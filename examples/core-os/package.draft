@@ -37,9 +37,10 @@ main :: proc() {
         assert(len(variables[0]) != 0)
     }
 
-    // Exercise the complete pathname seam through real target assembly and
-    // hosted OS calls. A relative path stays inside the runner's process-unique
-    // working directory, while removal still makes a standalone rerun clean.
+    // Exercise the complete pathname seam through the target's real variadic
+    // open ABI and hosted OS calls. A relative path stays inside the runner's
+    // process-unique working directory, while removal still makes a standalone
+    // rerun clean.
     path: memory.Owned_String
     memory.owned_string_copy(&path, "draft-core-os-round-trip")
     defer memory.owned_string_destroy(&path)

@@ -842,13 +842,15 @@ private:
   // checking operand expressions. This separation is important for generics:
   // the checker must know which declared type pattern receives each explicit
   // operand before it can infer substitutions. Positional operands must precede
-  // named operands; a static pack is therefore always one source-ordered tail.
+  // named operands; either kind of open tail is therefore one source-ordered
+  // suffix. A static pack consumes that suffix at compile time, while a C
+  // variadic procedure retains it as physical call operands.
   [[nodiscard]] BoundProcedureArguments bind_procedure_arguments(
       const SyntaxTree &tree,
       const SyntaxNode &call,
       const Symbol *declaration,
       std::size_t fixed_parameter_count,
-      bool has_static_pack) {
+      bool has_open_tail) {
     BoundProcedureArguments result;
     const std::size_t initial_errors = diagnostics_.error_count();
     const std::vector<ProcedureParameter> *parameters = declaration == nullptr
@@ -926,7 +928,7 @@ private:
         ++next_positional;
         continue;
       }
-      if (!has_static_pack) {
+      if (!has_open_tail) {
         diagnostics_.error(
             argument.range,
             "procedure call has too many arguments");
@@ -1500,7 +1502,10 @@ private:
                 value_substitutions,
                 use_range);
       return semantic_.types.procedure(
-          parameters, result, value.c_calling_convention);
+          parameters,
+          result,
+          value.c_calling_convention,
+          value.c_variadic);
     }
     default:
       return source;
@@ -1673,6 +1678,7 @@ private:
     if (left.kind != right.kind || left.name != right.name ||
         left.bit_width != right.bit_width ||
         left.c_calling_convention != right.c_calling_convention ||
+        left.c_variadic != right.c_variadic ||
         left.c_representation != right.c_representation ||
         left.requested_alignment != right.requested_alignment ||
         left.members.size() != right.members.size() ||
@@ -2215,6 +2221,125 @@ private:
     for (HirExpressionId operand : operands) {
       contextualize_numeric_expression(operand, target);
     }
+  }
+
+  // Checks and promotes one operand in the unnamed tail of a C variadic call.
+  // C has no declared parameter type for this position, so applying Draft's
+  // ordinary inferred runtime defaults would be ABI-wrong: an integer literal
+  // must arrive as C `int` (i32), not Draft `int` (i64), and f16/f32 must arrive
+  // as C `double` (f64). Narrow integer-shaped values and bool receive the C
+  // integer promotions. Wider scalar values and pointers preserve their exact
+  // representation.
+  //
+  // The first implementation deliberately excludes aggregates. Passing a C
+  // struct or union through `...` uses target-specific unnamed-argument rules
+  // that are not the same as the fixed-parameter classifier. Rejecting those
+  // values here keeps the accepted source set exactly aligned with the backend;
+  // callers can retain a fixed wrapper until aggregate-tail lowering exists.
+  [[nodiscard]] HirExpressionId check_c_variadic_argument(
+      const SyntaxTree &tree,
+      NodeId expression_id,
+      ScopeId scope) {
+    const HirExpressionId checked = check_expression(tree, expression_id, scope);
+    HirExpression &source_expression = hir_.expression_mut(checked);
+    const TypeId source = source_expression.type;
+    if (is_invalid_type(source)) return checked;
+
+    const Type source_type = semantic_.types.type(source);
+    const std::optional<TypeId> c_int = semantic_.types.find_builtin("i32");
+    const std::optional<TypeId> c_double = semantic_.types.find_builtin("f64");
+    assert(c_int.has_value() && c_double.has_value());
+
+    TypeId promoted = source;
+    bool legal = true;
+    if (is_untyped_integer(source)) {
+      promoted = *c_int;
+    } else if (is_untyped_float(source)) {
+      promoted = *c_double;
+    } else {
+      switch (source_type.kind) {
+      case TypeKind::Bool:
+        promoted = *c_int;
+        break;
+      case TypeKind::BooleanStorage:
+      case TypeKind::EndianScalar:
+      case TypeKind::SignedInteger:
+      case TypeKind::UnsignedInteger:
+        if (source_type.bit_width < 32) promoted = *c_int;
+        break;
+      case TypeKind::Rune:
+        break;
+      case TypeKind::Enum: {
+        if (!source_type.c_representation || !source_type.element.is_valid()) {
+          legal = false;
+          break;
+        }
+        const Type &backing = semantic_.types.type(source_type.element);
+        if (backing.bit_width < 32) promoted = *c_int;
+        break;
+      }
+      case TypeKind::Float:
+        if (source_type.bit_width < 64) {
+          promoted = *c_double;
+        } else if (source_type.bit_width != 64) {
+          legal = false;
+        }
+        break;
+      case TypeKind::RawPointer:
+      case TypeKind::CString:
+      case TypeKind::Pointer:
+      case TypeKind::MultiPointer:
+        break;
+      case TypeKind::Procedure:
+        legal = source_type.c_calling_convention;
+        break;
+      default:
+        legal = false;
+        break;
+      }
+    }
+
+    if (!legal) {
+      diagnostics_.error(
+          source_expression.range,
+          "C variadic argument must be a C scalar or pointer; pass aggregates "
+          "through a fixed C wrapper");
+      return checked;
+    }
+
+    if (promoted == source) return checked;
+    if (is_untyped_integer(source) || is_untyped_float(source)) {
+      contextualize_numeric_expression(checked, promoted);
+      return checked;
+    }
+
+    HirExpression promotion;
+    promotion.kind = HirExpressionKind::Intrinsic;
+    promotion.type = promoted;
+    promotion.range = source_expression.range;
+    promotion.constant = ConstantValue::make_string("cast");
+    promotion.operands.push_back(checked);
+
+    // Preserve compile-time constants as constants so MIR never emits a
+    // needless extension. Bool is the one promotion source not accepted by
+    // the general numeric cast helper, so spell its C integer value directly.
+    if (source_expression.kind == HirExpressionKind::Constant) {
+      std::optional<ConstantValue> converted;
+      if (source_type.kind == TypeKind::Bool &&
+          source_expression.constant.kind == ConstantKind::Bool) {
+        converted = ConstantValue::make_integer(
+            source_expression.constant.boolean ? 1 : 0);
+      } else {
+        converted = convert_numeric_constant(
+            source_expression.constant, promoted, source_expression.range);
+      }
+      if (converted.has_value()) {
+        promotion.kind = HirExpressionKind::Constant;
+        promotion.constant = *converted;
+        promotion.operands.clear();
+      }
+    }
+    return hir_.add_expression(std::move(promotion));
   }
 
   // Inferred runtime bindings may not retain the untyped numeric pseudo-types.
@@ -4106,7 +4231,8 @@ private:
     case TypeKind::Procedure:
       if (pattern.members.size() != actual.members.size() ||
           (pattern.kind == TypeKind::Procedure &&
-           pattern.c_calling_convention != actual.c_calling_convention)) {
+           (pattern.c_calling_convention != actual.c_calling_convention ||
+            pattern.c_variadic != actual.c_variadic))) {
         return false;
       }
       for (std::size_t index = 0; index < pattern.members.size(); ++index) {
@@ -4239,7 +4365,10 @@ private:
         ? semantic_.types.builtins().void_type
         : fixed.members.back();
     instance_symbol.type = semantic_.types.procedure(
-        concrete_parameters, result, fixed.c_calling_convention);
+        concrete_parameters,
+        result,
+        fixed.c_calling_convention,
+        fixed.c_variadic);
     instance_symbol.syntax = source_symbol.syntax;
     instance_symbol.name_range = source_symbol.name_range;
     const SymbolId instance_id =
@@ -4648,7 +4777,10 @@ private:
         ? semantic_.types.builtins().void_type
         : fixed.members.back();
     instance_symbol.type = semantic_.types.procedure(
-        concrete_parameters, result, fixed.c_calling_convention);
+        concrete_parameters,
+        result,
+        fixed.c_calling_convention,
+        fixed.c_variadic);
     instance_symbol.syntax = source_symbol.syntax;
     instance_symbol.name_range = source_symbol.name_range;
     const SymbolId instance_id =
@@ -6095,7 +6227,10 @@ private:
                   ? semantic_.types.builtins().void_type
                   : fixed.members.back();
               concrete_signature_id = semantic_.types.procedure(
-                  concrete_parameters, result, fixed.c_calling_convention);
+                  concrete_parameters,
+                  result,
+                  fixed.c_calling_convention,
+                  fixed.c_variadic);
             } else {
               callee_symbol = instantiate_procedure(
                   *inferred_template,
@@ -6183,7 +6318,7 @@ private:
           node,
           direct_declaration.has_value() ? &*direct_declaration : nullptr,
           parameter_count,
-          false);
+          signature.c_variadic);
       if (!bound.valid) {
         return invalid_expression(node.range);
       }
@@ -6195,11 +6330,20 @@ private:
            index < bound.explicit_expressions.size(); ++index) {
         const std::uint32_t parameter_index =
             bound.explicit_parameter_indices[index];
-        expression.operands.push_back(check_expression(
-            tree,
-            bound.explicit_expressions[index],
-            scope,
-            signature.members[parameter_index]));
+        if (parameter_index < parameter_count) {
+          expression.operands.push_back(check_expression(
+              tree,
+              bound.explicit_expressions[index],
+              scope,
+              signature.members[parameter_index]));
+        } else {
+          // A C variadic tail has no declared expected type. The dedicated
+          // checker applies C default argument promotions before this operand
+          // reaches MIR, making every physical ABI type explicit.
+          assert(signature.c_variadic);
+          expression.operands.push_back(check_c_variadic_argument(
+              tree, bound.explicit_expressions[index], scope));
+        }
         expression.call_parameter_indices.push_back(parameter_index);
       }
       for (std::uint32_t parameter_index :

@@ -109,9 +109,12 @@ destructors, or automatic moves. Confirm in `core/`. If a generally useful
 operation is missing, add the smallest honest core or platform seam with tests;
 otherwise keep application policy local.
 
-Do not bypass a missing fixed-arity C binding with an invented variadic Draft
-declaration. Draft 1 rejects variadic foreign procedures; use a small
-fixed-signature wrapper supplied by an explicit provider or package assembly.
+For a real C variadic import, use bare final `..` only in a `c proc`, keep at
+least one fixed parameter, and pass only supported scalar or pointer tail
+values. Do not confuse it with `values: ..type` static packs or `...`
+synthesis. Aggregate variadic arguments, C macros, and foreign data still need
+a small fixed-signature wrapper supplied by an explicit provider or package
+assembly.
 
 Do not add `...` merely to avoid implementing code. Complete handwritten
 programs require no provider. Saved expansions are ordinary checked Draft

@@ -187,6 +187,8 @@ struct TypeCompletion {
 // Procedure members always contain a final result TypeId; void procedures use
 // the canonical void type there. c_calling_convention distinguishes physical
 // procedure pointer identities because ordinary procedures carry Draft context.
+// c_variadic is meaningful only with the C calling convention and records an
+// unnamed ABI tail after the fixed members; the tail has no TypeId of its own.
 // c_representation and requested_alignment are meaningful only on nominal
 // aggregates. They remain on the type after layout so ABI validation and
 // package-interface reconstruction do not infer source attributes from bytes.
@@ -221,6 +223,7 @@ struct Type {
   std::vector<std::uint64_t> member_bit_offsets;
   std::vector<FieldLayout> member_layouts;
   bool c_calling_convention = false;
+  bool c_variadic = false;
   bool c_representation = false;
   std::uint32_t requested_alignment = 0;
   SourceRange declaration;
@@ -356,7 +359,10 @@ public:
       std::uint32_t deferred_index = std::numeric_limits<std::uint32_t>::max());
   [[nodiscard]] TypeId tuple(const std::vector<TypeId> &members);
   [[nodiscard]] TypeId procedure(
-      const std::vector<TypeId> &parameters, TypeId result, bool c_calling_convention);
+      const std::vector<TypeId> &parameters,
+      TypeId result,
+      bool c_calling_convention,
+      bool c_variadic);
   [[nodiscard]] TypeId distinct(std::string name, TypeId underlying, SourceRange declaration);
   [[nodiscard]] TypeId type_parameter(std::string name, SourceRange declaration);
   [[nodiscard]] TypeId begin_nominal(

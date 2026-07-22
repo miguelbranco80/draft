@@ -148,6 +148,12 @@ depend on runtime parameters or unresolved parametric bindings, or have a
 parameter type which remains symbolic. Defaults are not valid in standalone
 procedure types or on a static pack.
 
+A bare final `..` has a separate native-interoperation meaning in a `c proc`:
+it marks an unnamed C variadic tail. It has no binding name or Draft value and
+is distinct from both a named `values: ..type` static pack and the `...`
+synthesis construct. Its declaration and call rules are specified in
+[native interop](04-native-interop.md#c-variadic-imports-and-calls).
+
 Procedures live in packages or lexical scopes. Structs contain data; package
 procedures operate on that data explicitly:
 

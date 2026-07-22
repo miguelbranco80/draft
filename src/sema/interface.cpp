@@ -113,6 +113,13 @@ void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
   hash_u64(hash, static_cast<std::uint64_t>(type.member_bit_offsets.size()));
   for (std::uint64_t offset : type.member_bit_offsets) hash_u64(hash, offset);
   hash_u64(hash, type.c_calling_convention ? 1 : 0);
+  // A fixed procedure is the historical/default row shape. Add a framed
+  // extension only for the new non-default state so unrelated exact type
+  // digests—and therefore accepted synthesis inputs—do not change merely
+  // because the type vocabulary gained C variadics.
+  if (type.c_variadic) {
+    hash_field(hash, "draft.interface.c-variadic.v1");
+  }
   hash_u64(hash, type.c_representation ? 1 : 0);
   hash_u64(hash, type.requested_alignment);
   // A concrete type packet imported solely for monomorphization does not bind
@@ -768,6 +775,7 @@ private:
     translated.member_bit_offsets = source_type.member_bit_offsets;
     translated.member_layouts = source_type.member_layouts;
     translated.c_calling_convention = source_type.c_calling_convention;
+    translated.c_variadic = source_type.c_variadic;
     translated.c_representation = source_type.c_representation;
     translated.requested_alignment = source_type.requested_alignment;
     set_nominal_identity(source, translated);
@@ -1389,7 +1397,10 @@ private:
         const TypeId procedure_result = members.back();
         members.pop_back();
         result = consumer_.types.procedure(
-            members, procedure_result, source.c_calling_convention);
+            members,
+            procedure_result,
+            source.c_calling_convention,
+            source.c_variadic);
       }
       break;
     }

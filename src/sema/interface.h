@@ -105,6 +105,9 @@ struct InterfaceType {
   std::vector<std::uint64_t> member_bit_offsets;
   std::vector<FieldLayout> member_layouts;
   bool c_calling_convention = false;
+  // An open C ABI tail follows the fixed procedure members when true. It is a
+  // procedure-type identity fact, not declaration metadata or inferred arity.
+  bool c_variadic = false;
   bool c_representation = false;
   std::uint32_t requested_alignment = 0;
   std::vector<InterfaceMember> nominal_members;

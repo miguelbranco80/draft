@@ -201,7 +201,8 @@ void remap_type_row(Type &type, const SemanticTaskPublication &maps) {
     return left.members == right.members;
   case TypeKind::Procedure:
     return left.members == right.members &&
-        left.c_calling_convention == right.c_calling_convention;
+        left.c_calling_convention == right.c_calling_convention &&
+        left.c_variadic == right.c_variadic;
   default:
     return false;
   }

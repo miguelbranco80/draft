@@ -15,8 +15,9 @@ editing.
 - [Ordinary and C procedures](#ordinary-and-c-procedures)
 - [C-signature legality](#c-signature-legality)
 - [Foreign imports and providers](#foreign-imports-and-providers)
+- [C variadic imports](#c-variadic-imports)
 - [Exports and C callbacks](#exports-and-c-callbacks)
-- [Fixed-arity wrapper pattern](#fixed-arity-wrapper-pattern)
+- [Fixed-signature wrapper pattern](#fixed-signature-wrapper-pattern)
 - [Parsed inline assembly](#parsed-inline-assembly)
 - [Package assembly](#package-assembly)
 - [Native artifact kinds](#native-artifact-kinds)
@@ -179,8 +180,7 @@ extend it.
 
 ## Foreign imports and providers
 
-A foreign block declares fixed-arity procedure symbols from one semantic link
-provider:
+A foreign block declares procedure symbols from one semantic link provider:
 
 ```draft
 import core/c_abi
@@ -215,8 +215,36 @@ mappings for target-owned libc/runtime or package assembly.
 Codex, rerun judgments, or change generated-source pins. “Provider” in native
 linking means an explicit artifact supplier, not an elaboration model.
 
-Draft foreign blocks do not support variadic procedures or foreign data
-symbols. Use an explicit fixed-signature wrapper.
+Foreign data symbols are not supported. Use an explicit procedure or a
+fixed-signature wrapper supplied by the provider.
+
+## C variadic imports
+
+Bare final `..` declares a real C variadic tail:
+
+```draft
+foreign libc {
+    ioctl :: c proc(
+        descriptor: c_abi.int,
+        request: c_abi.unsigned_long,
+        ..,
+    ) -> c_abi.int
+}
+```
+
+The marker is valid only in `c proc`, must follow at least one fixed parameter,
+and has no binding name. It is structural procedure-type identity and can be
+queried with `type_is_variadic`. Draft cannot define or export a C variadic
+body.
+
+Supply the fixed prefix positionally before the tail. Untyped integers become
+C `int`/i32, narrow integers and bool promote to i32, and f16/f32 promote to
+f64. Wider C scalars, data pointers, `cstring`, and C procedure pointers retain
+their type. The current backend rejects strings, slices, ordinary Draft
+procedure pointers, distinct values, and every aggregate tail. Use a fixed
+wrapper for those cases. A bare `nil` has no tail type; cast it to the required
+pointer type first. `values: ..type` is instead a compile-time Draft pack; `...`
+is always synthesis.
 
 ## Exports and C callbacks
 
@@ -256,25 +284,24 @@ On a foreign-created thread, the bridge establishes Draft TLS as needed.
 Foreign hosts must still obey the generated header, provider, artifact, and
 lifetime contracts.
 
-## Fixed-arity wrapper pattern
+## Fixed-signature wrapper pattern
 
-Many C APIs are variadic or macro-shaped. Draft cannot import those directly.
-Supply a tiny C or package-assembly wrapper with one fixed signature:
+Macro-shaped APIs, foreign data, and aggregate variadic arguments cannot use
+the direct procedure-import surface. Supply a tiny C or package-assembly
+wrapper with one fixed signature:
 
 ```c
-int draft_open_fixed(const char *path, int flags, unsigned mode) {
-    return open(path, flags, mode);
+int draft_wifexited(int status) {
+    return WIFEXITED(status);
 }
 ```
 
 ```draft
 import core/c_abi
 
-foreign package_assembly {
-    native_open as "draft_open_fixed" :: c proc(
-        path: cstring,
-        flags: c_abi.int,
-        mode: c_abi.unsigned_int,
+foreign process_helpers {
+    process_exited as "draft_wifexited" :: c proc(
+        status: c_abi.int,
     ) -> c_abi.int
 }
 ```
@@ -397,7 +424,9 @@ nondeterministic archive metadata, or filesystem enumeration order.
 - Audit every C-visible type recursively and generate/compile the C header.
 - Keep ordinary `proc` and `c proc` pointer types distinct.
 - Bridge Context explicitly in callbacks and exports.
-- Replace variadic or macro C APIs with fixed-signature wrappers.
+- Use bare final `..` only for supported C scalar/pointer variadic tails.
+- Replace C macros, foreign data, and aggregate variadic tails with
+  fixed-signature wrappers.
 - Declare every parsed-assembly input, output, flags write, and memory effect.
 - Keep complex or directive-heavy code in target package assembly.
 - Test ABI classification, symbol spelling, artifact kind, and an independent C

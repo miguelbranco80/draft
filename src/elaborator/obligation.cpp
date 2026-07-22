@@ -572,6 +572,10 @@ void collect_constant_procedures(
       if (index != 0) result += ", ";
       result += type_text(package, type.members[index]);
     }
+    if (type.c_variadic) {
+      if (type.members.size() > 1) result += ", ";
+      result += "..";
+    }
     result += ")";
     const TypeId return_type = type.members.back();
     if (package.types.type(return_type).kind != TypeKind::Void) {
@@ -754,6 +758,13 @@ void append_constant_context(
         "TYPE_C_CALLING_CONVENTION",
         type.c_calling_convention ? "true" : "false",
         output);
+    // Keep unrelated accepted source stable when a new structural capability
+    // is added. The absence of this sparse field is the ordinary fixed
+    // procedure state; only a variadic type contributes the new semantic fact
+    // to a synthesis input digest.
+    if (type.c_variadic) {
+      append_context_field("TYPE_C_VARIADIC", "true", output);
+    }
     append_context_field(
         "TYPE_C_REPRESENTATION",
         type.c_representation ? "true" : "false",

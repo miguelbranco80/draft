@@ -2674,11 +2674,16 @@ private:
         // named procedure body and therefore are not standalone type values.
         std::vector<TypeId> parameters;
         TypeId result = semantic_.types.builtins().void_type;
+        bool c_variadic = false;
         for (NodeId child_id : expression.children) {
           const SyntaxNode &child = tree.node(child_id);
           if (child.kind == NodeKind::ParameterList) {
             for (NodeId parameter_id : child.children) {
               const SyntaxNode &parameter = tree.node(parameter_id);
+              if (parameter.kind == NodeKind::CVariadicTail) {
+                c_variadic = true;
+                continue;
+              }
               if (parameter.children.size() < 2) return std::nullopt;
               NodeId parameter_type_id;
               for (std::size_t index = 1;
@@ -2725,7 +2730,8 @@ private:
           if (kind == TokenKind::KeywordC) c_calling = true;
           if (kind == TokenKind::KeywordProc) break;
         }
-        return semantic_.types.procedure(parameters, result, c_calling);
+        return semantic_.types.procedure(
+            parameters, result, c_calling, c_variadic && c_calling);
       }
       if (expression.kind == NodeKind::DistinctType &&
           !expression.children.empty()) {

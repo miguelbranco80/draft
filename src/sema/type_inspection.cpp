@@ -229,6 +229,10 @@ constexpr std::array<std::string_view, 2> kTargetObjectFormatNames = {
       if (index != 0) result += ", ";
       result += canonical_type_name(package, type.members[index], active);
     }
+    if (type.c_variadic) {
+      if (parameter_count != 0) result += ", ";
+      result += "..";
+    }
     result += ")";
     if (!type.members.empty() &&
         type.members.back() != package.types.builtins().void_type) {
@@ -292,7 +296,7 @@ std::string_view type_facet_name(TypeFacet facet) {
 }
 
 bool is_type_inspection_query(std::string_view name) {
-  constexpr std::array<std::string_view, 22> names = {
+  constexpr std::array<std::string_view, 23> names = {
       "type_kind", "type_name", "type_bit_width", "type_byte_order",
       "type_element", "type_element_count", "type_member_count",
       "type_member_name", "type_member_type", "type_member_offset",
@@ -300,7 +304,8 @@ bool is_type_inspection_query(std::string_view name) {
       "type_member_bit_offset", "type_member_value", "type_underlying",
       "type_discriminator",
       "type_parameter_count", "type_parameter_type", "type_result",
-      "type_calling_convention", "type_is_c_repr", "type_requested_alignment",
+      "type_calling_convention", "type_is_variadic", "type_is_c_repr",
+      "type_requested_alignment",
   };
   return std::find(names.begin(), names.end(), name) != names.end();
 }
@@ -616,6 +621,13 @@ TypeInspectionAttempt inspect_type(
     return enum_result(
         builtins.calling_convention_type,
         type.c_calling_convention ? 1 : 0);
+  }
+  if (query == "type_is_variadic") {
+    if (type.kind != TypeKind::Procedure) {
+      return failure("type_is_variadic requires a procedure type");
+    }
+    return success(
+        ConstantValue::make_bool(type.c_variadic), builtins.bool_type);
   }
   if (query == "type_is_c_repr") {
     if (type.kind != TypeKind::Struct && type.kind != TypeKind::Enum &&

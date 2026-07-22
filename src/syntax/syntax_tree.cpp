@@ -122,6 +122,7 @@ std::string_view node_kind_name(NodeKind kind) {
   case NodeKind::Parameter: return "Parameter";
   case NodeKind::ParameterDefault: return "ParameterDefault";
   case NodeKind::StaticPackType: return "StaticPackType";
+  case NodeKind::CVariadicTail: return "CVariadicTail";
   case NodeKind::ResultClause: return "ResultClause";
   case NodeKind::MemberList: return "MemberList";
   case NodeKind::PackedFieldSpecifier: return "PackedFieldSpecifier";

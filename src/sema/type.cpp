@@ -691,13 +691,22 @@ void TypeStore::complete_pending_tuple_layouts() {
 }
 
 TypeId TypeStore::procedure(
-    const std::vector<TypeId> &parameters, TypeId result_type, bool c_calling_convention) {
+    const std::vector<TypeId> &parameters,
+    TypeId result_type,
+    bool c_calling_convention,
+    bool c_variadic) {
+  // An unnamed ABI tail exists only in the C calling convention. Keeping this
+  // invariant at the interning boundary prevents task publication or interface
+  // reconstruction from manufacturing a procedure identity that no Draft
+  // source form can denote.
+  assert(!c_variadic || c_calling_convention);
   std::vector<TypeId> signature = parameters;
   signature.push_back(result_type);
   for (std::uint32_t index = 0; index < size(); ++index) {
     const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::Procedure && candidate.members == signature &&
         candidate.c_calling_convention == c_calling_convention &&
+        candidate.c_variadic == c_variadic &&
         !candidate.owner_evaluated_type_application) {
       return TypeId{index};
     }
@@ -708,6 +717,7 @@ TypeId TypeStore::procedure(
   result.layout = {true, bytes, bytes};
   result.members = std::move(signature);
   result.c_calling_convention = c_calling_convention;
+  result.c_variadic = c_variadic;
   return add(std::move(result));
 }
 

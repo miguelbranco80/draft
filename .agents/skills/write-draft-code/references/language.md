@@ -129,7 +129,9 @@ outer :: proc(input: []u8) -> usize {
 
 An ordinary procedure pointer is `proc(...) -> T` and carries the hidden Draft
 context in its physical ABI. A `c proc(...) -> T` is a distinct C procedure
-pointer with no Draft context. Neither is a closure.
+pointer with no Draft context. A C procedure type may use bare final `..` for a
+native variadic tail; read `interop-and-targets.md` before declaring or calling
+one. Neither procedure kind is a closure.
 
 ## Literals and source rules
 
@@ -445,7 +447,9 @@ when expression grammar places it in a compile-time comparison.
 expression. Structural inspection uses `type_kind`, `type_name`, scalar
 bit-width/byte-order queries, element and member queries, underlying and
 discriminator queries, procedure-signature queries, and C-representation or
-requested-alignment queries. Use the exact vocabulary and applicability table
+requested-alignment queries. Procedure inspection includes
+`type_is_variadic`; a static `..type` pack produces fixed specializations and
+therefore is not a variadic procedure type. Use the exact vocabulary and applicability table
 in the specification's “Compile-time type values and structural inspection”
 section rather than guessing a reflection API. These are structural language
 facts, not target ABI classification or runtime reflection.
@@ -595,7 +599,7 @@ no `main`.
 Do not synthesize syntax for familiar features that are absent. Draft 1 has no
 methods, closures, inheritance, interfaces/traits, exceptions, implicit
 destructors, automatic ownership/moves, operator overloading, declaration
-overloading, variadic foreign procedures, macro expander,
+overloading, Draft-defined C variadic bodies, macro expander,
 AST construction API, textual preprocessor, hidden package initialization,
 strict-aliasing assumption, implicit numeric conversions, implicit truthiness,
 aggregate equality, general compile-time declaration generation, or raw-string

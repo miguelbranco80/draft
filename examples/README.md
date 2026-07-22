@@ -84,7 +84,7 @@ policy rather than missing backend features.
 | [`core-array`](core-array/) | Owning growable arrays plus small uses of the heap, I/O interface, testing, benchmarking, and duration APIs. |
 | [`core-map`](core-map/) | Explicit string-key map initialization, insertion, replacement, lookup, removal, and destruction. |
 | [`core-utf8`](core-utf8/) | Allocation-free strict UTF-8 validation, forward/reverse scalar decoding, counting, and encoding into caller-owned storage. |
-| [`core-os`](core-os/) | Arguments, environment, process facts, file descriptors, path conversion, raw byte I/O, and zero-copy literal/sliced/empty string writes. |
+| [`core-os`](core-os/) | Arguments, environment, process facts, file descriptors, direct variadic C `open`, path conversion, raw byte I/O, and zero-copy literal/sliced/empty string writes. |
 | [`core-thread`](core-thread/) | Thread creation and joining, mutexes, condition variables, per-thread context setup, temporary storage, and language TLS. |
 | [`core-atomic`](core-atomic/) | Atomic integer, pointer, and memory-order operations on one thread. |
 | [`core-atomic-thread`](core-atomic-thread/) | Atomic coordination across spawned threads. |

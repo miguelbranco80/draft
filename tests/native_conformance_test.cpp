@@ -366,15 +366,6 @@ void test_partial_text_writes(TestState &state) {
     if (error) return;
   }
   const std::string target_tag = target.facts.file_tag;
-  const std::string open_name = "open@" + target_tag + ".s";
-  std::filesystem::copy_file(
-      source_root / "core" / "os" / open_name,
-      core / "os" / open_name,
-      std::filesystem::copy_options::none,
-      error);
-  EXPECT(state, name, !error);
-  if (error) return;
-
   std::ofstream platform(
       core / "os" / ("platform@" + target_tag + ".draft"),
       std::ios::binary);
@@ -384,9 +375,9 @@ void test_partial_text_writes(TestState &state) {
 // fixture owns one 16-KiB package-global capture buffer which the launched app
 // resets between cases; no pointer is retained after native_write returns.
 //
-// Production package.draft, console, format, io, runtime, and package assembly
-// remain unchanged. This provider depends only on core/c_abi and intentionally
-// supplies the complete private seam required by core/os.
+// Production package.draft, console, format, io, and runtime remain unchanged.
+// This provider depends only on core/c_abi and intentionally supplies the
+// complete private seam required by core/os.
 package os
 
 import core/c_abi
@@ -436,6 +427,14 @@ pub page_size :: proc() -> usize {
 
 // The launched fixture never reads through this provider. Returning a native
 // error keeps accidental reads deterministic and outside the write assertions.
+native_open :: proc(
+    path: cstring,
+    flags: c_abi.int,
+    mode: c_abi.unsigned_int,
+) -> c_abi.int {
+    return -1
+}
+
 native_read :: proc(
     descriptor: c_abi.int,
     destination: [^]u8,

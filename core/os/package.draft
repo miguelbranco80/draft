@@ -2,15 +2,15 @@
 // macOS and GNU/Linux targets. It exposes process-lifetime argument and
 // environment views, explicit descriptor handles, one-call byte/text
 // reads/writes, complete writes, pathname operations, and small process facts.
-// Target files and package assembly own platform constants and fixed C ABI
-// adapters; this common file owns portable Draft policy over those selected
-// operations.
+// Target files own platform constants and C ABI declarations; this common file
+// owns portable Draft policy over those selected operations.
 //
 // File values alias native descriptors and never own cleanup implicitly.
 // Callers retain ownership of every byte slice and must close each successfully
 // opened handle exactly once through its chosen owner. Recoverable native
 // failures are collapsed into core/io.Error or bool by this initial surface.
-// Draft specification: sections 5-7 and the selected target profile.
+// Draft specification: sections 5-7, native interoperation section 12, and the
+// selected target profile.
 package os
 
 import core/c_abi
@@ -39,8 +39,9 @@ pub environment :: proc() -> []string {
     return data[:process_environment_count()]
 }
 
-// File is a small non-owning descriptor handle. Closing it is explicit, and a
-// copied File aliases the same OS resource. A failed open returns a File whose
+// File is a plain descriptor handle with an explicit close obligation. It does
+// not close itself, and a copied File aliases the same OS resource rather than
+// creating an independently owned handle. A failed open returns a File whose
 // descriptor is -1. Keeping that sentinel in the ordinary value means callers
 // can initialize and clean up a handle without a second representation.
 pub File :: c struct {
@@ -63,26 +64,18 @@ pub open_read_write :: cast[c_abi.int](2)
 // sites than repeating a target-shaped numeric literal.
 pub default_creation_permissions :: cast[c_abi.unsigned_int](438)
 
-// POSIX declares open(2) as variadic because the mode argument is consumed only
-// when O_CREAT is present. Draft 1 rejects variadic foreign declarations, so
-// each target assembly file supplies this fixed three-argument C ABI wrapper.
-// The kernel ignores the third value when O_CREAT is absent.
-foreign package_assembly {
-    native_open as "draft_os_open_fixed" :: c proc(
-        path: cstring,
-        flags: c_abi.int,
-        mode: c_abi.unsigned_int,
-    ) -> c_abi.int
-}
-
 pub file_from_descriptor :: proc(descriptor: c_abi.int) -> File {
     return File{descriptor = descriptor}
 }
 
-// Opens a pathname through the fixed-signature package-assembly adapter.
-// `mode` is used only when flags contains open_create. The low-level form stays
-// public because systems code needs combinations such as append or exclusive
-// creation, while the convenience procedures below cover the common cases.
+// Opens a borrowed pathname through the target's variadic C declaration. The
+// native call reads `path` synchronously and does not retain it. `mode` is an
+// unsigned int, so it already has its final C variadic representation and needs
+// no default promotion. The native function consumes it only when flags
+// contains open_create. On success, the returned File transfers one explicit
+// close obligation to the caller. The low-level form stays public because
+// systems code needs combinations such as append or exclusive creation, while
+// the convenience procedures below cover the common cases.
 pub open :: proc(
     path: cstring,
     flags: c_abi.int,
@@ -95,8 +88,9 @@ pub open :: proc(
     return (File{descriptor = descriptor}, .none)
 }
 
-// Opens an existing file for reading. The ignored mode is explicitly zero so
-// the fixed native signature has one unsurprising call convention everywhere.
+// Opens an existing file for reading. The native function ignores the supplied
+// mode because open_create is absent; retaining one common internal call keeps
+// the public wrapper direct and deterministic.
 pub open_for_reading :: proc(path: cstring) -> (File, io.Error) {
     return open(path, open_read_only, 0)
 }

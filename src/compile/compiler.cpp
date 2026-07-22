@@ -1657,7 +1657,10 @@ struct InterfaceSynthesisSurface {
     const TypeId procedure_result = members.back();
     members.pop_back();
     result = canonical.procedure(
-        members, procedure_result, type.c_calling_convention);
+        members,
+        procedure_result,
+        type.c_calling_convention,
+        type.c_variadic);
     break;
   }
   default:

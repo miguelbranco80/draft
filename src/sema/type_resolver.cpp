@@ -907,6 +907,7 @@ private:
     std::vector<TypeId> parameters;
     TypeId result = semantic_.types.builtins().void_type;
     bool saw_static_pack = false;
+    bool saw_c_variadic_tail = false;
     if (owner.has_value()) {
       // Signature resolution may run in a private product attempt before its
       // completed Symbol patch is published. Rebuild the metadata from syntax
@@ -920,6 +921,20 @@ private:
              parameter_index < child.children.size(); ++parameter_index) {
           const NodeId parameter_id = child.children[parameter_index];
           const SyntaxNode &parameter = tree.node(parameter_id);
+          if (parameter.kind == NodeKind::CVariadicTail) {
+            if (saw_c_variadic_tail) {
+              diagnostics_.error(
+                  parameter.range,
+                  "procedure may declare only one C variadic tail");
+            }
+            saw_c_variadic_tail = true;
+            if (parameter_index + 1 != child.children.size()) {
+              diagnostics_.error(
+                  parameter.range,
+                  "C variadic tail must be the final procedure parameter");
+            }
+            continue;
+          }
           if (parameter.children.size() < 2) {
             continue;
           }
@@ -1072,8 +1087,28 @@ private:
         }
       }
     }
+    const bool uses_c_calling_convention =
+        c_calling_convention(tree, procedure);
+    if (saw_c_variadic_tail && !uses_c_calling_convention) {
+      diagnostics_.error(
+          procedure.range,
+          "bare '..' parameter tail is valid only in a c proc");
+    }
+    if (saw_c_variadic_tail && parameters.empty()) {
+      diagnostics_.error(
+          procedure.range,
+          "C variadic procedure requires at least one fixed parameter");
+    }
+    if (saw_c_variadic_tail && procedure.kind == NodeKind::Procedure) {
+      diagnostics_.error(
+          procedure.range,
+          "Draft cannot define a C variadic procedure body; declare a foreign procedure type");
+    }
     return semantic_.types.procedure(
-        parameters, result, c_calling_convention(tree, procedure));
+        parameters,
+        result,
+        uses_c_calling_convention,
+        saw_c_variadic_tail && uses_c_calling_convention);
   }
 
   // Layout syntax accepts the same exact integer expression vocabulary used by
@@ -2676,7 +2711,10 @@ private:
                 value_substitutions,
                 use_range);
       return semantic_.types.procedure(
-          parameters, result, value.c_calling_convention);
+          parameters,
+          result,
+          value.c_calling_convention,
+          value.c_variadic);
     }
     default:
       return source;

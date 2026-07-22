@@ -520,6 +520,42 @@ main :: proc() -> i64 {
   EXPECT(state, emitted.text.find("static_pack") == std::string::npos);
 }
 
+// A C variadic call remains genuinely variadic in LLVM. The semantic checker
+// has already changed every unnamed operand to its C promoted type, leaving
+// LLVM's target lowering to choose the Darwin or GNU AArch64 physical
+// register/stack locations from an ordinary vararg function type.
+void test_c_variadic_call_emits_promoted_tail(TestState &state) {
+  const EmittedFixture emitted = emit_fixture(R"draft(package c_vararg_llvm
+
+foreign libc {
+    sink as "draft_variadic_sink" :: c proc(tag: i32, ..) -> i32
+}
+
+invoke :: proc(
+    narrow: u8,
+    single: f32,
+    condition: bool,
+    pointer: rawptr,
+) -> i32 {
+    return sink(1, narrow, single, condition, pointer)
+}
+)draft");
+
+  if (!emitted.ok) std::cerr << emitted.diagnostics;
+  EXPECT(state, emitted.ok);
+  EXPECT(state, emitted.text.find(
+      "declare i32 @\"draft_variadic_sink\"(i32, ...)") !=
+      std::string::npos);
+  EXPECT(state, emitted.text.find("zext i8") != std::string::npos);
+  EXPECT(state, emitted.text.find("fpext float") != std::string::npos);
+  EXPECT(state, emitted.text.find("zext i1") != std::string::npos);
+  EXPECT(state, emitted.text.find(
+      "i32 (i32, ...) @\"draft_variadic_sink\"(i32 1, i32 ") !=
+      std::string::npos);
+  EXPECT(state, emitted.text.find(", double ") != std::string::npos);
+  EXPECT(state, emitted.text.find(", ptr ") != std::string::npos);
+}
+
 // Verifies that tuple extraction uses the tuple's logical member numbers even
 // when semantic layout places alignment padding before a member. LLVM owns the
 // implicit padding of tuple types; only named packed structs contain explicit
@@ -1110,6 +1146,7 @@ int main() {
   test_raw_string_data_is_direct_pointer_extraction(state);
   test_multistep_call_lowering_keeps_debug_locations(state);
   test_static_argument_pack_emits_fixed_signature(state);
+  test_c_variadic_call_emits_promoted_tail(state);
   test_padded_tuple_extraction_uses_logical_indices(state);
   test_scalar_executable_module(
       state, draft::make_aarch64_macos_profile());

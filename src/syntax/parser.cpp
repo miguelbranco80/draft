@@ -633,6 +633,25 @@ private:
     std::vector<NodeId> parameters;
     (void)expect(TokenKind::LeftParen, "expected '('");
     while (!at_end() && !at(TokenKind::RightParen)) {
+      // Bare `..` is an unnamed open C ABI tail. It is intentionally distinct
+      // from both `name: ..type`, which creates a Draft static pack binding,
+      // and `...`, which remains synthesis syntax in every grammar category.
+      // Calling-convention legality belongs to semantic resolution because the
+      // syntax tree should retain a precise node even in an ordinary proc.
+      if (at(TokenKind::DotDot)) {
+        const std::uint32_t tail_start = position_;
+        advance();
+        parameters.push_back(tree_.add_node(
+            NodeKind::CVariadicTail, tail_start, position_));
+        if (match(TokenKind::Comma) && at(TokenKind::RightParen)) {
+          break;
+        }
+        if (!at(TokenKind::RightParen)) {
+          error_here("C variadic tail must be the final procedure parameter");
+          while (!at_end() && !at(TokenKind::RightParen)) advance();
+        }
+        break;
+      }
       const std::uint32_t parameter_start = position_;
       std::vector<NodeId> children;
       children.push_back(parse_name_list());

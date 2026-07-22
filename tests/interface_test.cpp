@@ -182,6 +182,44 @@ void test_owner_evaluated_count_interface_marker(TestState &state) {
   EXPECT(state, !diagnostics.has_errors());
 }
 
+void test_c_variadic_interface_identity(TestState &state) {
+  draft::SemanticPackage producer;
+  draft::DiagnosticSink diagnostics;
+  const std::optional<draft::TypeId> cstring =
+      producer.types.find_builtin("cstring");
+  const std::optional<draft::TypeId> i32 = producer.types.find_builtin("i32");
+  EXPECT(state, cstring.has_value());
+  EXPECT(state, i32.has_value());
+  if (!cstring.has_value() || !i32.has_value()) return;
+
+  const draft::TypeId variadic =
+      producer.types.procedure({*cstring}, *i32, true, true);
+  const draft::PackageIdentity identity{"workspace", "lib/c-vararg"};
+  const draft::InterfaceTypeGraph graph = draft::export_interface_type(
+      identity, producer, variadic, diagnostics);
+  EXPECT(state, graph.root.is_valid());
+  if (!graph.root.is_valid() || graph.root.value >= graph.types.size()) return;
+  EXPECT(state, graph.types[graph.root.value].c_variadic);
+
+  draft::InterfaceTypeGraph fixed = graph;
+  fixed.types[fixed.root.value].c_variadic = false;
+  EXPECT(state,
+      draft::hash_interface_type_graph(graph) !=
+          draft::hash_interface_type_graph(fixed));
+
+  draft::SemanticPackage consumer;
+  const draft::TypeId imported = draft::import_interface_type(
+      graph, consumer, diagnostics);
+  EXPECT(state, imported.is_valid());
+  if (imported.is_valid()) {
+    const draft::Type &type = consumer.types.type(imported);
+    EXPECT(state, type.kind == draft::TypeKind::Procedure);
+    EXPECT(state, type.c_calling_convention);
+    EXPECT(state, type.c_variadic);
+  }
+  EXPECT(state, !diagnostics.has_errors());
+}
+
 void test_imported_public_semantics(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -1101,6 +1139,7 @@ caller :: proc() {
 int main() {
   TestState state;
   test_owner_evaluated_count_interface_marker(state);
+  test_c_variadic_interface_identity(state);
   test_imported_public_semantics(state);
   test_private_name_is_not_imported(state);
   test_imported_parametric_type(state);

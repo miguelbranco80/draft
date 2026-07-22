@@ -77,6 +77,7 @@ void ensure_runtime_context_type(
        builtins.usize_type,
        builtins.usize_type},
       builtins.void_type,
+      false,
       false);
   const TypeId context = package.types.begin_nominal(
       TypeKind::Struct, "<runtime-context>", SourceRange::invalid());

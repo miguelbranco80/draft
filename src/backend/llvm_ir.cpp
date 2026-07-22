@@ -1845,6 +1845,10 @@ private:
       if (with_names) result += " %arg" + std::to_string(index);
       emitted = true;
     }
+    if (signature.c_variadic) {
+      if (emitted) result += ", ";
+      result += "...";
+    }
     result += ")";
     return result;
   }
@@ -3638,7 +3642,7 @@ private:
     const Type &signature = type(signature_id);
     const std::size_t parameter_count = signature.members.size() - 1;
     std::vector<std::string> arguments;
-    arguments.reserve(parameter_count + 1);
+    arguments.reserve(instruction.operands.size());
 
     const TypeId logical_result = signature.members.back();
     const bool returns_void =
@@ -3694,23 +3698,54 @@ private:
       arguments.push_back(physical_type + " " + physical);
     }
 
+    // Body checking has already applied the C default argument promotions to
+    // every unnamed operand. The tail is intentionally restricted to direct
+    // ABI scalars and pointers, so LLVM can see each promoted physical type and
+    // perform the target's Darwin or GNU AArch64 variadic register/stack
+    // assignment. Aggregate tails remain a source error until their separate
+    // unnamed-argument classification is implemented.
+    for (std::size_t index = parameter_count + 1;
+         index < instruction.operands.size(); ++index) {
+      const MirValueId value = instruction.operands[index];
+      const TypeId logical_type = procedure.value(value).type;
+      const Aarch64CAbiType abi = c_abi_type(logical_type);
+      if (abi.classification != Aarch64CAbiClass::Direct) {
+        error(
+            instruction.range,
+            "non-scalar C variadic argument reached LLVM emission");
+        arguments.push_back("i8 poison");
+        continue;
+      }
+      arguments.push_back(
+          llvm_type(logical_type) + " " +
+          value_operand(operands, value, instruction.range));
+    }
+
     const std::string callee_operand =
         value_operand(operands, callee, instruction.range);
+    // LLVM requires the complete function type at a variadic call site. A
+    // fixed call can infer it from the callee and argument list, which is why
+    // the older fixed-only path did not print this parenthesized signature.
+    const std::string variadic_signature = signature.c_variadic
+        ? function_signature(signature_id, false) + " "
+        : std::string();
     const std::string result = instruction.result.is_valid()
         ? "%v" + std::to_string(instruction.result.value)
         : std::string();
     if (returns_void || result_abi.classification == Aarch64CAbiClass::Indirect) {
-      output_ << "  call void " << callee_operand << '(';
+      output_ << "  call void " << variadic_signature << callee_operand << '(';
     } else if (result_abi.classification == Aarch64CAbiClass::SmallAggregate ||
                result_abi.classification ==
                    Aarch64CAbiClass::HomogeneousFloatAggregate) {
       output_ << "  %abi.call." << instruction_index << ".physical = call "
-              << c_result_type(logical_result) << ' ' << callee_operand << '(';
+              << c_result_type(logical_result) << ' ' << variadic_signature
+              << callee_operand << '(';
     } else {
       const std::string extension = c_integer_extension(logical_result);
       output_ << "  " << result << " = call ";
       if (!extension.empty()) output_ << extension << ' ';
-      output_ << c_result_type(logical_result) << ' ' << callee_operand << '(';
+      output_ << c_result_type(logical_result) << ' ' << variadic_signature
+              << callee_operand << '(';
     }
     for (std::size_t index = 0; index < arguments.size(); ++index) {
       if (index != 0) output_ << ", ";

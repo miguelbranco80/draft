@@ -195,8 +195,57 @@ complete manifest summary set, and retain the consumed digest through semantic
 compilation. A missing, stale, mismatched, unused, compiler-owned, or
 target-owned mapping fails before native linking.
 
-Draft 1 foreign blocks declare fixed-arity procedure symbols only. Variadic C calls
-and foreign data symbols require a fixed-signature C wrapper.
+<a id="c-variadic-imports-and-calls"></a>
+
+### C variadic imports and calls
+
+A foreign C procedure may terminate its parameter list with bare `..`:
+
+```draft
+foreign libc {
+    printf :: c proc(format: cstring, ..) -> c_abi.int
+    ioctl :: c proc(
+        descriptor: c_abi.int,
+        request: c_abi.unsigned_long,
+        ..,
+    ) -> c_abi.int
+}
+```
+
+The tail is part of procedure-type identity and is reported by
+`type_is_variadic`. It is valid only on a `c proc`, must follow at least one
+fixed parameter, and must be final. It has no source binding. `..` is not the
+named `values: ..type` compile-time argument pack, and `...` remains exclusively
+the synthesis construct.
+
+Calls check the fixed prefix normally and evaluate every explicit argument once
+from left to right. Tail arguments are positional; because Draft never permits
+a positional argument after a named one, a call which supplies the variadic
+tail also supplies its fixed prefix positionally. Before ABI lowering, Draft
+applies the C default argument promotions:
+
+- an untyped integer becomes `c_abi.int` (`i32`) and must fit;
+- an untyped float, `f16`, or `f32` becomes `f64`;
+- `bool` and integer-shaped values narrower than 32 bits become `i32`; and
+- wider C scalars, `f64`, data pointers, `cstring`, and C procedure pointers
+  retain their types.
+
+A tail supplies no expected parameter type. Bare `nil` and contextual enum
+alternatives must therefore be given an explicit concrete pointer or enum type
+before they can appear there.
+
+The initial tail accepts those promoted C scalars and pointers. Strings,
+slices, arrays, tuples, SIMD values, aggregates, variants, distinct values, and
+ordinary Draft procedure pointers are rejected. In particular, aggregate
+variadic arguments use target-specific unnamed-argument classification not
+covered by the fixed-parameter aggregate ABI and still require a fixed C
+wrapper.
+
+Draft may import and call a C variadic procedure or store its procedure pointer.
+It cannot define or export one: consuming such a body requires an explicit
+`va_list`/`va_start` source model which Draft does not yet provide. C macros,
+foreign data symbols, aggregate variadic tails, and any API better represented
+by a narrower typed contract continue to use a fixed-signature wrapper.
 
 ### C exports
 

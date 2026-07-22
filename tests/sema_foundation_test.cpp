@@ -101,9 +101,9 @@ void test_builtin_and_structural_types(TestState &state) {
   EXPECT(state, types.type(tuple_a).layout == draft::TypeLayout({true, 16, 8}));
 
   const draft::TypeId ordinary =
-      types.procedure({*u32}, types.builtins().bool_type, false);
+      types.procedure({*u32}, types.builtins().bool_type, false, false);
   const draft::TypeId c_procedure =
-      types.procedure({*u32}, types.builtins().bool_type, true);
+      types.procedure({*u32}, types.builtins().bool_type, true, false);
   EXPECT(state, ordinary != c_procedure);
   EXPECT(state, types.type(ordinary).layout.size == 8);
 }

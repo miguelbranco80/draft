@@ -75,6 +75,7 @@ package native
 
 foreign libc {
     puts :: c proc(text: cstring) -> i32
+    printf :: c proc(format: cstring, ..) -> i32
 }
 
 export increment as "draft_increment" :: c proc(value: i32) -> i32 {
@@ -114,6 +115,8 @@ export increment as "draft_increment" :: c proc(value: i32) -> i32 {
   EXPECT(state, mir.ok);
   EXPECT(state, llvm.ok);
   EXPECT(state, llvm.text.find("declare i32 @\"puts\"(ptr)") !=
+      std::string::npos);
+  EXPECT(state, llvm.text.find("declare i32 @\"printf\"(ptr, ...)") !=
       std::string::npos);
   EXPECT(state, llvm.text.find("define i32 @\"draft_increment\"(i32 %arg0)") !=
       std::string::npos);

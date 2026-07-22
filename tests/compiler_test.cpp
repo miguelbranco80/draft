@@ -3396,7 +3396,7 @@ void test_compiler_distributed_os(TestState &state) {
   }
   EXPECT(state, result.ok);
   EXPECT(state, !diagnostics.has_errors());
-  // root, os, io, c, memory, and runtime form the native round-trip graph.
+  // root, os, io, c_abi, memory, and runtime form the native round-trip graph.
   EXPECT(state, result.graph.packages.size() == 6);
   if (!result.ok || !result.graph.root_package.is_valid()) return;
 
@@ -3426,16 +3426,13 @@ void test_compiler_distributed_os(TestState &state) {
     EXPECT(state, package_llvm_text(*os).find("@\"__draft.os.args_data\"") !=
         std::string::npos);
     EXPECT(state, package_llvm_text(*os).find("@\"getpid\"") != std::string::npos);
-    EXPECT(state, package_llvm_text(*os).find("@\"draft_os_open_fixed\"") !=
+    EXPECT(state, package_llvm_text(*os).find(
+        "declare i32 @\"open\"(ptr, i32, ...)") !=
         std::string::npos);
-    EXPECT(state, os->assembly_sources.size() == 1);
-    if (os->assembly_sources.size() == 1) {
-    EXPECT(state, os->assembly_sources.front().relative_name ==
-        "open@aarch64-macos.s");
-      EXPECT(state, os->assembly_sources.front().contents.find(
-          "_draft_os_open_fixed:") != std::string::npos);
-    }
-    EXPECT(state, os->native_interop.providers.size() == 3);
+    EXPECT(state, package_llvm_text(*os).find(
+        "i32 (ptr, i32, ...) @\"open\"") != std::string::npos);
+    EXPECT(state, os->assembly_sources.empty());
+    EXPECT(state, os->native_interop.providers.size() == 2);
   }
 }
 
@@ -3498,8 +3495,8 @@ void test_compiler_distributed_thread(TestState &state) {
 
 // The Linux core gate runs the same public OS/thread examples through semantic,
 // HIR, MIR, and LLVM construction. It checks the target-selected source seam
-// before the later ELF linker test: no Darwin provider or Mach-O assembly file
-// may survive merely because both hosts expose similarly named POSIX calls.
+// before the later ELF linker test: no Darwin provider may survive merely
+// because both hosts expose similarly named POSIX calls.
 void test_aarch64_linux_core_selection(TestState &state) {
   for (const std::string_view example : {"core-os", "core-thread"}) {
     draft::SourceManager sources;
@@ -3536,15 +3533,10 @@ void test_aarch64_linux_core_selection(TestState &state) {
           package->native_interop.providers.end(),
           "darwin") == package->native_interop.providers.end());
       if (package->identity.root_relative_path != "os") continue;
-      EXPECT(state, package->assembly_sources.size() == 1);
-      if (package->assembly_sources.size() == 1) {
-        EXPECT(state, package->assembly_sources.front().relative_name ==
-            "open@aarch64-linux.s");
-        EXPECT(state, package->assembly_sources.front().contents.find(
-            "draft_os_open_fixed:") != std::string::npos);
-        EXPECT(state, package->assembly_sources.front().contents.find(
-            "_draft_os_open_fixed:") == std::string::npos);
-      }
+      EXPECT(state, package->assembly_sources.empty());
+      EXPECT(state, package_llvm_text(*package).find(
+          "declare i32 @\"open\"(ptr, i32, ...)") !=
+          std::string::npos);
     }
   }
 }

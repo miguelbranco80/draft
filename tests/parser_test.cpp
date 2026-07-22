@@ -150,6 +150,7 @@ deny asm {
 
 foreign libc {
     puts :: c proc(message: cstring) -> c_abi.int
+    printf :: c proc(format: cstring, ..) -> c_abi.int
 }
 
 pack_proc :: proc(prefix: u32 = 0, values: ..type) {
@@ -483,6 +484,7 @@ void test_invalid_production_recovery(TestState &state) {
       {"missing parametric colon", "package bad\nBox[T type] :: struct {}\n", "expected ':' after parametric parameter name"},
       {"missing parametric close", "package bad\nBox[T: type :: struct {}\n", "expected ']' after parametric parameters"},
       {"missing parameter colon", "package bad\nrun :: proc(value u32) {}\n", "expected ':' after parameter name"},
+      {"nonfinal C variadic tail", "package bad\nCallback :: c proc(value: u32, .., suffix: u32)\n", "C variadic tail must be the final procedure parameter"},
       {"missing linker name", "package bad\nexport run as :: c proc() {}\n", "expected exact linker symbol string after 'as'"},
       {"missing alignment open", "package bad\nRecord :: align 16) struct {}\n", "expected '(' after 'align'"},
       {"missing alignment value", "package bad\nRecord :: align() struct {}\n", "align requires one compile-time usize expression"},

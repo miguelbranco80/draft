@@ -373,13 +373,16 @@ private:
   }
 
   [[nodiscard]] std::string parameter_list(const Type &signature) const {
-    if (signature.members.size() <= 1) return "void";
+    if (signature.members.size() <= 1) {
+      return signature.c_variadic ? "..." : "void";
+    }
     std::string result;
     for (std::size_t index = 0; index + 1 < signature.members.size(); ++index) {
       if (index != 0) result += ", ";
       result += declaration(
           signature.members[index], "arg" + std::to_string(index));
     }
+    if (signature.c_variadic) result += ", ...";
     return result;
   }
 

@@ -209,10 +209,10 @@ runtime materializes argv and envp as stable `{pointer,length}` string records;
 `core/os` returns non-owning slices over those records. Normal return frees the
 record arrays after all Draft defers finish. Environment entries preserve their
 exact `name=value` bytes and ordering. The initial file API wraps already-open
-fixed descriptors. Pathname opening uses a target-qualified fixed-signature
-assembly wrapper because Draft 1 deliberately rejects variadic C imports:
-Darwin spills the variadic mode to its stack slot, while GNU AAPCS64 can tail
-branch with the existing x0/w1/w2 argument registers.
+fixed descriptors. Pathname opening now uses a target-qualified true C variadic
+`open` declaration. Body checking promotes the mode value and LLVM applies the
+selected target's unnamed-argument ABI, so `core/os` needs no package-assembly
+adapter for Darwin or GNU AArch64.
 
 `core/thread` uses pthreads through fixed C signatures. Spawn state owns a copy
 of the active Context. The C trampoline installs that copy as the child TLS

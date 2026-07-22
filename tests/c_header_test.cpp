@@ -103,6 +103,8 @@ Opaque_View_Box :: c struct {
     value: ^Opaque_View,
 }
 
+Variadic_Callback :: c proc(format: cstring, ..) -> i32
+
 export map_pair as "draft_map_pair" :: c proc(
     value: Pair,
     callback: c proc(value: i32) -> i32,
@@ -166,6 +168,12 @@ export opaque_view_box as "draft_opaque_view_box" :: c proc(
 export echo_rune as "draft_echo_rune" :: c proc(value: rune) -> rune {
     return value
 }
+
+export accept_variadic_callback as "draft_accept_variadic_callback" :: c proc(
+    callback: Variadic_Callback,
+) -> i32 {
+    return 0
+}
 )draft");
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
   loaded.files.push_back(std::move(file));
@@ -207,7 +215,7 @@ export echo_rune as "draft_echo_rune" :: c proc(value: rune) -> rune {
   EXPECT(state, native.ok);
   EXPECT(state, header.ok);
   EXPECT(state, linux_header.ok);
-  EXPECT(state, header.export_count == 9);
+  EXPECT(state, header.export_count == 10);
   EXPECT(state, header.text.find(
       "typedef struct draft_c_library_Pair draft_c_library_Pair;") !=
       std::string::npos);
@@ -250,6 +258,7 @@ export echo_rune as "draft_echo_rune" :: c proc(value: rune) -> rune {
                     std::string::npos);
   EXPECT(state, header.text.find(
       "typedef int32_t (*draft_c_library_proc_") != std::string::npos);
+  EXPECT(state, header.text.find("char * arg0, ...);") != std::string::npos);
   EXPECT(state, header.text.find(
       "extern draft_c_library_Pair draft_map_pair(") != std::string::npos);
   EXPECT(state, header.text.find(
@@ -284,6 +293,9 @@ export echo_rune as "draft_echo_rune" :: c proc(value: rune) -> rune {
       std::string::npos);
   EXPECT(state, header.text.find(
       "extern int32_t draft_echo_rune(int32_t arg0);") !=
+      std::string::npos);
+  EXPECT(state, header.text.find(
+      "extern int32_t draft_accept_variadic_callback(") !=
       std::string::npos);
 }
 

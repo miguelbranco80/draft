@@ -60,6 +60,23 @@ asserts facts about an executed binary, the validation policy identity records
 O0 or O2 and prevents runs at different levels from sharing one evidence key.
 This derived-execution distinction does not enter the resolved-program digest.
 
+## C variadic LLVM lowering
+
+Status: promoted scalar/pointer tails implemented for AArch64 Darwin and GNU.
+
+Foreign declarations retain LLVM's real `(fixed, ...)` function type. At each
+call, MIR contains the fixed operands followed by already-promoted unnamed
+operands with their exact scalar or pointer types. The textual adapter prints
+the complete variadic function type at the call site, as LLVM requires, and
+does not attach fixed-parameter extension attributes to the unnamed tail.
+LLVM's selected target lowering then owns the materially different Darwin and
+GNU AArch64 register/stack placement. This removes the former per-target
+`open(2)` assembly shim without moving ABI policy into `core/os`.
+
+Aggregate tails fail during semantic checking. The fixed-parameter aggregate
+classifier is intentionally not reused for them because C variadic aggregate
+rules are a separate target ABI contract.
+
 ## Raw string-data lowering
 
 Status: explicit zero-copy MIR and LLVM lowering implemented.

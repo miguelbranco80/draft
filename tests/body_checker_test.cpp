@@ -3412,6 +3412,62 @@ bad_calls :: c proc() {
       std::string::npos);
 }
 
+void test_c_variadic_call_arguments(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+foreign libc {
+    variadic_sink :: c proc(tag: i32, ..) -> i32
+}
+
+call_sink :: proc(
+    small_unsigned: u8,
+    small_signed: i16,
+    single: f32,
+    condition: bool,
+    pointer: ^u8,
+) -> i32 {
+    return variadic_sink(
+        7,
+        11,
+        2.5,
+        small_unsigned,
+        small_signed,
+        single,
+        condition,
+        pointer,
+    )
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.semantics.ok);
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+Record :: c struct { value: i32, }
+Callback :: proc()
+
+foreign libc {
+    variadic_sink :: c proc(tag: i32, ..) -> i32
+}
+
+bad :: proc(record: Record, callback: Callback) {
+    _ = variadic_sink(0, record, "text", callback)
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find(
+      "C variadic argument must be a C scalar or pointer") !=
+      std::string::npos);
+}
+
 void test_compile_time_type_inspection(TestState &state) {
   CheckedSource valid(R"draft(
 package bodies
@@ -3450,6 +3506,7 @@ Overlay :: c align(8) union {
 
 Callback :: proc(value: i32, flag: bool) -> u64
 C_Callback :: c proc(value: i32) -> u64
+C_Variadic :: c proc(format: cstring, ..) -> i32
 Pair :: (u8, bool)
 Vector :: simd[4]u32
 
@@ -3555,6 +3612,8 @@ inspect_types :: proc() {
     static_assert(type_result(Callback) == u64)
     static_assert(type_calling_convention(Callback) == .draft)
     static_assert(type_calling_convention(C_Callback) == .c)
+    static_assert(type_is_variadic(Callback) == false)
+    static_assert(type_is_variadic(C_Variadic))
     static_assert(type_is_c_repr(Record))
     static_assert(type_is_c_repr(Mode) == false)
     static_assert(type_is_c_repr(Overlay))
@@ -3576,6 +3635,7 @@ bad_queries :: proc() {
     static_assert(type_element(u32) == u32)
     type_member_name(Type_Kind, 100)
     static_assert(type_byte_order(^u32) == .native)
+    static_assert(type_is_variadic(u32))
 }
 )draft");
   EXPECT(state, !invalid.bodies.ok);
@@ -3586,6 +3646,8 @@ bad_queries :: proc() {
   EXPECT(state, rendered.find("type_member_name index is out of bounds") !=
       std::string::npos);
   EXPECT(state, rendered.find("type_byte_order requires a scalar storage type") !=
+      std::string::npos);
+  EXPECT(state, rendered.find("type_is_variadic requires a procedure type") !=
       std::string::npos);
 }
 
@@ -3906,6 +3968,7 @@ int main() {
   test_invalid_operator_type_matrix(state);
   test_numeric_context_boundaries(state);
   test_builtin_context_value(state);
+  test_c_variadic_call_arguments(state);
   test_compile_time_type_inspection(state);
   test_compile_time_type_runtime_boundary(state);
   test_dependent_when_type_refinement(state);

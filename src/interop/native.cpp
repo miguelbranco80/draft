@@ -80,7 +80,8 @@ namespace {
   }
   const Type &procedure = semantic.types.type(symbol.type);
   if (procedure.kind != TypeKind::Procedure ||
-      !procedure.c_calling_convention || procedure.members.size() != 1 ||
+      !procedure.c_calling_convention || procedure.c_variadic ||
+      procedure.members.size() != 1 ||
       procedure.members.back() != semantic.runtime_context_type) {
     return false;
   }
@@ -214,6 +215,7 @@ NativeInteropResult validate_native_interop(
     }
     const std::optional<std::string> linker_name =
         decode_linker_name(binding.linker_name_spelling);
+    const Type &procedure = semantic.types.type(symbol.type);
     if (!valid_c_signature(semantic.types, symbol.type, abi) &&
         !valid_default_context_bridge(
             semantic, binding, symbol, linker_name)) {
@@ -221,6 +223,16 @@ NativeInteropResult validate_native_interop(
           symbol.name_range,
           "native import or export requires a Draft 1 C-ABI-legal 'c proc' signature");
       diagnosed_c_procedures.push_back(symbol.type);
+    }
+    // Draft can call a foreign C variadic procedure because every call site
+    // supplies and promotes the complete unnamed tail. Defining or exporting
+    // one would require a source-level va_list/va_start consumption model,
+    // which is intentionally not part of this first interoperation slice.
+    if (procedure.c_variadic &&
+        binding.kind != NativeBindingKind::ForeignImport) {
+      diagnostics.error(
+          symbol.name_range,
+          "Draft cannot export a C variadic procedure");
     }
     const bool body = has_body(procedures, selected_indices, binding.symbol);
     if (binding.kind == NativeBindingKind::ForeignImport && body) {

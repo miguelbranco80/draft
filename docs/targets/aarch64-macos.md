@@ -48,6 +48,12 @@ eight bytes for integer values, plus pointer-sized pointer objects. C11 memory
 semantics remain defined by the runtime specification; the supported object
 widths are facts of this target and core distribution.
 
+Apple arm64 C variadic calls place unnamed arguments according to Darwin's
+variadic stack rules rather than the fixed-parameter register assignment.
+Draft emits a real LLVM variadic function type and delegates that placement to
+the selected target machine; `core/os` therefore calls variadic `open(2)`
+directly with its promoted mode value.
+
 Darwin interactive terminal state uses the macOS 14 arm64 `termios` contract:
 four 64-bit flag words, twenty one-byte control characters, padding to two
 64-bit speed fields, 72-byte total size, and eight-byte alignment. `pollfd` is

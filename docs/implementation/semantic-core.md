@@ -136,7 +136,8 @@ Public interfaces carry one fixed runtime-parameter row per procedure. Names
 are ordinary interface strings; ready defaults use the same recursive constant
 canonicalization and TypeId translation as public constants. Imported proxy
 Symbols reconstruct this metadata after their procedure type graph. Procedure
-type identity remains only ordered types, result, and calling convention.
+type identity remains only ordered fixed types, result, calling convention, and
+the C-variadic bit.
 
 Body checking binds every explicit argument to a physical parameter before
 generic inference or expression checking. The HIR call retains explicit
@@ -146,6 +147,26 @@ source sequence first and assembles ABI operands through that permutation.
 Effect analysis snapshots values in the same source sequence, then stores the
 summaries in physical order before substituting callee contracts. Indirect calls
 have no declaration metadata and retain the exact positional-arity rule.
+
+## C variadic call checking
+
+Status: scalar/pointer C variadic imports and calls implemented; aggregate tails
+and Draft-defined variadic bodies remain rejected.
+
+The parser retains bare final `..` as `CVariadicTail`, separate from both a
+named static-pack type and synthesis. Type resolution interns the tail as one
+bit on the structural procedure type and carries it through package interfaces,
+type publication, canonical type text, and `type_is_variadic`. It requires a C
+calling convention and one fixed parameter, and rejects any procedure body.
+
+Ordinary call binding treats the tail as an open positional suffix after the
+fixed parameter rows. Each suffix expression is checked without an expected
+parameter type, then body checking applies the C default promotions explicitly:
+untyped integers use i32 rather than Draft's ordinary inferred i64, narrow
+integers and bool become i32, and f16/f32 become f64. The resulting HIR operands
+have complete physical types before effect analysis or MIR. Non-C aggregates,
+ordinary Draft procedure pointers, and aggregate tail values are diagnosed at
+that boundary rather than being left for LLVM to guess.
 
 ## Compile-time type values and inspection
 

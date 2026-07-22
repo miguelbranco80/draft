@@ -88,11 +88,12 @@ cstring                          zero-terminated C byte pointer
 simd[N]T                        fixed vector with native vector lowering
 ```
 
-A procedure type is identified by its ordered parameter types, result type, and
-calling convention. Source parameter names and default constants belong to a
-named declaration's call contract; they do not affect procedure-type equality,
-assignment compatibility, representation, or ABI. Consequently, taking a
-procedure as a value deliberately loses named/default calling convenience.
+A procedure type is identified by its ordered fixed parameter types, result
+type, calling convention, and whether it has a C variadic tail. Source
+parameter names and default constants belong to a named declaration's call
+contract; they do not affect procedure-type equality, assignment
+compatibility, representation, or ABI. Consequently, taking a procedure as a
+value deliberately loses named/default calling convenience.
 
 `nil` is the zero-address literal for pointer-like and procedure-pointer types.
 A zero slice may contain `{nil, 0}`. Pointer arithmetic is performed through
@@ -386,7 +387,10 @@ The remaining structural queries are compile-time intrinsics:
 - `type_parameter_count(T) -> usize`, `type_parameter_type(T, index) -> type`,
   `type_result(T) -> type`, and
   `type_calling_convention(T) -> Calling_Convention` inspect procedure types.
-  Calling conventions are `.draft` and `.c`.
+  Calling conventions are `.draft` and `.c`. `type_is_variadic(T) -> bool`
+  reports whether a C procedure has the bare `..` native variadic tail; static
+  `..type` packs specialize to fixed procedure types and therefore report
+  false.
 - `type_is_c_repr(T) -> bool` applies to structs, enums, and unions.
   `type_requested_alignment(T) -> usize` applies to structs and unions and
   returns zero when no `align(N)` was requested.

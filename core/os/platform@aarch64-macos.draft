@@ -1,4 +1,4 @@
-// This target-selected half of core/os supplies Darwin constants and fixed C
+// This target-selected half of core/os supplies Darwin constants and C
 // procedure declarations to the portable policy in package.draft. It owns no
 // resources or state: every pointer is borrowed for one synchronous native
 // call, and descriptor lifetime remains with the common File API.
@@ -27,6 +27,14 @@ pub page_size :: proc() -> usize {
 // both declarations use [^]u8; the write nonmutation/nonretention contract is
 // what permits package.draft to pass raw_data(string) without copying.
 foreign darwin {
+    // open consumes the promoted mode argument only when open_create is set.
+    // The bare tail is the real Darwin variadic ABI; LLVM owns its required
+    // stack placement rather than routing the call through package assembly.
+    native_open as "open" :: c proc(
+        path: cstring,
+        flags: c_abi.int,
+        ..,
+    ) -> c_abi.int
     native_read as "read" :: c proc(
         descriptor: c_abi.int,
         destination: [^]u8,

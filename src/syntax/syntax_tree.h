@@ -77,6 +77,11 @@ enum class NodeKind {
   // clients from depending on a fragile "last child is the type" convention.
   ParameterDefault,
   StaticPackType,
+  // CVariadicTail is the bare `..` which may terminate a `c proc` parameter
+  // list. It is not a Parameter: it has no name, declared type, default, or
+  // runtime binding. Semantic resolution verifies the surrounding calling
+  // convention and records the open ABI tail in procedure-type identity.
+  CVariadicTail,
   ResultClause,
   MemberList,
   PackedFieldSpecifier,

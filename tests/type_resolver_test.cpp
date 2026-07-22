@@ -1089,6 +1089,59 @@ export exported_variadic :: c proc(values: ..type) {}
                     std::string::npos);
 }
 
+void test_c_variadic_procedure_types(TestState &state) {
+  SemanticSource valid(R"draft(
+package types
+
+Fixed :: c proc(format: cstring) -> i32
+Variadic :: c proc(format: cstring, ..) -> i32
+
+foreign libc {
+    printf :: c proc(format: cstring, ..) -> i32
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, !valid.diagnostics.has_errors());
+  const draft::Symbol *fixed = find_symbol(valid.semantic, "Fixed");
+  const draft::Symbol *variadic = find_symbol(valid.semantic, "Variadic");
+  const draft::Symbol *printf = find_symbol(valid.semantic, "printf");
+  EXPECT(state, fixed != nullptr);
+  EXPECT(state, variadic != nullptr);
+  EXPECT(state, printf != nullptr);
+  if (fixed != nullptr && variadic != nullptr && printf != nullptr) {
+    const draft::Type &fixed_type = valid.semantic.types.type(fixed->type);
+    const draft::Type &variadic_type = valid.semantic.types.type(variadic->type);
+    const draft::Type &printf_type = valid.semantic.types.type(printf->type);
+    EXPECT(state, !fixed_type.c_variadic);
+    EXPECT(state, variadic_type.c_variadic);
+    EXPECT(state, printf_type.c_variadic);
+    EXPECT(state, fixed->type != variadic->type);
+    EXPECT(state, variadic->type == printf->type);
+  }
+
+  SemanticSource invalid(R"draft(
+package types
+
+Draft_Variadic :: proc(value: i32, ..)
+No_Fixed :: c proc(..)
+defined :: c proc(value: i32, ..) {}
+)draft");
+  EXPECT(state, invalid.diagnostics.has_errors());
+  const std::string rendered =
+      draft::render_diagnostics(invalid.sources, invalid.diagnostics);
+  EXPECT(state, rendered.find(
+      "bare '..' parameter tail is valid only in a c proc") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "C variadic procedure requires at least one fixed parameter") !=
+      std::string::npos);
+  EXPECT(state, rendered.find(
+      "Draft cannot define a C variadic procedure body") !=
+      std::string::npos);
+}
+
 void test_value_parameter_diagnostics(TestState &state) {
   SemanticSource source(R"draft(
 package types
@@ -1357,6 +1410,7 @@ int main() {
   test_parametric_type_diagnostics(state);
   test_static_argument_pack_signature_metadata(state);
   test_static_argument_pack_declaration_diagnostics(state);
+  test_c_variadic_procedure_types(state);
   test_value_parameter_diagnostics(state);
   test_invalid_enum_values(state);
   test_c_enum_default_backing(state);

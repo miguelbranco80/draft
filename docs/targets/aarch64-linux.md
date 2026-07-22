@@ -32,6 +32,12 @@ indirect. Unlike Darwin arm64, GNU AAPCS64 does not attach LLVM `signext` or
 `c enum` retains the default 32-bit C width and widens to 64 bits only
 when its values require it.
 
+GNU AAPCS64 variadic calls retain their own unnamed-argument classification.
+Draft emits a real LLVM variadic function type and delegates the concrete
+register/stack assignment to the selected target machine; the promoted mode
+argument of `core/os`'s `open(2)` call is therefore passed directly without a
+package-assembly shim.
+
 The enabled and known CPU feature vocabulary and legal baseline SIMD shapes
 match the current AArch64 macOS profile because they describe the same baseline
 machine architecture. The parsed-assembly contract has its own
@@ -45,20 +51,19 @@ the older target.
 The logical `libc` and `linux` foreign providers are both supplied by glibc's
 `libc.so.6` through the compiler-owned `-lc` link. The separate names remain
 semantic provider identities for denial summaries. The initial target-owned
-summary covers only the fixed libc, POSIX thread, mapping, file, process, and
-clock symbols used by the compiler runtime and first core packages.
+summary covers the libc, POSIX thread, mapping, file, process, and clock symbols
+used by the compiler runtime and first core packages.
 
 The current core source tree selects Linux file/open flags, anonymous-mapping
-bits, glibc pthread handle/storage types, `clock_gettime`, and ELF assembly
-symbol spelling with the profile's `aarch64-linux` file tag. Every package
-command now accepts `--target aarch64-linux` and carries this profile through
-compilation, C-header emission, validation, resolution, and judgment; macOS
-remains the compatibility default. The root LLVM runtime now emits glibc's
-32-bit `pthread_once_t` and `pthread_key_t` layouts. The native adapter emits
-ELF relocatable objects, deterministic archives, `.so` files with SONAMEs, and
-PIE executables using the host glibc development files and `ld.lld`. Final ELF
-artifacts retain DWARF and a content-derived GNU build ID; they correctly omit
-a Mach-O dSYM companion.
+bits, glibc pthread handle/storage types, and `clock_gettime` with the profile's
+`aarch64-linux` file tag. Every package command now accepts
+`--target aarch64-linux` and carries this profile through compilation, C-header
+emission, validation, resolution, and judgment; macOS remains the compatibility
+default. The root LLVM runtime now emits glibc's 32-bit `pthread_once_t` and
+`pthread_key_t` layouts. The native adapter emits ELF relocatable objects,
+deterministic archives, `.so` files with SONAMEs, and PIE executables using the
+host glibc development files and `ld.lld`. Final ELF artifacts retain DWARF and
+a content-derived GNU build ID; they correctly omit a Mach-O dSYM companion.
 
 The selected glibc 2.39 AArch64 terminal contract gives `struct termios` four
 32-bit flag words, one line-discipline byte, thirty-two control bytes, padding,
