@@ -89,6 +89,8 @@ Number :: c union {
 
 Wide :: c struct {
     value: i128,
+    little_integer: i128le,
+    big_float: f64be,
 }
 
 Hidden :: struct {
@@ -273,6 +275,10 @@ export accept_variadic_callback as "draft_accept_variadic_callback" :: c proc(
       "__asm__(\"draft.inspect\")") != std::string::npos);
   EXPECT(state, header.text.find(
       "__int128 value;") != std::string::npos);
+  EXPECT(state, header.text.find(
+      "unsigned __int128 little_integer;") != std::string::npos);
+  EXPECT(state, header.text.find(
+      "uint64_t big_float;") != std::string::npos);
   EXPECT(state, header.text.find(
       "extern unsigned __int128 draft_widen(__int128 arg0, uint8_t **arg1, "
       "draft_c_library_Wide *arg2);") != std::string::npos);

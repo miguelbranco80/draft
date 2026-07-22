@@ -291,10 +291,17 @@ private:
       return "int32_t";
     case TypeKind::BooleanStorage:
     case TypeKind::EndianScalar:
+      // Endian scalars are storage representations, so their C view is an
+      // unsigned integer container even when the corresponding Draft value is
+      // signed or floating point. C has no standard 128-bit typedef; use the
+      // same Clang extension as ordinary u128 so a generated header preserves
+      // the complete 16-byte field, parameter, or result instead of silently
+      // degrading an otherwise C-ABI-legal type to void.
       if (value.bit_width == 8) return "uint8_t";
       if (value.bit_width == 16) return "uint16_t";
       if (value.bit_width == 32) return "uint32_t";
       if (value.bit_width == 64) return "uint64_t";
+      if (value.bit_width == 128) return "unsigned __int128";
       return "void";
     case TypeKind::Float:
       if (value.bit_width == 16) return "_Float16";

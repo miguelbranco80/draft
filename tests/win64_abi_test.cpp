@@ -186,6 +186,7 @@ Huge :: c enum u128 { zero, maximum = 340282366920938463463374607431768211455, }
 
 foreign windows {
     signed_identity :: c proc(value: i128) -> i128
+    endian_identity :: c proc(value: u128le) -> u128le
     enum_identity :: c proc(value: Huge) -> Huge
 }
 )draft");
@@ -203,10 +204,19 @@ foreign windows {
         source.semantics.package.types, *i128, source.target.facts)
         .classification == draft::CAbiClass::Win64WideInteger);
   }
+  const std::optional<draft::TypeId> u128le =
+      source.semantics.package.types.find_builtin("u128le");
+  EXPECT(state, u128le.has_value());
+  if (u128le.has_value()) {
+    EXPECT(state, draft::classify_c_type(
+        source.semantics.package.types, *u128le, source.target.facts)
+        .classification == draft::CAbiClass::Win64WideInteger);
+  }
   EXPECT(state, source.classify("Huge").classification ==
       draft::CAbiClass::Win64WideInteger);
 
-  for (std::string_view procedure : {"signed_identity", "enum_identity"}) {
+  for (std::string_view procedure :
+       {"signed_identity", "endian_identity", "enum_identity"}) {
     const draft::CAbiFunctionPlan plan = source.plan(procedure);
     EXPECT(state, plan.ok);
     EXPECT(state, plan.parameters.size() == 1);

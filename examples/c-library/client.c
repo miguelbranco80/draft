@@ -70,8 +70,9 @@ int main(void) {
     if (number.integer != 42) return 3;
     if (draft_apply(add_one, 41) != 42) return 4;
 
-    // Three-byte results use an exact i24 return container while arguments use
-    // one full general-purpose register. This is an easy place for independent
+    // Three-byte records expose a deliberately awkward ABI boundary. AArch64
+    // and SysV use direct integer carriers, while Win64 passes and returns this
+    // non-power-of-two record indirectly. This is an easy place for independent
     // front ends to agree on layout but disagree on call lowering.
     draft_c_library_Odd_Bytes odd = {{17, 33, 65}};
     odd = draft_odd_bytes_identity(odd);
@@ -90,8 +91,9 @@ int main(void) {
     if (floats.left != 1.25f || floats.right != -2.5f) return 7;
 
     // `_Float16` has a native representation on every current target. This
-    // six-byte aggregate uses three AArch64 FP lanes or one SysV SSE eightbyte;
-    // the Clang caller and Draft callee must select the same target rule.
+    // six-byte aggregate uses three AArch64 FP lanes, one SysV SSE eightbyte,
+    // or an indirect Win64 copy; the Clang caller and Draft callee must select
+    // the same target rule.
     draft_c_library_Half_Triple halves = {{(_Float16)0.5, (_Float16)-1.5,
                                             (_Float16)3.25}};
     halves = draft_half_triple_identity(halves);
@@ -102,8 +104,8 @@ int main(void) {
     }
 
     // The largest union member controls aggregate classification. Nesting that
-    // union beside another pair must preserve all four values through either
-    // AArch64 FP lanes or SysV SSE eightbytes.
+    // union beside another pair must preserve all four values through AArch64
+    // FP lanes, SysV SSE eightbytes, or Win64's indirect aggregate path.
     draft_c_library_Float_Overlay overlay;
     overlay.pair[0] = 4.5f;
     overlay.pair[1] = -6.25f;
