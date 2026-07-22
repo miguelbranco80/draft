@@ -46,7 +46,7 @@ slot, lock delay, or high-score file.
   allocation, or clock access.
 - [`input.draft`](input.draft) maps `core/terminal`'s streaming keys—including
   fragmented ANSI arrows—to game actions one byte at a time.
-- [`render.draft`](render.draft) paints a complete desired ASCII cell surface;
+- [`render.draft`](render.draft) paints a complete desired Unicode-capable cell surface;
   `core/tui` retains the prior surface and publishes only changed cell runs.
 - [`package.draft`](package.draft) owns raw-mode lifetime and the timed event
   loop, queries terminal size, and resizes the bounded TUI viewport. Every

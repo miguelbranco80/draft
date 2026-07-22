@@ -1,0 +1,379 @@
+// The unicode package supplies the narrow Unicode property layer required by
+// terminal cell applications. It segments one extended grapheme cluster from
+// strict UTF-8 and assigns that cluster a deterministic display width of one or
+// two columns. The policy is pinned to Unicode 17.0.0: UAX #29 extended
+// grapheme boundaries, East_Asian_Width W/F as double-column, ambiguous width
+// as one, and emoji/flag/keycap clusters as double-column.
+//
+// This is terminal layout policy, not a change to Draft's string type. Input is
+// an immutable borrowed byte view, byte offsets remain the public cursor, and
+// core/utf8 remains the authority for strict scalar decoding. The package owns
+// no storage and performs no normalization, shaping, bidi reordering, line
+// breaking, locale tailoring, or font lookup. A terminal may choose a different
+// ambiguous/emoji width policy; core/tui uses this fixed policy so its model and
+// renderer stay internally deterministic.
+//
+// data.draft contains generated, source-ordered interval tables from the
+// Unicode 17.0.0 Character Database. This file depends only on core/utf8.
+// Draft specification: sections 4, 5, and 7.
+package unicode
+
+import core/utf8
+
+// Grapheme_Error distinguishes an ordinary cluster, the clean terminal byte
+// boundary, malformed UTF-8, and a cluster which cannot own a terminal cell.
+// nonprinting covers C0/C1 controls and clusters made only from zero-width
+// format/mark scalars. The returned end offset still advances through the
+// complete decoded cluster for that last case.
+pub Grapheme_Error :: enum u8 {
+    none,
+    end_of_input,
+    invalid_encoding,
+    nonprinting,
+}
+
+// Grapheme_Property is the closed subset of Grapheme_Cluster_Break values used
+// by UAX #29 rules GB3 through GB13. other is the implicit value for every code
+// point absent from the generated table.
+Grapheme_Property :: enum u8 {
+    other,
+    carriage_return,
+    line_feed,
+    control,
+    extend,
+    zero_width_joiner,
+    regional_indicator,
+    prepend,
+    spacing_mark,
+    hangul_l,
+    hangul_v,
+    hangul_t,
+    hangul_lv,
+    hangul_lvt,
+}
+
+// Indic_Property is the Indic_Conjunct_Break state needed by UAX #29 GB9c.
+// The generated table stores only consonant, linker, and extend intervals;
+// every omitted scalar is none.
+Indic_Property :: enum u8 {
+    none,
+    consonant,
+    linker,
+    extend,
+}
+
+// Property_Range maps one inclusive scalar interval to a grapheme property.
+// The generated table stores the enum's fixed u8 representation because Draft
+// globals currently accept primitive aggregate members but not a nested enum
+// label. The private lookup casts it immediately; no raw value reaches callers.
+// Tables are sorted, nonoverlapping, and merged only when adjacent intervals
+// have the same property. Binary search therefore has one unambiguous result.
+Property_Range :: struct {
+    first: u32,
+    last: u32,
+    property: u8,
+}
+
+Indic_Range :: struct {
+    first: u32,
+    last: u32,
+    property: u8,
+}
+
+// Scalar_Range is the compact representation for boolean Unicode properties.
+// End points are inclusive Unicode scalar values and arrays are sorted and
+// disjoint, allowing one common binary-search helper.
+Scalar_Range :: struct {
+    first: u32,
+    last: u32,
+}
+
+grapheme_property :: proc(value: rune) -> Grapheme_Property {
+    codepoint := cast[u32](value)
+    // UAX #29 derives modern Hangul syllable classes from the fixed 28-trailing
+    // sequence. Keeping this formula here compresses 11,172 alternating LV/LVT
+    // values without changing the pinned property result.
+    if codepoint >= 0xac00 && codepoint <= 0xd7a3 {
+        if (codepoint - 0xac00) % 28 == 0 {
+            return .hangul_lv
+        }
+        return .hangul_lvt
+    }
+    low: usize
+    high := len(Grapheme_Ranges)
+    for low < high {
+        middle := low + (high - low) / 2
+        interval := Grapheme_Ranges[middle]
+        if codepoint < interval.first {
+            high = middle
+        } else if codepoint > interval.last {
+            low = middle + 1
+        } else {
+            return cast[Grapheme_Property](interval.property)
+        }
+    }
+    return .other
+}
+
+indic_property :: proc(value: rune) -> Indic_Property {
+    codepoint := cast[u32](value)
+    low: usize
+    high := len(Indic_Ranges)
+    for low < high {
+        middle := low + (high - low) / 2
+        interval := Indic_Ranges[middle]
+        if codepoint < interval.first {
+            high = middle
+        } else if codepoint > interval.last {
+            low = middle + 1
+        } else {
+            return cast[Indic_Property](interval.property)
+        }
+    }
+    return .none
+}
+
+in_ranges :: proc(value: rune, ranges: []Scalar_Range) -> bool {
+    codepoint := cast[u32](value)
+    low: usize
+    high := len(ranges)
+    for low < high {
+        middle := low + (high - low) / 2
+        interval := ranges[middle]
+        if codepoint < interval.first {
+            high = middle
+        } else if codepoint > interval.last {
+            low = middle + 1
+        } else {
+            return true
+        }
+    }
+    return false
+}
+
+is_control_scalar :: proc(value: rune) -> bool {
+    return in_ranges(value, Control_Ranges[:])
+}
+
+is_zero_width_scalar :: proc(value: rune) -> bool {
+    return in_ranges(value, Zero_Width_Ranges[:])
+}
+
+is_wide_scalar :: proc(value: rune) -> bool {
+    return in_ranges(value, Wide_Ranges[:])
+}
+
+is_extended_pictographic :: proc(value: rune) -> bool {
+    return in_ranges(value, Extended_Pictographic_Ranges[:])
+}
+
+is_break_control :: proc(property: Grapheme_Property) -> bool {
+    return property == .carriage_return || property == .line_feed ||
+        property == .control
+}
+
+// Cluster_State carries precisely the left-context facts used by boundary
+// rules which inspect more than the adjacent pair. Every field describes the
+// current cluster only and is reset when next_grapheme returns at a boundary.
+Cluster_State :: struct {
+    previous: Grapheme_Property,
+    regional_count: usize,
+    emoji_extend_prefix: bool,
+    emoji_zwj_ready: bool,
+    indic_consonant: bool,
+    indic_linker: bool,
+}
+
+// joins_cluster applies UAX #29 rules in their specified order. Adjacent CR/LF
+// and Hangul syllable rules come first; Extend/ZWJ, spacing marks, and prepend
+// then attach; finally the retained Indic, emoji-ZWJ, and regional-indicator
+// state covers GB9c and GB11-13. A false result is the default GB999 break.
+joins_cluster :: proc(
+    state: ^Cluster_State,
+    current: Grapheme_Property,
+    current_indic: Indic_Property,
+    current_is_pictographic: bool,
+) -> bool {
+    previous := state^.previous
+    if previous == .carriage_return && current == .line_feed {
+        return true
+    }
+    if is_break_control(previous) || is_break_control(current) {
+        return false
+    }
+    if previous == .hangul_l &&
+        (current == .hangul_l || current == .hangul_v ||
+            current == .hangul_lv || current == .hangul_lvt) {
+        return true
+    }
+    if (previous == .hangul_lv || previous == .hangul_v) &&
+        (current == .hangul_v || current == .hangul_t) {
+        return true
+    }
+    if (previous == .hangul_lvt || previous == .hangul_t) &&
+        current == .hangul_t {
+        return true
+    }
+    if current == .extend || current == .zero_width_joiner ||
+        current == .spacing_mark || previous == .prepend {
+        return true
+    }
+    if current_indic == .consonant && state^.indic_consonant &&
+        state^.indic_linker {
+        return true
+    }
+    if previous == .zero_width_joiner && state^.emoji_zwj_ready &&
+        current_is_pictographic {
+        return true
+    }
+    if previous == .regional_indicator && current == .regional_indicator &&
+        state^.regional_count % 2 == 1 {
+        return true
+    }
+    return false
+}
+
+// advance_state incorporates one scalar already accepted into the current
+// cluster. The emoji prefix retains only `Extended_Pictographic Extend*`; a
+// following ZWJ snapshots that fact for GB11. Indic state retains only the
+// `Consonant (Extend|Linker)*` suffix and whether it contains a linker. The RI
+// count needs parity but retaining the small exact count is clearer.
+advance_state :: proc(
+    state: ^Cluster_State,
+    property: Grapheme_Property,
+    indic: Indic_Property,
+    pictographic: bool,
+) {
+    if property == .regional_indicator {
+        state^.regional_count += 1
+    } else {
+        state^.regional_count = 0
+    }
+
+    if property == .zero_width_joiner {
+        state^.emoji_zwj_ready = state^.emoji_extend_prefix
+        state^.emoji_extend_prefix = false
+    } else {
+        state^.emoji_zwj_ready = false
+        if pictographic {
+            state^.emoji_extend_prefix = true
+        } else if property != .extend {
+            state^.emoji_extend_prefix = false
+        }
+    }
+
+    if indic == .consonant {
+        state^.indic_consonant = true
+        state^.indic_linker = false
+    } else if state^.indic_consonant &&
+        (indic == .extend || indic == .linker) {
+        if indic == .linker {
+            state^.indic_linker = true
+        }
+    } else {
+        state^.indic_consonant = false
+        state^.indic_linker = false
+    }
+    state^.previous = property
+}
+
+// observe_width records one scalar's contribution to the terminal width of
+// its complete grapheme. Marks and format controls do not create a base.
+// East-Asian W/F scalars, extended pictographs, regional indicators, emoji
+// variation selector U+FE0F, and combining keycap U+20E3 select two columns.
+observe_width :: proc(
+    value: rune,
+    property: Grapheme_Property,
+    has_base: ^bool,
+    wide: ^bool,
+) {
+    if !is_zero_width_scalar(value) && !is_break_control(property) {
+        has_base^ = true
+    }
+    if is_wide_scalar(value) || is_extended_pictographic(value) ||
+        property == .regional_indicator || value == '\u{fe0f}' ||
+        value == '\u{20e3}' {
+        wide^ = true
+    }
+}
+
+// rune_columns returns the number of terminal columns for one standalone
+// scalar and whether it can own a cell. Combining/format scalars and controls
+// return false; callers that need them must segment the complete grapheme with
+// next_grapheme so those scalars remain attached to a printable base.
+pub rune_columns :: proc(value: rune) -> (usize, bool) {
+    property := grapheme_property(value)
+    if is_control_scalar(value) || is_zero_width_scalar(value) ||
+        is_break_control(property) {
+        return (0, false)
+    }
+    if is_wide_scalar(value) || is_extended_pictographic(value) ||
+        property == .regional_indicator {
+        return (2, true)
+    }
+    return (1, true)
+}
+
+// next_grapheme decodes the extended grapheme beginning at byte offset and
+// returns its exclusive byte end plus deterministic terminal column width.
+// offset may equal len(text), yielding end_of_input, but not exceed it. Invalid
+// UTF-8 reports invalid_encoding at the offending scalar and advances the end
+// by utf8's one-byte recovery width. A decoded control or zero-width-only
+// cluster reports nonprinting after consuming that complete cluster.
+//
+// The scan is allocation-free and linear in the returned cluster's scalars.
+// Boundary state is updated once per scalar; it never rescans an arbitrarily
+// long combining sequence for emoji or Indic look-behind.
+pub next_grapheme :: proc(
+    text: string,
+    offset: usize,
+) -> (usize, usize, Grapheme_Error) {
+    assert(offset <= len(text), "Unicode grapheme offset is out of bounds")
+    if offset == len(text) {
+        return (offset, 0, .end_of_input)
+    }
+
+    (first, first_width, first_error) := utf8.decode_next(text, offset)
+    if first_error != .none {
+        return (offset + first_width, 0, .invalid_encoding)
+    }
+    first_property := grapheme_property(first)
+    first_indic := indic_property(first)
+    first_pictographic := is_extended_pictographic(first)
+    state := Cluster_State{previous = first_property}
+    advance_state(
+        &state,
+        first_property,
+        first_indic,
+        first_pictographic,
+    )
+    has_base := false
+    wide := false
+    contains_control := is_control_scalar(first) ||
+        is_break_control(first_property)
+    observe_width(first, first_property, &has_base, &wide)
+
+    end := offset + first_width
+    for end < len(text) {
+        (current, width, error) := utf8.decode_next(text, end)
+        if error != .none {
+            return (end + width, 0, .invalid_encoding)
+        }
+        property := grapheme_property(current)
+        indic := indic_property(current)
+        pictographic := is_extended_pictographic(current)
+        if !joins_cluster(&state, property, indic, pictographic) {
+            break
+        }
+        contains_control = contains_control || is_control_scalar(current) ||
+            is_break_control(property)
+        observe_width(current, property, &has_base, &wide)
+        advance_state(&state, property, indic, pictographic)
+        end += width
+    }
+
+    if contains_control || (!has_base && !wide) {
+        return (end, 0, .nonprinting)
+    }
+    return (end, 2 if wide else 1, .none)
+}

@@ -15,4 +15,4 @@
 - [ ] Add freestanding and embedded target support.
 - [ ] Complete cross-target sanitizer, race, and coverage profiles.
 - [x] Add portable terminal resize observation with POSIX notifications.
-- [ ] Add Unicode display support to `core/tui`.
+- [x] Add Unicode grapheme and display-width support to `core/tui`.

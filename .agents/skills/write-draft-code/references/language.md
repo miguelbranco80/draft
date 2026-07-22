@@ -229,7 +229,10 @@ copies only the view.
 
 `string` is immutable bytes, not an owning Unicode string. Indexing returns one
 byte. Use `core/utf8` to validate, decode, count, or encode Unicode scalars when
-scalar boundaries matter; its offsets and widths remain byte counts.
+scalar boundaries matter; its offsets and widths remain byte counts. Use
+`core/unicode` for extended-grapheme boundaries and deterministic terminal
+column widths, and `tui.write_utf8` to paint complete graphemes. A combining
+mark cannot be painted as a standalone terminal cell.
 
 `raw_data(text)` returns a `[^]u8` pointing at a string's existing first byte.
 It performs no copy or termination and inherits the backing storage's lifetime.

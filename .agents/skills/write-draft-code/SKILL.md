@@ -102,12 +102,12 @@ update the stale skill reference in the same coherent change.
 
 ## Avoid false familiarity
 
-Do not assume the current library provides paths, directory walking, seek,
-metadata, rename, terminal control, sockets, subprocesses,
-Unicode algorithms, general formatting, iterators, smart pointers, hidden
-destructors, or automatic moves. Confirm in `core/`. If a generally useful
-operation is missing, add the smallest honest core or platform seam with tests;
-otherwise keep application policy local.
+Do not assume the current library provides path manipulation, directory
+walking, seek, metadata, rename, sockets, subprocesses, event loops, Unicode
+normalization/case mapping/shaping, general formatting, iterators, smart
+pointers, hidden destructors, or automatic moves. Confirm in `core/`. If a
+generally useful operation is missing, add the smallest honest core or platform
+seam with tests; otherwise keep application policy local.
 
 For a real C variadic import, use bare final `..` only in a `c proc`, keep at
 least one fixed parameter, and pass only supported scalar or pointer tail

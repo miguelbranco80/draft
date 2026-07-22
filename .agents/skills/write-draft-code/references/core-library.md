@@ -27,6 +27,7 @@ from another standard library is not evidence that Draft provides it.
 - [`core/testing`](#coretesting)
 - [`core/terminal`](#coreterminal)
 - [`core/tui`](#coretui)
+- [`core/unicode`](#coreunicode)
 - [`core/thread`](#corethread)
 - [`core/time`](#coretime)
 - [`core/utf8`](#coreutf8)
@@ -572,13 +573,14 @@ an unknown foreign call until that explicit target coverage is added.
 
 ## `core/tui`
 
-Allocation-backed ASCII cell surfaces and ANSI differential rendering:
+Allocation-backed Unicode-grapheme cell surfaces and ANSI differential
+rendering:
 
 ```draft
 tui.Color
 tui.indexed_color(index: u8) -> tui.Color
 tui.Style{foreground, background, bold, dim, underline, reverse}
-tui.Cell{byte_value, style}
+tui.Cell{value, columns, continuation, style}
 
 tui.Surface
 tui.surface_init(&surface, columns, rows)
@@ -586,10 +588,11 @@ tui.surface_init_with_allocator(&surface, columns, rows, allocator)
 tui.surface_destroy(&surface)
 tui.clear(&surface, style)
 tui.put(&surface, column, row, byte_value, style) -> bool
-tui.put_cell(&surface, column, row, cell) -> bool
-tui.fill(&surface, column, row, width, height, cell) -> bool
+tui.put_rune(&surface, column, row, value, style) -> bool
+tui.fill(&surface, column, row, width, height, value, style) -> bool
 tui.write_ascii(&surface, column, row, text, style) -> bool
 tui.write_ascii_bytes(&surface, column, row, bytes, style) -> bool
+tui.write_utf8(&surface, column, row, text, style) -> bool
 tui.cell_at(&surface, column, row) -> (tui.Cell, bool)
 
 tui.Renderer
@@ -612,18 +615,43 @@ Screen even for an empty diff. Call `invalidate` after every resume attempt that
 may have emitted terminal bytes—successful or failed—and after any out-of-band
 terminal output.
 
-Coordinates are zero-based. Mutations reject out-of-bounds placement and
-non-printable/non-ASCII bytes before changing cells. `write_ascii` and its
-runtime `[]u8` counterpart `write_ascii_bytes` are all-or-nothing and do not
-clip or retain input. The zero Style means terminal defaults; indexed colors
-cover ANSI palette entries 0-255. The renderer emits maximal contiguous
-changed runs in row-major order with absolute cursor positions and resets style
-at the update boundary.
+Coordinates are zero-based terminal columns. `put` remains the printable-ASCII
+byte operation; `put_rune` accepts one printable standalone scalar. `fill`
+requires a one-column scalar because its width is measured in cells. ASCII and
+UTF-8 writers validate their complete input and range before mutation and do
+not clip. `write_utf8` copies multi-scalar graphemes into Surface-owned storage,
+so caller text is never retained.
+
+A wide glyph owns one leading cell plus a continuation. Replacing either half
+clears the complete old glyph. `cell_at` exposes the first scalar, width, style,
+and continuation state but not the Surface's private grapheme bytes. The zero
+Style means terminal defaults; indexed colors cover ANSI palette entries
+0-255. Rendering emits maximal changed runs with absolute cursor positions,
+never splits a grapheme, and resets style at the update boundary.
 
 There are no widgets, layout engine, text wrapping, clipping regions, input
-dispatch, focus, event loop, mouse support, Unicode width rules, transparency,
-or retained application pointers. Build those policies over Surface only when
-an application demonstrates the reusable shape.
+dispatch, focus, event loop, mouse support, normalization, shaping, bidi,
+locale tailoring, transparency, or retained application pointers. Build those
+policies over Surface only when an application demonstrates the reusable shape.
+
+## `core/unicode`
+
+Pinned Unicode 17.0.0 grapheme and terminal-width policy:
+
+```draft
+unicode.Grapheme_Error // none, end_of_input, invalid_encoding, nonprinting
+unicode.rune_columns(value) -> (columns: usize, printable: bool)
+unicode.next_grapheme(text, byte_offset)
+    -> (end_byte: usize, columns: usize, unicode.Grapheme_Error)
+```
+
+`next_grapheme` borrows strict UTF-8 and returns one extended grapheme boundary
+using UAX #29, including Hangul, Indic conjuncts, emoji ZWJ sequences, and
+regional-indicator pairs. Width is deterministic across targets: East-Asian
+W/F, emoji, flags, and keycaps are two columns; ambiguous characters are one.
+Controls and mark/format-only clusters return `nonprinting` after consuming the
+complete cluster. This is `core/tui` policy, not locale-sensitive font
+measurement. There is no normalization, shaping, bidi, or line breaking.
 
 ## `core/thread`
 
@@ -718,7 +746,8 @@ may need:
 - path manipulation, directories, metadata, random-access files, or rename;
 - mouse input or general signal-safe terminal recovery;
 - sockets, subprocesses, signals, dynamic libraries, or event loops;
-- Unicode normalization, properties, case mapping, and grapheme algorithms;
+- Unicode normalization, general property queries, case mapping, shaping, bidi,
+  locale tailoring, or line breaking;
 - general formatting/parsing and string builders;
 - ownership-aware algorithms, iterators, smart pointers, or automatic cleanup;
 - broad math, compression, crypto, image, or GUI packages.

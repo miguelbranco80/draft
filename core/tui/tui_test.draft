@@ -28,7 +28,9 @@ test_surface_mutation :: proc(test: ^testing.Test) {
 
     (initial, initial_valid) := cell_at(&grid, 0, 0)
     testing.expect(test, initial_valid)
-    testing.expect(test, initial.byte_value == cast[u8](' '))
+    testing.expect(test, initial.value == ' ')
+    testing.expect(test, initial.columns == 1)
+    testing.expect(test, !initial.continuation)
     testing.expect(test, !initial.style.foreground.indexed)
 
     accent := Style{foreground = indexed_color(51), bold = true}
@@ -57,27 +59,90 @@ test_surface_mutation :: proc(test: ^testing.Test) {
     ))
     (unchanged, unchanged_valid) := cell_at(&grid, 0, 1)
     testing.expect(test, unchanged_valid)
-    testing.expect(test, unchanged.byte_value == cast[u8](' '))
+    testing.expect(test, unchanged.value == ' ')
     testing.expect(test, fill(
         &grid,
         0,
         1,
         5,
         1,
-        Cell{byte_value = cast[u8]('-')},
+        '-',
+        Style{},
     ))
 
     (accent_cell, accent_valid) := cell_at(&grid, 1, 0)
     testing.expect(test, accent_valid)
-    testing.expect(test, accent_cell.byte_value == cast[u8]('X'))
+    testing.expect(test, accent_cell.value == 'X')
     testing.expect(test, accent_cell.style.foreground.index == 51)
     testing.expect(test, accent_cell.style.bold)
     (outside, outside_valid) := cell_at(&grid, 5, 0)
     testing.expect(test, !outside_valid)
-    testing.expect(test, outside.byte_value == 0)
+    testing.expect(test, outside.value == cast[rune](0))
 
     surface_destroy(&grid)
     testing.expect(test, grid.cells.data == nil)
+}
+
+// test_unicode_graphemes verifies exact byte retention, one/two-column cell
+// ownership, diff emission, and whole-glyph replacement through a continuation
+// coordinate. The decomposed accent must remain byte-for-byte decomposed; TUI
+// display never normalizes caller text.
+test_unicode_graphemes :: proc(test: ^testing.Test) {
+    renderer: Renderer
+    renderer_init(&renderer, 6, 1)
+    commit_desired(&renderer)
+
+    testing.expect(test, write_utf8(
+        surface(&renderer),
+        1,
+        0,
+        "é界",
+        Style{},
+    ))
+    (accent, accent_valid) := cell_at(surface(&renderer), 1, 0)
+    testing.expect(test,
+        accent_valid && accent.value == 'e' && accent.columns == 1 &&
+        !accent.continuation)
+    (wide, wide_valid) := cell_at(surface(&renderer), 2, 0)
+    testing.expect(test,
+        wide_valid && wide.value == '界' && wide.columns == 2 &&
+        !wide.continuation)
+    (continuation, continuation_valid) :=
+        cell_at(surface(&renderer), 3, 0)
+    testing.expect(test,
+        continuation_valid && continuation.continuation &&
+        continuation.columns == 0)
+    testing.expect(test, bytes_equal_text(
+        build_render_bytes(&renderer),
+        "\x1b[1;2Hé界\x1b[0m",
+    ))
+    commit_desired(&renderer)
+    testing.expect(test, len(build_render_bytes(&renderer)) == 0)
+
+    // Painting into the old wide glyph's continuation clears its leading cell
+    // before placing X, producing two ordinary one-column cells in the diff.
+    testing.expect(test, put(
+        surface(&renderer),
+        3,
+        0,
+        cast[u8]('X'),
+        Style{},
+    ))
+    testing.expect(test, bytes_equal_text(
+        build_render_bytes(&renderer),
+        "\x1b[1;3H X\x1b[0m",
+    ))
+
+    // Validation finishes before mutation for nonprinting and overflowing
+    // strings; the already-painted accent remains present after both failures.
+    testing.expect(test,
+        !write_utf8(surface(&renderer), 0, 0, "bad\n", Style{}))
+    testing.expect(test,
+        !write_utf8(surface(&renderer), 5, 0, "界", Style{}))
+    (unchanged, unchanged_valid) := cell_at(surface(&renderer), 1, 0)
+    testing.expect(test, unchanged_valid && unchanged.value == 'e')
+
+    renderer_destroy(&renderer)
 }
 
 // test_renderer_diff verifies exact first-frame clearing, no-op frames,

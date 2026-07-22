@@ -1,0 +1,89 @@
+// These same-package tests qualify the pinned Unicode grapheme and terminal
+// width policy without consulting the host locale or terminal. They cover the
+// stateful UAX #29 rules which are easy to regress—emoji ZWJ, regional pairs,
+// Indic conjuncts, and Hangul—as well as width and nonprinting boundaries.
+package unicode
+
+import core/testing
+
+// expect_one_cluster asserts one complete printable string is exactly one
+// extended grapheme with the requested deterministic terminal width.
+expect_one_cluster :: proc(
+    test: ^testing.Test,
+    text: string,
+    expected_columns: usize,
+) {
+    (end, columns, error) := next_grapheme(text, 0)
+    testing.expect_message(test, error == .none,
+        "valid printable grapheme must not report an error")
+    testing.expect_message(test, end == len(text),
+        "one grapheme must consume the complete test string")
+    testing.expect_message(test, columns == expected_columns,
+        "grapheme must have its pinned terminal column width")
+}
+
+// test_unicode_scalar_widths fixes ordinary narrow, East-Asian wide, emoji,
+// combining, and control results at the standalone-scalar boundary.
+test_unicode_scalar_widths :: proc(test: ^testing.Test) {
+    (ascii_columns, ascii_printable) := rune_columns('A')
+    testing.expect(test, ascii_printable && ascii_columns == 1)
+    (cjk_columns, cjk_printable) := rune_columns('界')
+    testing.expect(test, cjk_printable && cjk_columns == 2)
+    (emoji_columns, emoji_printable) := rune_columns('😀')
+    testing.expect(test, emoji_printable && emoji_columns == 2)
+    (mark_columns, mark_printable) := rune_columns('\u{0301}')
+    testing.expect(test, !mark_printable && mark_columns == 0)
+    (control_columns, control_printable) := rune_columns('\n')
+    testing.expect(test, !control_printable && control_columns == 0)
+}
+
+// test_unicode_attached_sequences covers ordinary combining attachment, an
+// emoji ZWJ sequence, an emoji-presentation keycap, and a modern Hangul syllable
+// expressed as separate Jamo scalars.
+test_unicode_attached_sequences :: proc(test: ^testing.Test) {
+    expect_one_cluster(test, "é", 1)
+    expect_one_cluster(test, "👩‍💻", 2)
+    expect_one_cluster(test, "1️⃣", 2)
+    expect_one_cluster(test, "각", 2)
+}
+
+// test_unicode_contextual_sequences covers GB9c's Indic linker context and
+// GB12/13's paired regional indicators. Three regional indicators form one
+// flag pair followed by one standalone wide indicator.
+test_unicode_contextual_sequences :: proc(test: ^testing.Test) {
+    expect_one_cluster(test, "क्क", 1)
+    expect_one_cluster(test, "🇨🇭", 2)
+
+    three_indicators := "🇨🇭🇺"
+    (first_end, first_columns, first_error) :=
+        next_grapheme(three_indicators, 0)
+    testing.expect(test,
+        first_error == .none && first_columns == 2 && first_end == 8)
+    (second_end, second_columns, second_error) :=
+        next_grapheme(three_indicators, first_end)
+    testing.expect(test,
+        second_error == .none && second_columns == 2 &&
+        second_end == len(three_indicators))
+}
+
+// test_unicode_nonprinting_and_boundaries proves CR/LF remains one UAX cluster
+// even though terminal painting rejects it, a mark-only cluster is rejected,
+// and the final byte boundary reports a clean end without progress.
+test_unicode_nonprinting_and_boundaries :: proc(test: ^testing.Test) {
+    (control_end, control_columns, control_error) :=
+        next_grapheme("\r\n", 0)
+    testing.expect(test,
+        control_error == .nonprinting && control_columns == 0 &&
+        control_end == 2)
+
+    combining_only := "́"
+    (mark_end, mark_columns, mark_error) :=
+        next_grapheme(combining_only, 0)
+    testing.expect(test,
+        mark_error == .nonprinting && mark_columns == 0 &&
+        mark_end == len(combining_only))
+
+    (_, end_columns, end_error) := next_grapheme("A", 1)
+    testing.expect(test,
+        end_error == .end_of_input && end_columns == 0)
+}

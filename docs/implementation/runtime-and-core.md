@@ -241,17 +241,31 @@ or Kernel32 boundary.
 Status: ordinary Draft allocation and ANSI policy over `core/terminal`; no
 widgets, layout framework, callbacks, or compiler intrinsic.
 
-`core/tui.Surface` owns one fixed row-major allocation of printable
-single-column ASCII cells. Each cell contains one byte plus foreground,
-background, bold, dim, underline, and reverse style state. The zero style maps
-to terminal defaults; colors are either default or one ANSI 256-color index.
-Public put, fill, immutable-string, and mutable-byte-slice operations validate
-the complete coordinate range and byte vocabulary before mutation. The two
-ASCII writers share one exact contract; the slice form lets bounded runtime
-formatters paint their initialized output without an intermediate copy. The
-initial package intentionally rejects control bytes, UTF-8, combining
-characters, and wide glyphs until a real display-width contract can preserve
-the one-cell invariant.
+`core/unicode` owns generated, sorted interval tables pinned to Unicode 17.0.0.
+The source generator records SHA-256 hashes for UnicodeData,
+GraphemeBreakProperty, DerivedCoreProperties, emoji-data, and EastAsianWidth.
+One allocation-free state machine implements extended grapheme rules GB3-13,
+including Hangul, Indic conjunct, emoji-ZWJ, and regional-indicator context.
+Display width is deterministic rather than locale-dependent: East-Asian W/F
+and emoji forms are wide, ambiguous characters are narrow, and controls or
+zero-width-only clusters cannot own a cell.
+
+`core/tui.Surface` owns one fixed row-major cell allocation plus one compact
+byte arena for multi-scalar graphemes. A leading cell records one or two
+terminal columns; a wide glyph's second column is an explicit continuation.
+Single scalars remain allocation-free, while a multi-scalar spelling is copied
+exactly into Surface storage and survives caller-buffer reuse. Replacing either
+half of a wide glyph clears the complete old glyph. Repeated incremental edits
+use live-byte accounting and deterministic row-major arena compaction; a full
+surface clear reuses the allocation with zero live bytes.
+
+Public ASCII byte/string operations retain their all-or-nothing contract.
+`put_rune` accepts one standalone printable scalar, and `write_utf8` first
+validates and measures every extended grapheme before changing any cell. The
+renderer emits complete stored graphemes and advances by terminal columns, so a
+diff never splits a combining sequence or addresses the middle of a wide glyph.
+The zero style maps to terminal defaults; colors are either default or one ANSI
+256-color index.
 
 `core/tui.Renderer` owns desired and last-published Surfaces of equal size plus
 one reusable output byte array. Rendering scans in row-major order, groups each
@@ -271,8 +285,9 @@ or after output performed outside the renderer. `present` rejects a non-active
 Screen even for an empty diff and invalidates its correspondence. A
 dimension-changing resize discards both old frames and returns a blank desired
 surface; equal dimensions are an exact no-op. Focus, input dispatch, clipping,
-text wrapping, widgets, layout, event loops, and Unicode display remain
-application or future-library policy.
+text wrapping, widgets, layout, and event loops remain application or
+future-library policy. Unicode normalization, shaping, bidi, locale tailoring,
+and line breaking deliberately remain outside this cell surface.
 
 The virtual-memory seam uses target-qualified source with fixed signatures.
 POSIX calls `mmap`, `mprotect`, and `munmap`; Windows calls `VirtualAlloc`,

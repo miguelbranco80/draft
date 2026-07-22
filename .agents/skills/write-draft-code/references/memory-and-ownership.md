@@ -280,9 +280,11 @@ Always attempt every final restoration even when an earlier one fails. This
 ordering exposes the primary screen and saved input mode to external work and
 avoids re-entering the alternate screen when raw input could not be reacquired.
 
-`tui.Surface` owns one fixed cell buffer. `tui.Renderer` owns two nested
-Surfaces plus one reusable output buffer, so do not separately destroy or copy
-its fields. A pointer returned by `tui.surface(&renderer)` expires at a
+`tui.Surface` owns one fixed cell buffer and one compact byte arena containing
+multi-scalar grapheme spellings. `cell_at` returns only a value description;
+the private arena is never borrowed. `tui.Renderer` owns two nested Surfaces
+plus one reusable output buffer, so do not separately destroy or copy its
+fields. A pointer returned by `tui.surface(&renderer)` expires at a
 dimension-changing resize or destroy; equal-size resize is an exact no-op.
 Renderer borrows `terminal.Screen` only during `present`; failed output
 invalidates display history but retains every allocation for retry. Invalidate

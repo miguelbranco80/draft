@@ -1,8 +1,8 @@
 // This file owns deterministic ANSI diff rendering for one TUI Surface. A
 // Renderer contains the desired surface, the last completely published surface,
-// and one reusable output byte buffer. present scans cells in row-major order,
-// emits only contiguous changed runs, writes them through core/terminal once,
-// and advances the previous surface only after the complete write succeeds.
+// and one reusable output byte buffer. present scans glyphs in row-major order,
+// emits only contiguous changed runs, writes complete UTF-8 graphemes through
+// core/terminal once, and advances previous only after the write succeeds.
 //
 // A partial or failed terminal write invalidates the remembered display. The
 // next present then clears and repaints the complete desired surface, because
@@ -19,6 +19,7 @@ import core/io
 import core/memory
 import core/runtime
 import core/terminal
+import core/utf8
 
 // Renderer is a move-by-convention owner of two Surface allocations and one
 // reusable byte allocation. desired is the application paint target. previous
@@ -27,7 +28,7 @@ import core/terminal
 pub Renderer :: struct {
     desired: Surface,
     previous: Surface,
-    output: array.Dynamic[u8],
+    output: Byte_Array,
     allocator: runtime.Allocator,
     previous_valid: bool,
 }
@@ -124,13 +125,13 @@ pub invalidate :: proc(renderer: ^Renderer) {
 }
 
 // append_byte is the single mutation boundary for the reusable output buffer.
-append_byte :: proc(output: ^array.Dynamic[u8], byte: u8) {
+append_byte :: proc(output: ^Byte_Array, byte: u8) {
     array.append(output, byte)
 }
 
 // append_text copies immutable control/text bytes into renderer-owned storage.
 // The output array retains its allocation between frames but never borrows text.
-append_text :: proc(output: ^array.Dynamic[u8], text: string) {
+append_text :: proc(output: ^Byte_Array, text: string) {
     for index: usize = 0; index < len(text); index += 1 {
         array.append(output, text[index])
     }
@@ -138,7 +139,7 @@ append_text :: proc(output: ^array.Dynamic[u8], text: string) {
 
 // append_unsigned writes one terminal coordinate or color index without
 // allocation. Twenty bytes cover the current u64/usize target width.
-append_unsigned :: proc(output: ^array.Dynamic[u8], value: u64) {
+append_unsigned :: proc(output: ^Byte_Array, value: u64) {
     storage: [20]u8
     (digits, formatted) := format.unsigned_decimal(storage[:], value)
     assert(formatted, "TUI decimal scratch buffer is too small")
@@ -151,7 +152,7 @@ append_unsigned :: proc(output: ^array.Dynamic[u8], value: u64) {
 // zero-based Surface coordinate. Absolute positioning makes row transitions
 // independent of raw-mode newline translation.
 append_cursor :: proc(
-    output: ^array.Dynamic[u8],
+    output: ^Byte_Array,
     column, row: usize,
 ) {
     append_text(output, "\x1b[")
@@ -178,15 +179,66 @@ style_equal :: proc(left, right: Style) -> bool {
         left.underline == right.underline && left.reverse == right.reverse
 }
 
-cell_equal :: proc(left, right: Cell) -> bool {
-    return left.byte_value == right.byte_value &&
-        style_equal(left.style, right.style)
+// cell_equal compares semantic glyph content rather than private arena offsets.
+// Two compacted Surfaces may store the same grapheme at different byte offsets;
+// equal lengths and byte sequences are the stable display identity.
+cell_equal :: proc(
+    left_surface: ^Surface,
+    left: Stored_Cell,
+    right_surface: ^Surface,
+    right: Stored_Cell,
+) -> bool {
+    if left.kind != right.kind || left.scalar != right.scalar ||
+        left.columns != right.columns || !style_equal(left.style, right.style) {
+        return false
+    }
+    if left.kind != .grapheme {
+        return true
+    }
+    if left.byte_length != right.byte_length {
+        return false
+    }
+    for index: usize = 0; index < left.byte_length; index += 1 {
+        if left_surface^.grapheme_bytes.data[left.byte_start + index] !=
+            right_surface^.grapheme_bytes.data[right.byte_start + index] {
+            return false
+        }
+    }
+    return true
+}
+
+// append_cell_text emits one proven leading cell. Single scalars use a fixed
+// four-byte UTF-8 scratch buffer; multi-scalar graphemes copy their exact
+// Surface-owned spelling. Continuations are consumed by advancing columns and
+// must never reach this boundary independently.
+append_cell_text :: proc(
+    output: ^Byte_Array,
+    surface: ^Surface,
+    cell: Stored_Cell,
+) {
+    assert(cell.kind != .continuation,
+        "TUI renderer cannot emit a continuation independently")
+    if cell.kind == .scalar {
+        storage: [4]u8
+        (count, encoded) := utf8.encode(storage[:], cell.scalar)
+        assert(encoded, "TUI stored scalar cannot be encoded as UTF-8")
+        for index: usize = 0; index < count; index += 1 {
+            append_byte(output, storage[index])
+        }
+        return
+    }
+    end := cell.byte_start + cell.byte_length
+    assert(end <= surface^.grapheme_bytes.length,
+        "TUI stored grapheme exceeds its arena")
+    for index := cell.byte_start; index < end; index += 1 {
+        append_byte(output, surface^.grapheme_bytes.data[index])
+    }
 }
 
 // append_style resets every SGR field before enabling the requested direct
 // attributes and indexed colors. Reset-first is slightly longer than tracking
 // individual disable codes, but it keeps the state transition exact and small.
-append_style :: proc(output: ^array.Dynamic[u8], style: Style) {
+append_style :: proc(output: ^Byte_Array, style: Style) {
     append_text(output, terminal.reset_style)
     if style.bold {
         append_text(output, "\x1b[1m")
@@ -236,7 +288,9 @@ build_render_bytes :: proc(renderer: ^Renderer) -> []u8 {
         for column < desired^.columns {
             index := cell_index(desired, column, row)
             changed := full || !cell_equal(
+                desired,
                 desired^.cells.data[index],
+                previous,
                 previous^.cells.data[index],
             )
             if !changed {
@@ -251,21 +305,25 @@ build_render_bytes :: proc(renderer: ^Renderer) -> []u8 {
             for column < desired^.columns {
                 index = cell_index(desired, column, row)
                 if !full && cell_equal(
+                    desired,
                     desired^.cells.data[index],
+                    previous,
                     previous^.cells.data[index],
                 ) {
                     break
                 }
                 cell := desired^.cells.data[index]
-                assert(valid_cell(cell),
+                assert(valid_stored_cell(cell),
                     "TUI renderer encountered an invalid stored cell")
+                assert(cell.kind != .continuation,
+                    "TUI renderer began a changed run at a continuation")
                 if !style_equal(active_style, cell.style) {
                     append_style(&renderer^.output, cell.style)
                     active_style = cell.style
                 }
-                append_byte(&renderer^.output, cell.byte_value)
+                append_cell_text(&renderer^.output, desired, cell)
                 emitted_cells = true
-                column += 1
+                column += cast[usize](cell.columns)
             }
         }
     }
@@ -285,6 +343,21 @@ build_render_bytes :: proc(renderer: ^Renderer) -> []u8 {
 commit_desired :: proc(renderer: ^Renderer) {
     assert(renderer^.desired.cells.length == renderer^.previous.cells.length,
         "TUI renderer surfaces have different cell counts")
+    array.clear(&renderer^.previous.grapheme_bytes)
+    array.reserve(
+        &renderer^.previous.grapheme_bytes,
+        renderer^.desired.grapheme_bytes.length,
+    )
+    for byte_index: usize = 0;
+        byte_index < renderer^.desired.grapheme_bytes.length;
+        byte_index += 1 {
+        array.append(
+            &renderer^.previous.grapheme_bytes,
+            renderer^.desired.grapheme_bytes.data[byte_index],
+        )
+    }
+    renderer^.previous.live_grapheme_bytes =
+        renderer^.desired.live_grapheme_bytes
     for index: usize = 0; index < renderer^.desired.cells.length; index += 1 {
         renderer^.previous.cells.data[index] = renderer^.desired.cells.data[index]
     }

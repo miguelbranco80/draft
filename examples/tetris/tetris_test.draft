@@ -151,7 +151,8 @@ surface_contains_text :: proc(
             matches := true
             for index: usize = 0; index < len(needle); index += 1 {
                 (cell, valid) := tui.cell_at(surface, start + index, row)
-                if !valid || cell.byte_value != needle[index] {
+                if !valid || cell.continuation ||
+                    cell.value != cast[rune](needle[index]) {
                     matches = false
                     break
                 }

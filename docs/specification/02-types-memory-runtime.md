@@ -1039,7 +1039,8 @@ The initial core set includes:
 | `core/format` | Allocation-free conversion of values into caller-owned byte buffers. |
 | `core/console` | Checked human-facing text and scalar output over standard process handles. |
 | `core/terminal` | Suspendable raw/screen sessions, timed reads, cell-size queries/watchers, and streaming key decoding. |
-| `core/tui` | Owned ASCII cell surfaces and deterministic ANSI differential rendering. |
+| `core/tui` | Owned Unicode-grapheme cell surfaces and deterministic ANSI differential rendering. |
+| `core/unicode` | Pinned grapheme segmentation and deterministic terminal display widths. |
 | `core/utf8` | Allocation-free strict UTF-8 validation, decoding, encoding, and scalar counting. |
 | `core/io` | Stream and input/output interfaces and utilities. |
 | `core/os` | Process, argument, environment, file, and operating-system facilities. |
@@ -1068,8 +1069,16 @@ the built-in types: strings remain arbitrary immutable bytes, indexing still
 returns one byte, and `rune` remains one Unicode scalar. The package validates,
 decodes in either direction, counts scalars, and encodes into caller-owned
 storage. Decoding uses strict shortest-form UTF-8 and reports malformed input;
-normalization, grapheme segmentation, display width, and locale policy are
-separate future library concerns.
+normalization and locale policy remain separate library concerns.
+
+`core/unicode` segments strict UTF-8 strings into Unicode 17.0.0 extended
+grapheme clusters and assigns each printable cluster a deterministic terminal
+width. UAX #29 defines boundaries; East_Asian_Width W/F scalars, emoji
+presentation sequences, regional indicators, and keycaps occupy two columns,
+while ambiguous-width characters occupy one. Controls and clusters with no
+printable base are rejected. This is a portable `core/tui` layout policy, not a
+locale-sensitive claim about every font or terminal, and it performs no
+normalization, shaping, bidi reordering, or line breaking.
 
 `core/time` defines `Duration` as a distinct signed integer type and constants
 such as `time.nanosecond: Duration`; the distinct-operator rules make

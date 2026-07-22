@@ -1,23 +1,34 @@
 // The tui package owns a deliberately small terminal-cell model. A Surface is
-// one fixed rectangular allocation of single-column printable ASCII cells. It
-// provides exact bounds-checked painting operations but no widgets, layout
-// tree, callbacks, focus system, event loop, Unicode width rules, or terminal
-// I/O. render.draft composes two Surfaces into a deterministic ANSI diff.
+// one fixed rectangular allocation of terminal columns plus compact storage
+// for multi-scalar UTF-8 graphemes. It provides exact bounds-checked painting
+// operations but no widgets, layout tree, callbacks, focus system, event loop,
+// line breaking, bidi reordering, or terminal I/O. render.draft composes two
+// Surfaces into a deterministic ANSI diff.
 //
 // Surface is an explicit move-by-convention owner. Initialize and destroy it
 // exactly once, keep it at one stable address while borrowed, and never copy a
-// live value. All coordinates are zero-based cell coordinates. The zero Style
-// means the terminal's default colors and attributes, which makes ordinary
-// blank construction and reset behavior agree without hidden initialization.
+// live value. All coordinates are zero-based terminal-column coordinates. A
+// double-column glyph owns its leading cell and one explicit continuation cell;
+// replacing either half clears the complete old glyph before painting the new
+// value. The zero Style means terminal-default colors and attributes.
 //
 // This package is ordinary Draft library code. It depends only on core array,
-// formatting, I/O, memory, runtime allocation, and terminal output. Relevant
-// Draft specification: sections 5-7; terminal behavior follows the selected
-// target profile and core/terminal's ANSI contract.
+// formatting, I/O, memory, runtime allocation, terminal output, Unicode
+// grapheme policy, and UTF-8 conversion. Relevant Draft specification: sections
+// 5-7; terminal behavior follows the selected target profile and core/terminal's
+// ANSI contract.
 package tui
 
+import core/array
 import core/memory
 import core/runtime
+import core/unicode
+import core/utf8
+
+// Byte_Array names the package's one Dynamic[u8] instantiation. Keeping the
+// generic application in one declaration also gives every source file in this
+// semantic package one visibly identical owning byte-buffer type.
+Byte_Array :: array.Dynamic[u8]
 
 // Color is either the terminal default or one ANSI 256-color palette index.
 // Its zero value is default. indexed_color is the only constructor needed for
@@ -31,9 +42,9 @@ pub indexed_color :: proc(index: u8) -> Color {
     return Color{indexed = true, index = index}
 }
 
-// Style is the complete per-cell rendering state supported by this first TUI
-// layer. Each boolean maps directly to one ANSI SGR attribute. The zero value
-// is intentionally the default terminal style and may be copied freely.
+// Style is the complete per-cell rendering state supported by this TUI layer.
+// Each boolean maps directly to one ANSI SGR attribute. The zero value is the
+// terminal default and may be copied freely.
 pub Style :: struct {
     foreground: Color,
     background: Color,
@@ -43,43 +54,86 @@ pub Style :: struct {
     reverse: bool,
 }
 
-// Cell represents exactly one terminal column and one printable ASCII byte.
-// A Cell stored in a live Surface always has byte_value in 0x20-0x7e. UTF-8,
-// combining marks, wide glyphs, and control bytes require a later explicit
-// display-width design and are rejected instead of corrupting the cell grid.
+// Cell is the non-owning public description returned by cell_at. value is the
+// first scalar of a printable grapheme and columns is one or two. A continuation
+// cell has continuation=true, value zero, and columns zero; its style is the
+// owning leading cell's style. The Surface retains any additional UTF-8 bytes.
 pub Cell :: struct {
-    byte_value: u8,
+    value: rune,
+    columns: usize,
+    continuation: bool,
     style: Style,
 }
 
-// Surface owns columns*rows cells in row-major order. cells is intentionally a
-// standard memory.Buffer rather than a private allocator scheme. columns and
-// rows remain valid until surface_destroy; resizing belongs to Renderer because
-// a diff requires both desired and previously displayed dimensions to change
-// together.
+// Stored_Cell_Kind separates allocation-free single scalars from graphemes
+// whose exact multi-scalar spelling lives in Surface.grapheme_bytes. A
+// continuation never owns bytes and always immediately follows a two-column
+// scalar or grapheme in the same row.
+Stored_Cell_Kind :: enum u8 {
+    scalar,
+    grapheme,
+    continuation,
+}
+
+// Stored_Cell is private so callers cannot retain an arena offset across a
+// write or compaction. scalar is the complete value for scalar cells and the
+// first decoded scalar for grapheme cells. byte_start/byte_length address the
+// owning Surface arena only when kind is grapheme. columns is one or two on a
+// leading cell and zero on a continuation.
+Stored_Cell :: struct {
+    kind: Stored_Cell_Kind,
+    scalar: rune,
+    byte_start: usize,
+    byte_length: usize,
+    columns: u8,
+    style: Style,
+}
+
+// Surface owns cells in row-major order and a byte arena for multi-scalar
+// graphemes. live_grapheme_bytes is the exact sum referenced by current cells;
+// dead bytes arise when text is overwritten and trigger deterministic
+// row-major compaction. columns and rows remain valid until surface_destroy;
+// coordinated resizing belongs to Renderer because its two frames must agree.
 pub Surface :: struct {
-    cells: memory.Buffer[Cell],
+    cells: memory.Buffer[Stored_Cell],
+    grapheme_bytes: Byte_Array,
+    live_grapheme_bytes: usize,
     columns: usize,
     rows: usize,
 }
 
 Maximum_Terminal_Dimension :: 65535
 
-// blank_cell constructs the printable space used for clearing. Style remains
-// caller-selected so a filled background is an ordinary surface operation.
-pub blank_cell :: proc(style: Style) -> Cell {
-    return Cell{byte_value = cast[u8](' '), style = style}
+// blank_stored_cell constructs the one-column printable space used for
+// clearing. It owns no arena bytes and retains the caller-selected style.
+blank_stored_cell :: proc(style: Style) -> Stored_Cell {
+    return Stored_Cell{
+        kind = .scalar,
+        scalar = ' ',
+        columns = 1,
+        style = style,
+    }
 }
 
-// valid_cell fixes the byte invariant at every public mutation boundary. Style
-// needs no validation because Color's indexed form stores exactly one u8 index.
-valid_cell :: proc(cell: Cell) -> bool {
-    return cell.byte_value >= 0x20 && cell.byte_value <= 0x7e
+// valid_stored_cell checks local representation facts. Cross-cell continuation
+// pairing is asserted by the renderer while it scans one complete row.
+valid_stored_cell :: proc(cell: Stored_Cell) -> bool {
+    if cell.kind == .continuation {
+        return cell.columns == 0 && cell.byte_length == 0
+    }
+    if cell.columns != 1 && cell.columns != 2 {
+        return false
+    }
+    if cell.kind == .scalar {
+        (_, printable) := unicode.rune_columns(cell.scalar)
+        return printable && cell.byte_length == 0
+    }
+    return cell.byte_length > 0
 }
 
 // surface_cell_count proves coordinate multiplication before allocation. The
-// 65535 bound matches the current POSIX winsize field and also keeps emitted
-// ANSI cursor positions within one portable terminal-sized domain.
+// 65535 bound matches POSIX winsize and keeps emitted cursor positions within
+// one portable terminal-sized domain.
 surface_cell_count :: proc(columns, rows: usize) -> usize {
     assert(columns <= Maximum_Terminal_Dimension,
         "TUI column count exceeds terminal coordinate range")
@@ -101,105 +155,218 @@ pub surface_init :: proc(surface: ^Surface, columns, rows: usize) {
 
 // surface_init_with_allocator is the explicit allocator counterpart. surface
 // must be a zero or destroyed value. Allocation failure follows core/memory's
-// process-level assertion policy; every allocated cell is initialized to a
-// printable blank before the procedure returns.
+// process-level assertion policy; every allocated cell is initialized before
+// the procedure returns.
 pub surface_init_with_allocator :: proc(
     surface: ^Surface,
     columns, rows: usize,
     allocator: runtime.Allocator,
 ) {
-    assert(surface^.cells.data == nil && surface^.columns == 0 &&
-        surface^.rows == 0, "TUI surface must be empty before initialization")
+    assert(surface^.cells.data == nil && surface^.grapheme_bytes.data == nil &&
+        surface^.columns == 0 && surface^.rows == 0,
+        "TUI surface must be empty before initialization")
     count := surface_cell_count(columns, rows)
     memory.buffer_init_with_allocator(&surface^.cells, count, allocator)
+    array.init_with_allocator(&surface^.grapheme_bytes, allocator)
     surface^.columns = columns
     surface^.rows = rows
     clear(surface, Style{})
 }
 
-// surface_destroy releases the one cell allocation and returns Surface to its
-// zero state. No cell owns nested resources, so structural destruction is exact.
+// surface_destroy releases both owned allocations and returns Surface to its
+// zero state. No public Cell retains arena storage.
 pub surface_destroy :: proc(surface: ^Surface) {
     memory.buffer_destroy(&surface^.cells)
+    array.destroy(&surface^.grapheme_bytes)
+    surface^.live_grapheme_bytes = 0
     surface^.columns = 0
     surface^.rows = 0
 }
 
 // cell_index translates one proven in-bounds coordinate into row-major storage.
-// Keeping the assertion private lets public painting report false for user-
-// controlled coordinates while internal loops retain a direct indexing rule.
 cell_index :: proc(surface: ^Surface, column, row: usize) -> usize {
     assert(column < surface^.columns && row < surface^.rows,
         "TUI cell coordinate is out of bounds")
     return row * surface^.columns + column
 }
 
-// clear replaces every cell with one styled blank. The operation touches the
-// complete allocation in row-major order and cannot fail.
+// forget_grapheme removes one leading cell's live-byte accounting. Arena bytes
+// remain until clear or compaction, so no unrelated cell offset is invalidated.
+forget_grapheme :: proc(surface: ^Surface, cell: Stored_Cell) {
+    if cell.kind == .grapheme {
+        assert(cell.byte_length <= surface^.live_grapheme_bytes,
+            "TUI live grapheme byte accounting underflow")
+        surface^.live_grapheme_bytes -= cell.byte_length
+    }
+}
+
+// clear_glyph_at replaces the complete glyph intersecting one coordinate with
+// default-style spaces. This is the key wide-cell invariant: an application can
+// never leave either an orphaned continuation or half of an old wide glyph.
+clear_glyph_at :: proc(surface: ^Surface, column, row: usize) {
+    index := cell_index(surface, column, row)
+    cell := surface^.cells.data[index]
+    if cell.kind == .continuation {
+        assert(column > 0, "TUI continuation begins a row")
+        lead_index := index - 1
+        lead := surface^.cells.data[lead_index]
+        assert(lead.kind != .continuation && lead.columns == 2,
+            "TUI continuation has no wide leading cell")
+        forget_grapheme(surface, lead)
+        surface^.cells.data[lead_index] = blank_stored_cell(Style{})
+        surface^.cells.data[index] = blank_stored_cell(Style{})
+        return
+    }
+
+    forget_grapheme(surface, cell)
+    surface^.cells.data[index] = blank_stored_cell(Style{})
+    if cell.columns == 2 {
+        assert(column + 1 < surface^.columns,
+            "TUI wide cell exceeds its row")
+        continuation := surface^.cells.data[index + 1]
+        assert(continuation.kind == .continuation,
+            "TUI wide cell has no continuation")
+        surface^.cells.data[index + 1] = blank_stored_cell(Style{})
+    }
+}
+
+// compact_graphemes copies only live multi-scalar spellings in row-major cell
+// order, then swaps the private arena. Cell addresses remain stable; only
+// private offsets change. The operation is deterministic and exact.
+compact_graphemes :: proc(surface: ^Surface) {
+    replacement: Byte_Array
+    array.init_with_allocator(&replacement, surface^.grapheme_bytes.allocator)
+    array.reserve(&replacement, surface^.live_grapheme_bytes)
+    for index: usize = 0; index < surface^.cells.length; index += 1 {
+        cell := &surface^.cells.data[index]
+        if cell^.kind != .grapheme {
+            continue
+        }
+        old_start := cell^.byte_start
+        old_end := old_start + cell^.byte_length
+        assert(old_end <= surface^.grapheme_bytes.length,
+            "TUI grapheme bytes exceed their arena")
+        cell^.byte_start = replacement.length
+        for byte_index := old_start; byte_index < old_end; byte_index += 1 {
+            array.append(&replacement, surface^.grapheme_bytes.data[byte_index])
+        }
+    }
+    assert(replacement.length == surface^.live_grapheme_bytes,
+        "TUI grapheme compaction lost live bytes")
+    array.destroy(&surface^.grapheme_bytes)
+    surface^.grapheme_bytes = replacement
+}
+
+// compact_if_useful avoids copying for small or mostly live arenas. Once dead
+// storage exceeds both 1 KiB and all live storage, one linear compaction keeps
+// repeated incremental edits bounded without burdening ordinary frame clears.
+compact_if_useful :: proc(surface: ^Surface) {
+    dead := surface^.grapheme_bytes.length - surface^.live_grapheme_bytes
+    if dead > 1024 && dead > surface^.live_grapheme_bytes {
+        compact_graphemes(surface)
+    }
+}
+
+// clear replaces every cell with one styled blank and logically empties the
+// grapheme arena while retaining its allocation for the next frame.
 pub clear :: proc(surface: ^Surface, style: Style) {
-    cell := blank_cell(style)
+    array.clear(&surface^.grapheme_bytes)
+    surface^.live_grapheme_bytes = 0
+    cell := blank_stored_cell(style)
     for index: usize = 0; index < surface^.cells.length; index += 1 {
         surface^.cells.data[index] = cell
     }
 }
 
-// put_cell replaces one cell. It returns false and changes nothing when the
-// coordinate is outside the surface or the byte is not printable single-column
-// ASCII. This makes application clipping/error policy explicit.
-pub put_cell :: proc(
+// install_scalar performs a proven placement. It clears every old glyph which
+// intersects the new one, installs the leading scalar, and marks a second
+// column explicitly when needed.
+install_scalar :: proc(
     surface: ^Surface,
     column, row: usize,
-    cell: Cell,
+    value: rune,
+    columns: usize,
+    style: Style,
+) {
+    clear_glyph_at(surface, column, row)
+    if columns == 2 {
+        clear_glyph_at(surface, column + 1, row)
+    }
+    index := cell_index(surface, column, row)
+    surface^.cells.data[index] = Stored_Cell{
+        kind = .scalar,
+        scalar = value,
+        columns = cast[u8](columns),
+        style = style,
+    }
+    if columns == 2 {
+        surface^.cells.data[index + 1] = Stored_Cell{
+            kind = .continuation,
+            style = style,
+        }
+    }
+}
+
+// put_rune paints one standalone Unicode scalar according to core/unicode's
+// fixed terminal-width policy. Controls and zero-width scalars are rejected;
+// combining sequences belong in write_utf8. False changes no cell.
+pub put_rune :: proc(
+    surface: ^Surface,
+    column, row: usize,
+    value: rune,
+    style: Style,
 ) -> bool {
-    if column >= surface^.columns || row >= surface^.rows || !valid_cell(cell) {
+    (columns, printable) := unicode.rune_columns(value)
+    if !printable || row >= surface^.rows || column >= surface^.columns ||
+        columns > surface^.columns - column {
         return false
     }
-    surface^.cells.data[cell_index(surface, column, row)] = cell
+    install_scalar(surface, column, row, value, columns, style)
     return true
 }
 
-// put is the direct byte/style convenience over put_cell. It has the same
-// all-or-nothing validation and retains no caller data.
+// put preserves the direct ASCII-byte operation used by byte-oriented terminal
+// applications. Non-printable and non-ASCII bytes are rejected; Unicode input
+// uses put_rune or write_utf8.
 pub put :: proc(
     surface: ^Surface,
     column, row: usize,
     byte_value: u8,
     style: Style,
 ) -> bool {
-    return put_cell(
-        surface,
-        column,
-        row,
-        Cell{byte_value = byte_value, style = style},
-    )
+    if byte_value < 0x20 || byte_value > 0x7e {
+        return false
+    }
+    return put_rune(surface, column, row, cast[rune](byte_value), style)
 }
 
-// fill replaces one rectangle. The complete range and cell are validated
-// before mutation, so false never leaves a partially filled region. Empty
-// rectangles are valid when their origin is at or within the corresponding
-// surface boundary.
+// fill replaces one rectangle with a repeated one-column printable scalar.
+// Double-column values are rejected because "width" denotes terminal cells,
+// not glyph repetitions. The complete range and value are validated before
+// mutation, so false never leaves a partial rectangle.
 pub fill :: proc(
     surface: ^Surface,
     column, row, width, height: usize,
-    cell: Cell,
+    value: rune,
+    style: Style,
 ) -> bool {
-    if !valid_cell(cell) || column > surface^.columns ||
+    (columns, printable) := unicode.rune_columns(value)
+    if !printable || columns != 1 || column > surface^.columns ||
         row > surface^.rows || width > surface^.columns - column ||
         height > surface^.rows - row {
         return false
     }
     for y: usize = 0; y < height; y += 1 {
         for x: usize = 0; x < width; x += 1 {
-            surface^.cells.data[cell_index(surface, column + x, row + y)] = cell
+            install_scalar(surface, column + x, row + y, value, 1, style)
         }
     }
     return true
 }
 
-// write_ascii paints one complete immutable byte string on one row. It rejects
-// overflow, out-of-bounds placement, and every non-printable byte before the
-// first mutation. It performs no clipping, newline interpretation, UTF-8
-// decoding, allocation, or retention.
+// write_ascii paints one complete immutable ASCII string on one row. It
+// rejects overflow and non-printable bytes before the first mutation. It does
+// no clipping, newline interpretation, allocation, or retention.
 pub write_ascii :: proc(
     surface: ^Surface,
     column, row: usize,
@@ -216,19 +383,21 @@ pub write_ascii :: proc(
         }
     }
     for index: usize = 0; index < len(text); index += 1 {
-        surface^.cells.data[cell_index(surface, column + index, row)] = Cell{
-            byte_value = text[index],
-            style = style,
-        }
+        install_scalar(
+            surface,
+            column + index,
+            row,
+            cast[rune](text[index]),
+            1,
+            style,
+        )
     }
     return true
 }
 
 // write_ascii_bytes is the mutable-slice counterpart used by formatting and
-// other bounded byte producers. It borrows bytes only for this call and has
-// the same preflight and all-or-nothing mutation contract as write_ascii.
-// Keeping both entry points avoids copying initialized runtime text through an
-// unrelated immutable-string conversion merely to paint ordinary ASCII.
+// other bounded byte producers. It borrows bytes only for this call and has the
+// same preflight and all-or-nothing mutation contract as write_ascii.
 pub write_ascii_bytes :: proc(
     surface: ^Surface,
     column, row: usize,
@@ -245,16 +414,95 @@ pub write_ascii_bytes :: proc(
         }
     }
     for index: usize = 0; index < len(bytes); index += 1 {
-        surface^.cells.data[cell_index(surface, column + index, row)] = Cell{
-            byte_value = bytes[index],
-            style = style,
-        }
+        install_scalar(
+            surface,
+            column + index,
+            row,
+            cast[rune](bytes[index]),
+            1,
+            style,
+        )
     }
     return true
 }
 
-// cell_at returns a copy of one cell and a validity bit. The surface retains
-// ownership; callers cannot accidentally keep a pointer across destruction.
+// write_utf8 paints one strict UTF-8 string as complete extended grapheme
+// clusters. Validation and total-column measurement finish before mutation, so
+// malformed, control-containing, zero-width-only, or overflowing text returns
+// false without changing cells. Multi-scalar graphemes are copied into private
+// Surface storage; the input is never retained.
+pub write_utf8 :: proc(
+    surface: ^Surface,
+    column, row: usize,
+    text: string,
+    style: Style,
+) -> bool {
+    if row >= surface^.rows || column > surface^.columns {
+        return false
+    }
+
+    total_columns: usize
+    offset: usize
+    for offset < len(text) {
+        (end, columns, error) := unicode.next_grapheme(text, offset)
+        if error != .none || columns > surface^.columns - column ||
+            total_columns > surface^.columns - column - columns {
+            return false
+        }
+        total_columns += columns
+        offset = end
+    }
+
+    compact_if_useful(surface)
+    offset = 0
+    painted_columns: usize
+    for offset < len(text) {
+        (end, columns, error) := unicode.next_grapheme(text, offset)
+        assert(error == .none, "validated TUI grapheme changed while painting")
+        (first, scalar_bytes, decode_error) := utf8.decode_next(text, offset)
+        assert(decode_error == .none,
+            "validated TUI grapheme has an invalid first scalar")
+
+        target_column := column + painted_columns
+        if offset + scalar_bytes == end {
+            install_scalar(surface, target_column, row, first, columns, style)
+        } else {
+            clear_glyph_at(surface, target_column, row)
+            if columns == 2 {
+                clear_glyph_at(surface, target_column + 1, row)
+            }
+            start := surface^.grapheme_bytes.length
+            for byte_index := offset; byte_index < end; byte_index += 1 {
+                array.append(&surface^.grapheme_bytes, text[byte_index])
+            }
+            byte_length := end - offset
+            surface^.live_grapheme_bytes += byte_length
+            index := cell_index(surface, target_column, row)
+            surface^.cells.data[index] = Stored_Cell{
+                kind = .grapheme,
+                scalar = first,
+                byte_start = start,
+                byte_length = byte_length,
+                columns = cast[u8](columns),
+                style = style,
+            }
+            if columns == 2 {
+                surface^.cells.data[index + 1] = Stored_Cell{
+                    kind = .continuation,
+                    style = style,
+                }
+            }
+        }
+        painted_columns += columns
+        offset = end
+    }
+    return true
+}
+
+// cell_at returns a non-owning description by value. Additional scalars in a
+// multi-scalar grapheme deliberately remain private; rendering and replacement
+// use the Surface-owned exact bytes, while inspection can identify its first
+// scalar, terminal width, style, and continuation cells.
 pub cell_at :: proc(
     surface: ^Surface,
     column, row: usize,
@@ -263,5 +511,11 @@ pub cell_at :: proc(
         empty: Cell
         return (empty, false)
     }
-    return (surface^.cells.data[cell_index(surface, column, row)], true)
+    stored := surface^.cells.data[cell_index(surface, column, row)]
+    return (Cell{
+        value = stored.scalar,
+        columns = cast[usize](stored.columns),
+        continuation = stored.kind == .continuation,
+        style = stored.style,
+    }, true)
 }
