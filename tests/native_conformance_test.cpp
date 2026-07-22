@@ -1,12 +1,13 @@
-// Real native AArch64 execution matrix for handwritten Draft programs.
+// Real native execution matrix for handwritten Draft programs.
 //
 // Semantic and LLVM snapshot tests localize compiler failures well, but they do
 // not prove that runtime Context setup, the selected platform ABI, package
 // assembly, atomics, pthread bridges, and system linking agree in a launched
 // process. This gate runs only when the bootstrap host can execute one of the
-// implemented AArch64 targets directly: Apple Silicon selects Mach-O/macOS and
-// AArch64 Linux selects ELF/GNU Linux. Every package still passes through the
-// public compiler and native-adapter APIs before its executable is launched.
+// implemented targets directly: Apple Silicon selects Mach-O/macOS, while
+// AArch64 and x86-64 Linux select their matching ELF/GNU profile. Every package
+// still passes through the public compiler and native-adapter APIs before its
+// executable is launched.
 
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
@@ -128,7 +129,7 @@ struct ConformanceCase {
 }
 
 // Selects the Draft target whose executables the current CI host can launch
-// directly. CMake only builds this test on the two supported AArch64 hosts, so
+// directly. CMake only builds this test on supported native hosts, so
 // reaching another branch would be a build-configuration error rather than a
 // runtime condition that should be hidden by skipping the test.
 [[nodiscard]] draft::TargetProfile native_host_target() {
@@ -136,8 +137,10 @@ struct ConformanceCase {
   return draft::make_aarch64_macos_profile();
 #elif defined(__linux__) && defined(__aarch64__)
   return draft::make_aarch64_linux_profile();
+#elif defined(__linux__) && defined(__x86_64__)
+  return draft::make_x86_64_linux_profile();
 #else
-#error "native conformance requires an implemented AArch64 host target"
+#error "native conformance requires an implemented host target"
 #endif
 }
 
@@ -291,7 +294,7 @@ void test_native_examples(TestState &state) {
                 process_status));
         EXPECT(state, test.name, WIFSIGNALED(process_status));
         if (WIFSIGNALED(process_status)) {
-          // LLVM lowers llvm.trap to AArch64 BRK for both selected targets, and
+          // LLVM lowers llvm.trap to the selected architecture's trap, and
           // each selected kernel reports that deliberate breakpoint as
           // SIGTRAP. Requiring the exact signal distinguishes the compiler's
           // trap edge from an accidental arithmetic or memory fault.

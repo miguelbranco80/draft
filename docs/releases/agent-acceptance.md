@@ -13,8 +13,9 @@ operations. It combines features that are most useful when exercised together:
 
 The committed `.draft` files are content-addressed acceptance inputs, not build
 caches. They contain four checked generated-source objects and separate v6
-resolution manifests for AArch64 macOS and GNU/Linux. Each selected program has
-four sites, and the checked expansions are shared across the two targets. The
+resolution manifests for AArch64 macOS, AArch64 GNU/Linux, and x86-64
+GNU/Linux. Each selected program has four sites, and the checked expansions are
+shared across the three targets. The
 input digests remain target-specific where the typed obligation contains target
 facts. Validation and judgment evidence is stored independently in the
 workspace-level `.draft/evidence` store and is not selected by either manifest.
@@ -35,7 +36,8 @@ build/draftc bench examples/agent-acceptance --root app --verify
 ```
 
 These commands use the macOS compatibility default. Pass
-`--target aarch64-linux` to select the independently committed Linux manifest.
+`--target aarch64-linux` or `--target x86_64-linux` to select the corresponding
+independently committed Linux manifest.
 
 All four commands load the committed generated source without contacting
 Codex. `build` uses the host native toolchain and does not require test,
@@ -158,6 +160,18 @@ and every classified example test and benchmark passed from an isolated
 workspace copy. The Linux manifest's native execution remains the responsibility
 of the required AArch64 Linux CI row; this local run does not claim Linux-host
 execution.
+
+## x86-64 Linux manifest qualification
+
+On 2026-07-22, the new `draft-x86_64-linux-gnu-v1` manifest was created by
+provider-free `resolve --revalidate`. The resolver rechecked and reused all four
+existing generated source objects and made zero synthesis calls. The committed
+x86-64 resolved-program digest is
+`4c81303f74cfcfe552864e25250034383b3dcd9babc7d30b1e82192644189294`.
+The exhaustive example frontend matrix then passed every classified package on
+AArch64 macOS, AArch64 GNU/Linux, and x86-64 GNU/Linux. This is source and
+target-identity evidence; native x86-64 execution remains the responsibility of
+the required Linux CI row and is not claimed by the macOS-hosted run.
 
 The corrected `agent-pending/app` walkthrough was independently resolved to the
 checked expression `42`, built and executed, rebuilt provider-free, expanded,

@@ -87,9 +87,10 @@ assembly, pthread spawn/join/mutex/condition/TLS/Context attachment, and a
 generated-header C client calling a Draft shared library across aggregate,
 enum, HFA, callback, and foreign-thread boundaries. Repeated artifact builds
 are byte-identical. AddressSanitizer and the other Draft validation
-instrumentation profiles remain fail-closed for this target; the separate
-x86-64 CI sanitizer job instruments the C++ bootstrap implementation rather
-than generated Draft programs.
+instrumentation profiles remain fail-closed for this target. The x86-64 CI job
+instruments the C++ bootstrap implementation and also runs the complete native
+x86-64 Draft target suite; generated Draft programs themselves still use the
+ordinary target profile.
 
 ## Related contracts
 

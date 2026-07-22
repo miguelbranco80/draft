@@ -269,7 +269,7 @@ private:
     if (value.bit_width == 16) return signed_value ? "int16_t" : "uint16_t";
     if (value.bit_width == 32) return signed_value ? "int32_t" : "uint32_t";
     if (value.bit_width == 64) return signed_value ? "int64_t" : "uint64_t";
-    // The selected Clang target defines the AArch64 C ABI for its standard
+    // The selected Clang target defines the C ABI for its standard
     // `__int128` extension. There is no C `<stdint.h>` typedef for 128 bits, so
     // spelling the extension is the only header form matching Draft i128/u128.
     if (value.bit_width == 128) {

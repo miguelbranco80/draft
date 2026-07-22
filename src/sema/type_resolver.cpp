@@ -5049,8 +5049,9 @@ private:
   }
 
   // Selects the compatible integer type used by an unfixed C enum on the
-  // current Darwin and GNU AArch64 targets. Their default ABI keeps an enum at
-  // C `int` width even when every enumerator would fit in u8 or u16. At that
+  // current Darwin arm64, GNU AAPCS64, and SysV AMD64 targets. Their default
+  // ABI keeps an enum at C `int` width even when every enumerator would fit in
+  // u8 or u16. At that
   // width it uses
   // unsigned int for a wholly nonnegative set and signed int when any member
   // is negative. Values outside 32 bits widen by the same signedness rule to
@@ -5060,13 +5061,14 @@ private:
   // the smallest fixed-width representation, while c explicitly asks
   // for the target C ABI's default. The target ABI identity is already part of
   // every resolved program. A future ABI must add its complete C-enum rule
-  // here rather than inheriting this shared AArch64 result accidentally.
+  // here rather than inheriting this shared LP64 result accidentally.
   [[nodiscard]] TypeId inferred_c_enum_backing(
       const std::vector<BigInteger> &values) const {
     if (target_ != nullptr && !target_->abi.empty() &&
         target_->abi != "darwin_arm64" &&
-        target_->abi != "aapcs64_gnu") {
-      // Applying the current AArch64 rule to another ABI would manufacture the
+        target_->abi != "aapcs64_gnu" &&
+        target_->abi != "sysv_amd64") {
+      // Applying the current LP64 rule to another ABI would manufacture the
       // wrong public type. Fail closed until that profile supplies a complete
       // rule alongside its ABI classifier and header lowering.
       return semantic_.types.builtins().invalid;

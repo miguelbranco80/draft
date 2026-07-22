@@ -25,7 +25,7 @@
 
 #pragma once
 
-#include "assembly/aarch64.h"
+#include "assembly/analyze.h"
 #include "backend/llvm_ir.h"
 #include "compile/body_work.h"
 #include "compile/configuration.h"

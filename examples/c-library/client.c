@@ -75,8 +75,9 @@ int main(void) {
     floats = draft_float_pair_identity(floats);
     if (floats.left != 1.25f || floats.right != -2.5f) return 7;
 
-    // `_Float16` has a native AArch64 ABI. This six-byte aggregate must
-    // use three FP lanes on both the Clang caller and Draft callee sides.
+    // `_Float16` has a native representation on every current target. This
+    // six-byte aggregate uses three AArch64 FP lanes or one SysV SSE eightbyte;
+    // the Clang caller and Draft callee must select the same target rule.
     draft_c_library_Half_Triple halves = {{(_Float16)0.5, (_Float16)-1.5,
                                             (_Float16)3.25}};
     halves = draft_half_triple_identity(halves);
@@ -86,8 +87,9 @@ int main(void) {
         return 17;
     }
 
-    // The largest union member controls its HFA lane count. Nesting that
-    // union beside another pair must preserve all four FP-register lanes.
+    // The largest union member controls aggregate classification. Nesting that
+    // union beside another pair must preserve all four values through either
+    // AArch64 FP lanes or SysV SSE eightbytes.
     draft_c_library_Float_Overlay overlay;
     overlay.pair[0] = 4.5f;
     overlay.pair[1] = -6.25f;

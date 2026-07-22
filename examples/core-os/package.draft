@@ -7,7 +7,7 @@
 // is isolated by the native test runner's process-unique working directory;
 // explicit close and remove operations still make standalone runs predictable.
 // It depends only on core/os and core/memory. Draft specification: sections 5-7
-// and the selected AArch64 target profile.
+// and the selected native target profile.
 package core_os
 
 import core/os
@@ -27,7 +27,7 @@ main :: proc() {
     assert(os.standard_error.descriptor == 2)
     assert(os.process_id() != 0)
     // Each implemented target publishes one fixed profile page size. Keep the
-    // complete example valid on both profiles while the target-profile tests
+    // complete example valid on all profiles while the target-profile tests
     // independently pin the exact 4 KiB/16 KiB values.
     page_size := os.page_size()
     assert(page_size == 4096 || page_size == 16384)

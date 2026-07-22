@@ -12,7 +12,8 @@ to `--root .`; no directory name such as `app` has special meaning. Thus
 `draftc check project --root tools/admin` compiles the package in
 `project/tools/admin/` and permits imports such as `lib` from `project/lib/`.
 
-All package commands accept `--target aarch64-macos|aarch64-linux` where shown.
+All package commands accept
+`--target aarch64-macos|aarch64-linux|x86_64-linux` where shown.
 macOS remains the compatibility default. The workspace, selected root, and
 target determine persistent namespaces. Generated source objects are shared by
 content identity, while manifests and derived build artifacts are isolated as:
@@ -85,12 +86,12 @@ the option useful for locating failure-path costs.
 build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
 build/draftc check path/to/workspace [--root package/path] \
-  [--target aarch64-macos|aarch64-linux] [--timings|--timings=all]
+  [--target aarch64-macos|aarch64-linux|x86_64-linux] [--timings|--timings=all]
 build/draftc emit-llvm path/to/workspace [--root package/path] \
-  [--target aarch64-macos|aarch64-linux] [--timings|--timings=all]
+  [--target aarch64-macos|aarch64-linux|x86_64-linux] [--timings|--timings=all]
 build/draftc emit-c-header path/to/workspace [--root package/path] [-o output.h] \
-  [--target aarch64-macos|aarch64-linux] [--timings|--timings=all]
-build/draftc target [--target aarch64-macos|aarch64-linux]
+  [--target aarch64-macos|aarch64-linux|x86_64-linux] [--timings|--timings=all]
+build/draftc target [--target aarch64-macos|aarch64-linux|x86_64-linux]
 ```
 
 `check` runs the provider-free front end and semantic pipeline. If the program
@@ -103,7 +104,7 @@ package's globals and source-ordered concrete procedure definitions.
 
 ```sh
 build/draftc expand path/to/workspace [--root package/path] --out new-directory \
-  [--target aarch64-macos|aarch64-linux] [--assertions=off] \
+  [--target aarch64-macos|aarch64-linux|x86_64-linux] [--assertions=off] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
   [--runtime-asset name:/absolute/file-or-directory]... \
@@ -129,7 +130,7 @@ a separate reason to version that derived view.
 
 ```sh
 build/draftc build path/to/workspace [--root package/path]... [-o output] \
-  [--target aarch64-macos|aarch64-linux] \
+  [--target aarch64-macos|aarch64-linux|x86_64-linux] \
   [--kind executable|object|static-library|dynamic-library|assembly] \
   [-O0|-O2] \
   [--assertions=off] \
@@ -221,7 +222,7 @@ build/draftc resolve path/to/workspace [--root package/path] [--revalidate] [--b
   [-o output] \
   [--kind executable|object|static-library|dynamic-library|assembly] \
   [-O0|-O2] \
-  [--target aarch64-macos|aarch64-linux] [--assertions=off] \
+  [--target aarch64-macos|aarch64-linux|x86_64-linux] [--assertions=off] \
   [--model model] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
@@ -283,7 +284,7 @@ cache; `.draft/generated` is source, not cached compiler state.
 
 ```sh
 build/draftc test path/to/workspace [--root package/path] \
-  [--target aarch64-macos|aarch64-linux] [-O0|-O2] \
+  [--target aarch64-macos|aarch64-linux|x86_64-linux] [-O0|-O2] \
   [--instrument address|...] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
@@ -291,7 +292,7 @@ build/draftc test path/to/workspace [--root package/path] \
   [--timings|--timings=all]
 
 build/draftc bench path/to/workspace [--root package/path] [--verify] \
-  [--target aarch64-macos|aarch64-linux] [-O0|-O2] \
+  [--target aarch64-macos|aarch64-linux|x86_64-linux] [-O0|-O2] \
   [--instrument address|...] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
@@ -326,7 +327,7 @@ Linux Draft sanitizer profile fail closed with an explicit diagnostic.
 
 ```sh
 build/draftc judge path/to/workspace [--root package/path] [selector...] [--list] \
-  [--target aarch64-macos|aarch64-linux] [--assertions=off] \
+  [--target aarch64-macos|aarch64-linux|x86_64-linux] [--assertions=off] \
   [--judge-validator identity:model]... \
   [--judge-artifact kind:/absolute/path]... \
   [--model model] \

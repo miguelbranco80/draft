@@ -4,7 +4,7 @@
 // symbol must match the example's explicit `c "draft_triple"` declaration.
 // The C compiler, Draft compiler, and platform linker therefore provide an
 // independent end-to-end check of logical provider mapping and exact symbol
-// resolution on each supported native AArch64 host.
+// resolution on each supported native host.
 
 #include <stdint.h>
 

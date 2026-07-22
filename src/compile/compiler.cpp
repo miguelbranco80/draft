@@ -5462,7 +5462,7 @@ struct PackageAssemblyWaveExecution {
       failure = "parsed-assembly body index is outside the HIR product table";
       return false;
     }
-    AssemblyProgram local = analyze_aarch64_assembly(
+    AssemblyProgram local = analyze_target_assembly(
         *slot.sources,
         *slot.loaded,
         *slot.target,

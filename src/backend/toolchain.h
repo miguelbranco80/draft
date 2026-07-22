@@ -1,4 +1,5 @@
-// Native artifact adapter for AArch64 objects, archives, and final links.
+// Native artifact adapter for target-profiled objects, archives, and final
+// links.
 //
 // This module receives a completely lowered Draft program, schedules its
 // independent semantic-package modules and package-assembly objects, and

@@ -121,15 +121,17 @@ parallel package-module representation remain in compiler state.
 
 ## Native host and instrumentation limits
 
-Status: explicit two-target bootstrap boundary.
+Status: explicit three-target bootstrap boundary.
 
 The bootstrap compiler runs and executes its complete native integration suite
-on both AArch64 macOS and AArch64 GNU/Linux. It links a selected LLVM 22 library
-for ordinary package-module object emission. Matching Clang/`ld.lld`/`llvm-ar`/
-`dsymutil`, the Apple linker, `libtool`, SDK, and system runtime remain ordinary
-tooling prerequisites rather than Draft program inputs. Draft currently emits
-only AArch64 machine code; x86-64 hosts can build and sanitize the bootstrap
-compiler, but cannot execute Draft's native integration programs.
+on AArch64 macOS, AArch64 GNU/Linux, and x86-64 GNU/Linux. It links a selected
+LLVM 22 library for ordinary package-module object emission. Matching
+Clang/`ld.lld`/`llvm-ar`/`dsymutil`, the Apple linker, `libtool`, SDK, and system
+runtime remain ordinary tooling prerequisites rather than Draft program inputs.
+Windows, other Linux libcs/distribution contracts, and other architectures still
+have no target profile. Parsed inline assembly remains AArch64-only; x86-64
+supports ordinary native code and target-qualified package assembly but rejects
+selected `asm` constructs.
 
 AddressSanitizer is qualified only for the macOS target. Linux and every other
 instrumentation request remain fail-closed until the compiler pass, runtime,

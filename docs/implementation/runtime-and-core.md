@@ -16,7 +16,7 @@ core code may pass existing string storage to a synchronous nonmutating native
 write without manufacturing a mutable byte slice or copying through a bounded
 buffer.
 
-Both current AArch64 profiles use a root Context of 96 bytes with 8-byte
+All current native profiles use a root Context of 96 bytes with 8-byte
 alignment. Its fields
 begin at offsets 0, 16, 32, 40, 56, 72, 80, and 88, in the source order declared
 by `core/runtime.Context`. Allocator, logger, and random-generator provider
@@ -40,7 +40,7 @@ has no implicit Context and may not name `context`.
 
 Two compiler-owned bridges cover that C boundary. `runtime.default_context`
 lazily initializes Draft TLS from the process-default Context and returns the
-calling thread's snapshot through the selected AArch64 indirect aggregate-result
+calling thread's snapshot through the selected C ABI's indirect aggregate-result
 convention. `runtime.call_with_context` statically checks a non-nil `^Context`,
 an ordinary Draft callback, and the callback's exact arguments, initializes
 Draft TLS when entered from a foreign-created thread, then lowers directly to
@@ -257,8 +257,8 @@ not values inferred from host headers.
 
 ## Hosted process views and core threads
 
-Status: target-selected AArch64 Darwin/GNU source contract; ELF runtime/link
-qualification follows in the native backend slice.
+Status: target-selected AArch64 Darwin plus AArch64/x86-64 GNU source contract;
+ELF runtime/link qualification follows in the native backend slice.
 
 The hosted C entry receives the platform `envp` vector. Before Draft `main`, the
 runtime materializes argv and envp as stable `{pointer,length}` string records;
@@ -268,7 +268,7 @@ exact `name=value` bytes and ordering. The initial file API wraps already-open
 fixed descriptors. Pathname opening now uses a target-qualified true C variadic
 `open` declaration. Body checking promotes the mode value and LLVM applies the
 selected target's unnamed-argument ABI, so `core/os` needs no package-assembly
-adapter for Darwin or GNU AArch64.
+adapter for Darwin, GNU AArch64, or SysV AMD64.
 
 `core/thread` uses pthreads through fixed C signatures. Spawn state owns a copy
 of the active Context. The C trampoline installs that copy as the child TLS
@@ -277,12 +277,14 @@ with a provider whose state belongs to that OS thread, so ordinary calls,
 defers, and `runtime.default_context` agree. Join clears the owning handle.
 Mutex and condition storage is accessed only through pthread operations. Darwin
 uses 64-byte mutex and 48-byte condition storage, including their signatures.
-glibc 2.39 AArch64 uses 48 bytes with eight-byte alignment for both;
-`pthread_t` is `unsigned long` rather than Darwin's opaque pointer.
+glibc 2.39 AArch64 uses 48 bytes with eight-byte alignment for both. On x86-64,
+the mutex is 40 bytes and the condition remains 48 bytes, both aligned to eight.
+Both GNU profiles define `pthread_t` as `unsigned long` rather than Darwin's
+opaque pointer.
 
 ## Initial compiler-backed atomic interface
 
-Status: shared AArch64 core surface; C11 memory semantics are normative.
+Status: shared native core surface; C11 memory semantics are normative.
 
 `core/atomic.Value[T]` is an ordinary, naturally aligned nominal wrapper whose
 storage may be initialized non-atomically only before publication. After

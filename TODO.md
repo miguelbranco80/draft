@@ -3,7 +3,7 @@
 - [x] Add named and default procedure arguments.
 - [x] Add field-level `packed` and `bits(N)` layout.
 - [ ] Add Raylib bindings, native linking, ABI tests, and examples.
-- [ ] Add an x86-64 Linux native target.
+- [x] Add an x86-64 Linux native target.
 - [ ] Add a Windows native target, starting with x86-64.
 - [x] Add explicit C variadic interoperation when fixed wrappers are insufficient.
 - [x] Unify current declaration syntax around `import`, `pub`, `export <name> as "<symbol>"`, `foreign <provider> {}`, `c proc`/`c struct`/`c enum`/`c union`, `align(N)`, and `asm <architecture> {}`; remove annotations.

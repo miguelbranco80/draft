@@ -10,17 +10,18 @@
 //
 // Every invocation owns an isolated LLVM context, module, target machine, and
 // output buffer. Calls may therefore execute concurrently as long as the linked
-// LLVM distribution reports thread support. LLVM's AArch64 registry is process
-// global and initialized exactly once; it contains immutable target metadata
-// after initialization. The adapter uses LLVM's C API to keep version-sensitive
-// C++ implementation types out of Draft headers and the rest of the compiler.
+// LLVM distribution reports thread support. LLVM's native target registries
+// are process global and initialized exactly once; they contain immutable
+// target metadata after initialization. The adapter uses LLVM's C API to keep
+// version-sensitive C++ implementation types out of Draft headers and the rest
+// of the compiler.
 //
 // LLVM may choose instruction encodings, register allocation, and object-file
-// details only within the ABI, layout, feature, relocation, and code-model facts
-// fixed by TargetProfile. A disagreement is a compiler/toolchain error, never a
-// reason to reinterpret Draft source.
-// Relevant specification: docs/specification/04-native-interop.md sections
-// 11-12 and docs/specification/06-compiler.md "Native lowering and summaries".
+// details only within the ABI, layout, feature, relocation, and code-model
+// facts fixed by TargetProfile. A disagreement is a compiler/toolchain error,
+// never a reason to reinterpret Draft source. Relevant specification:
+// docs/specification/04-native-interop.md sections 11-12 and
+// docs/specification/06-compiler.md "Native lowering and summaries".
 
 #pragma once
 

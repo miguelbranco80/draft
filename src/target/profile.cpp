@@ -1,4 +1,4 @@
-// Complete AArch64 target construction and consistency validation.
+// Complete built-in target construction and consistency validation.
 
 #include "target/profile.h"
 
@@ -53,9 +53,11 @@ namespace {
   return std::nullopt;
 }
 
-// Both current profiles implement the same baseline Armv8-A/Advanced SIMD
-// architecture.  These helpers return values instead of exposing mutable
-// process globals, so each TargetProfile remains a complete owned build input.
+// All current profiles expose the same 64-bit and 128-bit source vector shapes.
+// Shape legality is a storage/lowering fact; instruction availability remains
+// governed by each architecture's separate enabled-feature vocabulary. These
+// helpers return values instead of exposing mutable process globals, so each
+// TargetProfile remains a complete owned build input.
 [[nodiscard]] std::vector<TargetSimdShape> baseline_simd_shapes() {
   return {
       {"f16", 4}, {"f16", 8}, {"f32", 2}, {"f32", 4}, {"f64", 2},
@@ -86,6 +88,42 @@ namespace {
       {".S", AssemblyPreprocessing::None},
       {".asm", AssemblyPreprocessing::None},
       {".s", AssemblyPreprocessing::None},
+  };
+}
+
+// Both GNU/Linux profiles select the same glibc 2.39 symbol boundary. Keep the
+// list independent of either machine constructor: sharing a complete target
+// profile would obscure which facts are genuinely OS/libc facts and would do
+// unnecessary work merely to copy this one semantic denial table.
+[[nodiscard]] std::vector<SystemForeignSummary>
+linux_system_foreign_summaries() {
+  return {
+      {"libc", "labs", {}},
+      {"linux", "_exit", {}},
+      {"linux", "clock_gettime", {}},
+      {"linux", "close", {}},
+      {"linux", "getpid", {}},
+      {"linux", "mmap", {}},
+      {"linux", "mprotect", {}},
+      {"linux", "munmap", {}},
+      {"linux", "nanosleep", {}},
+      {"linux", "pthread_cond_broadcast", {}},
+      {"linux", "pthread_cond_destroy", {}},
+      {"linux", "pthread_cond_init", {}},
+      {"linux", "pthread_cond_signal", {}},
+      {"linux", "pthread_cond_wait", {}},
+      {"linux", "pthread_create", {2}},
+      {"linux", "pthread_join", {}},
+      {"linux", "pthread_mutex_destroy", {}},
+      {"linux", "pthread_mutex_init", {}},
+      {"linux", "pthread_mutex_lock", {}},
+      {"linux", "pthread_mutex_trylock", {}},
+      {"linux", "pthread_mutex_unlock", {}},
+      {"linux", "pthread_self", {}},
+      {"linux", "read", {}},
+      {"linux", "sched_yield", {}},
+      {"linux", "unlink", {}},
+      {"linux", "write", {}},
   };
 }
 
@@ -124,6 +162,7 @@ TargetProfile make_aarch64_macos_profile() {
   profile.relocation_model = TargetRelocationModel::PositionIndependent;
   profile.code_model = TargetCodeModel::Small;
   profile.tls_model = TargetTlsModel::GeneralDynamic;
+  profile.supports_parsed_assembly = true;
   profile.parsed_assembly_architecture = "aarch64";
   profile.parsed_assembly_dialect = "draft-aarch64-apple-v2";
   profile.parsed_assembly_instructions = baseline_assembly_instructions();
@@ -194,6 +233,7 @@ TargetProfile make_aarch64_linux_profile() {
   profile.relocation_model = TargetRelocationModel::PositionIndependent;
   profile.code_model = TargetCodeModel::Small;
   profile.tls_model = TargetTlsModel::GeneralDynamic;
+  profile.supports_parsed_assembly = true;
   profile.parsed_assembly_architecture = "aarch64";
   profile.parsed_assembly_dialect = "draft-aarch64-linux-v1";
   profile.parsed_assembly_instructions = baseline_assembly_instructions();
@@ -203,42 +243,55 @@ TargetProfile make_aarch64_linux_profile() {
   // profile, but remain separate semantic provider identities for denials.
   profile.system_link_providers = {"libc", "linux"};
   profile.system_link_library = "c";
-  profile.system_foreign_summaries = {
-      {"libc", "labs", {}},
-      {"linux", "_exit", {}},
-      {"linux", "clock_gettime", {}},
-      {"linux", "close", {}},
-      {"linux", "getpid", {}},
-      {"linux", "mmap", {}},
-      {"linux", "mprotect", {}},
-      {"linux", "munmap", {}},
-      {"linux", "nanosleep", {}},
-      {"linux", "pthread_cond_broadcast", {}},
-      {"linux", "pthread_cond_destroy", {}},
-      {"linux", "pthread_cond_init", {}},
-      {"linux", "pthread_cond_signal", {}},
-      {"linux", "pthread_cond_wait", {}},
-      {"linux", "pthread_create", {2}},
-      {"linux", "pthread_join", {}},
-      {"linux", "pthread_mutex_destroy", {}},
-      {"linux", "pthread_mutex_init", {}},
-      {"linux", "pthread_mutex_lock", {}},
-      {"linux", "pthread_mutex_trylock", {}},
-      {"linux", "pthread_mutex_unlock", {}},
-      {"linux", "pthread_self", {}},
-      {"linux", "read", {}},
-      {"linux", "sched_yield", {}},
-      {"linux", "unlink", {}},
-      {"linux", "write", {}},
-  };
+  profile.system_foreign_summaries = linux_system_foreign_summaries();
   profile.assembly_files = assembly_file_rules();
   return profile;
 }
 
-bool select_builtin_target_profile(
-    std::string_view selector,
-    TargetProfile &profile,
-    std::string &reason) {
+TargetProfile make_x86_64_linux_profile() {
+  TargetProfile profile;
+  profile.facts.identity = "draft-x86_64-linux-gnu-v1";
+  profile.facts.arch = "x86_64";
+  profile.facts.os = "linux";
+  profile.facts.abi = "sysv_amd64";
+  profile.facts.byte_order = "little";
+  profile.facts.object_format = "elf";
+  profile.facts.file_tag = "x86_64-linux";
+  profile.facts.pointer_bits = 64;
+  profile.facts.page_size = 4096;
+
+  // x86-64 requires SSE2 as architectural baseline. AVX and AVX2 are known
+  // profile vocabulary but deliberately disabled so generated code remains
+  // runnable on the complete baseline architecture rather than the build host.
+  profile.facts.known_features = {"avx", "avx2", "sse2"};
+  profile.facts.features = {"sse2"};
+  profile.facts.simd_shapes = baseline_simd_shapes();
+
+  profile.minimum_os_version = "linux-6.8-glibc-2.39";
+  profile.llvm_triple = "x86_64-unknown-linux-gnu";
+  profile.llvm_data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-"
+                             "i128:128-f80:128-n8:16:32:64-S128";
+  profile.llvm_cpu = "x86-64";
+  profile.llvm_feature_string = "+sse2";
+  profile.relocation_model = TargetRelocationModel::PositionIndependent;
+  profile.code_model = TargetCodeModel::Small;
+  profile.tls_model = TargetTlsModel::GeneralDynamic;
+
+  // Native code and package assembly are supported, but the first x86-64
+  // profile deliberately has no parsed inline-assembly grammar. This absence
+  // is explicit target capability rather than an AArch64 parser fallback.
+  profile.supports_parsed_assembly = false;
+
+  profile.system_link_providers = {"libc", "linux"};
+  profile.system_link_library = "c";
+  profile.system_foreign_summaries = linux_system_foreign_summaries();
+  profile.assembly_files = assembly_file_rules();
+  return profile;
+}
+
+bool select_builtin_target_profile(std::string_view selector,
+                                   TargetProfile &profile,
+                                   std::string &reason) {
   reason.clear();
   if (selector.empty() || selector == "aarch64-macos") {
     profile = make_aarch64_macos_profile();
@@ -248,37 +301,48 @@ bool select_builtin_target_profile(
     profile = make_aarch64_linux_profile();
     return true;
   }
+  if (selector == "x86_64-linux") {
+    profile = make_x86_64_linux_profile();
+    return true;
+  }
   reason = "unknown target '" + std::string(selector) +
-      "'; expected aarch64-macos or aarch64-linux";
+      "'; expected aarch64-macos, aarch64-linux, or x86_64-linux";
   return false;
 }
 
-bool validate_target_profile(const TargetProfile &profile, std::string &reason) {
+bool validate_target_profile(const TargetProfile &profile,
+                             std::string &reason) {
   reason.clear();
   if (profile.facts.identity.empty() || profile.facts.file_tag.empty()) {
     reason = "target identity and file tag must not be empty";
     return false;
   }
   if (profile.facts.pointer_bits != 64) {
-    reason = "initial AArch64 profile requires 64-bit pointers";
+    reason = "built-in native profiles require 64-bit pointers";
     return false;
   }
   if (!is_power_of_two(profile.facts.page_size)) {
     reason = "target page size must be a nonzero power of two";
     return false;
   }
-  if (profile.facts.arch != "aarch64") {
-    reason = "bootstrap target profile must name AArch64";
+  if (profile.facts.arch != "aarch64" && profile.facts.arch != "x86_64") {
+    reason = "bootstrap target profile names an unsupported architecture";
     return false;
   }
-  const bool macos = profile.facts.os == "macos" &&
-      profile.facts.abi == "darwin_arm64" &&
-      profile.facts.object_format == "macho";
-  const bool linux = profile.facts.os == "linux" &&
-      profile.facts.abi == "aapcs64_gnu" &&
-      profile.facts.object_format == "elf";
-  if (!macos && !linux) {
-    reason = "target OS, ABI, and object format are not a supported coherent set";
+  const bool macos = profile.facts.arch == "aarch64" &&
+                     profile.facts.os == "macos" &&
+                     profile.facts.abi == "darwin_arm64" &&
+                     profile.facts.object_format == "macho";
+  const bool aarch64_linux = profile.facts.arch == "aarch64" &&
+                             profile.facts.os == "linux" &&
+                             profile.facts.abi == "aapcs64_gnu" &&
+                             profile.facts.object_format == "elf";
+  const bool x86_64_linux =
+      profile.facts.arch == "x86_64" && profile.facts.os == "linux" &&
+      profile.facts.abi == "sysv_amd64" && profile.facts.object_format == "elf";
+  if (!macos && !aarch64_linux && !x86_64_linux) {
+    reason =
+        "target OS, ABI, and object format are not a supported coherent set";
     return false;
   }
   if (profile.llvm_triple.empty() || profile.llvm_data_layout.empty() ||
@@ -292,11 +356,10 @@ bool validate_target_profile(const TargetProfile &profile, std::string &reason) 
     return false;
   }
   for (const std::string &feature : profile.facts.features) {
-    if (!std::binary_search(
-            profile.facts.known_features.begin(),
-            profile.facts.known_features.end(),
-            feature)) {
-      reason = "enabled target feature is absent from the known feature vocabulary";
+    if (!std::binary_search(profile.facts.known_features.begin(),
+                            profile.facts.known_features.end(), feature)) {
+      reason =
+          "enabled target feature is absent from the known feature vocabulary";
       return false;
     }
   }
@@ -312,23 +375,33 @@ bool validate_target_profile(const TargetProfile &profile, std::string &reason) 
         shape.lanes > 128 / *element_bits ||
         (*element_bits * shape.lanes != 64 &&
          *element_bits * shape.lanes != 128)) {
-      reason = "target SIMD shape must name a baseline 64-bit or 128-bit vector";
+      reason =
+          "target SIMD shape must name a baseline 64-bit or 128-bit vector";
       return false;
     }
   }
-  if (profile.parsed_assembly_architecture != profile.facts.arch ||
-      profile.parsed_assembly_dialect.empty()) {
-    reason = "parsed assembly architecture must match the target architecture";
+  if (profile.supports_parsed_assembly) {
+    if (profile.parsed_assembly_architecture != profile.facts.arch ||
+        profile.parsed_assembly_dialect.empty()) {
+      reason =
+          "parsed assembly architecture must match the target architecture";
+      return false;
+    }
+    if (profile.parsed_assembly_instructions.empty() ||
+        !bytewise_sorted_unique(profile.parsed_assembly_instructions)) {
+      reason =
+          "parsed assembly instruction vocabulary must be sorted and unique";
+      return false;
+    }
+  } else if (!profile.parsed_assembly_architecture.empty() ||
+             !profile.parsed_assembly_dialect.empty() ||
+             !profile.parsed_assembly_instructions.empty()) {
+    reason = "unsupported parsed assembly must not publish a partial grammar";
     return false;
   }
-  if (profile.parsed_assembly_instructions.empty() ||
-      !bytewise_sorted_unique(profile.parsed_assembly_instructions)) {
-    reason = "parsed assembly instruction vocabulary must be sorted and unique";
-    return false;
-  }
-  const std::vector<std::string> expected_system_providers = macos
-      ? std::vector<std::string>{"darwin", "libc"}
-      : std::vector<std::string>{"libc", "linux"};
+  const std::vector<std::string> expected_system_providers =
+      macos ? std::vector<std::string>{"darwin", "libc"}
+            : std::vector<std::string>{"libc", "linux"};
   const std::string_view expected_system_library = macos ? "System" : "c";
   if (profile.system_link_library != expected_system_library ||
       profile.system_link_providers != expected_system_providers ||
@@ -336,8 +409,8 @@ bool validate_target_profile(const TargetProfile &profile, std::string &reason) 
     reason = "target system providers do not match its base system library";
     return false;
   }
-  for (std::size_t index = 0;
-       index < profile.system_foreign_summaries.size(); ++index) {
+  for (std::size_t index = 0; index < profile.system_foreign_summaries.size();
+       ++index) {
     const SystemForeignSummary &summary =
         profile.system_foreign_summaries[index];
     if (!std::binary_search(

@@ -2,7 +2,7 @@
 // without borrowing or modifying the test runner's real terminal. They verify
 // timeout conversion, inactive raw/screen resources, size-query validation,
 // and streaming key decoding across read boundaries. The native validation
-// driver copies this package to a private workspace, selects the host AArch64
+// driver copies this package to a private workspace, selects the matching host
 // target, and links the real libc symbols. Actual mode and alternate-screen
 // changes require an application or pseudo-terminal integration test and are
 // deliberately not attempted against CTest's stdin/stdout.

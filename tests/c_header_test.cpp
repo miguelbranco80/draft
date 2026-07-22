@@ -206,6 +206,11 @@ export accept_variadic_callback as "draft_accept_variadic_callback" :: c proc(
       linux_target,
       {},
       diagnostics);
+  const draft::TargetProfile x86_target = draft::make_x86_64_linux_profile();
+  const draft::CAbiTable x86_abi =
+      draft::classify_c_types(semantics.package.types, x86_target.facts);
+  const draft::CHeaderResult x86_header = draft::emit_c_header(
+      semantics.package, x86_abi, x86_target, {}, diagnostics);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -215,6 +220,7 @@ export accept_variadic_callback as "draft_accept_variadic_callback" :: c proc(
   EXPECT(state, native.ok);
   EXPECT(state, header.ok);
   EXPECT(state, linux_header.ok);
+  EXPECT(state, x86_header.ok);
   EXPECT(state, header.export_count == 10);
   EXPECT(state, header.text.find(
       "typedef struct draft_c_library_Pair draft_c_library_Pair;") !=

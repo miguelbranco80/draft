@@ -16,7 +16,7 @@ layout and the versioned Draft profile is a compiler/toolchain error; LLVM never
 supplies missing language or ABI facts.
 
 The adapter exposes no LLVM reference outside its module. Its process-global
-AArch64 registry is initialized once, while contexts, modules, target machines,
+AArch64 and X86 registries are initialized once, while contexts, modules, target machines,
 pass options, messages, and output buffers have one explicit call lifetime. The
 linked distribution must report thread support so isolated package-module calls
 can be scheduled concurrently without sharing an LLVM context.
@@ -60,17 +60,40 @@ asserts facts about an executed binary, the validation policy identity records
 O0 or O2 and prevents runs at different levels from sharing one evidence key.
 This derived-execution distinction does not enter the resolved-program digest.
 
+## SysV AMD64 C ABI lowering
+
+Status: fixed scalar, aggregate, callback, import, and export lowering implemented.
+
+The target-independent C ABI table retains one classification row for every
+semantic type. SysV aggregate rows contain at most two INTEGER/SSE eightbytes.
+A second ordered procedure plan consumes those rows with the ABI's six-GPR and
+eight-XMM budgets, including the hidden result pointer. Keeping placement in a
+signature product is necessary because a two-component argument which cannot
+fit completely must revert to memory without consuming a partial assignment.
+The classifier remains the single source for native interop validation, header
+emission, LLVM declarations, definitions, calls, and returns.
+
+The LLVM adapter expands register aggregates into physical component
+parameters and reconstructs the logical Draft value in bounded stack storage.
+An exhausted or intrinsically indirect parameter uses `byval` with the exact
+logical type and alignment; a large result uses `sret`. Scratch storage rounds
+up to complete physical eightbytes because the last XMM carrier can be wider
+than the meaningful source bytes. Component accesses retain the alignment
+actually guaranteed by the aggregate base. Unit tests compare Clang-shaped IR
+contracts and compile them through the embedded X86 backend; native x86-64 CI
+closes the boundary with the independent generated-header C client.
+
 ## C variadic LLVM lowering
 
-Status: promoted scalar/pointer tails implemented for AArch64 Darwin and GNU.
+Status: promoted scalar/pointer tails implemented for every current native ABI.
 
 Foreign declarations retain LLVM's real `(fixed, ...)` function type. At each
 call, MIR contains the fixed operands followed by already-promoted unnamed
 operands with their exact scalar or pointer types. The textual adapter prints
 the complete variadic function type at the call site, as LLVM requires, and
 does not attach fixed-parameter extension attributes to the unnamed tail.
-LLVM's selected target lowering then owns the materially different Darwin and
-GNU AArch64 register/stack placement. This removes the former per-target
+LLVM's selected target lowering then owns the materially different Darwin,
+GNU AArch64, and SysV AMD64 register/stack placement. This removes the former per-target
 `open(2)` assembly shim without moving ABI policy into `core/os`.
 
 Aggregate tails fail during semantic checking. The fixed-parameter aggregate
@@ -174,7 +197,7 @@ literals cannot carry the initializer-specific packed type.
 
 ## Native artifact ownership and visibility
 
-Status: AArch64 Mach-O and ELF artifact contracts implemented.
+Status: AArch64 Mach-O plus AArch64/x86-64 ELF artifact contracts implemented.
 
 The root package module owns runtime support for every final native artifact,
 but only executable compilation adds the hosted C `main`. This lets
@@ -198,8 +221,8 @@ Generated C headers cover root-package exports and transitively required C
 records, unions, enums, fixed-array fields, and callback types. Layout
 assertions make size, alignment, and field-offset disagreement a C compile error.
 
-A `c enum` without an explicit backing follows the selected AArch64 C
-compiler's default enum rule instead of Draft's smallest-fitting rule. Its backing
+A `c enum` without an explicit backing follows the selected LP64 C compiler's
+default enum rule instead of Draft's smallest-fitting rule. Its backing
 is at least 32 bits: a wholly nonnegative member set uses `u32`, a set containing
 a negative member uses `i32`, and either widens with the same signedness to 64
 bits when required. Values that do not fit `u64` or `i64` are rejected. The
@@ -279,7 +302,7 @@ a real host-toolchain/dSYM gate and remains part of release qualification.
 
 ## Native ELF debug information
 
-Status: implemented for AArch64 Linux executable and shared-library artifacts.
+Status: implemented for AArch64 and x86-64 Linux executable and shared-library artifacts.
 
 ELF final links retain input-object DWARF directly in the executable or
 shared library. They therefore do not run `dsymutil` or publish an empty
@@ -292,12 +315,13 @@ profile must be a separate explicit artifact contract rather than an ambient
 
 ## Native integration gates
 
-Status: required on AArch64 macOS and AArch64 Linux CI hosts.
+Status: required on AArch64 macOS, AArch64 Linux, and x86-64 Linux CI hosts.
 
 The native integration executables select the target matching the host pair:
-Apple Silicon exercises `draft-aarch64-macos-v5`, while AArch64 Linux exercises
-`draft-aarch64-linux-gnu-v1`. Both hosts compile complete example packages,
-build and run executables, provoke the target `BRK` trap path, repeat every
+Apple Silicon exercises `draft-aarch64-macos-v5`, AArch64 Linux exercises
+`draft-aarch64-linux-gnu-v1`, and x86-64 Linux exercises
+`draft-x86_64-linux-gnu-v1`. Every host compiles complete example packages,
+builds and runs executables, provokes the selected trap path, repeats every
 artifact build to compare its complete output tree, and compile a C client
 against the generated header and shared library. Mach-O cases additionally
 require the `.dSYM` companion; ELF cases require its absence because their DWARF

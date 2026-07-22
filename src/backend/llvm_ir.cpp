@@ -1,4 +1,4 @@
-// Target-profiled LLVM IR text emission for the bootstrap AArch64 backends.
+// Target-profiled LLVM IR text emission for the bootstrap native backends.
 //
 // This is a deliberately small printer over Draft MIR. LLVM performs target
 // instruction selection and object emission, but it does not decide Draft
@@ -881,11 +881,11 @@ private:
     }
 
     // pthread_once_t and pthread_key_t are libc ABI types, not architectural
-    // AArch64 types.  Darwin uses a 16-byte signed once record and a 64-bit
+    // machine types. Darwin uses a 16-byte signed once record and a 64-bit
     // key; the selected glibc contract uses a 32-bit once word initialized to
     // zero and a 32-bit key.  These strings remain local to the runtime emitter
     // so the distinction cannot leak into Draft's semantic type system.
-    const bool is_linux_gnu = target_.facts.abi == "aapcs64_gnu";
+    const bool is_linux_gnu = target_.facts.os == "linux";
     const std::string pthread_once_type =
         is_linux_gnu ? "{ i32 }" : "{ i64, [8 x i8] }";
     const std::string pthread_once_initializer = is_linux_gnu
@@ -1708,6 +1708,33 @@ private:
         std::to_string(bits) + "]";
   }
 
+  [[nodiscard]] std::string
+  sysv_eightbyte_llvm_type(const CAbiEightbyte &component) const {
+    if (component.classification == CAbiEightbyteClass::Integer) {
+      return "i" + std::to_string(component.bits);
+    }
+    if (component.classification == CAbiEightbyteClass::Sse) {
+      if (component.bits <= 16)
+        return "half";
+      if (component.bits <= 32)
+        return "float";
+      return "double";
+    }
+    return "<invalid-eightbyte>";
+  }
+
+  [[nodiscard]] std::string
+  sysv_aggregate_llvm_type(const CAbiType &abi) const {
+    if (abi.eightbyte_count == 1) {
+      return sysv_eightbyte_llvm_type(abi.eightbytes[0]);
+    }
+    if (abi.eightbyte_count == 2) {
+      return "{ " + sysv_eightbyte_llvm_type(abi.eightbytes[0]) + ", " +
+             sysv_eightbyte_llvm_type(abi.eightbytes[1]) + " }";
+    }
+    return "<invalid-eightbyte-aggregate>";
+  }
+
   [[nodiscard]] std::string c_parameter_type(TypeId type_id) const {
     const CAbiType abi = c_abi_type(type_id);
     switch (abi.classification) {
@@ -1716,8 +1743,10 @@ private:
     case CAbiClass::HomogeneousFloatAggregate:
       return homogeneous_llvm_type(abi);
     case CAbiClass::SmallAggregate:
-      return integer_container_type(
-          abi.argument_integer_bits, abi.argument_integer_count);
+      return integer_container_type(abi.argument_integer_bits,
+                                    abi.argument_integer_count);
+    case CAbiClass::EightbyteAggregate:
+      return sysv_aggregate_llvm_type(abi);
     case CAbiClass::Indirect:
       return "ptr";
     case CAbiClass::Illegal:
@@ -1733,7 +1762,10 @@ private:
     // form and does not attach signext/zeroext. Darwin arm64 requires the
     // explicit extension contract. This difference changes register bits and
     // must be applied to declarations, definitions, and every call site.
-    if (target_.facts.abi != "darwin_arm64") return {};
+    if (target_.facts.abi != "darwin_arm64" &&
+        target_.facts.abi != "sysv_amd64") {
+      return {};
+    }
     const Type &value = type(type_id);
     // A fixed-backing C enum crosses the ABI exactly like its backing scalar.
     // Looking only at the nominal enum row loses both width and signedness
@@ -1742,8 +1774,10 @@ private:
     if (value.kind == TypeKind::Enum && value.element.is_valid()) {
       return c_integer_extension(value.element);
     }
-    if (value.bit_width >= 32) return {};
-    if (value.kind == TypeKind::SignedInteger) return "signext";
+    if (value.bit_width >= 32)
+      return {};
+    if (value.kind == TypeKind::SignedInteger)
+      return "signext";
     if (value.kind == TypeKind::UnsignedInteger ||
         value.kind == TypeKind::BooleanStorage ||
         value.kind == TypeKind::EndianScalar) {
@@ -1753,7 +1787,8 @@ private:
   }
 
   [[nodiscard]] std::string c_result_type(TypeId type_id) const {
-    if (type_id == semantic_.types.builtins().void_type) return "void";
+    if (type_id == semantic_.types.builtins().void_type)
+      return "void";
     const CAbiType abi = c_abi_type(type_id);
     switch (abi.classification) {
     case CAbiClass::Direct:
@@ -1764,8 +1799,10 @@ private:
       // storage or through nested source aggregate names.
       return homogeneous_llvm_type(abi);
     case CAbiClass::SmallAggregate:
-      return integer_container_type(
-          abi.result_integer_bits, abi.result_integer_count);
+      return integer_container_type(abi.result_integer_bits,
+                                    abi.result_integer_count);
+    case CAbiClass::EightbyteAggregate:
+      return sysv_aggregate_llvm_type(abi);
     case CAbiClass::Indirect:
       return "void";
     case CAbiClass::Illegal:
@@ -1776,7 +1813,8 @@ private:
 
   [[nodiscard]] CAbiType function_result_abi(TypeId type_id) const {
     const TypeId result = function_result(type_id);
-    if (result == semantic_.types.builtins().void_type) return {};
+    if (result == semantic_.types.builtins().void_type)
+      return {};
     return c_abi_type(result);
   }
 
@@ -1791,62 +1829,133 @@ private:
     }
     const CAbiType *abi = abi_.find(type_id);
     if (abi == nullptr) {
-      error(
-          SourceRange::invalid(),
-          "C ABI query names a type outside the classified semantic prefix");
+      error(SourceRange::invalid(),
+            "C ABI query names a type outside the classified semantic prefix");
       return {};
     }
     return *abi;
   }
 
+  [[nodiscard]] CAbiFunctionPlan c_abi_function_plan(TypeId type_id) const {
+    CAbiFunctionPlan result =
+        plan_c_abi_function(semantic_.types, type_id, abi_, target_.facts);
+    if (result.ok)
+      return result;
+
+    // core/runtime.default_context deliberately returns the private Context
+    // aggregate through the C ABI even though that record is not legal in a
+    // user signature. It has no fixed parameters, so the sole missing table
+    // row can be supplied by the emitter's existing runtime-bridge override
+    // without reproducing SysV register assignment.
+    const Type &signature = type(type_id);
+    if (signature.kind == TypeKind::Procedure &&
+        signature.c_calling_convention && signature.members.size() == 1 &&
+        signature.members.back() == semantic_.runtime_context_type) {
+      result.ok = true;
+      result.result = c_abi_type(signature.members.back());
+    }
+    return result;
+  }
+
+  [[nodiscard]] std::vector<std::string>
+  c_parameter_types(TypeId type_id, CAbiParameterMode mode) const {
+    const CAbiType abi = c_abi_type(type_id);
+    if (mode == CAbiParameterMode::Indirect) {
+      if (target_.facts.abi == "sysv_amd64") {
+        return {"ptr byval(" + llvm_type(type_id) + ") align " +
+                std::to_string(abi.alignment)};
+      }
+      return {"ptr"};
+    }
+    if (abi.classification == CAbiClass::EightbyteAggregate) {
+      std::vector<std::string> result;
+      result.reserve(abi.eightbyte_count);
+      for (std::size_t index = 0; index < abi.eightbyte_count; ++index) {
+        result.push_back(sysv_eightbyte_llvm_type(abi.eightbytes[index]));
+      }
+      return result;
+    }
+    return {c_parameter_type(type_id)};
+  }
+
   [[nodiscard]] std::string llvm_function_result(TypeId type_id) const {
     const Type &signature = type(type_id);
     const TypeId result = function_result(type_id);
-    if (!signature.c_calling_convention) return llvm_type(result);
+    if (!signature.c_calling_convention)
+      return llvm_type(result);
     const std::string extension = c_integer_extension(result);
-    return extension.empty()
-        ? c_result_type(result)
-        : extension + " " + c_result_type(result);
+    return extension.empty() ? c_result_type(result)
+                             : extension + " " + c_result_type(result);
   }
 
-  [[nodiscard]] std::string function_signature(
-      TypeId type_id,
-      bool with_names) const {
+  [[nodiscard]] std::string function_signature(TypeId type_id,
+                                               bool with_names) const {
     const Type &signature = type(type_id);
-    const std::size_t parameter_count = signature.members.empty()
-        ? 0
-        : signature.members.size() - 1;
+    const std::size_t parameter_count =
+        signature.members.empty() ? 0 : signature.members.size() - 1;
     std::string result = "(";
     bool emitted = false;
+    const CAbiFunctionPlan abi_plan = signature.c_calling_convention
+                                          ? c_abi_function_plan(type_id)
+                                          : CAbiFunctionPlan{};
+    if (signature.c_calling_convention && !abi_plan.ok) {
+      error(SourceRange::invalid(), "cannot plan C ABI function signature");
+    }
     if (signature.c_calling_convention) {
       const TypeId logical_result = function_result(type_id);
-      const CAbiType result_abi = function_result_abi(type_id);
+      const CAbiType result_abi =
+          abi_plan.ok ? abi_plan.result : function_result_abi(type_id);
       if (result_abi.classification == CAbiClass::Indirect) {
         result += "ptr sret(" + llvm_type(logical_result) + ") align " +
-            std::to_string(result_abi.alignment);
-        if (with_names) result += " %sret";
+                  std::to_string(result_abi.alignment);
+        if (with_names)
+          result += " %sret";
         emitted = true;
       }
     } else {
       result += "ptr";
-      if (with_names) result += " %context";
+      if (with_names)
+        result += " %context";
       emitted = true;
     }
     for (std::size_t index = 0; index < parameter_count; ++index) {
-      if (emitted) result += ", ";
+      if (emitted)
+        result += ", ";
       if (signature.c_calling_convention) {
-        result += c_parameter_type(signature.members[index]);
-        const std::string extension =
-            c_integer_extension(signature.members[index]);
-        if (!extension.empty()) result += " " + extension;
+        const CAbiParameterMode mode = abi_plan.ok
+                                           ? abi_plan.parameters[index].mode
+                                           : CAbiParameterMode::Expanded;
+        const std::vector<std::string> physical_types =
+            c_parameter_types(signature.members[index], mode);
+        for (std::size_t component = 0; component < physical_types.size();
+             ++component) {
+          if (component != 0)
+            result += ", ";
+          result += physical_types[component];
+          if (mode == CAbiParameterMode::Expanded &&
+              physical_types.size() == 1) {
+            const std::string extension =
+                c_integer_extension(signature.members[index]);
+            if (!extension.empty())
+              result += " " + extension;
+          }
+          if (with_names) {
+            result += " %arg" + std::to_string(index);
+            if (physical_types.size() != 1) {
+              result += "." + std::to_string(component);
+            }
+          }
+        }
       } else {
         result += llvm_type(signature.members[index]);
+        if (with_names)
+          result += " %arg" + std::to_string(index);
       }
-      if (with_names) result += " %arg" + std::to_string(index);
       emitted = true;
     }
     if (signature.c_variadic) {
-      if (emitted) result += ", ";
+      if (emitted)
+        result += ", ";
       result += "...";
     }
     result += ")";
@@ -1855,9 +1964,8 @@ private:
 
   [[nodiscard]] TypeId function_result(TypeId type_id) const {
     const Type &signature = type(type_id);
-    return signature.members.empty()
-        ? semantic_.types.builtins().void_type
-        : signature.members.back();
+    return signature.members.empty() ? semantic_.types.builtins().void_type
+                                     : signature.members.back();
   }
 
   // The procedure span is the complete concrete runtime definition set for
@@ -3025,53 +3133,81 @@ private:
 
   [[nodiscard]] std::string auxiliary_label(std::string_view purpose) {
     return "atomic." + std::string(purpose) + "." +
-        std::to_string(auxiliary_index_++);
+           std::to_string(auxiliary_index_++);
   }
 
-  [[nodiscard]] std::string abi_call_argument_scratch(
-      std::size_t instruction, std::size_t argument) const {
+  [[nodiscard]] std::string
+  abi_call_argument_scratch(std::size_t instruction,
+                            std::size_t argument) const {
     return "%abi.call." + std::to_string(instruction) + ".arg." +
-        std::to_string(argument);
+           std::to_string(argument);
   }
 
-  [[nodiscard]] std::string abi_call_result_scratch(
-      std::size_t instruction) const {
+  [[nodiscard]] std::string
+  abi_call_result_scratch(std::size_t instruction) const {
     return "%abi.call." + std::to_string(instruction) + ".result";
   }
 
-  [[nodiscard]] std::uint64_t abi_argument_storage_size(
-      const CAbiType &abi) const {
+  [[nodiscard]] std::uint64_t
+  abi_argument_storage_size(const CAbiType &abi) const {
     if (abi.classification == CAbiClass::SmallAggregate) {
       return static_cast<std::uint64_t>(abi.argument_integer_bits / 8U) *
-          abi.argument_integer_count;
+             abi.argument_integer_count;
+    }
+    if (abi.classification == CAbiClass::EightbyteAggregate) {
+      // An SSE carrier is half, float, or double. The final source eightbyte
+      // can contain six meaningful bytes yet still use a 64-bit XMM carrier;
+      // reserving the complete physical eightbytes prevents that carrier load
+      // or store from extending beyond a short logical aggregate.
+      return static_cast<std::uint64_t>(abi.eightbyte_count) * 8U;
     }
     return abi.size;
   }
 
-  [[nodiscard]] std::uint64_t abi_result_storage_size(
-      const CAbiType &abi) const {
+  [[nodiscard]] std::uint64_t
+  abi_result_storage_size(const CAbiType &abi) const {
     if (abi.classification == CAbiClass::SmallAggregate) {
       return static_cast<std::uint64_t>(abi.result_integer_bits / 8U) *
-          abi.result_integer_count;
+             abi.result_integer_count;
+    }
+    if (abi.classification == CAbiClass::EightbyteAggregate) {
+      return static_cast<std::uint64_t>(abi.eightbyte_count) * 8U;
     }
     return abi.size;
   }
 
-  void assign_alias(
-      std::vector<std::string> &operands,
-      const MirInstruction &instruction,
-      const std::string &value) {
-    if (instruction.result.is_valid()) operands[instruction.result.value] = value;
+  // A component at byte offset eight cannot inherit an aggregate's possible
+  // 16-byte base alignment. Conversely, an align-4 aggregate does not become
+  // align 8 merely because that offset is divisible by eight. SysV aggregate
+  // reconstruction therefore uses the minimum of the base guarantee and the
+  // component offset's natural eight-byte guarantee.
+  [[nodiscard]] std::uint32_t
+  sysv_component_alignment(const CAbiType &abi, std::size_t component) const {
+    if (component == 0)
+      return abi.alignment;
+    return std::min<std::uint32_t>(abi.alignment, 8U);
   }
 
-  [[nodiscard]] std::string integer_binary_opcode(
-      HirOperation operation, TypeId operand_type) const {
+  void assign_alias(std::vector<std::string> &operands,
+                    const MirInstruction &instruction,
+                    const std::string &value) {
+    if (instruction.result.is_valid())
+      operands[instruction.result.value] = value;
+  }
+
+  [[nodiscard]] std::string integer_binary_opcode(HirOperation operation,
+                                                  TypeId operand_type) const {
     switch (operation) {
-    case HirOperation::Add: return "add";
-    case HirOperation::Subtract: return "sub";
-    case HirOperation::Multiply: return "mul";
-    case HirOperation::Divide: return signed_integer(operand_type) ? "sdiv" : "udiv";
-    case HirOperation::Remainder: return signed_integer(operand_type) ? "srem" : "urem";
+    case HirOperation::Add:
+      return "add";
+    case HirOperation::Subtract:
+      return "sub";
+    case HirOperation::Multiply:
+      return "mul";
+    case HirOperation::Divide:
+      return signed_integer(operand_type) ? "sdiv" : "udiv";
+    case HirOperation::Remainder:
+      return signed_integer(operand_type) ? "srem" : "urem";
     case HirOperation::BitwiseAnd: return "and";
     case HirOperation::BitwiseOr: return "or";
     case HirOperation::BitwiseXor: return "xor";
@@ -3632,46 +3768,54 @@ private:
         "%v" + std::to_string(instruction.result.value));
   }
 
-  void emit_c_call(
-      std::size_t instruction_index,
-      const MirProcedure &procedure,
-      const MirInstruction &instruction,
-      std::vector<std::string> &operands) {
+  void emit_c_call(std::size_t instruction_index, const MirProcedure &procedure,
+                   const MirInstruction &instruction,
+                   std::vector<std::string> &operands) {
     const MirValueId callee = instruction.operands.front();
     const TypeId signature_id = procedure.value(callee).type;
     const Type &signature = type(signature_id);
     const std::size_t parameter_count = signature.members.size() - 1;
+    const CAbiFunctionPlan function_abi = c_abi_function_plan(signature_id);
+    if (!function_abi.ok || function_abi.parameters.size() != parameter_count) {
+      error(instruction.range, "cannot plan C ABI call signature");
+    }
     std::vector<std::string> arguments;
     arguments.reserve(instruction.operands.size());
 
     const TypeId logical_result = signature.members.back();
     const bool returns_void =
         logical_result == semantic_.types.builtins().void_type;
-    const CAbiType result_abi = returns_void
-        ? CAbiType{}
-        : c_abi_type(logical_result);
+    const CAbiType result_abi =
+        returns_void ? CAbiType{}
+                     : (function_abi.ok ? function_abi.result
+                                        : c_abi_type(logical_result));
     if (result_abi.classification == CAbiClass::Indirect) {
-      arguments.push_back(
-          "ptr sret(" + llvm_type(logical_result) + ") align " +
-          std::to_string(result_abi.alignment) + " " +
-          abi_call_result_scratch(instruction_index));
+      arguments.push_back("ptr sret(" + llvm_type(logical_result) + ") align " +
+                          std::to_string(result_abi.alignment) + " " +
+                          abi_call_result_scratch(instruction_index));
     }
 
     for (std::size_t index = 0; index < parameter_count; ++index) {
       const TypeId logical_type = signature.members[index];
       const MirValueId value = instruction.operands[index + 1];
       const CAbiType abi = c_abi_type(logical_type);
-      if (abi.classification == CAbiClass::Direct) {
+      const CAbiParameterMode mode =
+          function_abi.ok && index < function_abi.parameters.size()
+              ? function_abi.parameters[index].mode
+              : CAbiParameterMode::Expanded;
+      if (abi.classification == CAbiClass::Direct &&
+          mode == CAbiParameterMode::Expanded) {
         std::string argument = llvm_type(logical_type);
         const std::string extension = c_integer_extension(logical_type);
-        if (!extension.empty()) argument += " " + extension;
-        argument += " " + value_operand(
-            operands, value, instruction.range);
+        if (!extension.empty())
+          argument += " " + extension;
+        argument += " " + value_operand(operands, value, instruction.range);
         arguments.push_back(std::move(argument));
         continue;
       }
       if (abi.classification == CAbiClass::Illegal) {
-        error(instruction.range, "illegal C ABI call argument reached emission");
+        error(instruction.range,
+              "illegal C ABI call argument reached emission");
         arguments.push_back("i8 poison");
         continue;
       }
@@ -3679,29 +3823,54 @@ private:
       const std::string scratch =
           abi_call_argument_scratch(instruction_index, index);
       const std::uint64_t storage = abi_argument_storage_size(abi);
-      if (abi.classification == CAbiClass::SmallAggregate) {
-        output_ << "  store [" << storage
-                << " x i8] zeroinitializer, ptr " << scratch
-                << ", align " << abi.alignment << '\n';
+      if (abi.classification == CAbiClass::SmallAggregate ||
+          abi.classification == CAbiClass::EightbyteAggregate) {
+        output_ << "  store [" << storage << " x i8] zeroinitializer, ptr "
+                << scratch << ", align " << abi.alignment << '\n';
       }
       output_ << "  store "
               << typed_operand(procedure, operands, value, instruction.range)
               << ", ptr " << scratch << ", align " << abi.alignment << '\n';
-      if (abi.classification == CAbiClass::Indirect) {
-        arguments.push_back("ptr " + scratch);
+      if (mode == CAbiParameterMode::Indirect) {
+        if (target_.facts.abi == "sysv_amd64") {
+          arguments.push_back("ptr byval(" + llvm_type(logical_type) +
+                              ") align " + std::to_string(abi.alignment) + " " +
+                              scratch);
+        } else {
+          arguments.push_back("ptr " + scratch);
+        }
+        continue;
+      }
+      if (abi.classification == CAbiClass::EightbyteAggregate) {
+        for (std::size_t component = 0; component < abi.eightbyte_count;
+             ++component) {
+          std::string address = scratch;
+          if (component != 0) {
+            address = auxiliary();
+            output_ << "  " << address << " = getelementptr i8, ptr " << scratch
+                    << ", i64 " << component * 8U << '\n';
+          }
+          const std::string physical = auxiliary();
+          const std::string physical_type =
+              sysv_eightbyte_llvm_type(abi.eightbytes[component]);
+          output_ << "  " << physical << " = load " << physical_type << ", ptr "
+                  << address << ", align "
+                  << sysv_component_alignment(abi, component) << '\n';
+          arguments.push_back(physical_type + " " + physical);
+        }
         continue;
       }
       const std::string physical = auxiliary();
       const std::string physical_type = c_parameter_type(logical_type);
-      output_ << "  " << physical << " = load " << physical_type
-              << ", ptr " << scratch << ", align " << abi.alignment << '\n';
+      output_ << "  " << physical << " = load " << physical_type << ", ptr "
+              << scratch << ", align " << abi.alignment << '\n';
       arguments.push_back(physical_type + " " + physical);
     }
 
     // Body checking has already applied the C default argument promotions to
     // every unnamed operand. The tail is intentionally restricted to direct
     // ABI scalars and pointers, so LLVM can see each promoted physical type and
-    // perform the target's Darwin or GNU AArch64 variadic register/stack
+    // perform the target's Darwin, GNU AArch64, or SysV variadic register/stack
     // assignment. Aggregate tails remain a source error until their separate
     // unnamed-argument classification is implemented.
     for (std::size_t index = parameter_count + 1;
@@ -3710,15 +3879,13 @@ private:
       const TypeId logical_type = procedure.value(value).type;
       const CAbiType abi = c_abi_type(logical_type);
       if (abi.classification != CAbiClass::Direct) {
-        error(
-            instruction.range,
-            "non-scalar C variadic argument reached LLVM emission");
+        error(instruction.range,
+              "non-scalar C variadic argument reached LLVM emission");
         arguments.push_back("i8 poison");
         continue;
       }
-      arguments.push_back(
-          llvm_type(logical_type) + " " +
-          value_operand(operands, value, instruction.range));
+      arguments.push_back(llvm_type(logical_type) + " " +
+                          value_operand(operands, value, instruction.range));
     }
 
     const std::string callee_operand =
@@ -3726,37 +3893,42 @@ private:
     // LLVM requires the complete function type at a variadic call site. A
     // fixed call can infer it from the callee and argument list, which is why
     // the older fixed-only path did not print this parenthesized signature.
-    const std::string variadic_signature = signature.c_variadic
-        ? function_signature(signature_id, false) + " "
-        : std::string();
-    const std::string result = instruction.result.is_valid()
-        ? "%v" + std::to_string(instruction.result.value)
-        : std::string();
+    const std::string variadic_signature =
+        signature.c_variadic ? function_signature(signature_id, false) + " "
+                             : std::string();
+    const std::string result =
+        instruction.result.is_valid()
+            ? "%v" + std::to_string(instruction.result.value)
+            : std::string();
     if (returns_void || result_abi.classification == CAbiClass::Indirect) {
       output_ << "  call void " << variadic_signature << callee_operand << '(';
     } else if (result_abi.classification == CAbiClass::SmallAggregate ||
                result_abi.classification ==
-                   CAbiClass::HomogeneousFloatAggregate) {
+                   CAbiClass::HomogeneousFloatAggregate ||
+               result_abi.classification == CAbiClass::EightbyteAggregate) {
       output_ << "  %abi.call." << instruction_index << ".physical = call "
               << c_result_type(logical_result) << ' ' << variadic_signature
               << callee_operand << '(';
     } else {
       const std::string extension = c_integer_extension(logical_result);
       output_ << "  " << result << " = call ";
-      if (!extension.empty()) output_ << extension << ' ';
+      if (!extension.empty())
+        output_ << extension << ' ';
       output_ << c_result_type(logical_result) << ' ' << variadic_signature
               << callee_operand << '(';
     }
     for (std::size_t index = 0; index < arguments.size(); ++index) {
-      if (index != 0) output_ << ", ";
+      if (index != 0)
+        output_ << ", ";
       output_ << arguments[index];
     }
     output_ << ")\n";
 
-    if (returns_void) return;
+    if (returns_void)
+      return;
     if (result_abi.classification == CAbiClass::SmallAggregate ||
-        result_abi.classification ==
-            CAbiClass::HomogeneousFloatAggregate) {
+        result_abi.classification == CAbiClass::HomogeneousFloatAggregate ||
+        result_abi.classification == CAbiClass::EightbyteAggregate) {
       const std::string scratch = abi_call_result_scratch(instruction_index);
       const std::string physical =
           "%abi.call." + std::to_string(instruction_index) + ".physical";
@@ -3778,19 +3950,16 @@ private:
     }
   }
 
-  void emit_instruction(
-      std::size_t procedure_index,
-      std::size_t instruction_index,
-      const MirProcedure &procedure,
-      const MirInstruction &instruction,
-      std::vector<std::string> &operands) {
+  void emit_instruction(std::size_t procedure_index,
+                        std::size_t instruction_index,
+                        const MirProcedure &procedure,
+                        const MirInstruction &instruction,
+                        std::vector<std::string> &operands) {
     // One intrinsic marker per MIR operation makes every source operation
     // addressable by line-table consumers without adding runtime behavior.
     // It also covers constant/alias MIR rows that do not print an LLVM value.
-    const std::optional<std::size_t> debug_location =
-        emit_debug_marker(
-            instruction.range,
-            mir_instruction_kind_name(instruction.kind));
+    const std::optional<std::size_t> debug_location = emit_debug_marker(
+        instruction.range, mir_instruction_kind_name(instruction.kind));
     begin_debug_operation(debug_location);
     const std::string result = instruction.result.is_valid()
         ? "%v" + std::to_string(instruction.result.value)
@@ -4258,14 +4427,11 @@ private:
     end_debug_operation(debug_location);
   }
 
-  void emit_terminator(
-      const MirProcedure &procedure,
-      const MirTerminator &terminator,
-      const std::vector<std::string> &operands) {
-    const std::optional<std::size_t> debug_location =
-        emit_debug_marker(
-            terminator.range,
-            mir_terminator_kind_name(terminator.kind));
+  void emit_terminator(const MirProcedure &procedure,
+                       const MirTerminator &terminator,
+                       const std::vector<std::string> &operands) {
+    const std::optional<std::size_t> debug_location = emit_debug_marker(
+        terminator.range, mir_terminator_kind_name(terminator.kind));
     begin_debug_operation(debug_location);
     switch (terminator.kind) {
     case MirTerminatorKind::Return:
@@ -4273,33 +4439,34 @@ private:
         const Type &signature = type(procedure.type);
         const TypeId logical_result = procedure.value(terminator.value).type;
         const CAbiType abi = signature.c_calling_convention
-            ? c_abi_type(logical_result)
-            : CAbiType{};
+                                 ? c_abi_type(logical_result)
+                                 : CAbiType{};
         if (signature.c_calling_convention &&
             abi.classification == CAbiClass::Indirect) {
           output_ << "  store "
-                  << typed_operand(
-                         procedure, operands, terminator.value, terminator.range)
+                  << typed_operand(procedure, operands, terminator.value,
+                                   terminator.range)
                   << ", ptr %sret, align " << abi.alignment << '\n'
                   << "  ret void\n";
         } else if (signature.c_calling_convention &&
                    (abi.classification == CAbiClass::SmallAggregate ||
                     abi.classification ==
-                        CAbiClass::HomogeneousFloatAggregate)) {
+                        CAbiClass::HomogeneousFloatAggregate ||
+                    abi.classification == CAbiClass::EightbyteAggregate)) {
           const std::string physical = auxiliary();
           output_ << "  store "
-                  << typed_operand(
-                         procedure, operands, terminator.value, terminator.range)
+                  << typed_operand(procedure, operands, terminator.value,
+                                   terminator.range)
                   << ", ptr %abi.return, align " << abi.alignment << '\n'
                   << "  " << physical << " = load "
                   << c_result_type(logical_result)
                   << ", ptr %abi.return, align " << abi.alignment << '\n'
-                  << "  ret " << c_result_type(logical_result)
-                  << ' ' << physical << '\n';
+                  << "  ret " << c_result_type(logical_result) << ' '
+                  << physical << '\n';
         } else {
           output_ << "  ret "
-                  << typed_operand(
-                         procedure, operands, terminator.value, terminator.range)
+                  << typed_operand(procedure, operands, terminator.value,
+                                   terminator.range)
                   << '\n';
         }
       } else {
@@ -4311,10 +4478,10 @@ private:
       break;
     case MirTerminatorKind::ConditionalBranch:
       output_ << "  br "
-              << typed_operand(
-                     procedure, operands, terminator.value, terminator.range)
-              << ", label %b" << terminator.targets[0].value
-              << ", label %b" << terminator.targets[1].value << '\n';
+              << typed_operand(procedure, operands, terminator.value,
+                               terminator.range)
+              << ", label %b" << terminator.targets[0].value << ", label %b"
+              << terminator.targets[1].value << '\n';
       break;
     case MirTerminatorKind::Switch:
       output_ << "  switch "
@@ -4356,12 +4523,10 @@ private:
     if (own_signature.c_calling_convention) {
       const CAbiType result_abi = function_result_abi(procedure.type);
       if (result_abi.classification == CAbiClass::SmallAggregate ||
-          result_abi.classification ==
-              CAbiClass::HomogeneousFloatAggregate) {
-        emit_abi_scratch(
-            "%abi.return",
-            abi_result_storage_size(result_abi),
-            result_abi.alignment);
+          result_abi.classification == CAbiClass::HomogeneousFloatAggregate ||
+          result_abi.classification == CAbiClass::EightbyteAggregate) {
+        emit_abi_scratch("%abi.return", abi_result_storage_size(result_abi),
+                         result_abi.alignment);
       }
     }
 
@@ -4386,63 +4551,70 @@ private:
         continue;
       }
       const std::size_t parameter_count = signature.members.size() - 1;
-      for (std::size_t argument = 0;
-           argument < parameter_count && argument + 1 < instruction.operands.size();
+      const CAbiFunctionPlan function_abi = c_abi_function_plan(signature_id);
+      for (std::size_t argument = 0; argument < parameter_count &&
+                                     argument + 1 < instruction.operands.size();
            ++argument) {
-        const CAbiType abi =
-            c_abi_type(signature.members[argument]);
-        if (abi.classification == CAbiClass::Direct ||
+        const CAbiType abi = c_abi_type(signature.members[argument]);
+        const CAbiParameterMode mode =
+            function_abi.ok && argument < function_abi.parameters.size()
+                ? function_abi.parameters[argument].mode
+                : CAbiParameterMode::Expanded;
+        if ((abi.classification == CAbiClass::Direct &&
+             mode == CAbiParameterMode::Expanded) ||
             abi.classification == CAbiClass::Illegal) {
           continue;
         }
-        emit_abi_scratch(
-            abi_call_argument_scratch(instruction_index, argument),
-            abi_argument_storage_size(abi),
-            abi.alignment);
+        emit_abi_scratch(abi_call_argument_scratch(instruction_index, argument),
+                         abi_argument_storage_size(abi), abi.alignment);
       }
       const CAbiType result_abi = function_result_abi(signature_id);
       if (result_abi.classification == CAbiClass::SmallAggregate ||
-          result_abi.classification ==
-              CAbiClass::HomogeneousFloatAggregate ||
+          result_abi.classification == CAbiClass::HomogeneousFloatAggregate ||
+          result_abi.classification == CAbiClass::EightbyteAggregate ||
           result_abi.classification == CAbiClass::Indirect) {
-        emit_abi_scratch(
-            abi_call_result_scratch(instruction_index),
-            abi_result_storage_size(result_abi),
-            result_abi.alignment);
+        emit_abi_scratch(abi_call_result_scratch(instruction_index),
+                         abi_result_storage_size(result_abi),
+                         result_abi.alignment);
       }
     }
   }
 
-  void emit_procedure(std::size_t procedure_index, const MirProcedure &procedure) {
-    if (!procedure.valid) return;
+  void emit_procedure(std::size_t procedure_index,
+                      const MirProcedure &procedure) {
+    if (!procedure.valid)
+      return;
     auxiliary_index_ = 0;
     debug_marker_index_ = 0;
-    current_debug_procedure_ =
-        semantic_.symbols.symbol(procedure.symbol).name;
+    current_debug_procedure_ = semantic_.symbols.symbol(procedure.symbol).name;
     current_debug_procedure_ordinal_ = procedure_index;
     current_debug_subprogram_ = debug_subprogram(procedure);
+    const Type &procedure_signature = type(procedure.type);
+    const CAbiFunctionPlan procedure_abi =
+        procedure_signature.c_calling_convention
+            ? c_abi_function_plan(procedure.type)
+            : CAbiFunctionPlan{};
     output_ << "define ";
-    if (!is_c_export(procedure.symbol)) output_ << "hidden ";
+    if (!is_c_export(procedure.symbol))
+      output_ << "hidden ";
     output_ << llvm_function_result(procedure.type) << ' '
             << symbol_name(procedure.symbol)
             << function_signature(procedure.type, true) << " !dbg !"
             << current_debug_subprogram_ << " {\n";
     std::vector<std::string> operands(procedure.values.size());
-    for (std::size_t block_index = 0;
-         block_index < procedure.blocks.size();
+    for (std::size_t block_index = 0; block_index < procedure.blocks.size();
          ++block_index) {
       const MirBlock &block = procedure.blocks[block_index];
       output_ << "b" << block_index << ":\n";
       if (block_index == procedure.entry.value) {
-        for (std::size_t local_index = 0;
-             local_index < procedure.locals.size();
+        for (std::size_t local_index = 0; local_index < procedure.locals.size();
              ++local_index) {
           const MirLocal &local = procedure.locals[local_index];
           output_ << "  %l" << local_index << " = alloca "
                   << llvm_type(local.type) << ", align "
                   << type(local.type).layout.alignment << '\n';
           if (local.kind == MirLocalKind::Parameter) {
-            const Type &signature = type(procedure.type);
+            const Type &signature = procedure_signature;
             const std::string argument =
                 "%arg" + std::to_string(local.parameter_index);
             if (!signature.c_calling_convention) {
@@ -4451,17 +4623,31 @@ private:
                       << type(local.type).layout.alignment << '\n';
             } else {
               const CAbiType abi = c_abi_type(local.type);
-              if (abi.classification == CAbiClass::Direct) {
-                output_ << "  store " << llvm_type(local.type) << ' ' << argument
+              const CAbiParameterMode mode =
+                  procedure_abi.ok && local.parameter_index <
+                                          procedure_abi.parameters.size()
+                      ? procedure_abi.parameters[local.parameter_index].mode
+                      : CAbiParameterMode::Expanded;
+              if (mode == CAbiParameterMode::Indirect) {
+                const std::string logical =
+                    "%abi.param." + std::to_string(local.parameter_index) +
+                    ".logical";
+                output_ << "  " << logical << " = load "
+                        << llvm_type(local.type) << ", ptr " << argument
+                        << ", align " << abi.alignment << '\n'
+                        << "  store " << llvm_type(local.type) << ' ' << logical
                         << ", ptr %l" << local_index << ", align "
+                        << type(local.type).layout.alignment << '\n';
+              } else if (abi.classification == CAbiClass::Direct) {
+                output_ << "  store " << llvm_type(local.type) << ' '
+                        << argument << ", ptr %l" << local_index << ", align "
                         << type(local.type).layout.alignment << '\n';
               } else if (abi.classification ==
                          CAbiClass::HomogeneousFloatAggregate) {
                 output_ << "  store " << homogeneous_llvm_type(abi) << ' '
                         << argument << ", ptr %l" << local_index << ", align "
                         << abi.alignment << '\n';
-              } else if (abi.classification ==
-                         CAbiClass::SmallAggregate) {
+              } else if (abi.classification == CAbiClass::SmallAggregate) {
                 const std::string scratch =
                     "%abi.param." + std::to_string(local.parameter_index);
                 const std::uint64_t storage = abi_argument_storage_size(abi);
@@ -4481,18 +4667,42 @@ private:
                         << "  store " << llvm_type(local.type) << ' ' << logical
                         << ", ptr %l" << local_index << ", align "
                         << type(local.type).layout.alignment << '\n';
-              } else if (abi.classification == CAbiClass::Indirect) {
-                const std::string logical =
-                    "%abi.param." + std::to_string(local.parameter_index) +
-                    ".logical";
+              } else if (abi.classification == CAbiClass::EightbyteAggregate) {
+                const std::string scratch =
+                    "%abi.param." + std::to_string(local.parameter_index);
+                const std::uint64_t storage = abi_argument_storage_size(abi);
+                emit_abi_scratch(scratch, storage, abi.alignment);
+                output_ << "  store [" << storage
+                        << " x i8] zeroinitializer, ptr " << scratch
+                        << ", align " << abi.alignment << '\n';
+                for (std::size_t component = 0; component < abi.eightbyte_count;
+                     ++component) {
+                  std::string address = scratch;
+                  if (component != 0) {
+                    address = auxiliary();
+                    output_ << "  " << address << " = getelementptr i8, ptr "
+                            << scratch << ", i64 " << component * 8U << '\n';
+                  }
+                  std::string component_argument = argument;
+                  if (abi.eightbyte_count != 1) {
+                    component_argument += "." + std::to_string(component);
+                  }
+                  output_ << "  store "
+                          << sysv_eightbyte_llvm_type(abi.eightbytes[component])
+                          << ' ' << component_argument << ", ptr " << address
+                          << ", align "
+                          << sysv_component_alignment(abi, component) << '\n';
+                }
+                const std::string logical = scratch + ".logical";
                 output_ << "  " << logical << " = load "
-                        << llvm_type(local.type) << ", ptr " << argument
+                        << llvm_type(local.type) << ", ptr " << scratch
                         << ", align " << abi.alignment << '\n'
                         << "  store " << llvm_type(local.type) << ' ' << logical
                         << ", ptr %l" << local_index << ", align "
                         << type(local.type).layout.alignment << '\n';
               } else {
-                error(procedure.range, "illegal C ABI parameter reached emission");
+                error(procedure.range,
+                      "illegal C ABI parameter reached emission");
               }
             }
           }
@@ -4506,19 +4716,16 @@ private:
              ++instruction_index) {
           const std::optional<TypeId> scratch_type = aggregate_scratch_type(
               procedure, procedure.instructions[instruction_index]);
-          if (!scratch_type.has_value()) continue;
-          output_ << "  " << aggregate_scratch(instruction_index) << " = alloca "
-                  << llvm_type(*scratch_type) << ", align "
+          if (!scratch_type.has_value())
+            continue;
+          output_ << "  " << aggregate_scratch(instruction_index)
+                  << " = alloca " << llvm_type(*scratch_type) << ", align "
                   << type(*scratch_type).layout.alignment << '\n';
         }
       }
       for (MirInstructionId instruction_id : block.instructions) {
-        emit_instruction(
-            procedure_index,
-            instruction_id.value,
-            procedure,
-            procedure.instruction(instruction_id),
-            operands);
+        emit_instruction(procedure_index, instruction_id.value, procedure,
+                         procedure.instruction(instruction_id), operands);
       }
       emit_terminator(procedure, block.terminator, operands);
     }
@@ -4558,7 +4765,8 @@ private:
         symbol.flags.parametric) {
       error(
           symbol.name_range,
-          "Draft main must be a non-parametric ordinary zero-parameter procedure");
+          "Draft main must be a non-parametric ordinary "
+                               "zero-parameter procedure");
       return;
     }
     const TypeId result_type = function_result(symbol.type);

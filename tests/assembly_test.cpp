@@ -1,6 +1,7 @@
 // Parsed AArch64 assembly validation and MIR/LLVM handoff tests.
 
 #include "assembly/aarch64.h"
+#include "assembly/analyze.h"
 #include "backend/llvm_ir.h"
 #include "mir/lower.h"
 #include "sema/body_checker.h"
@@ -410,6 +411,46 @@ unresolved :: proc() {
       std::string::npos);
 }
 
+// x86-64 native code generation deliberately does not pretend that the closed
+// AArch64 source grammar is portable. The target dispatcher must reject an
+// authored site at its source range, while ordinary procedures on that target
+// continue to produce an empty successful assembly product.
+void test_x86_target_rejects_parsed_aarch64(TestState &state) {
+  CheckedAssembly source(R"draft(
+package assembly
+
+ordinary :: proc(value: u64) -> u64 {
+    return value + 1
+}
+
+barrier :: proc() {
+    asm aarch64 {
+        clobber memory
+        dmb ish
+    }
+}
+)draft");
+  const draft::TargetProfile x86 = draft::make_x86_64_linux_profile();
+  draft::DiagnosticSink diagnostics;
+  std::size_t assembly_sites = 0;
+  for (const draft::ProcedureBodyHirResult &product :
+       source.bodies.procedures) {
+    const draft::AssemblyProgram assembly = draft::analyze_target_assembly(
+        source.sources, source.loaded, x86, source.bodies.package,
+        product.program, diagnostics);
+    if (!assembly.ok)
+      ++assembly_sites;
+  }
+  EXPECT(state, assembly_sites == 1);
+  EXPECT(state, diagnostics.error_count() == 1);
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, diagnostics);
+  EXPECT(state,
+         rendered.find("parsed assembly is not supported by target "
+                       "'draft-x86_64-linux-gnu-v1'") != std::string::npos);
+  EXPECT(state, rendered.find("asm aarch64") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -417,6 +458,7 @@ int main() {
   test_valid_fixed_register_regions(state);
   test_invalid_effects_and_architecture(state);
   test_unresolved_assembly_synthesis(state);
+  test_x86_target_rejects_parsed_aarch64(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " assembly expectation(s) failed\n";
     return EXIT_FAILURE;

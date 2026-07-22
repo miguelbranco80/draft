@@ -1,9 +1,10 @@
-// In-process LLVM emission contracts for both implemented target profiles.
+// In-process LLVM emission contracts for all implemented target profiles.
 //
 // The tests use minimal valid modules to isolate parsing, profile verification,
-// deterministic object bytes, assembly output, and concurrent context ownership.
-// Native integration tests later exercise the compiler's complete generated IR,
-// linker contracts, runtime behavior, debug information, and sanitizers.
+// deterministic object bytes, assembly output, and concurrent context
+// ownership. Native integration tests later exercise the compiler's complete
+// generated IR, linker contracts, runtime behavior, debug information, and
+// sanitizers.
 
 #include "backend/llvm_object_emitter.h"
 #include "base/work_graph.h"
@@ -47,7 +48,8 @@ std::string minimal_module(const draft::TargetProfile &target) {
 void test_target_object_and_assembly(TestState &state) {
   for (const draft::TargetProfile &target : {
            draft::make_aarch64_macos_profile(),
-           draft::make_aarch64_linux_profile()}) {
+           draft::make_aarch64_linux_profile(),
+           draft::make_x86_64_linux_profile()}) {
     const std::string module = minimal_module(target);
     const draft::LlvmObjectEmissionResult first =
         draft::emit_llvm_object_in_process(target, "minimal", module, {});
@@ -89,7 +91,8 @@ void test_target_object_and_assembly(TestState &state) {
 void test_o0_and_o2_pipelines(TestState &state) {
   for (const draft::TargetProfile &target : {
            draft::make_aarch64_macos_profile(),
-           draft::make_aarch64_linux_profile()}) {
+           draft::make_aarch64_linux_profile(),
+           draft::make_x86_64_linux_profile()}) {
     const std::string module =
         "target triple = \"" + target.llvm_triple + "\"\n"
         "target datalayout = \"" + target.llvm_data_layout + "\"\n"

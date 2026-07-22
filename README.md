@@ -78,6 +78,7 @@ particular:
 - [Elaboration, semantic context, and pins](docs/implementation/elaboration-and-pins.md)
 - [AArch64 macOS target profile](docs/targets/aarch64-macos.md)
 - [AArch64 Linux target and qualification](docs/targets/aarch64-linux.md)
+- [x86-64 Linux target profile](docs/targets/x86-64-linux.md)
 - [Compiler command reference](docs/operations/command-reference.md)
 - [Native host qualification](docs/releases/native-host-qualification.md)
 - [Historical first implementation plan](docs/history/first-implementation-plan.md)
@@ -104,10 +105,10 @@ Use `/usr/lib/llvm-22/lib/cmake/llvm` for the standard Ubuntu LLVM 22 layout.
 `LLVM_DIR` may instead name an exact downloaded or locally built LLVM 22 CMake
 package; no ambient `llvm-config` lookup decides the linked backend version.
 
-The bootstrap is a direct C++20 implementation targeting AArch64 macOS and
-AArch64 GNU/Linux. Both targets build and execute on their native ARM64 hosts;
-the CI matrix also runs the target-independent bootstrap suite under Linux
-x86-64 address and undefined-behavior sanitizers.
+The bootstrap is a direct C++20 implementation targeting AArch64 macOS,
+AArch64 GNU/Linux, and x86-64 GNU/Linux. All three build and execute on their
+matching native hosts; the x86-64 CI row additionally runs the bootstrap under
+address and undefined-behavior sanitizers.
 It implements the complete ordinary-language pipeline independently of Codex;
 provider-backed synthesis and judgment live behind compiler-owned typed,
 content-addressed boundaries. Detailed capability and evidence claims belong to

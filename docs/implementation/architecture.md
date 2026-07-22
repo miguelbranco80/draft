@@ -323,13 +323,15 @@ assignment lowering never manufactures a typed pointer to the field.
 LLVM types stay behind numeric, target, ABI, and code-generation adapters. The
 front end must not depend on LLVM IR details.
 
-### AArch64 macOS target boundary
+### Native target boundary
 
-One versioned target profile fixes the triple, LLVM data layout, pointer width,
-Darwin C ABI rules, CPU features, object format, relocation/code/TLS models,
-trap behavior, linker contract, and parsed-assembly dialect. Target-specific
-ABI classification lives under this boundary rather than leaking into type
-checking.
+One selected versioned profile fixes the triple, LLVM data layout, pointer
+width, C ABI rules, CPU features, object format, relocation/code/TLS models,
+trap behavior, linker contract, and parsed-assembly capability. Target-specific
+classification lives under this boundary rather than leaking into type
+checking. The current constructors cover AArch64 macOS, AArch64 GNU/Linux, and
+x86-64 GNU/Linux; a profile may provide package assembly without a parsed
+inline-assembly grammar.
 
 The first runtime supplies `runtime.Context`, failure entries, TLS/context
 establishment, `main` entry glue, and the smallest allocator/OS support needed

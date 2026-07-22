@@ -309,14 +309,14 @@ void test_all_native_artifact_kinds(TestState &state) {
 // The recording process makes the ELF driver contract observable without
 // requiring a Linux sysroot in every unit-test environment. Real LLVM object
 // acceptance and hosted execution are separate qualification gates.
-void test_aarch64_linux_toolchain_arguments(TestState &state) {
+void test_linux_toolchain_arguments(TestState &state,
+                                    const draft::TargetProfile &target,
+                                    std::string_view scratch_name) {
   draft::test::TemporaryDirectory temporary_directory{
-      "draft-aarch64-linux-toolchain-test"};
+      std::string(scratch_name)};
   const std::filesystem::path &temporary = temporary_directory.path();
   std::error_code error;
   if (error) return;
-
-  const draft::TargetProfile target = draft::make_aarch64_linux_profile();
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   const draft::CompileWorkspaceResult compiled = compile_fixture(
@@ -392,7 +392,7 @@ void test_aarch64_linux_toolchain_arguments(TestState &state) {
   EXPECT(state, !diagnostics.has_errors());
 
   const std::string arguments = read_file(log);
-  EXPECT(state, arguments.find("\naarch64-unknown-linux-gnu\n") !=
+  EXPECT(state, arguments.find("\n" + target.llvm_triple + "\n") !=
       std::string::npos);
   EXPECT(state, arguments.find("-mmacosx-version-min") == std::string::npos);
   EXPECT(state, arguments.find("\n-Wl,--build-id=sha1\n") !=
@@ -524,7 +524,10 @@ int main() {
   test_package_assembly_reaches_link(state);
   test_explicit_foreign_provider_mapping(state);
   test_all_native_artifact_kinds(state);
-  test_aarch64_linux_toolchain_arguments(state);
+  test_linux_toolchain_arguments(state, draft::make_aarch64_linux_profile(),
+                                 "draft-aarch64-linux-toolchain-test");
+  test_linux_toolchain_arguments(state, draft::make_x86_64_linux_profile(),
+                                 "draft-x86-64-linux-toolchain-test");
   if (state.failures != 0) {
     std::cerr << state.failures << " toolchain expectation(s) failed\n";
     return EXIT_FAILURE;

@@ -1,0 +1,73 @@
+// This target-selected half of core/terminal defines glibc 2.39's x86-64
+// termios record, poll count ABI, and TIOCGWINSZ request. Native_Mode contains
+// four 32-bit flag words, one line byte, thirty-two control bytes, padding, and
+// two 32-bit speeds: 60 bytes total with alignment four. Every pointer is
+// borrowed for one libc call; ownership and terminal error policy remain in
+// package.draft.
+//
+// These declarations depend only on core/c_abi and the x86-64 GNU/Linux target
+// profile. Their layouts and signatures are versioned libc/UAPI facts rather
+// than a claim about every Linux environment. Draft specification: sections
+// 5-7 and 12.
+package terminal
+
+import core/c_abi
+
+// libc's cfmakeraw owns flag policy; the named fields exist solely to give the
+// C boundary the selected glibc storage layout and alignment.
+Native_Mode :: c struct {
+    input_flags: c_abi.unsigned_int,
+    output_flags: c_abi.unsigned_int,
+    control_flags: c_abi.unsigned_int,
+    local_flags: c_abi.unsigned_int,
+    line_discipline: c_abi.unsigned_char,
+    control_characters: [32]c_abi.unsigned_char,
+    input_speed: c_abi.unsigned_int,
+    output_speed: c_abi.unsigned_int,
+}
+
+Native_Apply_Now :: cast[c_abi.int](0)
+Native_Size_Request :: cast[c_abi.unsigned_long](0x5413)
+
+foreign linux {
+    native_get_mode as "tcgetattr" :: c proc(
+        descriptor: c_abi.int,
+        mode: ^Native_Mode,
+    ) -> c_abi.int
+    native_set_mode as "tcsetattr" :: c proc(
+        descriptor: c_abi.int,
+        action: c_abi.int,
+        mode: ^Native_Mode,
+    ) -> c_abi.int
+    native_make_raw as "cfmakeraw" :: c proc(mode: ^Native_Mode)
+    native_poll as "poll" :: c proc(
+        descriptors: ^Poll_Descriptor,
+        count: c_abi.unsigned_long,
+        timeout_milliseconds: c_abi.int,
+    ) -> c_abi.int
+    native_ioctl as "ioctl" :: c proc(
+        descriptor: c_abi.int,
+        request: c_abi.unsigned_long,
+        ..,
+    ) -> c_abi.int
+}
+
+// glibc defines nfds_t as unsigned long. Common code waits on exactly one
+// descriptor, keeping that ABI scalar confined to this adapter.
+native_poll_one :: proc(
+    descriptor: ^Poll_Descriptor,
+    timeout_milliseconds: c_abi.int,
+) -> c_abi.int {
+    static_assert(size_of(Native_Mode) == 60)
+    static_assert(align_of(Native_Mode) == 4)
+    return native_poll(descriptor, 1, timeout_milliseconds)
+}
+
+// Linux TIOCGWINSZ writes the common eight-byte winsize record through ioctl's
+// unnamed C argument. The request value remains selected target source.
+native_query_size :: proc(
+    descriptor: c_abi.int,
+    size: ^Native_Window_Size,
+) -> c_abi.int {
+    return native_ioctl(descriptor, Native_Size_Request, size)
+}

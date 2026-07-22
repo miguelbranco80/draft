@@ -18,7 +18,8 @@ can be passed through fields, ABI decomposition, addresses, or memory operands.
 Every build selects one versioned target profile. It fixes the LLVM target
 triple and data layout, pointer width, byte order, scalar sizes and alignments,
 object format, platform C ABI, CPU features, relocation and code models, TLS
-model, trap and termination lowering, and parsed-assembly architecture. The
+model, trap and termination lowering, and whether a parsed-assembly dialect is
+available. The
 built-in `target` value exposes
 the stable compile-time fields `identity: string`,
 `arch: Target_Architecture`, `os: Target_Operating_System`,
@@ -26,8 +27,9 @@ the stable compile-time fields `identity: string`,
 `object_format: Target_Object_Format`, `file_tag: string`,
 `pointer_bits: uint`, and `page_size: usize`.
 The categorical types are distinct compiler-defined enums. Draft 1 defines
-`Target_Architecture` with `.aarch64`; `Target_Operating_System` with `.macos`
-and `.linux`; `Target_ABI` with `.darwin_arm64` and `.aapcs64_gnu`;
+`Target_Architecture` with `.aarch64` and `.x86_64`;
+`Target_Operating_System` with `.macos` and `.linux`; `Target_ABI` with
+`.darwin_arm64`, `.aapcs64_gnu`, and `.sysv_amd64`;
 `Target_Byte_Order` with `.little` and `.big`; and `Target_Object_Format` with
 `.macho` and `.elf`, in the stated source order. A later target profile may
 append alternatives but cannot reorder or conflate existing types. Consequently

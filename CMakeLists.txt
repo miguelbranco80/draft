@@ -107,6 +107,7 @@ target_link_libraries(
 add_library(
   draft_compiler
   src/assembly/aarch64.cpp
+  src/assembly/analyze.cpp
   src/backend/foreign_inputs.cpp
   src/backend/foreign_summaries.cpp
   src/backend/llvm_ir.cpp
@@ -236,15 +237,25 @@ target_compile_definitions(
 include(CTest)
 if(BUILD_TESTING)
   # The complete native matrix must execute the artifacts it just built. Keep
-  # it enabled only when the host is one of Draft's implemented AArch64 target
-  # pairs: Apple Silicon runs Mach-O and AArch64 Linux runs ELF. Other hosts
-  # still build every target-independent compiler, ABI, and lowering test.
-  set(DRAFT_NATIVE_AARCH64_HOST OFF)
-  if(
-    (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # it enabled only when the host exactly matches an implemented target pair.
+  # Other hosts still build every target-independent compiler, ABI, and
+  # lowering test; they simply cannot launch the produced artifact.
+  set(DRAFT_NATIVE_HOST OFF)
+  if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+    set(DRAFT_NATIVE_HOST ON)
+    set(DRAFT_NATIVE_TEST_TARGET aarch64-macos)
+  elseif(
+    CMAKE_SYSTEM_NAME STREQUAL "Linux"
     AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$"
   )
-    set(DRAFT_NATIVE_AARCH64_HOST ON)
+    set(DRAFT_NATIVE_HOST ON)
+    set(DRAFT_NATIVE_TEST_TARGET aarch64-linux)
+  elseif(
+    CMAKE_SYSTEM_NAME STREQUAL "Linux"
+    AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$"
+  )
+    set(DRAFT_NATIVE_HOST ON)
+    set(DRAFT_NATIVE_TEST_TARGET x86_64-linux)
   endif()
 
   add_executable(draft_sha256_tests tests/sha256_test.cpp)
@@ -441,6 +452,10 @@ if(BUILD_TESTING)
   target_link_libraries(draft_aarch64_abi_tests PRIVATE draft_compiler)
   add_test(NAME draft_aarch64_abi_tests COMMAND draft_aarch64_abi_tests)
 
+  add_executable(draft_x86_64_abi_tests tests/x86_64_abi_test.cpp)
+  target_link_libraries(draft_x86_64_abi_tests PRIVATE draft_compiler)
+  add_test(NAME draft_x86_64_abi_tests COMMAND draft_x86_64_abi_tests)
+
   add_executable(draft_c_header_tests tests/c_header_test.cpp)
   target_link_libraries(draft_c_header_tests PRIVATE draft_compiler)
   add_test(NAME draft_c_header_tests COMMAND draft_c_header_tests)
@@ -454,9 +469,9 @@ if(BUILD_TESTING)
   add_test(NAME draft_toolchain_tests COMMAND draft_toolchain_tests)
 
   # These are intentionally host integration tests rather than fake toolchain
-  # tests. Each supported AArch64 host selects its matching Draft target and
-  # proves that real links, launches, debug contracts, and C ABI calls work.
-  if(DRAFT_NATIVE_AARCH64_HOST)
+  # tests. Each supported host selects its matching Draft target and proves
+  # that real links, launches, debug contracts, and C ABI calls work.
+  if(DRAFT_NATIVE_HOST)
     add_executable(
       draft_native_determinism_tests
       tests/native_determinism_test.cpp
@@ -627,7 +642,7 @@ if(BUILD_TESTING)
 
   # The TSV is the exhaustive repository-owned package inventory. This gate is
   # target-independent and provider-free: every tracked example package either
-  # checks successfully on both targets or fails with its declared unresolved
+  # checks successfully on every target or fails with its declared unresolved
   # synthesis diagnostic. Git is used only to prove that the data file has no
   # omissions; it works in both a primary checkout and a linked worktree.
   find_program(DRAFT_GIT_EXECUTABLE NAMES git)
@@ -701,6 +716,25 @@ if(BUILD_TESTING)
     draft_aarch64_linux_check_driver
     PROPERTIES PASS_REGULAR_EXPRESSION
       "checked package graph rooted at core_os"
+  )
+  add_test(
+    NAME draft_x86_64_linux_target_driver
+    COMMAND draftc target --target x86_64-linux
+  )
+  set_tests_properties(
+    draft_x86_64_linux_target_driver
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "identity draft-x86_64-linux-gnu-v1.*triple x86_64-unknown-linux-gnu"
+  )
+  add_test(
+    NAME draft_x86_64_linux_check_driver
+    COMMAND draftc check "${CMAKE_CURRENT_SOURCE_DIR}/examples/tetris"
+      --target x86_64-linux
+  )
+  set_tests_properties(
+    draft_x86_64_linux_check_driver
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "checked package graph rooted at tetris"
   )
 
   # Timing is a process-facing diagnostic contract. Exercise both report
@@ -812,12 +846,7 @@ if(BUILD_TESTING)
       WILL_FAIL TRUE
   )
 
-  if(DRAFT_NATIVE_AARCH64_HOST)
-    if(APPLE)
-      set(DRAFT_NATIVE_TEST_TARGET aarch64-macos)
-    else()
-      set(DRAFT_NATIVE_TEST_TARGET aarch64-linux)
-    endif()
+  if(DRAFT_NATIVE_HOST)
     add_test(
       NAME draft_resolve_build_reuses_final_graph
       COMMAND
@@ -853,8 +882,8 @@ if(BUILD_TESTING)
 
     # Every example-owned Draft test and benchmark runs from a private copy of
     # its declared workspace. The same target-qualified acceptance pins used by
-    # ordinary provider-free builds are therefore exercised on both native CI
-    # hosts, alongside the handwritten validation packages.
+    # ordinary provider-free builds are therefore exercised on every native CI
+    # host, alongside the handwritten validation packages.
     add_test(
       NAME draft_example_validation_matrix
       COMMAND

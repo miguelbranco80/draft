@@ -1,0 +1,27 @@
+// This target-selected half of core/time binds the x86-64 glibc timespec and
+// CLOCK_MONOTONIC_RAW interface. It owns no resource: each query writes one
+// stack record synchronously and returns an ordinary Duration. The clock ID and
+// layout are versioned Linux/libc facts rather than portable core policy. Draft
+// specification: sections 5-7 and 12, plus the x86-64 Linux target profile.
+package time
+
+import core/c_abi
+
+Timespec :: c struct {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
+foreign linux {
+    clock_gettime :: c proc(clock: c_abi.int, value: ^Timespec) -> c_abi.int
+}
+
+// Linux CLOCK_MONOTONIC_RAW is 4. Failure is a runtime invariant violation for
+// this selected target rather than a fabricated timestamp.
+pub monotonic_now :: proc() -> Duration {
+    value: Timespec
+    status := clock_gettime(4, &value)
+    assert(status == 0, "CLOCK_MONOTONIC_RAW is unavailable")
+    total := value.seconds * cast[i64](second) + value.nanoseconds
+    return cast[Duration](total)
+}

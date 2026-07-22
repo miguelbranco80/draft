@@ -4,7 +4,7 @@
 # every package is classified explicitly, including libraries, unresolved agent
 # fixtures, foreign-provider programs, and resolved programs. This process test
 # first proves that the matrix exactly covers the directories containing tracked
-# Draft or assembly sources, then checks every row for both supported targets.
+# Draft or assembly sources, then checks every row for every supported target.
 # Expected unresolved packages must fail for the one intended reason; any other
 # diagnostic is a regression rather than an acceptable negative example.
 
@@ -77,7 +77,7 @@ foreach(line IN LISTS matrix_lines)
     list(APPEND matrix_bench_packages "${package_relative}")
   endif()
 
-  foreach(target IN ITEMS aarch64-macos aarch64-linux)
+  foreach(target IN ITEMS aarch64-macos aarch64-linux x86_64-linux)
     execute_process(
       COMMAND "${DRAFTC}" check "${SOURCE_ROOT}/${workspace}"
         --root "${root}" --target "${target}"
@@ -180,4 +180,4 @@ if(NOT tracked_bench_packages STREQUAL matrix_bench_packages)
 endif()
 
 message(STATUS
-  "qualified ${row_count} example packages for both supported frontends")
+  "qualified ${row_count} example packages for all supported frontends")

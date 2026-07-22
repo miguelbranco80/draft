@@ -1,4 +1,4 @@
-// In-process LLVM-C adapter for deterministic AArch64 native emission.
+// In-process LLVM-C adapter for deterministic native emission.
 //
 // See llvm_object_emitter.h for the phase, ownership, and semantic firewall.
 // This implementation deliberately uses small local RAII owners around opaque
@@ -111,7 +111,7 @@ struct PassOptionsOwner {
 // Target registration mutates LLVM process-global registries and must finish
 // before any worker performs lookup. std::call_once gives every later worker a
 // happens-before edge; after this function the registered metadata is read-only.
-void initialize_aarch64_llvm() {
+void initialize_native_llvm() {
   static std::once_flag initialized;
   std::call_once(initialized, []() {
     LLVMInitializeAArch64TargetInfo();
@@ -119,6 +119,11 @@ void initialize_aarch64_llvm() {
     LLVMInitializeAArch64TargetMC();
     LLVMInitializeAArch64AsmParser();
     LLVMInitializeAArch64AsmPrinter();
+    LLVMInitializeX86TargetInfo();
+    LLVMInitializeX86Target();
+    LLVMInitializeX86TargetMC();
+    LLVMInitializeX86AsmParser();
+    LLVMInitializeX86AsmPrinter();
   });
 }
 
@@ -202,7 +207,7 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
     std::string_view module_name,
     std::string_view llvm_ir,
     LlvmObjectEmissionOptions options) {
-  initialize_aarch64_llvm();
+  initialize_native_llvm();
   if (LLVMIsMultithreaded() == 0) {
     return emission_failure(
         module_name,

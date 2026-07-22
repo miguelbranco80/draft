@@ -1,0 +1,47 @@
+// This target-selected half of core/os supplies x86-64 GNU/Linux constants
+// and C procedure declarations to the portable policy in package.draft. It
+// owns no resources or state: pointers are borrowed for one synchronous call,
+// and descriptor lifetime remains with the common File API.
+//
+// Numeric flags and signatures are facts of the versioned Linux target rather
+// than portable POSIX assumptions. Draft specification: sections 5-7 and 12,
+// plus the versioned x86-64 GNU/Linux target profile.
+package os
+
+import core/c_abi
+
+// Linux UAPI open(2) flags for the initial little-endian x86-64 GNU profile.
+pub open_append :: cast[c_abi.int](0x0400)
+pub open_create :: cast[c_abi.int](0x0040)
+pub open_truncate :: cast[c_abi.int](0x0200)
+pub open_exclusive :: cast[c_abi.int](0x0080)
+
+pub page_size :: proc() -> usize {
+    return 4096
+}
+
+// read fills mutable caller storage, while write only observes its source for
+// the call. Draft has no const-qualified pointer family, so both declarations
+// use [^]u8; the write nonmutation/nonretention contract permits passing
+// raw_data(string) without copying.
+foreign linux {
+    native_open as "open" :: c proc(
+        path: cstring,
+        flags: c_abi.int,
+        ..,
+    ) -> c_abi.int
+    native_read as "read" :: c proc(
+        descriptor: c_abi.int,
+        destination: [^]u8,
+        count: c_abi.size_t,
+    ) -> c_abi.ssize_t
+    native_write as "write" :: c proc(
+        descriptor: c_abi.int,
+        source: [^]u8,
+        count: c_abi.size_t,
+    ) -> c_abi.ssize_t
+    native_close as "close" :: c proc(descriptor: c_abi.int) -> c_abi.int
+    native_unlink as "unlink" :: c proc(path: cstring) -> c_abi.int
+    native_process_id as "getpid" :: c proc() -> c_abi.int
+    native_exit as "_exit" :: c proc(status: c_abi.int)
+}

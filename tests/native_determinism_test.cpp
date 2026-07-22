@@ -1,4 +1,4 @@
-// Byte-for-byte determinism gate across native AArch64 worker schedules.
+// Byte-for-byte determinism gate across native target worker schedules.
 //
 // Most toolchain tests use a recording process so failures describe our exact
 // argument contract without depending on a host installation. This test asks
@@ -80,8 +80,10 @@ using ArtifactSnapshot =
   return draft::make_aarch64_macos_profile();
 #elif defined(__linux__) && defined(__aarch64__)
   return draft::make_aarch64_linux_profile();
+#elif defined(__linux__) && defined(__x86_64__)
+  return draft::make_x86_64_linux_profile();
 #else
-#error "native determinism requires an implemented AArch64 host target"
+#error "native determinism requires an implemented host target"
 #endif
 }
 

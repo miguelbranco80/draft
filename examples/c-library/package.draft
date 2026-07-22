@@ -1,10 +1,10 @@
+// This package has no Draft `main`: it is a native library fixture. Its public
+// C surface exercises records, enums, unions, and callback pointers through
+// the exact same selected C ABI classifier used by call lowering.
 package c_library
 
 import core/runtime
 
-// This package has no Draft `main`: it is a native library fixture. Its public
-// C surface exercises records, enums, unions, and callback pointers through
-// the exact same selected AArch64 C ABI classifier used by call lowering.
 Pair :: c struct {
     left: i32,
     right: i32,
@@ -18,8 +18,8 @@ Choice :: c enum {
 }
 
 // C's default enum backing never narrows below `int` width. A nonnegative set
-// uses the unsigned form, and a value beyond u32 widens to 64 bits on both
-// current AArch64 C ABIs. These types keep that target rule visible in the real
+// uses the unsigned form, and a value beyond u32 widens to 64 bits on every
+// current LP64 C ABI. These types keep that target rule visible in the real
 // generated-header and C-client boundary below.
 Unsigned_Choice :: c enum {
     none,
@@ -54,10 +54,10 @@ Number :: c union {
     decimal: f64,
 }
 
-// These records deliberately select the remaining AArch64 aggregate classes.
-// The C client below calls every one through a real shared library, so changes
-// to packing, register classification, or sret handling cannot hide behind an
-// LLVM text snapshot.
+// These records deliberately select distinct aggregate classes on AArch64 and
+// SysV AMD64. The C client below calls every one through a real shared library,
+// so changes to packing, register classification, or sret handling cannot hide
+// behind an LLVM text snapshot.
 Odd_Bytes :: c struct {
     bytes: [3]u8,
 }
@@ -71,17 +71,18 @@ Float_Pair :: c struct {
     right: f32,
 }
 
-// A three-lane half-precision record is still an HFA. Its six-byte physical
-// payload is especially useful here: treating it as an ordinary small record
-// would put the argument in an integer register and disagree with Clang.
+// A three-lane half-precision record is an AArch64 HFA and a SysV SSE
+// aggregate. Its six-byte payload is especially useful here: treating it as an
+// ordinary integer record would disagree with Clang on every current target.
 Half_Triple :: c struct {
     values: [3]f16,
 }
 
-// AAPCS64 homogeneous-aggregate classification composes through C unions and
-// nested records. Union members overlap, so their lane count is the maximum of
-// the members rather than their sum. Nested_Floats is therefore four
-// f32 lanes: two from overlay plus two from tail.
+// AAPCS64 homogeneous classification and SysV eightbyte classification both
+// compose through C unions and nested records. Union members overlap, so the
+// AArch64 lane count is the maximum of the members rather than their sum.
+// Nested_Floats is therefore four f32 lanes on AArch64 and two SSE eightbytes
+// on SysV AMD64.
 Float_Overlay :: c union {
     scalar: f32,
     pair: [2]f32,

@@ -58,8 +58,8 @@ pub Assertion_Failure_Proc :: proc(
 
 // Field order is versioned runtime ABI, not an implementation convenience.
 // Keep this declaration synchronized with the layout facts tested by the
-// backend. Provider records are two pointers each on both current AArch64
-// profiles.
+// backend. Provider records are two pointers each on every current native
+// profile.
 pub Context :: c struct {
     allocator: Allocator,
     temp_allocator: Allocator,

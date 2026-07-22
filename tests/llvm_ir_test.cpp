@@ -46,8 +46,8 @@ struct EmittedFixture {
 // Runs the complete agent-free semantic/MIR/LLVM path for one in-memory file.
 // Keeping this helper local makes byte-for-byte comparisons independent from
 // filesystem order and from the native toolchain adapter.
-[[nodiscard]] EmittedFixture emit_fixture(
-    std::string text,
+[[nodiscard]] EmittedFixture emit_fixture_for_target(
+    std::string text, const draft::TargetProfile &target,
     std::vector<draft::SourceExpansionMap> expansion_maps = {}) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -60,8 +60,6 @@ struct EmittedFixture {
       "package.draft [resolved]", std::move(text), std::move(expansion_maps));
   file.syntax.emplace(draft::parse_source_file(sources, file.source, diagnostics));
   loaded.files.push_back(std::move(file));
-
-  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
   draft::PackageBodyWorkState bodies = draft::check_package_bodies(
@@ -97,6 +95,17 @@ struct EmittedFixture {
   result.source_correlations = std::move(module.source_correlations);
   result.diagnostics = draft::render_diagnostics(sources, diagnostics);
   return result;
+}
+
+// Most historical snapshots exercise Darwin AArch64. Target-specific ABI
+// tests call the explicit helper above so adding another backend cannot quietly
+// change the baseline target of unrelated expectations.
+[[nodiscard]] EmittedFixture
+emit_fixture(std::string text,
+             std::vector<draft::SourceExpansionMap> expansion_maps = {}) {
+  return emit_fixture_for_target(std::move(text),
+                                 draft::make_aarch64_macos_profile(),
+                                 std::move(expansion_maps));
 }
 
 void test_generated_debug_locations_are_hermetic(TestState &state) {
@@ -522,8 +531,8 @@ main :: proc() -> i64 {
 
 // A C variadic call remains genuinely variadic in LLVM. The semantic checker
 // has already changed every unnamed operand to its C promoted type, leaving
-// LLVM's target lowering to choose the Darwin or GNU AArch64 physical
-// register/stack locations from an ordinary vararg function type.
+// LLVM's target lowering to choose the Darwin/GNU AArch64 or SysV AMD64
+// physical register/stack locations from an ordinary vararg function type.
 void test_c_variadic_call_emits_promoted_tail(TestState &state) {
   const EmittedFixture emitted = emit_fixture(R"draft(package c_vararg_llvm
 
@@ -554,6 +563,107 @@ invoke :: proc(
       std::string::npos);
   EXPECT(state, emitted.text.find(", double ") != std::string::npos);
   EXPECT(state, emitted.text.find(", ptr ") != std::string::npos);
+}
+
+// SysV AMD64 decomposes a small C record into one or two INTEGER/SSE
+// parameters, except when the complete record no longer fits the registers
+// remaining at its source position. The latter case must use LLVM byval so the
+// backend performs the ABI-mandated stack copy; treating it as an ordinary
+// pointer would pass an address in a register and disagree with C.
+void test_sysv_aggregate_signatures_and_calls(TestState &state) {
+  const draft::TargetProfile target = draft::make_x86_64_linux_profile();
+  const EmittedFixture emitted = emit_fixture_for_target(R"draft(
+package sysv_aggregate
+
+Mixed :: c struct {
+    floating: f64,
+    integer: i32,
+}
+
+One_Integer :: c struct {
+    value: i64,
+}
+
+Integer_Pair :: c struct {
+    first: i64,
+    second: i64,
+}
+
+Large :: c struct {
+    values: [3]i64,
+}
+
+export mixed_identity as "draft_mixed_identity" :: c proc(
+    value: Mixed,
+) -> Mixed {
+    return value
+}
+
+export large_identity as "draft_large_identity" :: c proc(
+    value: Large,
+) -> Large {
+    return value
+}
+
+foreign libc {
+    after_six as "draft_after_six" :: c proc(
+        a, b, c, d, e, f: i64,
+        value: Mixed,
+    ) -> Mixed
+    pair_after_five as "draft_pair_after_five" :: c proc(
+        a, b, c, d, e: i64,
+        value: Integer_Pair,
+    ) -> Integer_Pair
+    one_after_five as "draft_one_after_five" :: c proc(
+        a, b, c, d, e: i64,
+        value: One_Integer,
+    ) -> One_Integer
+}
+
+call_after_six :: proc(value: Mixed) -> Mixed {
+    return after_six(1, 2, 3, 4, 5, 6, value)
+}
+
+call_pair_after_five :: proc(value: Integer_Pair) -> Integer_Pair {
+    return pair_after_five(1, 2, 3, 4, 5, value)
+}
+
+call_one_after_five :: proc(value: One_Integer) -> One_Integer {
+    return one_after_five(1, 2, 3, 4, 5, value)
+}
+)draft",
+                                                         target);
+
+  if (!emitted.ok)
+    std::cerr << emitted.diagnostics;
+  EXPECT(state, emitted.ok);
+  EXPECT(state, emitted.text.find(
+                    "define { double, i32 } @\"draft_mixed_identity\""
+                    "(double %arg0.0, i32 %arg0.1)") != std::string::npos);
+  EXPECT(state,
+         emitted.text.find("define void @\"draft_large_identity\"(ptr sret(") !=
+             std::string::npos);
+  EXPECT(state,
+         emitted.text.find("@\"draft_after_six\"(i64, i64, i64, i64, i64, i64, "
+                           "ptr byval(") != std::string::npos);
+  EXPECT(state, emitted.text.find(
+                    "@\"draft_pair_after_five\"(i64, i64, i64, i64, i64, "
+                    "ptr byval(") != std::string::npos);
+  EXPECT(state,
+         emitted.text.find(
+             "@\"draft_one_after_five\"(i64, i64, i64, i64, i64, i64)") !=
+             std::string::npos);
+
+  // LLVM parsing and x86 object emission are part of this test. A textual ABI
+  // spelling that violates LLVM's attribute or aggregate rules must fail here
+  // before native Linux CI reaches the independent C-client oracle.
+  const draft::LlvmObjectEmissionResult object =
+      draft::emit_llvm_object_in_process(target, "sysv-aggregate", emitted.text,
+                                         {});
+  if (!object.ok)
+    std::cerr << object.failure << '\n';
+  EXPECT(state, object.ok);
+  EXPECT(state, !object.bytes.empty());
 }
 
 // Verifies that tuple extraction uses the tuple's logical member numbers even
@@ -1075,7 +1185,7 @@ main :: proc() -> int {
   EXPECT(state, module.text.find(
       "define internal ptr @__draft.ensure_thread_context") !=
       std::string::npos);
-  if (target.facts.abi == "aapcs64_gnu") {
+  if (target.facts.os == "linux") {
     EXPECT(state, module.text.find(
         "%draft.runtime.PthreadOnce = type { i32 }") != std::string::npos);
     EXPECT(state, module.text.find(
@@ -1147,11 +1257,13 @@ int main() {
   test_multistep_call_lowering_keeps_debug_locations(state);
   test_static_argument_pack_emits_fixed_signature(state);
   test_c_variadic_call_emits_promoted_tail(state);
+  test_sysv_aggregate_signatures_and_calls(state);
   test_padded_tuple_extraction_uses_logical_indices(state);
   test_scalar_executable_module(
       state, draft::make_aarch64_macos_profile());
   test_scalar_executable_module(
       state, draft::make_aarch64_linux_profile());
+  test_scalar_executable_module(state, draft::make_x86_64_linux_profile());
   if (state.failures != 0) {
     std::cerr << state.failures << " LLVM IR expectation(s) failed\n";
     return EXIT_FAILURE;

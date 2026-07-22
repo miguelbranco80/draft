@@ -3,7 +3,7 @@
 // Header snapshots and LLVM ABI checks are useful because they report a small,
 // precise failure. They still cannot prove that the independent C compiler,
 // platform linker, dynamic loader, and Draft-generated code all agree. On each
-// implemented AArch64 host this test builds the checked-in c-library package in
+// implemented native host this test builds the checked-in c-library package in
 // the native `.dylib` or `.so` format, emits its real target-selected header,
 // compiles the checked-in C client, and launches that client.
 
@@ -48,7 +48,7 @@ struct TestState {
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
 // Selects the Draft ABI and object format that the current process can consume.
-// The enclosing CMake condition admits only supported native AArch64 hosts, so
+// The enclosing CMake condition admits only supported native hosts, so
 // another platform is a configuration error rather than a reason to skip the
 // independent C ABI oracle.
 [[nodiscard]] draft::TargetProfile native_host_target() {
@@ -56,8 +56,10 @@ struct TestState {
   return draft::make_aarch64_macos_profile();
 #elif defined(__linux__) && defined(__aarch64__)
   return draft::make_aarch64_linux_profile();
+#elif defined(__linux__) && defined(__x86_64__)
+  return draft::make_x86_64_linux_profile();
 #else
-#error "C client integration requires an implemented AArch64 host target"
+#error "C client integration requires an implemented host target"
 #endif
 }
 

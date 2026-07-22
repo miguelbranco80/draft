@@ -8,8 +8,9 @@ in `tests/`, where diagnostics and source ranges can be checked directly;
 [`runtime-checks`](runtime-checks/package.draft) is the broad native conformance
 program.
 
-The native backends target AArch64 macOS and AArch64 GNU/Linux. On a matching
-host, a provider-free example can be checked or built with:
+The native backends target AArch64 macOS, AArch64 GNU/Linux, and x86-64
+GNU/Linux. On a matching host, a provider-free example can be checked or built
+with:
 
 ```sh
 build/draftc check examples/language-tour
@@ -48,9 +49,9 @@ ctest --test-dir build -L examples --output-on-failure
 ```
 
 The ordinary unfiltered CTest command used by CI includes this label. Frontend
-qualification runs for both supported targets on every host. Native execution,
+qualification runs for all supported targets on every host. Native execution,
 C-client/provider linking, and Draft test/benchmark execution are registered on
-matching AArch64 macOS and Linux hosts; unsupported hosts omit those native
+matching macOS/Linux architecture pairs; unsupported hosts omit those native
 tests instead of reporting false skips.
 
 ## Start here
@@ -98,8 +99,8 @@ policy rather than missing backend features.
 | [`nested-procedures`](nested-procedures/) | Static nested procedures, recursion, lexical compile-time bindings, parametric nesting, escaping procedure pointers, context propagation, and collision-free backend names. |
 | [`packages`](packages/) | Folder packages, file-local imports and aliases, `pub` declarations, package constants, qualified names, and compile-time `when`. |
 | [`packages-generic`](packages-generic/) | Cross-package parametric types and procedures, inferred value parameters, layout computation, transitive instantiation, and private consumer types. |
-| [`assembly`](assembly/) | Typed parsed AArch64 assembly with integer, flags, memory, floating conversion, and SIMD register classes. |
-| [`external-assembly`](external-assembly/) | Target-qualified Mach-O/ELF `.s` discovery and one C-ABI symbol implemented by separate assembly files. |
+| [`assembly`](assembly/) | Typed parsed AArch64 assembly with integer, flags, memory, floating conversion, and SIMD register classes; compile-time selection leaves a valid no-assembly program on x86-64. |
+| [`external-assembly`](external-assembly/) | Target-qualified Mach-O/AArch64 ELF/x86-64 ELF `.s` discovery and one C-ABI symbol implemented by separate assembly files. |
 | [`c-interop`](c-interop/) | A small foreign libc import and a Draft procedure exported with a C linker name. |
 | [`c-library`](c-library/) | The full Draft-as-C-library fixture: generated headers, C-compatible records, enums, unions, callbacks, aggregates, TLS, and re-entry into ordinary Draft code. It is driven by the C client integration test rather than as a standalone executable. |
 | [`foreign-provider`](foreign-provider/) | A foreign block supplied by an explicitly configured external object provider. It requires the matching provider artifact when built. |

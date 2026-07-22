@@ -6,17 +6,17 @@ owned cell surfaces and differential ANSI/VT output. There is no ncurses,
 third-party dependency, background thread, or platform-specific application
 code.
 
-Build and run it on AArch64 macOS:
+Build and run it on a matching native target, for example AArch64 macOS:
 
 ```sh
 build/draftc build examples/tetris --target aarch64-macos -O2 -o /tmp/draft-tetris
 /tmp/draft-tetris
 ```
 
-On an AArch64 GNU/Linux host, select `--target aarch64-linux` instead. Use a
-terminal of 50 columns by 24 rows or larger. The game follows terminal resizes;
-a smaller terminal displays a bounded size notice instead of corrupting the
-screen.
+On GNU/Linux, select `--target aarch64-linux` or `--target x86_64-linux` for
+the host architecture. Use a terminal of 50 columns by 24 rows or larger. The
+game follows terminal resizes; a smaller terminal displays a bounded size
+notice instead of corrupting the screen.
 
 ## Controls
 

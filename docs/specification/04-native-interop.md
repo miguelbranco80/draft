@@ -15,21 +15,24 @@ its operands and effects on machine state.
 
 ```draft
 add :: proc(a, b: u64) -> u64 {
-    return asm x86_64 -> u64 {
-        in  rax = a
-        in  rcx = b
-        out rax
+    return asm aarch64 -> u64 {
+        in  x0 = a
+        in  x1 = b
+        out x0
         clobber flags
 
-        add rax, rcx
+        add x0, x0, x1
     }
 }
 ```
 
-The selected target profile names one versioned parsed-assembly architecture
-and its instruction and operand grammar. `asm architecture` must match that
-profile; unsupported architectures, instructions, operands, registers, or
-features are compile errors.
+The selected target profile may name one versioned parsed-assembly architecture
+and its instruction and operand grammar. Where it does, `asm architecture`
+must match that profile; unsupported architectures, instructions, operands,
+registers, or features are compile errors. A profile may support native code
+and target-qualified package assembly without a parsed dialect. On such a
+profile every selected `asm` construct is a compile error; an unselected
+compile-time branch contributes no assembly site.
 
 The initial concrete grammar is recorded in
 [the AArch64 parsed assembly profile](../targets/aarch64-macos-assembly.md). That profile
@@ -61,10 +64,10 @@ no result and may not declare value-producing `out` operands; externally visible
 memory effects and machine-state clobbers remain explicit:
 
 ```draft
-asm x86_64 {
+asm aarch64 {
     clobber memory
 
-    mfence
+    dmb ish
 }
 ```
 

@@ -1,13 +1,10 @@
 // Validation source selection, signature proof, ordering, and harness tests.
 //
 // Most cases in this file exercise target-independent validation semantics by
-// compiling for the repository's AArch64 target on the current operating
-// system. The checked-harness case additionally builds and executes the result
-// when the test process itself is running on AArch64. Keeping that execution
-// conditional lets x86-64 sanitizer jobs retain the semantic coverage without
-// pretending that they can execute a cross-compiled AArch64 artifact. The two
-// native AArch64 CI jobs are responsible for making the execution path required
-// on both supported operating systems.
+// compiling for the Draft target matching the current host. The checked-harness
+// case additionally builds and executes the result on each implemented native
+// host pair. Cross-host configurations retain semantic coverage without
+// pretending they can execute an artifact for another OS or architecture.
 
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
@@ -50,18 +47,19 @@ struct TestState {
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
-// Select the AArch64 target belonging to the host operating system. Validation
-// source selection includes the target identity, so a Linux test must compile
-// the `@aarch64-linux` fixture rather than silently reusing a Mach-O fixture.
-// This function deliberately does not inspect the host CPU: x86-64 Linux can
-// still type-check and lower an AArch64 Linux program, but it cannot execute it.
+// Select the implemented target belonging to the host OS and architecture.
+// Validation source selection includes the target identity, so a Linux test
+// must compile the matching target-qualified fixture rather than silently
+// reusing a Mach-O or different-architecture source.
 [[nodiscard]] draft::TargetProfile validation_target() {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
   return draft::make_aarch64_macos_profile();
-#elif defined(__linux__)
+#elif defined(__linux__) && defined(__aarch64__)
   return draft::make_aarch64_linux_profile();
+#elif defined(__linux__) && defined(__x86_64__)
+  return draft::make_x86_64_linux_profile();
 #else
-#error "validation discovery tests require a supported Apple or Linux host"
+#error "validation discovery tests require an implemented host target"
 #endif
 }
 
@@ -78,7 +76,7 @@ struct TestState {
 // cross-host builds need an explicit sysroot and cannot prove execution.
 [[nodiscard]] constexpr bool can_execute_validation_target() {
 #if (defined(__APPLE__) && defined(__aarch64__)) || \
-    (defined(__linux__) && defined(__aarch64__))
+    (defined(__linux__) && (defined(__aarch64__) || defined(__x86_64__)))
   return true;
 #else
   return false;
@@ -228,9 +226,9 @@ void test_checked_test_harness(TestState &state) {
     }
   }
 
-  // The AArch64 jobs must prove the emitted binary and validation report. An
-  // x86-64 sanitizer job stops after lowering because executing this target
-  // would require emulation and would no longer be a native integration test.
+  // Every implemented native host must prove the emitted binary and validation
+  // report. Cross-target hosts stop after lowering because execution would
+  // require emulation and no longer provide a native integration result.
   if (can_execute_validation_target()) {
     draft::NativeBuildOptions native_options;
     native_options.build_directory = (root / "native-build").string();

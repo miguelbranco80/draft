@@ -1,18 +1,18 @@
-// Versioned target-profile facts for the bootstrap AArch64 implementations.
+// Versioned target-profile facts for the bootstrap native implementations.
 //
 // The profile is the single authority for facts that would otherwise leak host
 // assumptions into semantic analysis, ABI lowering, assembly parsing, object
-// emission, or linking. It contains no LLVM objects and performs no tool lookup;
-// the LLVM and linker adapters consume these stable strings and independently
-// verify compatibility with the selected host toolchain.
+// emission, or linking. It contains no LLVM objects and performs no tool
+// lookup; the LLVM and linker adapters consume these stable strings and
+// independently verify compatibility with the selected host toolchain.
 //
 // Each supported target has one complete constructor.  Shared architectural
 // facts are assembled here, while operating-system ABI, object, linker, and
 // runtime facts remain explicit in the individual constructor.  This is the
 // intended firewall against target conditionals scattered through semantic or
 // backend code.
-// Relevant specification: docs/specification/02-types-memory-runtime.md "Target profile" and
-// docs/specification/04-native-interop.md sections 11-12.
+// Relevant specification: docs/specification/02-types-memory-runtime.md "Target
+// profile" and docs/specification/04-native-interop.md sections 11-12.
 
 #pragma once
 
@@ -74,6 +74,11 @@ struct TargetProfile {
   TargetRelocationModel relocation_model = TargetRelocationModel::PositionIndependent;
   TargetCodeModel code_model = TargetCodeModel::Small;
   TargetTlsModel tls_model = TargetTlsModel::GeneralDynamic;
+  // Parsed assembly is an independently versioned target capability. A false
+  // value requires the following architecture, dialect, and instruction
+  // vocabulary to remain empty, so a machine-code backend cannot accidentally
+  // imply that Draft source may use a parser which has not been implemented.
+  bool supports_parsed_assembly = false;
   std::string parsed_assembly_architecture;
   std::string parsed_assembly_dialect;
   // This sorted list is the closed mnemonic vocabulary of the parsed dialect.
@@ -101,6 +106,11 @@ struct TargetProfile {
 // concrete 4 KiB-page, glibc-based distribution contract rather than claiming
 // that one profile describes every valid AArch64 Linux kernel/libc pairing.
 [[nodiscard]] TargetProfile make_aarch64_linux_profile();
+
+// Constructs the initial x86-64 GNU/Linux profile. It shares the selected
+// Ubuntu/glibc system boundary with the AArch64 Linux profile while owning a
+// distinct SysV AMD64 C ABI and LLVM machine contract.
+[[nodiscard]] TargetProfile make_x86_64_linux_profile();
 
 // Resolves the stable command-line selector for a built-in profile.  The
 // default remains aarch64-macos for compatibility.  Returning a value rather

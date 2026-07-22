@@ -360,7 +360,7 @@ gate.
     declaration/body generations, semantic retry counters, package-wide HIR/MIR
     ownership, closed-graph assumptions in semantic code, and stale docs/tests.
     Update the Draft coding skill to teach only the final compiler behavior.
-    Run focused tests, the full suite, sanitizers, both target checks, native
+    Run focused tests, the full suite, sanitizers, all target checks, native
     parity/determinism, resolved-provider fixtures, and a large-source timing
     qualification at several worker counts.
 

@@ -161,11 +161,11 @@ TypeStore::TypeStore(std::uint32_t pointer_bits) : pointer_bits_(pointer_bits) {
   builtins_.calling_convention_type = add_compiler_enum(
       "Calling_Convention", builtins_.u8_type, 2);
   builtins_.target_architecture_type = add_compiler_enum(
-      "Target_Architecture", builtins_.u8_type, 1);
+      "Target_Architecture", builtins_.u8_type, 2);
   builtins_.target_operating_system_type = add_compiler_enum(
       "Target_Operating_System", builtins_.u8_type, 2);
   builtins_.target_abi_type = add_compiler_enum(
-      "Target_ABI", builtins_.u8_type, 2);
+      "Target_ABI", builtins_.u8_type, 3);
   builtins_.target_byte_order_type = add_compiler_enum(
       "Target_Byte_Order", builtins_.u8_type, 2);
   builtins_.target_object_format_type = add_compiler_enum(

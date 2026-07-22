@@ -1,0 +1,53 @@
+// This target-selected half of core/thread provides glibc 2.39's x86-64
+// pthread handles, opaque synchronization storage, and C entry points. Thread,
+// Mutex, and Condition own native resources only after the common API reports
+// successful initialization; this file supplies physical representation and
+// no lifetime policy. Draft specification: sections 5-7 and 12, plus the
+// versioned x86-64 GNU/Linux target profile.
+package thread
+
+import core/c_abi
+
+// glibc x86-64 defines pthread_t as unsigned long. Keeping the scalar identity
+// matters to C declarations even though it occupies one pointer-width register.
+Pthread_Handle :: uintptr
+
+pub Thread :: c struct {
+    handle: Pthread_Handle,
+}
+
+// glibc 2.39 x86-64 gives pthread_mutex_t 40 bytes and pthread_cond_t 48 bytes,
+// both aligned to eight. Leading i64 fields establish alignment; pthread is the
+// only code permitted to interpret the remaining opaque bytes.
+pub Mutex :: c struct {
+    alignment: i64,
+    opaque: [32]u8,
+}
+
+pub Condition :: c struct {
+    alignment: i64,
+    opaque: [40]u8,
+}
+
+foreign linux {
+    pthread_create :: c proc(
+        thread: ^Pthread_Handle,
+        attributes: rawptr,
+        start: Start_Routine,
+        user: rawptr,
+    ) -> c_abi.int
+    pthread_join :: c proc(thread: Pthread_Handle, result: ^rawptr) -> c_abi.int
+    pthread_self :: c proc() -> Pthread_Handle
+    sched_yield :: c proc() -> c_abi.int
+    pthread_mutex_init :: c proc(mutex: ^Mutex, attributes: rawptr) -> c_abi.int
+    pthread_mutex_destroy :: c proc(mutex: ^Mutex) -> c_abi.int
+    pthread_mutex_lock :: c proc(mutex: ^Mutex) -> c_abi.int
+    pthread_mutex_trylock :: c proc(mutex: ^Mutex) -> c_abi.int
+    pthread_mutex_unlock :: c proc(mutex: ^Mutex) -> c_abi.int
+    pthread_cond_init :: c proc(condition: ^Condition, attributes: rawptr) -> c_abi.int
+    pthread_cond_destroy :: c proc(condition: ^Condition) -> c_abi.int
+    pthread_cond_wait :: c proc(condition: ^Condition, mutex: ^Mutex) -> c_abi.int
+    pthread_cond_signal :: c proc(condition: ^Condition) -> c_abi.int
+    pthread_cond_broadcast :: c proc(condition: ^Condition) -> c_abi.int
+    nanosleep :: c proc(requested: ^Timespec, remaining: ^Timespec) -> c_abi.int
+}

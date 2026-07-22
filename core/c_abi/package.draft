@@ -2,11 +2,12 @@
 // binary interface. These aliases keep a foreign declaration readable without
 // turning `c` into both a language modifier and an unrelated package name.
 //
-// The current AArch64 Darwin and GNU profiles are both LP64, so this common
-// source can state their widths directly. A future target with a different C
-// data model must select its own definitions rather than silently reusing this
-// file. These are ordinary Draft aliases: source tools can inspect every width,
-// and the package owns no runtime state or native resource.
+// The current AArch64 Darwin, AArch64 GNU/Linux, and x86-64 GNU/Linux profiles
+// are LP64, so this common source can state their widths directly. A future
+// target with a different C data model must select its own definitions rather
+// than silently reusing this file. These are ordinary Draft aliases: source
+// tools can inspect every width, and the package owns no runtime state or
+// native resource.
 // Draft specification: sections 7 and 12, plus the selected target profile.
 package c_abi
 

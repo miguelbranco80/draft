@@ -181,6 +181,55 @@ export wrap_narrow :: c proc(
   EXPECT(state, llvm.text.find("zeroext") == std::string::npos);
 }
 
+// SysV AMD64 extends integer arguments narrower than 32 bits at the public C
+// boundary. These attributes are part of the ABI contract, so declarations,
+// definitions, and calls must agree rather than relying on incidental upper
+// register contents.
+void test_x86_64_narrow_integer_abi(TestState &state) {
+  CheckedSource source(R"draft(
+package native
+
+foreign linux {
+    narrow :: c proc(signed: i8, unsigned: u16) -> i8
+}
+
+export wrap_narrow :: c proc(
+    signed: i8,
+    unsigned: u16,
+) -> i8 {
+    return narrow(signed, unsigned)
+}
+)draft",
+                       draft::make_x86_64_linux_profile());
+
+  const draft::NativeInteropResult native = draft::validate_native_interop(
+      source.semantics.package, source.bodies.procedures, source.abi,
+      source.target.facts, source.diagnostics);
+  const draft::test_support::LoweredProcedureProducts mir =
+      draft::test_support::lower_procedure_products(
+          source.bodies.package, source.bodies.procedures, source.diagnostics);
+  draft::LlvmIrOptions options;
+  options.package = {"workspace", "native"};
+  const draft::LlvmIrResult llvm =
+      draft::test_support::emit_package_llvm_module(
+          source.target, source.sources, options, source.bodies.package,
+          source.abi, source.semantics.global_initializers, mir.procedures,
+          source.diagnostics);
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, native.ok);
+  EXPECT(state, mir.ok);
+  EXPECT(state, llvm.ok);
+  EXPECT(state,
+         llvm.text.find(
+             "declare signext i8 @\"narrow\"(i8 signext, i16 zeroext)") !=
+             std::string::npos);
+  EXPECT(state, llvm.text.find("define signext i8 @\"wrap_narrow\""
+                               "(i8 signext %arg0, i16 zeroext %arg1)") !=
+      std::string::npos);
+}
+
 void test_invalid_c_boundaries(TestState &state) {
   CheckedSource source(R"draft(
 package native
@@ -439,6 +488,7 @@ int main() {
   TestState state;
   test_valid_import_and_export(state);
   test_linux_narrow_integer_abi(state);
+  test_x86_64_narrow_integer_abi(state);
   test_invalid_c_boundaries(state);
   test_aggregate_c_abi_lowering(state);
   test_invalid_c_aggregate_member(state);

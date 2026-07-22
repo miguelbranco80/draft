@@ -74,8 +74,10 @@ struct ArtifactCase {
   return draft::make_aarch64_macos_profile();
 #elif defined(__linux__) && defined(__aarch64__)
   return draft::make_aarch64_linux_profile();
+#elif defined(__linux__) && defined(__x86_64__)
+  return draft::make_x86_64_linux_profile();
 #else
-#error "native backend parity requires an implemented AArch64 host target"
+#error "native backend parity requires an implemented host target"
 #endif
 }
 

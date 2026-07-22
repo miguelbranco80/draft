@@ -3,7 +3,7 @@
 # The Draft test command owns evidence below its workspace. Copying the package
 # into this process-unique CMake binary directory keeps simultaneous worktrees
 # and source checkouts clean while imports continue to use draftc's configured
-# core distribution. The test selects the host's exact AArch64 profile, which
+# core distribution. The test selects the host's exact native profile, which
 # also links every target-qualified termios and poll declaration against the
 # actual platform libc without mutating the runner's terminal mode.
 
