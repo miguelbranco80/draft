@@ -81,7 +81,8 @@ struct NativeBuildOptions {
   // Empty selects dsymutil from the linked LLVM distribution.
   std::string dsymutil_path;
   // The macOS host default is Apple's libtool, whose -D switch removes
-  // timestamps and ownership. ELF selects deterministic LLVM ar instead.
+  // timestamps and ownership. ELF selects deterministic LLVM ar; COFF selects
+  // llvm-lib from the linked LLVM distribution.
   std::string archiver_path = "libtool";
   std::string build_directory;
   std::string output_path;
@@ -127,13 +128,18 @@ struct NativeBuildResult {
   // to this digest without making a derived file part of program identity.
   std::string source_correlation_path;
   Sha256Digest source_correlation_digest;
-  // Mach-O executables and dynamic libraries have a conventional sibling dSYM.
-  // The digest covers the path-stable bundle after removing dsymutil's
-  // path-bearing relocation cache. ELF and other artifact kinds leave these
-  // fields empty/zero because their DWARF remains in the primary artifact,
-  // object members, or emitted assembly.
+  // Mach-O executables/dylibs publish a sibling dSYM; PE executables/DLLs
+  // publish a sibling deterministic PDB. The digest covers the canonical
+  // companion bytes/tree. ELF and non-linked artifacts leave these fields
+  // empty because their DWARF remains in the primary artifact or members.
   std::string debug_symbols_path;
   Sha256Digest debug_symbols_digest;
+  // A Windows DLL also publishes the import library required by an ordinary
+  // statically linked C client. Other artifact kinds and targets leave these
+  // fields empty. The library is a first-class output rather than an implicit
+  // linker side effect, so callers can copy and verify the exact companion.
+  std::string import_library_path;
+  Sha256Digest import_library_digest;
   // Canonical physical roots verified for the exact manifest rows. This lets
   // an embedding build system deploy them without the compiler inventing a
   // target-specific output layout. Empty on failure.
@@ -141,8 +147,9 @@ struct NativeBuildResult {
 };
 
 // Emits each complete semantic-package module in-process and
-// materializes the requested native artifact. Object mode performs a
-// relocatable link over every layout object; archive and dynamic-library modes
+// materializes the requested native artifact. Mach-O/ELF object mode performs
+// a relocatable link over every layout object; COFF object mode requires one
+// native input because COFF defines no partial link. Archive and dynamic modes
 // retain every LLVM and package-assembly object; assembly mode produces a
 // directory with one collision-free source per unit/input. Remaining host-tool
 // arguments are passed directly to exec rather than through a shell. Runtime

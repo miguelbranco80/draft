@@ -149,8 +149,8 @@ Pass `--target aarch64-linux`, `--target x86_64-linux`, or
 `--target x86_64-windows` when selecting those profiles; macOS is the
 compatibility default. Run all four target checks for portable code. Matching
 Apple Silicon, AArch64 Linux, and x86-64 Linux hosts can execute current Draft
-artifacts; Windows currently supports checking and COFF object emission but not
-PE linking or hosted execution. See
+artifacts; Windows currently supports checking and PE/COFF artifact publication
+but not the hosted runtime/core or native execution qualification. See
 [workflow-and-testing.md](references/workflow-and-testing.md) for negative
 compiler tests, CMake/CTest, sanitizer, example, and documentation routing.
 

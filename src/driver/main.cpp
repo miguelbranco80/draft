@@ -691,18 +691,28 @@ int expand_package(
   std::filesystem::path output;
   switch (artifact_kind) {
   case draft::NativeArtifactKind::Executable:
-    output = artifact_directory / package_name;
+    output = artifact_directory /
+        (package_name +
+         (target.facts.object_format == "coff" ? ".exe" : ""));
     break;
   case draft::NativeArtifactKind::Object:
-    output = artifact_directory / (package_name + ".o");
+    output = artifact_directory /
+        (package_name +
+         (target.facts.object_format == "coff" ? ".obj" : ".o"));
     break;
   case draft::NativeArtifactKind::StaticLibrary:
-    output = artifact_directory / ("lib" + package_name + ".a");
+    output = target.facts.object_format == "coff"
+        ? artifact_directory / (package_name + ".lib")
+        : artifact_directory / ("lib" + package_name + ".a");
     break;
   case draft::NativeArtifactKind::DynamicLibrary:
-    output = artifact_directory /
-        ("lib" + package_name +
-         (target.facts.object_format == "elf" ? ".so" : ".dylib"));
+    if (target.facts.object_format == "coff") {
+      output = artifact_directory / (package_name + ".dll");
+    } else {
+      output = artifact_directory /
+          ("lib" + package_name +
+           (target.facts.object_format == "elf" ? ".so" : ".dylib"));
+    }
     break;
   case draft::NativeArtifactKind::Assembly:
     output = artifact_directory / (package_name + "-assembly");
@@ -734,6 +744,9 @@ int expand_package(
   std::cout << "built " << built.output_path << '\n';
   if (!built.debug_symbols_path.empty()) {
     std::cout << "debug symbols " << built.debug_symbols_path << '\n';
+  }
+  if (!built.import_library_path.empty()) {
+    std::cout << "import library " << built.import_library_path << '\n';
   }
   return true;
 }

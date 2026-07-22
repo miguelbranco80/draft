@@ -112,6 +112,57 @@ draft::CompileWorkspaceResult compile_fixture(
       diagnostics);
 }
 
+// Builds a self-contained Windows package below the test's private directory.
+// It deliberately needs no core package: this toolchain test isolates COFF
+// object naming, package assembly, PE linker arguments, and companion
+// publication before the hosted Windows core/runtime integration layer runs.
+draft::CompileWorkspaceResult compile_windows_fixture(
+    const std::filesystem::path &temporary,
+    draft::SourceManager &sources,
+    draft::DiagnosticSink &diagnostics,
+    bool include_assembly = true) {
+  const std::filesystem::path package = temporary /
+      (include_assembly ? "windows-package-with-assembly"
+                        : "windows-package-object");
+  std::error_code error;
+  std::filesystem::create_directories(package, error);
+  if (error) return {};
+  std::ofstream source(package / "package.draft", std::ios::binary);
+  source << "package windows_toolchain\n\n";
+  if (include_assembly) {
+    source << "foreign package_assembly {\n"
+              "    add as \"draft_windows_add\" :: c proc(left, right: i32) -> i32\n"
+              "}\n\n";
+  }
+  source << "export identity as \"draft_windows_identity\" :: c proc(value: i32) -> i32 {\n"
+            "    return value\n"
+            "}\n\n"
+            "main :: proc() -> int {\n";
+  source << (include_assembly
+      ? "    return cast[int](add(20, 22) - 42)\n"
+      : "    return 0\n");
+  source << "}\n";
+  if (include_assembly) {
+    std::ofstream(package / "native@x86_64-windows.s", std::ios::binary)
+        << ".text\n"
+           ".globl draft_windows_add\n"
+           ".def draft_windows_add; .scl 2; .type 32; .endef\n"
+           "draft_windows_add:\n"
+           "    leal (%rcx,%rdx), %eax\n"
+           "    retq\n";
+  }
+  source.close();
+
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_x86_64_windows_profile();
+  options.workspace.workspace_directory = temporary.string();
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  options.emit_program_entry = true;
+  return draft::compile_workspace(
+      sources, package, std::move(options), diagnostics);
+}
+
 void test_explicit_foreign_provider_mapping(TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
       "draft-provider-link-test"};
@@ -413,6 +464,152 @@ void test_linux_toolchain_arguments(TestState &state,
   std::filesystem::remove_all(temporary, error);
 }
 
+// PE/COFF argument construction is target data and is observable on any host.
+// The recording tools publish the exact side files lld-link/llvm-lib promise;
+// native Windows CI separately verifies that the real tools accept and execute
+// the result.
+void test_windows_toolchain_arguments(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-x86-64-windows-toolchain-test"};
+  const std::filesystem::path &temporary = temporary_directory.path();
+  std::error_code error;
+  if (error) return;
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  const draft::CompileWorkspaceResult compiled =
+      compile_windows_fixture(temporary, sources, diagnostics);
+  EXPECT(state, compiled.ok);
+  if (!compiled.ok) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+    return;
+  }
+
+  const std::filesystem::path log = temporary / "arguments.log";
+  const std::filesystem::path fake_clang = temporary / "record-clang";
+  {
+    std::ofstream script(fake_clang, std::ios::binary);
+    script << "#!/bin/sh\n"
+              "printf '%s\\n' '-- clang --' \"$@\" >> '"
+           << log.string()
+           << "'\n"
+              "previous=''\n"
+              "for argument in \"$@\"; do\n"
+              "  if [ \"$previous\" = \"-o\" ]; then : > \"$argument\"; fi\n"
+              "  case \"$argument\" in\n"
+              "    /pdb:*) : > \"${argument#/pdb:}\" ;;\n"
+              "    /implib:*) : > \"${argument#/implib:}\" ;;\n"
+              "  esac\n"
+              "  previous=\"$argument\"\n"
+              "done\n"
+              "exit 0\n";
+  }
+  const std::filesystem::path fake_archiver = temporary / "record-lib";
+  {
+    std::ofstream script(fake_archiver, std::ios::binary);
+    script << "#!/bin/sh\n"
+              "printf '%s\\n' '-- lib --' \"$@\" >> '"
+           << log.string()
+           << "'\n"
+              "for argument in \"$@\"; do\n"
+              "  case \"$argument\" in\n"
+              "    /OUT:*) : > \"${argument#/OUT:}\" ;;\n"
+              "  esac\n"
+              "done\n"
+              "exit 0\n";
+  }
+  EXPECT(state, chmod(fake_clang.c_str(), 0700) == 0);
+  EXPECT(state, chmod(fake_archiver.c_str(), 0700) == 0);
+
+  const draft::TargetProfile target = draft::make_x86_64_windows_profile();
+  const auto build = [&](draft::NativeArtifactKind kind,
+                         const std::filesystem::path &output) {
+    draft::NativeBuildOptions options;
+    options.clang_path = fake_clang.string();
+    options.archiver_path = fake_archiver.string();
+    options.build_directory = (temporary / "build").string();
+    options.output_path = output.string();
+    options.artifact_kind = kind;
+    return draft::build_native_artifact(
+        target, compiled, options, diagnostics);
+  };
+
+  const draft::NativeBuildResult executable = build(
+      draft::NativeArtifactKind::Executable, temporary / "program.exe");
+  EXPECT(state, executable.ok);
+  EXPECT(state, executable.debug_symbols_path ==
+      (temporary / "program.pdb").string());
+  EXPECT(state, executable.import_library_path.empty());
+  EXPECT(state, build(
+      draft::NativeArtifactKind::StaticLibrary,
+      temporary / "windows_toolchain.lib").ok);
+  const draft::NativeBuildResult dynamic = build(
+      draft::NativeArtifactKind::DynamicLibrary,
+      temporary / "windows_toolchain.dll");
+  EXPECT(state, dynamic.ok);
+  EXPECT(state, dynamic.debug_symbols_path ==
+      (temporary / "windows_toolchain.pdb").string());
+  EXPECT(state, dynamic.import_library_path ==
+      (temporary / "windows_toolchain.lib").string());
+  EXPECT(state, build(
+      draft::NativeArtifactKind::Assembly,
+      temporary / "windows-assembly").ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, std::filesystem::exists(
+      temporary / "build" / "package-0-module.obj"));
+  EXPECT(state, std::filesystem::exists(
+      temporary / "build" / "package-0-assembly-0.obj"));
+
+  const std::string arguments = read_file(log);
+  EXPECT(state, arguments.find("\nx86_64-pc-windows-msvc\n") !=
+      std::string::npos);
+  EXPECT(state, arguments.find("\n-fuse-ld=lld\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-Wl,/Brepro\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-Wl,/debug:full\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n/pdbaltpath:%_PDB%\n") !=
+      std::string::npos);
+  EXPECT(state, arguments.find("\n/implib:" +
+      (temporary / "windows_toolchain.lib").string() + "\n") !=
+      std::string::npos);
+  EXPECT(state, arguments.find("\n-lkernel32\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-shared\n") != std::string::npos);
+  EXPECT(state, arguments.find("\n-- lib --\n/nologo\n/OUT:" +
+      (temporary / "windows_toolchain.lib").string() + "\n") !=
+      std::string::npos);
+
+  // COFF has no multi-object partial link. A one-module package can still
+  // publish its exact relocatable object; the assembly-bearing fixture must
+  // fail closed and direct callers to a static library.
+  draft::SourceManager object_sources;
+  draft::DiagnosticSink object_compile_diagnostics;
+  const draft::CompileWorkspaceResult object_compiled = compile_windows_fixture(
+      temporary, object_sources, object_compile_diagnostics, false);
+  EXPECT(state, object_compiled.ok);
+  draft::NativeBuildOptions object_options;
+  object_options.clang_path = fake_clang.string();
+  object_options.build_directory = (temporary / "object-build").string();
+  object_options.output_path = (temporary / "windows_toolchain.obj").string();
+  object_options.artifact_kind = draft::NativeArtifactKind::Object;
+  draft::DiagnosticSink object_diagnostics;
+  const draft::NativeBuildResult object = draft::build_native_artifact(
+      target, object_compiled, object_options, object_diagnostics);
+  EXPECT(state, object.ok);
+  EXPECT(state, !object_diagnostics.has_errors());
+  EXPECT(state, std::filesystem::exists(temporary / "windows_toolchain.obj"));
+
+  object_options.build_directory = (temporary / "multi-object-build").string();
+  draft::DiagnosticSink rejected_diagnostics;
+  const draft::NativeBuildResult rejected = draft::build_native_artifact(
+      target, compiled, object_options, rejected_diagnostics);
+  EXPECT(state, !rejected.ok);
+  EXPECT(state, rejected_diagnostics.has_errors());
+  EXPECT(state, draft::render_diagnostics(sources, rejected_diagnostics).find(
+      "COFF object output requires exactly one native input") !=
+      std::string::npos);
+
+  std::filesystem::remove_all(temporary, error);
+}
+
 void test_package_assembly_reaches_link(TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
       "draft-bootstrap-toolchain-test"};
@@ -528,6 +725,7 @@ int main() {
                                  "draft-aarch64-linux-toolchain-test");
   test_linux_toolchain_arguments(state, draft::make_x86_64_linux_profile(),
                                  "draft-x86-64-linux-toolchain-test");
+  test_windows_toolchain_arguments(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " toolchain expectation(s) failed\n";
     return EXIT_FAILURE;

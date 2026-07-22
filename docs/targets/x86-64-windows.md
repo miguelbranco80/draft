@@ -8,9 +8,9 @@ the already implemented SysV GNU/Linux target.
 ## Initial profile
 
 Status: target selection, compile-time introspection, LLP64 C scalar aliases,
-Win64 aggregate classification, and in-process COFF object emission are
-implemented. PE linking, the hosted Windows runtime/core implementations, and
-native Windows CI are the remaining stages of this target's implementation.
+Win64 aggregate classification, COFF emission, and the PE/COFF artifact
+publication contract are implemented. The hosted Windows runtime/core
+implementations and native Windows CI are the remaining stages.
 
 The command selector is `x86_64-windows`, the profile identity is
 `draft-x86_64-windows-msvc-v1`, and the target-qualified source tag is
@@ -69,12 +69,26 @@ types.
 
 ## Native artifacts and assembly
 
-The embedded LLVM 22 adapter registers the X86 target and already emits
-deterministic AMD64 COFF package objects at O0 and O2. The completed artifact
-stage will use matching Clang/LLD and `llvm-lib` to produce `.exe`, `.dll`,
-`.lib`, and `.obj` outputs with PE/COFF debug information. Native Windows CI is
-the independent execution and C-client oracle; off-host COFF generation alone
-does not qualify the runtime or linker contract.
+The embedded LLVM 22 adapter registers the X86 target and emits deterministic
+AMD64 COFF package objects at O0 and O2. Matching Clang/LLD produces `.exe` and
+`.dll`; `llvm-lib` produces deterministic `.lib` archives. C exports carry the
+COFF `dllexport` contract, and a DLL publishes its `.lib` import library as an
+explicit hashed companion. Linked executables and DLLs request reproducible
+CodeView/PDB output and publish the sibling `.pdb` path and digest.
+
+COFF has no relocatable partial-link operation equivalent to ELF/Mach-O `-r`.
+`--kind object` therefore publishes an exact `.obj` only when the complete
+selected graph has one native input. A graph with several semantic packages,
+or package-assembly inputs must use `--kind static-library`; the compiler does
+not disguise archive bytes as an object file. A mapped foreign provider remains
+a separate link input and therefore requires a final executable/DLL link or
+must be supplied separately when a Draft object/archive is consumed.
+
+The Windows process adapter invokes tools with `CreateProcessW`, exact UTF-8 to
+UTF-16 argument conversion, CRT-correct quoting, combined output capture, and
+an explicit inherited-handle list. Native Windows CI remains the independent
+execution and C-client oracle; off-host command/COFF tests alone do not qualify
+the hosted runtime.
 
 Files such as `native@x86_64-windows.s` are exact assembler inputs. The profile
 does not claim a parsed `asm x86_64` dialect; selected parsed assembly receives

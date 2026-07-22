@@ -191,13 +191,22 @@ independent default paths.
 
 For non-assembly native builds, the native adapter emits one internal linker-
 input object per semantic package through the LLVM 22 library linked into
-`draftc`. `--kind object` still publishes one relocatably linked whole-graph
-object. Clang, `dsymutil`, and LLVM utilities default to the matching tools
+`draftc`. On Mach-O and ELF, `--kind object` publishes one relocatably linked
+whole-graph object. COFF has no partial-link equivalent: it publishes a
+single-input `.obj` and requires `--kind static-library` for a multi-input
+Draft-owned graph. Mapped providers cannot be embedded in that archive; use a
+final executable/DLL link or supply them when consuming the Draft object or
+archive. Clang, `dsymutil`, and LLVM utilities default to the matching tools
 directory selected while building the compiler.
 On macOS it additionally uses the Apple linker/SDK and `libtool`; on Linux it
 uses `ld.lld`, `llvm-ar`, and the target's libc development files. These
 installations are compiler operational prerequisites, not resolution-manifest
 inputs. Ordinary builds do not execute a toolchain-version probe.
+
+Windows defaults to `.exe`, `.obj`, `.lib`, and `.dll` names. A linked PE
+executable or DLL also publishes a deterministic sibling `.pdb`; a DLL
+publishes its import `.lib` as a second companion. The command prints both
+companion paths when present.
 
 All completely lowered package modules and package-assembly inputs form one
 bounded native ready set. Workers emit only

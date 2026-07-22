@@ -26,8 +26,8 @@ editing.
 ## Current target boundary
 
 The compiler currently selects four native target profiles. The first three
-are fully hosted; the Windows row currently reaches semantic checking and COFF
-object emission while its PE linker/runtime stage is completed:
+are fully hosted; the Windows row currently reaches semantic checking and
+PE/COFF artifact publication while its runtime/core stage is completed:
 
 | CLI target | Profile identity | ABI and object format | Page size | File tag |
 | --- | --- | --- | --- | --- |
@@ -440,14 +440,21 @@ packaged.
 
 For non-assembly native builds, the bootstrap emits one internal linker-input
 object per semantic package through its linked LLVM 22 C-API adapter.
-`--kind object` still publishes one relocatably linked whole-graph object, while
-`--kind assembly` publishes the package `.s` files instead.
+`--kind object` publishes one relocatably linked whole-graph object on Mach-O
+and ELF. COFF can publish one exact single-input `.obj`; a multi-package,
+or package-assembly object set must use `--kind static-library` because COFF
+has no relocatable partial link. Mapped providers remain separate and require a
+final executable/DLL link or consumer-side linking. `--kind assembly`
+publishes the package `.s` files instead.
 macOS additionally requires the Apple linker/SDK, `libtool`, and the matching
 LLVM `dsymutil`; applicable executable/shared outputs publish a verified
 `.dSYM`. Linux uses the matching Clang/LLVM tools, `ld.lld`, `llvm-ar`, and the
 selected glibc development contract; DWARF remains in ELF and no fake dSYM is
 emitted. These are compiler build/host requirements, not Draft package
 dependencies or resolution-manifest inputs.
+Windows uses matching Clang/LLD and `llvm-lib`, with `.exe`, `.obj`, `.lib`, and
+`.dll` defaults. Linked PE outputs publish a sibling PDB; a DLL also publishes
+its import `.lib` companion.
 
 After complete lowering, one explicit artifact layout orders each package's
 complete LLVM module followed by its package-assembly inputs. Every row becomes

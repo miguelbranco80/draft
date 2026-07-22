@@ -31,24 +31,32 @@
 #include <cassert>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <spawn.h>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
+#include <spawn.h>
 #include <sys/types.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 extern char **environ;
+#endif
 
 namespace draft {
 namespace {
@@ -71,20 +79,21 @@ struct ProcessResult {
 // Child usage reported by the kernel is nonnegative; keep the assertion close
 // to the signed-to-unsigned conversion rather than letting malformed values
 // turn into enormous timing rows.
+#if !defined(_WIN32)
 [[nodiscard]] std::uint64_t timeval_nanoseconds(const timeval &value) {
   assert(value.tv_sec >= 0 && value.tv_usec >= 0);
   return static_cast<std::uint64_t>(value.tv_sec) * 1'000'000'000ULL +
       static_cast<std::uint64_t>(value.tv_usec) * 1'000ULL;
 }
+#endif
 
-// Runs a process without a shell. posix_spawnp is required rather than a manual
-// fork/exec sequence because native object workers may invoke independent
-// assemblers concurrently. After fork in a multithreaded process, allocating a
-// vector or taking a C++ runtime lock in the child can deadlock against a lock
-// held by a suspended sibling thread. posix_spawnp provides the same PATH lookup
-// and inherited environment through an implementation-safe launch boundary.
-// Capturing stdout and stderr together keeps successful tool calls quiet and
-// attaches concise output to a phase diagnostic on failure.
+// Runs a process without a shell. Each host implementation performs ordinary
+// executable lookup, passes the exact argument vector, captures both output
+// streams through one pipe, and returns child CPU accounting. POSIX uses
+// posix_spawnp because workers may launch concurrently; Windows uses
+// CreateProcessW with an explicit inherited-handle list for the same reason.
+// No implementation may inherit unrelated process handles or interpolate a
+// command through a shell.
 [[nodiscard]] ProcessResult run_process(
     const std::vector<std::string> &arguments) {
   ProcessResult result;
@@ -92,6 +101,191 @@ struct ProcessResult {
     result.error = "empty process argument vector";
     return result;
   }
+#if defined(_WIN32)
+  // One small owner is sufficient here because every Windows resource is a
+  // HANDLE closed by CloseHandle. INVALID_HANDLE_VALUE is treated as empty so
+  // the same owner can hold CreateFileW and CreatePipe results.
+  struct HandleOwner {
+    HANDLE value = nullptr;
+    ~HandleOwner() {
+      if (value != nullptr && value != INVALID_HANDLE_VALUE) {
+        (void)CloseHandle(value);
+      }
+    }
+    HandleOwner() = default;
+    HandleOwner(const HandleOwner &) = delete;
+    HandleOwner &operator=(const HandleOwner &) = delete;
+  };
+
+  const auto windows_error = [](std::string_view operation) {
+    return std::string(operation) + " failed with Windows error " +
+        std::to_string(static_cast<unsigned long>(GetLastError()));
+  };
+  const auto utf8_to_wide = [](std::string_view input,
+                               std::wstring &output) -> bool {
+    output.clear();
+    if (input.empty()) return true;
+    const int required = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, input.data(),
+        static_cast<int>(input.size()), nullptr, 0);
+    if (required <= 0) return false;
+    output.resize(static_cast<std::size_t>(required));
+    return MultiByteToWideChar(
+               CP_UTF8, MB_ERR_INVALID_CHARS, input.data(),
+               static_cast<int>(input.size()), output.data(), required) ==
+        required;
+  };
+  const auto quote_argument = [](std::wstring_view argument) {
+    const bool needs_quotes = argument.empty() ||
+        argument.find_first_of(L" \t\n\v\"") != std::wstring_view::npos;
+    if (!needs_quotes) return std::wstring(argument);
+    std::wstring quoted;
+    quoted.push_back(L'\"');
+    std::size_t backslashes = 0;
+    for (wchar_t character : argument) {
+      if (character == L'\\') {
+        ++backslashes;
+        continue;
+      }
+      if (character == L'\"') {
+        quoted.append(backslashes * 2U + 1U, L'\\');
+        quoted.push_back(L'\"');
+        backslashes = 0;
+        continue;
+      }
+      quoted.append(backslashes, L'\\');
+      backslashes = 0;
+      quoted.push_back(character);
+    }
+    // Backslashes immediately before the closing quote must be doubled or the
+    // child CRT interprets the final quote as escaped data.
+    quoted.append(backslashes * 2U, L'\\');
+    quoted.push_back(L'\"');
+    return quoted;
+  };
+
+  std::wstring command_line;
+  for (std::size_t index = 0; index < arguments.size(); ++index) {
+    std::wstring wide;
+    if (arguments[index].size() > static_cast<std::size_t>(INT_MAX) ||
+        !utf8_to_wide(arguments[index], wide)) {
+      result.error = "process argument is not valid UTF-8";
+      return result;
+    }
+    if (index != 0) command_line.push_back(L' ');
+    command_line += quote_argument(wide);
+  }
+
+  SECURITY_ATTRIBUTES inheritable{};
+  inheritable.nLength = sizeof(inheritable);
+  inheritable.bInheritHandle = TRUE;
+  HandleOwner pipe_read;
+  HandleOwner pipe_write;
+  if (!CreatePipe(&pipe_read.value, &pipe_write.value, &inheritable, 0)) {
+    result.error = windows_error("CreatePipe");
+    return result;
+  }
+  if (!SetHandleInformation(pipe_read.value, HANDLE_FLAG_INHERIT, 0)) {
+    result.error = windows_error("SetHandleInformation");
+    return result;
+  }
+  HandleOwner null_input;
+  null_input.value = CreateFileW(
+      L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inheritable,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (null_input.value == INVALID_HANDLE_VALUE) {
+    result.error = windows_error("CreateFileW(NUL)");
+    return result;
+  }
+
+  SIZE_T attributes_size = 0;
+  (void)InitializeProcThreadAttributeList(
+      nullptr, 1, 0, &attributes_size);
+  if (attributes_size == 0) {
+    result.error = windows_error("InitializeProcThreadAttributeList(size)");
+    return result;
+  }
+  std::vector<std::byte> attributes_storage(attributes_size);
+  auto *attributes = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(
+      attributes_storage.data());
+  if (!InitializeProcThreadAttributeList(
+          attributes, 1, 0, &attributes_size)) {
+    result.error = windows_error("InitializeProcThreadAttributeList");
+    return result;
+  }
+  struct AttributeListOwner {
+    PPROC_THREAD_ATTRIBUTE_LIST value = nullptr;
+    ~AttributeListOwner() {
+      if (value != nullptr) DeleteProcThreadAttributeList(value);
+    }
+  } attributes_owner{attributes};
+  HANDLE inherited_handles[] = {null_input.value, pipe_write.value};
+  if (!UpdateProcThreadAttribute(
+          attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+          inherited_handles, sizeof(inherited_handles), nullptr, nullptr)) {
+    result.error = windows_error("UpdateProcThreadAttribute");
+    return result;
+  }
+
+  STARTUPINFOEXW startup{};
+  startup.StartupInfo.cb = sizeof(startup);
+  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  startup.StartupInfo.hStdInput = null_input.value;
+  startup.StartupInfo.hStdOutput = pipe_write.value;
+  startup.StartupInfo.hStdError = pipe_write.value;
+  startup.lpAttributeList = attributes;
+  PROCESS_INFORMATION process{};
+  if (!CreateProcessW(
+          nullptr, command_line.data(), nullptr, nullptr, TRUE,
+          EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, nullptr, nullptr,
+          &startup.StartupInfo, &process)) {
+    result.error = windows_error("CreateProcessW");
+    return result;
+  }
+  HandleOwner process_handle;
+  process_handle.value = process.hProcess;
+  HandleOwner thread_handle;
+  thread_handle.value = process.hThread;
+  result.started = true;
+  (void)CloseHandle(pipe_write.value);
+  pipe_write.value = nullptr;
+
+  char buffer[4096];
+  while (true) {
+    DWORD count = 0;
+    if (ReadFile(pipe_read.value, buffer, sizeof(buffer), &count, nullptr)) {
+      if (count == 0) break;
+      result.output.append(buffer, static_cast<std::size_t>(count));
+      continue;
+    }
+    if (GetLastError() == ERROR_BROKEN_PIPE) break;
+    result.error = windows_error("ReadFile(child output)");
+    return result;
+  }
+  if (WaitForSingleObject(process_handle.value, INFINITE) != WAIT_OBJECT_0) {
+    result.error = windows_error("WaitForSingleObject");
+    return result;
+  }
+  DWORD exit_code = 0;
+  if (!GetExitCodeProcess(process_handle.value, &exit_code)) {
+    result.error = windows_error("GetExitCodeProcess");
+    return result;
+  }
+  result.exit_code = static_cast<int>(exit_code);
+  FILETIME created{}, exited{}, kernel{}, user{};
+  if (GetProcessTimes(
+          process_handle.value, &created, &exited, &kernel, &user)) {
+    const auto nanoseconds = [](const FILETIME &time) {
+      ULARGE_INTEGER value{};
+      value.LowPart = time.dwLowDateTime;
+      value.HighPart = time.dwHighDateTime;
+      return static_cast<std::uint64_t>(value.QuadPart) * 100ULL;
+    };
+    result.user_nanoseconds = nanoseconds(user);
+    result.system_nanoseconds = nanoseconds(kernel);
+  }
+  return result;
+#else
   int pipe_descriptors[2] = {-1, -1};
   if (pipe(pipe_descriptors) != 0) {
     result.error = std::string("pipe failed: ") + std::strerror(errno);
@@ -185,6 +379,7 @@ struct ProcessResult {
     result.exit_code = 128 + WTERMSIG(status);
   }
   return result;
+#endif
 }
 
 // Runs and accounts for one external tool beneath a named timing event. The
@@ -219,6 +414,35 @@ void append_target_arguments(
   if (target.facts.object_format == "macho") {
     arguments.push_back("-mmacosx-version-min=" + target.minimum_os_version);
   }
+}
+
+[[nodiscard]] std::string_view object_file_extension(
+    const TargetProfile &target) {
+  return target.facts.object_format == "coff" ? ".obj" : ".o";
+}
+
+[[nodiscard]] bool read_file_bytes(
+    const std::filesystem::path &path,
+    std::string &contents,
+    std::string &reason);
+
+// Reads and hashes one regular companion file. PDB and import-library digests
+// use bytes rather than the directory-tree hash used by dSYM bundles.
+[[nodiscard]] bool hash_regular_file(
+    const std::filesystem::path &path,
+    Sha256Digest &digest,
+    DiagnosticSink &diagnostics,
+    std::string_view role) {
+  std::string bytes;
+  std::string reason;
+  if (!read_file_bytes(path, bytes, reason)) {
+    diagnostics.error(
+        SourceRange::invalid(), "cannot read " + std::string(role) + ": " +
+            reason);
+    return false;
+  }
+  digest = sha256(bytes);
+  return true;
 }
 
 // Writes one complete compiler-owned file through a sibling temporary and
@@ -645,7 +869,9 @@ void capture_child_usage(
         task,
         task_id,
         "output",
-        context.assembly_output ? ".s" : ".o");
+        context.assembly_output
+            ? ".s"
+            : object_file_extension(*context.target));
     std::string write_error;
     if (!write_atomic(private_source, native_module, write_error)) {
       failure = std::move(write_error);
@@ -697,7 +923,9 @@ void capture_child_usage(
   const std::filesystem::path private_source = native_task_private_path(
       context, task, task_id, "input", task.source_extension);
   const std::filesystem::path private_output =
-      native_task_private_path(context, task, task_id, "output", ".o");
+      native_task_private_path(
+          context, task, task_id, "output",
+          object_file_extension(*context.target));
   std::string write_error;
   if (!write_atomic(private_source, task.input_bytes, write_error)) {
     failure = std::move(write_error);
@@ -826,6 +1054,12 @@ NativeBuildResult build_native_artifact(
     // linked library; a caller may still supply another compatible executable
     // explicitly.
     archiver_path = linked_llvm_tool_path("llvm-ar");
+  } else if (target.facts.object_format == "coff" &&
+             archiver_path == "libtool") {
+    // COFF archives use Microsoft's library format. LLVM's compatible
+    // llvm-lib lives beside the LLVM library linked into draftc and emits
+    // deterministic archives without routing through the host's Unix ar.
+    archiver_path = linked_llvm_tool_path("llvm-lib");
   }
 
   // LLVM is selected and linked while building draftc. Recording the compiled
@@ -984,7 +1218,8 @@ NativeBuildResult build_native_artifact(
       }
       const std::filesystem::path native_output = assembly_output
           ? output_path / (task.output_stem + ".s")
-          : build_directory / (task.output_stem + ".o");
+          : build_directory /
+              (task.output_stem + std::string(object_file_extension(target)));
       if (!write_atomic(native_output, product.native_bytes, write_error)) {
         diagnostics.error(SourceRange::invalid(), write_error);
         return result;
@@ -1002,7 +1237,8 @@ NativeBuildResult build_native_artifact(
     }
     if (assembly_output) continue;
     const std::filesystem::path object =
-        build_directory / (task.output_stem + ".o");
+        build_directory /
+        (task.output_stem + std::string(object_file_extension(target)));
     if (!write_atomic(object, product.native_bytes, write_error)) {
       diagnostics.error(SourceRange::invalid(), write_error);
       return result;
@@ -1082,6 +1318,9 @@ NativeBuildResult build_native_artifact(
     if (target.facts.object_format == "elf") {
       archive_arguments.push_back("rcsD");
       archive_arguments.push_back(output_path.string());
+    } else if (target.facts.object_format == "coff") {
+      archive_arguments.push_back("/nologo");
+      archive_arguments.push_back("/OUT:" + output_path.string());
     } else {
       archive_arguments.push_back("-static");
       archive_arguments.push_back("-D");
@@ -1104,11 +1343,54 @@ NativeBuildResult build_native_artifact(
     return result;
   }
 
+  if (options.artifact_kind == NativeArtifactKind::Object &&
+      target.facts.object_format == "coff") {
+    // COFF has no counterpart to the ELF/Mach-O relocatable partial link. A
+    // graph which already consists of one object can publish those exact bytes
+    // under the requested path. A provider-free graph with several package or
+    // assembly objects must use a deterministic `.lib`; pretending that
+    // archive bytes are one `.obj` would violate the public artifact contract
+    // and confuse every downstream linker and object inspector. Mapped
+    // providers remain separate inputs by contract, so they instead require a
+    // final linked artifact or must be supplied by the eventual consumer.
+    if (!foreign_providers.empty()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "COFF object output cannot combine a mapped foreign provider; "
+          "build an executable or dynamic library, or link the provider "
+          "when the object is consumed");
+      return result;
+    }
+    if (objects.size() != 1) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "COFF object output requires exactly one native input; use "
+          "--kind static-library for a multi-package or assembly object set");
+      return result;
+    }
+    std::string object_bytes;
+    std::string read_error;
+    if (!read_file_bytes(objects.front(), object_bytes, read_error)) {
+      diagnostics.error(SourceRange::invalid(), read_error);
+      return result;
+    }
+    std::string write_error;
+    if (!write_atomic(output_path, object_bytes, write_error)) {
+      diagnostics.error(SourceRange::invalid(), write_error);
+      return result;
+    }
+    result.ok = true;
+    result.output_path = output_path.string();
+    result.runtime_assets = runtime_assets;
+    return result;
+  }
+
   std::vector<std::string> link_arguments = {
       clang_path,
   };
   append_target_arguments(target, link_arguments);
-  if (target.facts.object_format == "elf") {
+  if (target.facts.object_format == "elf" ||
+      target.facts.object_format == "coff") {
     // Name the linker family explicitly. The selected Clang installation can
     // find its matching `ld.lld` beside its own tools; it must not silently
     // choose a different host linker implementation.
@@ -1136,6 +1418,8 @@ NativeBuildResult build_native_artifact(
       link_arguments.push_back("-shared");
       link_arguments.push_back(
           "-Wl,-soname," + output_path.filename().string());
+    } else if (target.facts.object_format == "coff") {
+      link_arguments.push_back("-shared");
     } else {
       link_arguments.push_back("-nostdlib");
       link_arguments.push_back("-dynamiclib");
@@ -1151,15 +1435,56 @@ NativeBuildResult build_native_artifact(
       link_arguments.push_back("-nostdlib");
     }
   }
+  std::optional<std::filesystem::path> pdb_path;
+  std::optional<std::filesystem::path> import_library_path;
   if (target.facts.object_format == "macho") {
     // Apple's linker derives its UUID from the link result. Reproducible mode
     // also removes input timestamps from debug-map bookkeeping, including a
     // relocatable object link.
     link_arguments.push_back("-Wl,-reproducible");
-  } else if (options.artifact_kind != NativeArtifactKind::Object) {
+  } else if (target.facts.object_format == "elf" &&
+             options.artifact_kind != NativeArtifactKind::Object) {
     // lld hashes the final ELF contents for this note, giving debuggers a
     // useful identifier without introducing a time or random input.
     link_arguments.push_back("-Wl,--build-id=sha1");
+  } else if (target.facts.object_format == "coff") {
+    // lld-link's reproducible mode derives timestamps and the PDB GUID from
+    // content. Linked PE artifacts always carry CodeView debug information in
+    // a sibling PDB; object/archive outputs keep their records in the members.
+    link_arguments.push_back("-Wl,/Brepro");
+    if (options.artifact_kind == NativeArtifactKind::Executable ||
+        options.artifact_kind == NativeArtifactKind::DynamicLibrary) {
+      pdb_path = output_path;
+      pdb_path->replace_extension(".pdb");
+      std::error_code remove_error;
+      std::filesystem::remove(*pdb_path, remove_error);
+      if (remove_error) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "cannot replace PE debug-symbol file: " +
+                remove_error.message());
+        return result;
+      }
+      link_arguments.push_back("-Wl,/debug:full");
+      link_arguments.push_back("-Xlinker");
+      link_arguments.push_back("/pdb:" + pdb_path->string());
+      link_arguments.push_back("-Xlinker");
+      link_arguments.push_back("/pdbaltpath:%_PDB%");
+    }
+    if (options.artifact_kind == NativeArtifactKind::DynamicLibrary) {
+      import_library_path = output_path;
+      import_library_path->replace_extension(".lib");
+      std::error_code remove_error;
+      std::filesystem::remove(*import_library_path, remove_error);
+      if (remove_error) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "cannot replace PE import library: " + remove_error.message());
+        return result;
+      }
+      link_arguments.push_back("-Xlinker");
+      link_arguments.push_back("/implib:" + import_library_path->string());
+    }
   }
   link_arguments.insert(link_arguments.end(), objects.begin(), objects.end());
   if (options.artifact_kind == NativeArtifactKind::Object) {
@@ -1196,8 +1521,10 @@ NativeBuildResult build_native_artifact(
         SourceRange::invalid(),
         phase_failure(
             std::string(native_artifact_kind_name(options.artifact_kind)) +
-                (target.facts.object_format == "elf" ? " ELF link"
-                                                      : " Mach-O link"),
+                (target.facts.object_format == "elf"
+                     ? " ELF link"
+                 : target.facts.object_format == "coff" ? " PE/COFF link"
+                                                         : " Mach-O link"),
             link));
     return result;
   }
@@ -1273,6 +1600,22 @@ NativeBuildResult build_native_artifact(
       return result;
     }
     result.debug_symbols_path = debug_symbols.string();
+  }
+  if (pdb_path.has_value()) {
+    if (!hash_regular_file(
+            *pdb_path, result.debug_symbols_digest, diagnostics,
+            "PE debug-symbol file")) {
+      return result;
+    }
+    result.debug_symbols_path = pdb_path->string();
+  }
+  if (import_library_path.has_value()) {
+    if (!hash_regular_file(
+            *import_library_path, result.import_library_digest, diagnostics,
+            "PE import library")) {
+      return result;
+    }
+    result.import_library_path = import_library_path->string();
   }
   result.ok = true;
   result.output_path = output_path.string();

@@ -375,8 +375,14 @@ private:
         std::to_string(compile_file) +
         ", producer: \"Draft bootstrap compiler\", isOptimized: false, "
         "runtimeVersion: 0, emissionKind: FullDebug)");
-    debug_dwarf_flag_ = add_debug_metadata(
-        "!{i32 7, !\"Dwarf Version\", i32 4}");
+    // COFF debuggers consume CodeView records and linked PDBs. Mach-O and ELF
+    // consume DWARF. The source-level metadata graph is common, but selecting
+    // the wrong module flag makes LLVM silently emit the host's debug format
+    // into an otherwise correctly targeted object.
+    debug_format_flag_ = add_debug_metadata(
+        target_.facts.object_format == "coff"
+            ? "!{i32 2, !\"CodeView\", i32 1}"
+            : "!{i32 7, !\"Dwarf Version\", i32 4}");
     debug_info_flag_ = add_debug_metadata(
         "!{i32 2, !\"Debug Info Version\", i32 3}");
   }
@@ -497,7 +503,7 @@ private:
 
   void emit_debug_metadata() {
     output_ << "!llvm.dbg.cu = !{!" << debug_compile_unit_ << "}\n"
-            << "!llvm.module.flags = !{!" << debug_dwarf_flag_ << ", !"
+            << "!llvm.module.flags = !{!" << debug_format_flag_ << ", !"
             << debug_info_flag_ << "}\n\n";
     for (const DebugMetadataNode &metadata : debug_metadata_) {
       output_ << '!' << metadata.id << " = " << metadata.body << '\n';
@@ -4595,8 +4601,14 @@ private:
             ? c_abi_function_plan(procedure.type)
             : CAbiFunctionPlan{};
     output_ << "define ";
-    if (!is_c_export(procedure.symbol))
+    if (is_c_export(procedure.symbol) &&
+        target_.facts.object_format == "coff") {
+      // PE exports are opt-in. `dllexport` makes lld-link produce both the DLL
+      // export table and its import library without a generated .def file.
+      output_ << "dllexport ";
+    } else if (!is_c_export(procedure.symbol)) {
       output_ << "hidden ";
+    }
     output_ << llvm_function_result(procedure.type) << ' '
             << symbol_name(procedure.symbol)
             << function_signature(procedure.type, true) << " !dbg !"
@@ -4870,7 +4882,10 @@ private:
   std::vector<SourceCorrelationEntry> source_correlations_;
   std::size_t debug_subroutine_type_ = 0;
   std::size_t debug_compile_unit_ = 0;
-  std::size_t debug_dwarf_flag_ = 0;
+  // One target-selected LLVM module flag: Dwarf Version for Mach-O/ELF or
+  // CodeView for COFF. Keeping a neutral field name prevents later consumers
+  // from assuming one debug format after profile selection.
+  std::size_t debug_format_flag_ = 0;
   std::size_t debug_info_flag_ = 0;
   std::size_t current_debug_subprogram_ =
       std::numeric_limits<std::size_t>::max();

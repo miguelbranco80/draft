@@ -313,6 +313,29 @@ correlation sidecar, and its deterministic GNU build ID. A future split-debug
 profile must be a separate explicit artifact contract rather than an ambient
 `objcopy` convention.
 
+## Native PE/COFF artifacts and debug information
+
+Status: artifact construction implemented; native hosted qualification pending.
+
+The x86-64 Windows adapter emits AMD64 COFF package objects in process, invokes
+matching Clang/LLD for `.exe` and `.dll` links, and uses `llvm-lib` for
+deterministic `.lib` archives. C exports use LLVM `dllexport`, so a DLL link
+also publishes an explicit hashed import library. Linked outputs request
+lld-link `/Brepro` and full CodeView debug information in a sibling PDB whose
+path and byte digest are returned with the primary result.
+
+Tools are launched with `CreateProcessW` and a restricted inherited-handle
+list. Argument conversion/quoting preserves the exact UTF-8 operational paths
+without a shell, and process timing uses Windows user/kernel time. This keeps
+parallel package-assembly tasks from leaking unrelated compiler handles.
+
+COFF provides no relocatable partial link. A one-input object graph can publish
+its exact `.obj`; a provider-free multi-package or package-assembly object set
+must be represented by `--kind static-library`. Mapped providers remain
+separate by the existing artifact contract and must instead participate in a
+final executable/DLL link or be supplied by the consumer. The adapter rejects
+impossible shapes rather than labeling archive bytes as an object.
+
 ## Native integration gates
 
 Status: required on AArch64 macOS, AArch64 Linux, and x86-64 Linux CI hosts.

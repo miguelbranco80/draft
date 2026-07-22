@@ -129,8 +129,11 @@ LLVM 22 library for ordinary package-module object emission. Matching
 Clang/`ld.lld`/`llvm-ar`/`dsymutil`, the Apple linker, `libtool`, SDK, and system
 runtime remain ordinary tooling prerequisites rather than Draft program inputs.
 The x86-64 Windows profile currently reaches target selection, LLP64/Win64 ABI
-semantics, and COFF object emission, but not PE linking or its hosted
-runtime/core platform implementation. Other Linux libcs/distribution contracts
+semantics, COFF object emission, and PE/COFF artifact publication, but not its
+hosted runtime/core platform implementation or native qualification. COFF
+whole-graph object output is limited to a single native input because the
+format has no relocatable partial link; multi-input consumers use a `.lib`.
+Other Linux libcs/distribution contracts
 and other architectures still have no target profile. Parsed inline assembly
 remains AArch64-only; x86-64
 supports ordinary native code and target-qualified package assembly but rejects

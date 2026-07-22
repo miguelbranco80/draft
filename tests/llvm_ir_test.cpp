@@ -711,15 +711,19 @@ call_sixteen :: proc(value: Sixteen) -> Sixteen {
     std::cerr << emitted.diagnostics;
   EXPECT(state, emitted.ok);
   EXPECT(state, emitted.text.find(
-      "define i64 @\"draft_float_pair_identity\"(i64 %arg0)") !=
+      "define dllexport i64 @\"draft_float_pair_identity\"(i64 %arg0)") !=
       std::string::npos);
   EXPECT(state, emitted.text.find(
-      "define void @\"draft_six_identity\"(ptr sret(") !=
+      "define dllexport void @\"draft_six_identity\"(ptr sret(") !=
       std::string::npos);
   EXPECT(state, emitted.text.find("ptr byval(") == std::string::npos);
   EXPECT(state, emitted.text.find("@\"draft_take_eight\"(i64)") !=
       std::string::npos);
   EXPECT(state, emitted.text.find("@\"draft_take_sixteen\"(ptr sret(") !=
+      std::string::npos);
+  EXPECT(state, emitted.text.find("!\"CodeView\", i32 1") !=
+      std::string::npos);
+  EXPECT(state, emitted.text.find("!\"Dwarf Version\"") ==
       std::string::npos);
 
   const draft::LlvmObjectEmissionResult object =
