@@ -44,6 +44,7 @@ Treat these live values as non-copyable by convention:
   `memory.Arena`;
 - `memory.Virtual_Region` and an opened `os.File`;
 - a non-inactive `terminal.Session` or `terminal.Screen`;
+- a live `tui.Surface` or `tui.Renderer`;
 - `thread.Thread`, `thread.Mutex`, and `thread.Condition`.
 
 Pass a pointer to one stable owner. If an intentional transfer is necessary,
@@ -270,6 +271,15 @@ Screen then Session, resume Session then Screen, and finally restore Screen then
 Session. Always attempt both final restorations even when the first fails. This
 ordering exposes the primary screen and saved input mode to external work, and
 avoids re-entering the alternate screen when raw input could not be reacquired.
+
+`tui.Surface` owns one fixed cell buffer. `tui.Renderer` owns two nested
+Surfaces plus one reusable output buffer, so do not separately destroy or copy
+its fields. A pointer returned by `tui.surface(&renderer)` expires at a
+dimension-changing resize or destroy; equal-size resize is an exact no-op.
+Renderer borrows `terminal.Screen` only during `present`; failed output
+invalidates display history but retains every allocation for retry. Invalidate
+after successful resume and after a failed resume that may have written an
+unknown control-sequence prefix.
 
 `memory.Virtual_Region` is move-by-convention. Reserve returns inaccessible
 address space; commit/protect applies to the complete region; release unmaps

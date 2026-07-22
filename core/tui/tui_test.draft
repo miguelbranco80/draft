@@ -1,0 +1,151 @@
+// These same-package tests fix core/tui's storage and ANSI diff contracts
+// without touching the test runner's terminal. They use the real Context heap,
+// inspect the private reusable byte buffer, and destroy every owning value.
+// Native integration copies the package to process-unique build storage before
+// invoking draftc test, so evidence and objects never enter the source checkout.
+package tui
+
+import core/testing
+import core/terminal
+
+bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
+    if len(bytes) != len(text) {
+        return false
+    }
+    for index: usize = 0; index < len(bytes); index += 1 {
+        if bytes[index] != text[index] {
+            return false
+        }
+    }
+    return true
+}
+
+// test_surface_mutation verifies zero-style blank initialization and the
+// all-or-nothing bounds/ASCII contracts of put, fill, and write_ascii.
+test_surface_mutation :: proc(test: ^testing.Test) {
+    grid: Surface
+    surface_init(&grid, 5, 2)
+
+    (initial, initial_valid) := cell_at(&grid, 0, 0)
+    testing.expect(test, initial_valid)
+    testing.expect(test, initial.byte_value == cast[u8](' '))
+    testing.expect(test, !initial.style.foreground.indexed)
+
+    accent := Style{foreground = indexed_color(51), bold = true}
+    testing.expect(test, put(&grid, 1, 0, cast[u8]('X'), accent))
+    testing.expect(test, write_ascii(&grid, 2, 0, "abc", Style{}))
+    testing.expect(test, !write_ascii(&grid, 4, 1, "no", Style{}))
+    testing.expect(test, !write_ascii(&grid, 0, 1, "bad\n", Style{}))
+    testing.expect(test, fill(
+        &grid,
+        0,
+        1,
+        5,
+        1,
+        Cell{byte_value = cast[u8]('-')},
+    ))
+
+    (accent_cell, accent_valid) := cell_at(&grid, 1, 0)
+    testing.expect(test, accent_valid)
+    testing.expect(test, accent_cell.byte_value == cast[u8]('X'))
+    testing.expect(test, accent_cell.style.foreground.index == 51)
+    testing.expect(test, accent_cell.style.bold)
+    (outside, outside_valid) := cell_at(&grid, 5, 0)
+    testing.expect(test, !outside_valid)
+    testing.expect(test, outside.byte_value == 0)
+
+    surface_destroy(&grid)
+    testing.expect(test, grid.cells.data == nil)
+}
+
+// test_renderer_diff verifies exact first-frame clearing, no-op frames,
+// contiguous changed-run positioning, style emission, and resize invalidation.
+// commit_desired models the state transition that present performs only after a
+// complete terminal write.
+test_renderer_diff :: proc(test: ^testing.Test) {
+    renderer: Renderer
+    renderer_init(&renderer, 3, 2)
+
+    first := build_render_bytes(&renderer)
+    testing.expect(test, bytes_equal_text(
+        first,
+        "\x1b[0m\x1b[H\x1b[J\x1b[1;1H   \x1b[2;1H   \x1b[0m",
+    ))
+    commit_desired(&renderer)
+    testing.expect(test, len(build_render_bytes(&renderer)) == 0)
+
+    // Even an empty diff requires an active Screen. Returning success while the
+    // alternate screen is absent would preserve history for the wrong visible
+    // surface, so the invalid call also forces a future full repaint.
+    inactive_screen: terminal.Screen
+    testing.expect(test, present(&renderer, &inactive_screen) == .invalid)
+    testing.expect(test, !renderer.previous_valid)
+    commit_desired(&renderer)
+
+    testing.expect(test, put(
+        surface(&renderer),
+        1,
+        0,
+        cast[u8]('X'),
+        Style{},
+    ))
+    changed := build_render_bytes(&renderer)
+    testing.expect(test, bytes_equal_text(
+        changed,
+        "\x1b[1;2HX\x1b[0m",
+    ))
+    commit_desired(&renderer)
+
+    styled := Style{foreground = indexed_color(51), dim = true}
+    testing.expect(test, put(
+        surface(&renderer),
+        2,
+        0,
+        cast[u8]('Y'),
+        styled,
+    ))
+    styled_change := build_render_bytes(&renderer)
+    testing.expect(test, bytes_equal_text(
+        styled_change,
+        "\x1b[1;3H\x1b[0m\x1b[2m\x1b[38;5;51mY\x1b[0m",
+    ))
+    commit_desired(&renderer)
+
+    // A changed frame cannot be written through an inactive Screen. present
+    // returns terminal's explicit error and forgets previous correspondence,
+    // because a real write failure could have published an unknown prefix.
+    testing.expect(test, put(
+        surface(&renderer),
+        0,
+        1,
+        cast[u8]('!'),
+        Style{},
+    ))
+    testing.expect(test, present(&renderer, &inactive_screen) == .invalid)
+    testing.expect(test, !renderer.previous_valid)
+    failed_repaint := build_render_bytes(&renderer)
+    testing.expect(test, len(failed_repaint) > 3)
+    testing.expect(test, failed_repaint[0] == 27)
+    commit_desired(&renderer)
+
+    invalidate(&renderer)
+    invalidated := build_render_bytes(&renderer)
+    testing.expect(test, len(invalidated) > 3)
+    testing.expect(test, invalidated[0] == 27)
+    commit_desired(&renderer)
+
+    renderer_resize(&renderer, 2, 1)
+    testing.expect(test, renderer.desired.columns == 2)
+    testing.expect(test, renderer.desired.rows == 1)
+    testing.expect(test, !renderer.previous_valid)
+    resized := build_render_bytes(&renderer)
+    testing.expect(test, bytes_equal_text(
+        resized,
+        "\x1b[0m\x1b[H\x1b[J\x1b[1;1H  \x1b[0m",
+    ))
+
+    renderer_destroy(&renderer)
+    testing.expect(test, renderer.desired.cells.data == nil)
+    testing.expect(test, renderer.previous.cells.data == nil)
+    testing.expect(test, renderer.output.data == nil)
+}

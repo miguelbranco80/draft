@@ -1037,6 +1037,7 @@ The initial core set includes:
 | `core/format` | Allocation-free conversion of values into caller-owned byte buffers. |
 | `core/console` | Checked human-facing text and scalar output over standard process handles. |
 | `core/terminal` | Suspendable raw/screen sessions, timed reads, cell-size queries, and streaming key decoding. |
+| `core/tui` | Owned ASCII cell surfaces and deterministic ANSI differential rendering. |
 | `core/utf8` | Allocation-free strict UTF-8 validation, decoding, encoding, and scalar counting. |
 | `core/io` | Stream and input/output interfaces and utilities. |
 | `core/os` | Process, argument, environment, file, and operating-system facilities. |

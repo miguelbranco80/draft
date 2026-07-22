@@ -889,6 +889,25 @@ if(BUILD_TESTING)
       PROPERTIES LABELS "integration"
     )
 
+    # core/tui is target-independent Draft policy over core/terminal, but its
+    # tests execute the real allocator/runtime and therefore belong in the
+    # native host matrix. The copied workspace keeps validation evidence out of
+    # source while exact diff bytes are checked without terminal side effects.
+    add_test(
+      NAME draft_core_tui_tests
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core-tui-test"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_core_tui_test.cmake"
+    )
+    set_tests_properties(
+      draft_core_tui_tests
+      PROPERTIES LABELS "integration"
+    )
+
     # Build the logical custom_math provider independently as C, then map its
     # exact object into the public Draft build and launch the checked example.
     add_library(

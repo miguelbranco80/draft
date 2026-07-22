@@ -210,6 +210,41 @@ Target source contains compile-time size/alignment assertions, while native
 package validation links the selected libc boundary, including real variadic
 `ioctl` calls.
 
+## Minimal terminal cell rendering
+
+Status: ordinary Draft allocation and ANSI policy over `core/terminal`; no
+widgets, layout framework, callbacks, or compiler intrinsic.
+
+`core/tui.Surface` owns one fixed row-major allocation of printable
+single-column ASCII cells. Each cell contains one byte plus foreground,
+background, bold, dim, underline, and reverse style state. The zero style maps
+to terminal defaults; colors are either default or one ANSI 256-color index.
+Public put, fill, and whole-string operations validate the complete coordinate
+range and byte vocabulary before mutation. The initial package intentionally
+rejects control bytes, UTF-8, combining characters, and wide glyphs until a
+real display-width contract can preserve the one-cell invariant.
+
+`core/tui.Renderer` owns desired and last-published Surfaces of equal size plus
+one reusable output byte array. Rendering scans in row-major order, groups each
+maximal contiguous changed run behind one absolute cursor position, and emits
+style transitions only when cell style changes. Every successful update ends
+in default style. The first frame, a resize, explicit invalidation, or a failed
+possibly-partial terminal write forces the next update to reset, home, clear,
+and repaint the complete desired surface. Previous cells advance only after
+`terminal.write_screen` completes, so an I/O error never publishes speculative
+diff state.
+
+Renderer captures one allocator across both Surfaces and its output array. It
+borrows `terminal.Screen` for a present call and retains no application or
+terminal pointer. Applications repaint the desired Surface directly and call
+`invalidate` after every successful or possibly-partial failed screen resume,
+or after output performed outside the renderer. `present` rejects a non-active
+Screen even for an empty diff and invalidates its correspondence. A
+dimension-changing resize discards both old frames and returns a blank desired
+surface; equal dimensions are an exact no-op. Focus, input dispatch, clipping,
+text wrapping, widgets, layout, event loops, and Unicode display remain
+application or future-library policy.
+
 The virtual-memory seam uses target-qualified source with fixed signatures for
 `mmap`, `mprotect`, and `munmap`. Reserve creates inaccessible private anonymous
 address space, commit/protect change whole-region permissions, and release

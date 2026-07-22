@@ -1,0 +1,320 @@
+// This file owns deterministic ANSI diff rendering for one TUI Surface. A
+// Renderer contains the desired surface, the last completely published surface,
+// and one reusable output byte buffer. present scans cells in row-major order,
+// emits only contiguous changed runs, writes them through core/terminal once,
+// and advances the previous surface only after the complete write succeeds.
+//
+// A partial or failed terminal write invalidates the remembered display. The
+// next present then clears and repaints the complete desired surface, because
+// retaining a speculative partial previous state would make later diffs wrong.
+// Resizing likewise recreates both fixed surfaces and forces a full repaint.
+// Renderer owns allocations but not terminal.Screen or its output descriptor.
+// It has no callbacks, retained application pointers, hidden event loop, or
+// target-specific code.
+package tui
+
+import core/array
+import core/format
+import core/io
+import core/memory
+import core/runtime
+import core/terminal
+
+// Renderer is a move-by-convention owner of two Surface allocations and one
+// reusable byte allocation. desired is the application paint target. previous
+// is meaningful only when previous_valid is true and always has the same
+// dimensions. Keep a live Renderer at one stable address and destroy it once.
+pub Renderer :: struct {
+    desired: Surface,
+    previous: Surface,
+    output: array.Dynamic[u8],
+    allocator: runtime.Allocator,
+    previous_valid: bool,
+}
+
+// renderer_init creates two blank surfaces with the active Context allocator.
+// The first present is deliberately a full clear/repaint even though both owned
+// buffers begin blank, because the actual terminal contents are unknown.
+pub renderer_init :: proc(
+    renderer: ^Renderer,
+    columns, rows: usize,
+) {
+    renderer_init_with_allocator(
+        renderer,
+        columns,
+        rows,
+        context.allocator,
+    )
+}
+
+// renderer_init_with_allocator installs one allocator policy across every
+// nested owner. renderer must be zero or previously destroyed. Allocation
+// failure follows the ordinary core container assertion policy.
+pub renderer_init_with_allocator :: proc(
+    renderer: ^Renderer,
+    columns, rows: usize,
+    allocator: runtime.Allocator,
+) {
+    assert(renderer^.desired.cells.data == nil &&
+        renderer^.previous.cells.data == nil &&
+        renderer^.output.data == nil,
+        "TUI renderer must be empty before initialization")
+    assert(allocator.procedure != nil, "TUI renderer allocator is nil")
+    renderer^.allocator = allocator
+    surface_init_with_allocator(&renderer^.desired, columns, rows, allocator)
+    surface_init_with_allocator(&renderer^.previous, columns, rows, allocator)
+    array.init_with_allocator(&renderer^.output, allocator)
+    renderer^.previous_valid = false
+}
+
+// renderer_destroy releases all three allocations and clears allocator/state
+// metadata. No borrowed Surface pointer may be used afterward.
+pub renderer_destroy :: proc(renderer: ^Renderer) {
+    surface_destroy(&renderer^.desired)
+    surface_destroy(&renderer^.previous)
+    array.destroy(&renderer^.output)
+    empty: runtime.Allocator
+    renderer^.allocator = empty
+    renderer^.previous_valid = false
+}
+
+// surface returns a mutable pointer to the desired frame. It remains valid until
+// a dimension-changing renderer_resize or renderer_destroy; equal-size resize
+// is an exact no-op. The Renderer must stay at one stable address for the
+// complete borrow.
+pub surface :: proc(renderer: ^Renderer) -> ^Surface {
+    return &renderer^.desired
+}
+
+// renderer_resize changes both grids as one operation. Equal dimensions are a
+// no-op that preserves desired content and diff history. Different dimensions
+// discard both old frames, create blank replacements with the captured
+// allocator, and invalidate the terminal so the next present clears remnants.
+pub renderer_resize :: proc(
+    renderer: ^Renderer,
+    columns, rows: usize,
+) {
+    if columns == renderer^.desired.columns && rows == renderer^.desired.rows {
+        return
+    }
+    surface_destroy(&renderer^.desired)
+    surface_destroy(&renderer^.previous)
+    surface_init_with_allocator(
+        &renderer^.desired,
+        columns,
+        rows,
+        renderer^.allocator,
+    )
+    surface_init_with_allocator(
+        &renderer^.previous,
+        columns,
+        rows,
+        renderer^.allocator,
+    )
+    renderer^.previous_valid = false
+}
+
+// invalidate forgets only the terminal correspondence. Desired cells and
+// allocations remain unchanged; the next present performs a full clear/repaint.
+// Applications call this after out-of-band terminal output and after every
+// screen-resume attempt that may have emitted a complete or partial enter
+// sequence, whether that attempt reported success or failure.
+pub invalidate :: proc(renderer: ^Renderer) {
+    renderer^.previous_valid = false
+}
+
+// append_byte is the single mutation boundary for the reusable output buffer.
+append_byte :: proc(output: ^array.Dynamic[u8], byte: u8) {
+    array.append(output, byte)
+}
+
+// append_text copies immutable control/text bytes into renderer-owned storage.
+// The output array retains its allocation between frames but never borrows text.
+append_text :: proc(output: ^array.Dynamic[u8], text: string) {
+    for index: usize = 0; index < len(text); index += 1 {
+        array.append(output, text[index])
+    }
+}
+
+// append_unsigned writes one terminal coordinate or color index without
+// allocation. Twenty bytes cover the current u64/usize target width.
+append_unsigned :: proc(output: ^array.Dynamic[u8], value: u64) {
+    storage: [20]u8
+    (digits, formatted) := format.unsigned_decimal(storage[:], value)
+    assert(formatted, "TUI decimal scratch buffer is too small")
+    for byte in digits {
+        array.append(output, byte)
+    }
+}
+
+// append_cursor emits an absolute one-based ANSI cursor position from a proven
+// zero-based Surface coordinate. Absolute positioning makes row transitions
+// independent of raw-mode newline translation.
+append_cursor :: proc(
+    output: ^array.Dynamic[u8],
+    column, row: usize,
+) {
+    append_text(output, "\x1b[")
+    append_unsigned(output, cast[u64](row + 1))
+    append_byte(output, cast[u8](';'))
+    append_unsigned(output, cast[u64](column + 1))
+    append_byte(output, cast[u8]('H'))
+}
+
+color_equal :: proc(left, right: Color) -> bool {
+    if left.indexed != right.indexed {
+        return false
+    }
+    // The palette index is semantically absent in the default-color state.
+    // Ignoring its stored byte keeps structurally fabricated zero/default
+    // colors from causing needless style transitions.
+    return !left.indexed || left.index == right.index
+}
+
+style_equal :: proc(left, right: Style) -> bool {
+    return color_equal(left.foreground, right.foreground) &&
+        color_equal(left.background, right.background) &&
+        left.bold == right.bold && left.dim == right.dim &&
+        left.underline == right.underline && left.reverse == right.reverse
+}
+
+cell_equal :: proc(left, right: Cell) -> bool {
+    return left.byte_value == right.byte_value &&
+        style_equal(left.style, right.style)
+}
+
+// append_style resets every SGR field before enabling the requested direct
+// attributes and indexed colors. Reset-first is slightly longer than tracking
+// individual disable codes, but it keeps the state transition exact and small.
+append_style :: proc(output: ^array.Dynamic[u8], style: Style) {
+    append_text(output, terminal.reset_style)
+    if style.bold {
+        append_text(output, "\x1b[1m")
+    }
+    if style.dim {
+        append_text(output, "\x1b[2m")
+    }
+    if style.underline {
+        append_text(output, "\x1b[4m")
+    }
+    if style.reverse {
+        append_text(output, "\x1b[7m")
+    }
+    if style.foreground.indexed {
+        append_text(output, "\x1b[38;5;")
+        append_unsigned(output, cast[u64](style.foreground.index))
+        append_byte(output, cast[u8]('m'))
+    }
+    if style.background.indexed {
+        append_text(output, "\x1b[48;5;")
+        append_unsigned(output, cast[u64](style.background.index))
+        append_byte(output, cast[u8]('m'))
+    }
+}
+
+// build_render_bytes computes one complete terminal update into output and
+// returns a borrowed view valid until the next renderer mutation. A full update
+// first resets style, homes the cursor, and erases the screen tail, then uses
+// the same changed-run loop with every cell considered changed. A normal diff
+// starts from default style because every successful update ends with reset.
+build_render_bytes :: proc(renderer: ^Renderer) -> []u8 {
+    array.clear(&renderer^.output)
+    full := !renderer^.previous_valid
+    if full {
+        append_text(&renderer^.output, terminal.reset_style)
+        append_text(&renderer^.output, terminal.cursor_home)
+        append_text(&renderer^.output, terminal.erase_screen_tail)
+    }
+
+    active_style: Style
+    emitted_cells := false
+    desired := &renderer^.desired
+    previous := &renderer^.previous
+
+    for row: usize = 0; row < desired^.rows; row += 1 {
+        column: usize
+        for column < desired^.columns {
+            index := cell_index(desired, column, row)
+            changed := full || !cell_equal(
+                desired^.cells.data[index],
+                previous^.cells.data[index],
+            )
+            if !changed {
+                column += 1
+                continue
+            }
+
+            // One cursor movement begins one maximal contiguous changed run.
+            // Unchanged cells terminate the run because rewriting them would no
+            // longer be a cell diff and could produce needless terminal bytes.
+            append_cursor(&renderer^.output, column, row)
+            for column < desired^.columns {
+                index = cell_index(desired, column, row)
+                if !full && cell_equal(
+                    desired^.cells.data[index],
+                    previous^.cells.data[index],
+                ) {
+                    break
+                }
+                cell := desired^.cells.data[index]
+                assert(valid_cell(cell),
+                    "TUI renderer encountered an invalid stored cell")
+                if !style_equal(active_style, cell.style) {
+                    append_style(&renderer^.output, cell.style)
+                    active_style = cell.style
+                }
+                append_byte(&renderer^.output, cell.byte_value)
+                emitted_cells = true
+                column += 1
+            }
+        }
+    }
+
+    // Leave the terminal in default style even when the final cell was styled.
+    // The full empty-surface path already emitted a leading reset and needs no
+    // additional bytes.
+    if emitted_cells {
+        append_text(&renderer^.output, terminal.reset_style)
+    }
+    return array.view(&renderer^.output)
+}
+
+// commit_desired records the exact frame only after terminal.write_screen has
+// completed. It is separate so same-package deterministic tests can model a
+// successful publication without writing ANSI bytes to the test runner.
+commit_desired :: proc(renderer: ^Renderer) {
+    assert(renderer^.desired.cells.length == renderer^.previous.cells.length,
+        "TUI renderer surfaces have different cell counts")
+    for index: usize = 0; index < renderer^.desired.cells.length; index += 1 {
+        renderer^.previous.cells.data[index] = renderer^.desired.cells.data[index]
+    }
+    renderer^.previous_valid = true
+}
+
+// present publishes one full or differential frame through an active borrowed
+// terminal.Screen. Inactive or suspended state returns .invalid and invalidates
+// display history even when the cell diff is empty: the remembered cells cannot
+// describe a screen which is not currently entered. No bytes are written for an
+// empty active diff. Success commits the complete desired surface; any write
+// error invalidates history so a retry clears and repaints rather than trusting
+// a potentially partial update.
+pub present :: proc(
+    renderer: ^Renderer,
+    screen: ^terminal.Screen,
+) -> io.Error {
+    if screen^.state != .active {
+        renderer^.previous_valid = false
+        return .invalid
+    }
+    bytes := build_render_bytes(renderer)
+    if len(bytes) == 0 {
+        return .none
+    }
+    error := terminal.write_screen(screen, bytes)
+    if error != .none {
+        renderer^.previous_valid = false
+        return error
+    }
+    commit_desired(renderer)
+    return .none
+}

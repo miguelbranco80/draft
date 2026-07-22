@@ -1,0 +1,238 @@
+// The tui package owns a deliberately small terminal-cell model. A Surface is
+// one fixed rectangular allocation of single-column printable ASCII cells. It
+// provides exact bounds-checked painting operations but no widgets, layout
+// tree, callbacks, focus system, event loop, Unicode width rules, or terminal
+// I/O. render.draft composes two Surfaces into a deterministic ANSI diff.
+//
+// Surface is an explicit move-by-convention owner. Initialize and destroy it
+// exactly once, keep it at one stable address while borrowed, and never copy a
+// live value. All coordinates are zero-based cell coordinates. The zero Style
+// means the terminal's default colors and attributes, which makes ordinary
+// blank construction and reset behavior agree without hidden initialization.
+//
+// This package is ordinary Draft library code. It depends only on core array,
+// formatting, I/O, memory, runtime allocation, and terminal output. Relevant
+// Draft specification: sections 5-7; terminal behavior follows the selected
+// target profile and core/terminal's ANSI contract.
+package tui
+
+import core/memory
+import core/runtime
+
+// Color is either the terminal default or one ANSI 256-color palette index.
+// Its zero value is default. indexed_color is the only constructor needed for
+// the indexed state, so callers do not depend on the physical boolean layout.
+pub Color :: struct {
+    indexed: bool,
+    index: u8,
+}
+
+pub indexed_color :: proc(index: u8) -> Color {
+    return Color{indexed = true, index = index}
+}
+
+// Style is the complete per-cell rendering state supported by this first TUI
+// layer. Each boolean maps directly to one ANSI SGR attribute. The zero value
+// is intentionally the default terminal style and may be copied freely.
+pub Style :: struct {
+    foreground: Color,
+    background: Color,
+    bold: bool,
+    dim: bool,
+    underline: bool,
+    reverse: bool,
+}
+
+// Cell represents exactly one terminal column and one printable ASCII byte.
+// A Cell stored in a live Surface always has byte_value in 0x20-0x7e. UTF-8,
+// combining marks, wide glyphs, and control bytes require a later explicit
+// display-width design and are rejected instead of corrupting the cell grid.
+pub Cell :: struct {
+    byte_value: u8,
+    style: Style,
+}
+
+// Surface owns columns*rows cells in row-major order. cells is intentionally a
+// standard memory.Buffer rather than a private allocator scheme. columns and
+// rows remain valid until surface_destroy; resizing belongs to Renderer because
+// a diff requires both desired and previously displayed dimensions to change
+// together.
+pub Surface :: struct {
+    cells: memory.Buffer[Cell],
+    columns: usize,
+    rows: usize,
+}
+
+Maximum_Terminal_Dimension :: 65535
+
+// blank_cell constructs the printable space used for clearing. Style remains
+// caller-selected so a filled background is an ordinary surface operation.
+pub blank_cell :: proc(style: Style) -> Cell {
+    return Cell{byte_value = cast[u8](' '), style = style}
+}
+
+// valid_cell fixes the byte invariant at every public mutation boundary. Style
+// needs no validation because Color's indexed form stores exactly one u8 index.
+valid_cell :: proc(cell: Cell) -> bool {
+    return cell.byte_value >= 0x20 && cell.byte_value <= 0x7e
+}
+
+// surface_cell_count proves coordinate multiplication before allocation. The
+// 65535 bound matches the current POSIX winsize field and also keeps emitted
+// ANSI cursor positions within one portable terminal-sized domain.
+surface_cell_count :: proc(columns, rows: usize) -> usize {
+    assert(columns <= Maximum_Terminal_Dimension,
+        "TUI column count exceeds terminal coordinate range")
+    assert(rows <= Maximum_Terminal_Dimension,
+        "TUI row count exceeds terminal coordinate range")
+    if columns == 0 || rows == 0 {
+        return 0
+    }
+    assert(rows <= ~cast[usize](0) / columns,
+        "TUI surface cell count overflows")
+    return columns * rows
+}
+
+// surface_init creates a blank default-style surface with the active Context
+// allocator. The zero-width and zero-height forms are valid empty surfaces.
+pub surface_init :: proc(surface: ^Surface, columns, rows: usize) {
+    surface_init_with_allocator(surface, columns, rows, context.allocator)
+}
+
+// surface_init_with_allocator is the explicit allocator counterpart. surface
+// must be a zero or destroyed value. Allocation failure follows core/memory's
+// process-level assertion policy; every allocated cell is initialized to a
+// printable blank before the procedure returns.
+pub surface_init_with_allocator :: proc(
+    surface: ^Surface,
+    columns, rows: usize,
+    allocator: runtime.Allocator,
+) {
+    assert(surface^.cells.data == nil && surface^.columns == 0 &&
+        surface^.rows == 0, "TUI surface must be empty before initialization")
+    count := surface_cell_count(columns, rows)
+    memory.buffer_init_with_allocator(&surface^.cells, count, allocator)
+    surface^.columns = columns
+    surface^.rows = rows
+    clear(surface, Style{})
+}
+
+// surface_destroy releases the one cell allocation and returns Surface to its
+// zero state. No cell owns nested resources, so structural destruction is exact.
+pub surface_destroy :: proc(surface: ^Surface) {
+    memory.buffer_destroy(&surface^.cells)
+    surface^.columns = 0
+    surface^.rows = 0
+}
+
+// cell_index translates one proven in-bounds coordinate into row-major storage.
+// Keeping the assertion private lets public painting report false for user-
+// controlled coordinates while internal loops retain a direct indexing rule.
+cell_index :: proc(surface: ^Surface, column, row: usize) -> usize {
+    assert(column < surface^.columns && row < surface^.rows,
+        "TUI cell coordinate is out of bounds")
+    return row * surface^.columns + column
+}
+
+// clear replaces every cell with one styled blank. The operation touches the
+// complete allocation in row-major order and cannot fail.
+pub clear :: proc(surface: ^Surface, style: Style) {
+    cell := blank_cell(style)
+    for index: usize = 0; index < surface^.cells.length; index += 1 {
+        surface^.cells.data[index] = cell
+    }
+}
+
+// put_cell replaces one cell. It returns false and changes nothing when the
+// coordinate is outside the surface or the byte is not printable single-column
+// ASCII. This makes application clipping/error policy explicit.
+pub put_cell :: proc(
+    surface: ^Surface,
+    column, row: usize,
+    cell: Cell,
+) -> bool {
+    if column >= surface^.columns || row >= surface^.rows || !valid_cell(cell) {
+        return false
+    }
+    surface^.cells.data[cell_index(surface, column, row)] = cell
+    return true
+}
+
+// put is the direct byte/style convenience over put_cell. It has the same
+// all-or-nothing validation and retains no caller data.
+pub put :: proc(
+    surface: ^Surface,
+    column, row: usize,
+    byte_value: u8,
+    style: Style,
+) -> bool {
+    return put_cell(
+        surface,
+        column,
+        row,
+        Cell{byte_value = byte_value, style = style},
+    )
+}
+
+// fill replaces one rectangle. The complete range and cell are validated
+// before mutation, so false never leaves a partially filled region. Empty
+// rectangles are valid when their origin is at or within the corresponding
+// surface boundary.
+pub fill :: proc(
+    surface: ^Surface,
+    column, row, width, height: usize,
+    cell: Cell,
+) -> bool {
+    if !valid_cell(cell) || column > surface^.columns ||
+        row > surface^.rows || width > surface^.columns - column ||
+        height > surface^.rows - row {
+        return false
+    }
+    for y: usize = 0; y < height; y += 1 {
+        for x: usize = 0; x < width; x += 1 {
+            surface^.cells.data[cell_index(surface, column + x, row + y)] = cell
+        }
+    }
+    return true
+}
+
+// write_ascii paints one complete immutable byte string on one row. It rejects
+// overflow, out-of-bounds placement, and every non-printable byte before the
+// first mutation. It performs no clipping, newline interpretation, UTF-8
+// decoding, allocation, or retention.
+pub write_ascii :: proc(
+    surface: ^Surface,
+    column, row: usize,
+    text: string,
+    style: Style,
+) -> bool {
+    if row >= surface^.rows || column > surface^.columns ||
+        len(text) > surface^.columns - column {
+        return false
+    }
+    for index: usize = 0; index < len(text); index += 1 {
+        if text[index] < 0x20 || text[index] > 0x7e {
+            return false
+        }
+    }
+    for index: usize = 0; index < len(text); index += 1 {
+        surface^.cells.data[cell_index(surface, column + index, row)] = Cell{
+            byte_value = text[index],
+            style = style,
+        }
+    }
+    return true
+}
+
+// cell_at returns a copy of one cell and a validity bit. The surface retains
+// ownership; callers cannot accidentally keep a pointer across destruction.
+pub cell_at :: proc(
+    surface: ^Surface,
+    column, row: usize,
+) -> (Cell, bool) {
+    if column >= surface^.columns || row >= surface^.rows {
+        empty: Cell
+        return (empty, false)
+    }
+    return (surface^.cells.data[cell_index(surface, column, row)], true)
+}

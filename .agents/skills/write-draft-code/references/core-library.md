@@ -26,6 +26,7 @@ from another standard library is not evidence that Draft provides it.
 - [`core/runtime`](#coreruntime)
 - [`core/testing`](#coretesting)
 - [`core/terminal`](#coreterminal)
+- [`core/tui`](#coretui)
 - [`core/thread`](#corethread)
 - [`core/time`](#coretime)
 - [`core/utf8`](#coreutf8)
@@ -545,6 +546,59 @@ The built-in target denial summaries do not yet audit the terminal-specific
 `tcgetattr`, `tcsetattr`, `cfmakeraw`, `poll`, or `ioctl` calls. A reachable
 native terminal operation beneath an active `deny` therefore fails closed as
 an unknown foreign call until that explicit target coverage is added.
+
+## `core/tui`
+
+Allocation-backed ASCII cell surfaces and ANSI differential rendering:
+
+```draft
+tui.Color
+tui.indexed_color(index: u8) -> tui.Color
+tui.Style{foreground, background, bold, dim, underline, reverse}
+tui.Cell{byte_value, style}
+
+tui.Surface
+tui.surface_init(&surface, columns, rows)
+tui.surface_init_with_allocator(&surface, columns, rows, allocator)
+tui.surface_destroy(&surface)
+tui.clear(&surface, style)
+tui.put(&surface, column, row, byte_value, style) -> bool
+tui.put_cell(&surface, column, row, cell) -> bool
+tui.fill(&surface, column, row, width, height, cell) -> bool
+tui.write_ascii(&surface, column, row, text, style) -> bool
+tui.cell_at(&surface, column, row) -> (tui.Cell, bool)
+
+tui.Renderer
+tui.renderer_init(&renderer, columns, rows)
+tui.renderer_init_with_allocator(&renderer, columns, rows, allocator)
+tui.renderer_destroy(&renderer)
+tui.surface(&renderer) -> ^tui.Surface
+tui.renderer_resize(&renderer, columns, rows)
+tui.invalidate(&renderer)
+tui.present(&renderer, &terminal_screen) -> io.Error
+```
+
+Surface and Renderer are non-copyable owners. Renderer owns its desired and
+last-published surfaces plus a reusable output buffer; it borrows Screen only
+for `present`. A successful present commits the desired frame. A write failure
+invalidates history so the next attempt clears and repaints completely.
+`renderer_resize` discards both frames when dimensions change; equal dimensions
+are an exact no-op and preserve existing borrows. `present` requires an active
+Screen even for an empty diff. Call `invalidate` after every resume attempt that
+may have emitted terminal bytes—successful or failed—and after any out-of-band
+terminal output.
+
+Coordinates are zero-based. Mutations reject out-of-bounds placement and
+non-printable/non-ASCII bytes before changing cells. `write_ascii` is
+all-or-nothing and does not clip. The zero Style means terminal defaults;
+indexed colors cover ANSI palette entries 0-255. The renderer emits maximal
+contiguous changed runs in row-major order with absolute cursor positions and
+resets style at the update boundary.
+
+There are no widgets, layout engine, text wrapping, clipping regions, input
+dispatch, focus, event loop, mouse support, Unicode width rules, transparency,
+or retained application pointers. Build those policies over Surface only when
+an application demonstrates the reusable shape.
 
 ## `core/thread`
 
