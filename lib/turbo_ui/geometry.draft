@@ -1,0 +1,131 @@
+// Geometry is the allocation-free coordinate vocabulary shared by drawing,
+// layout, hit testing, windows, and synthetic tests. Coordinates and extents
+// use terminal cells and are always zero based. Rectangle right/bottom edges
+// are exclusive; overflowing edges saturate so untrusted external dimensions
+// cannot wrap a large rectangle back into the visible surface.
+package turbo_ui
+
+pub Point :: struct {
+    column: usize,
+    row: usize,
+}
+pub Rect :: struct {
+    column: usize,
+    row: usize,
+    width: usize,
+    height: usize,
+}
+
+// saturated_add is the one edge-construction rule. Saturation preserves
+// monotonic intersection and containment even when a caller supplies a
+// nonsensically large extent.
+saturated_add :: proc(left, right: usize) -> usize {
+    maximum := ~cast[usize](0)
+    if right > maximum - left {
+        return maximum
+    }
+    return left + right
+}
+
+pub rect_right :: proc(rect: Rect) -> usize {
+    return saturated_add(rect.column, rect.width)
+}
+
+pub rect_bottom :: proc(rect: Rect) -> usize {
+    return saturated_add(rect.row, rect.height)
+}
+
+pub rect_empty :: proc(rect: Rect) -> bool {
+    return rect.width == 0 || rect.height == 0
+}
+
+pub point_in_rect :: proc(point: Point, rect: Rect) -> bool {
+    return point.column >= rect.column && point.column < rect_right(rect) &&
+        point.row >= rect.row && point.row < rect_bottom(rect)
+}
+
+pub rect_equal :: proc(left, right: Rect) -> bool {
+    return left.column == right.column && left.row == right.row &&
+        left.width == right.width && left.height == right.height
+}
+
+// intersect returns the exact shared half-open area. Disjoint rectangles have
+// a zero extent at the greatest starting coordinate; callers normally test
+// rect_empty and need not distinguish horizontal from vertical separation.
+pub intersect :: proc(left, right: Rect) -> Rect {
+    column := left.column
+    if right.column > column {
+        column = right.column
+    }
+    row := left.row
+    if right.row > row {
+        row = right.row
+    }
+    end_column := rect_right(left)
+    right_end_column := rect_right(right)
+    if right_end_column < end_column {
+        end_column = right_end_column
+    }
+    end_row := rect_bottom(left)
+    right_end_row := rect_bottom(right)
+    if right_end_row < end_row {
+        end_row = right_end_row
+    }
+    if end_column <= column || end_row <= row {
+        return Rect{column = column, row = row}
+    }
+    return Rect{
+        column = column,
+        row = row,
+        width = end_column - column,
+        height = end_row - row,
+    }
+}
+
+// inset removes the requested cells from all four sides. An amount larger
+// than half either extent yields an empty centered content rectangle rather
+// than underflowing an unsigned coordinate.
+pub inset :: proc(rect: Rect, amount: usize) -> Rect {
+    horizontal := amount
+    if horizontal > rect.width / 2 {
+        horizontal = rect.width / 2
+    }
+    vertical := amount
+    if vertical > rect.height / 2 {
+        vertical = rect.height / 2
+    }
+    return Rect{
+        column = rect.column + horizontal,
+        row = rect.row + vertical,
+        width = rect.width - horizontal * 2,
+        height = rect.height - vertical * 2,
+    }
+}
+
+// clamp_rect keeps a movable/resizable rectangle inside bounds. Extents larger
+// than bounds are reduced first, then the origin is moved without subtraction
+// underflow. The result is deterministic for empty bounds.
+pub clamp_rect :: proc(rect: Rect, bounds: Rect) -> Rect {
+    result := rect
+    if result.width > bounds.width {
+        result.width = bounds.width
+    }
+    if result.height > bounds.height {
+        result.height = bounds.height
+    }
+    if result.column < bounds.column {
+        result.column = bounds.column
+    }
+    if result.row < bounds.row {
+        result.row = bounds.row
+    }
+    maximum_column := rect_right(bounds) - result.width
+    maximum_row := rect_bottom(bounds) - result.height
+    if result.column > maximum_column {
+        result.column = maximum_column
+    }
+    if result.row > maximum_row {
+        result.row = maximum_row
+    }
+    return result
+}

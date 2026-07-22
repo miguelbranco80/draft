@@ -74,6 +74,7 @@ endfunction()
 file(REMOVE_RECURSE "${TEST_ROOT}")
 file(MAKE_DIRECTORY "${TEST_ROOT}")
 file(COPY "${SOURCE_ROOT}/examples" DESTINATION "${TEST_ROOT}")
+file(COPY "${SOURCE_ROOT}/lib" DESTINATION "${TEST_ROOT}")
 
 run_checked(
   "Windows target report"
@@ -126,8 +127,12 @@ foreach(row IN LISTS qualification_rows)
     set(argument document.txt)
     set(input_file "${case_directory}/editor-input.txt")
     file(WRITE "${input_file}" "q\n")
-  elseif(workspace_relative STREQUAL "examples" AND
-         root_package STREQUAL "tetris")
+  elseif((workspace_relative STREQUAL "examples" AND
+         root_package STREQUAL "tetris") OR
+         (workspace_relative STREQUAL "." AND
+          root_package STREQUAL "examples/turbo-editor") OR
+         (workspace_relative STREQUAL "." AND
+          root_package STREQUAL "examples/turbo-ui-gallery"))
     set(argument --smoke)
   endif()
   run_example(

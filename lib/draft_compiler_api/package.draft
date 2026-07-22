@@ -1,0 +1,93 @@
+// draft_compiler_api is the provider-free C ABI vocabulary between a Draft
+// development tool and an optional compiler service. It owns no session and
+// declares no foreign symbols, so ordinary clients such as turbo-editor can
+// retain the optional function table without acquiring a native dependency.
+// Every procedure is synchronous: source and destination pointers are borrowed
+// only for the call, while user remains owned by the service that created it.
+package draft_compiler_api
+
+// Result summarizes one compiler operation. success is an explicit byte at the
+// C boundary; diagnostic_count and span_count describe data retrievable from
+// the same session after the call.
+pub Result :: c struct {
+    success: u8,
+    diagnostic_count: u32,
+    span_count: usize,
+}
+
+// Span is one styled half-open byte range in the exact source supplied to the
+// latest check. kind is interpreted by the editor only after range checking.
+pub Span :: c struct {
+    start: usize,
+    end: usize,
+    kind: u8,
+}
+
+pub Check_Proc :: c proc(
+    user: rawptr,
+    source: [^]u8,
+    length: usize,
+    result: ^Result,
+)
+
+pub Action_Proc :: c proc(
+    user: rawptr,
+    source: [^]u8,
+    length: usize,
+    result: ^Result,
+)
+
+pub Span_Proc :: c proc(user: rawptr, index: usize, result: ^Span)
+
+pub Copy_Text_Proc :: c proc(
+    user: rawptr,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize
+
+pub Tooling_Section :: enum u8 {
+    packages,
+    declarations,
+    references,
+    effects,
+    denials,
+}
+
+pub Copy_Tooling_Proc :: c proc(
+    user: rawptr,
+    section: u8,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize
+
+pub Count_Proc :: c proc(user: rawptr) -> usize
+pub Index_Proc :: c proc(user: rawptr) -> usize
+pub Copy_Indexed_Text_Proc :: c proc(
+    user: rawptr,
+    index: usize,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize
+pub Select_Index_Proc :: c proc(user: rawptr, index: usize) -> u8
+pub Value_Proc :: c proc(user: rawptr) -> u8
+pub Select_Value_Proc :: c proc(user: rawptr, value: u8) -> u8
+
+// Host_Api is a borrowed table. A zero value means that no compiler service is
+// attached. destroy is intentionally absent: the Draft root which creates a
+// service session owns its explicit destruction separately from the editor.
+pub Host_Api :: c struct {
+    user: rawptr,
+    check: Check_Proc,
+    build: Action_Proc,
+    span: Span_Proc,
+    copy_diagnostics: Copy_Text_Proc,
+    copy_tooling: Copy_Tooling_Proc,
+    copy_source_path: Copy_Text_Proc,
+    copy_artifact_path: Copy_Text_Proc,
+    root_count: Count_Proc,
+    selected_root: Index_Proc,
+    copy_root_name: Copy_Indexed_Text_Proc,
+    select_root: Select_Index_Proc,
+    target: Value_Proc,
+    select_target: Select_Value_Proc,
+}

@@ -1,0 +1,137 @@
+// These tests qualify the reusable editor without opening a terminal. Buffer
+// ownership, Unicode boundaries, selection, history, disk-conflict policy, and
+// syntax-colored cell output are exercised through public operations. The one
+// fixed file path is safe because the native runner uses an isolated directory.
+package turbo_editor
+
+import core/memory
+import core/os
+import core/testing
+import core/tui
+import lib/turbo_ui
+
+Test_Path :: "turbo-editor-test.txt"
+
+remove_test_path :: proc() {
+    path: memory.Owned_String
+    memory.owned_string_copy(&path, Test_Path)
+    removed := os.remove(memory.owned_string_cstring(&path))
+    if !removed {
+        // Absence is the intended precondition and needs no secondary error.
+    }
+    memory.owned_string_destroy(&path)
+}
+
+test_edit_history_and_unicode_movement :: proc(test: ^testing.Test) {
+    buffer: Buffer
+    buffer_init(&buffer, Test_Path)
+    defer buffer_destroy(&buffer)
+
+    insert_text(&buffer, "Aé界\nsecond")
+    testing.expect(test, buffer.bytes.length == len("Aé界\nsecond"))
+    move_home(&buffer)
+    testing.expect(test, buffer.cursor == len("Aé界\n"))
+    move_up(&buffer)
+    testing.expect(test, buffer.cursor == 0)
+    move_end(&buffer)
+    testing.expect(test, buffer.cursor == len("Aé界"))
+    move_left(&buffer)
+    testing.expect(test, buffer.cursor == len("Aé"))
+    move_left(&buffer, true)
+    (selection_start, selection_end, selected) := selection(&buffer)
+    testing.expect(test, selected)
+    testing.expect(test, selection_start == 1)
+    testing.expect(test, selection_end == len("Aé"))
+
+    testing.expect(test, delete_selection(&buffer))
+    testing.expect(test, buffer.cursor == 1)
+    testing.expect(test, undo(&buffer))
+    testing.expect(test, buffer.cursor == 1)
+    testing.expect(test, redo(&buffer))
+    testing.expect(test, buffer.cursor == 1)
+    testing.expect(test, buffer.dirty)
+
+    needle := [6]u8{115, 101, 99, 111, 110, 100}
+    testing.expect(test, find(&buffer, needle[:]))
+    (_, _, found_selection) := selection(&buffer)
+    testing.expect(test, found_selection)
+}
+
+test_file_round_trip_and_conflict :: proc(test: ^testing.Test) {
+    remove_test_path()
+    defer remove_test_path()
+    buffer: Buffer
+    buffer_init(&buffer, Test_Path)
+    defer buffer_destroy(&buffer)
+    testing.expect(test, load(&buffer) == .new_file)
+    insert_text(&buffer, "first")
+    testing.expect(test, save(&buffer))
+    testing.expect(test, !buffer.dirty)
+
+    path := memory.owned_string_cstring(&buffer.path)
+    (external, create_error) := os.create_for_writing(path)
+    testing.expect(test, create_error == .none)
+    if create_error == .none {
+        testing.expect(test, os.write_text_all(external, "second") == .none)
+        testing.expect(test, os.close(&external))
+    }
+    testing.expect(test, poll_disk(&buffer) == .reloaded)
+    testing.expect(test, buffer.bytes.length == len("second"))
+
+    insert_text(&buffer, " local")
+    (changed, changed_error) := os.create_for_writing(path)
+    testing.expect(test, changed_error == .none)
+    if changed_error == .none {
+        testing.expect(test, os.write_text_all(changed, "external") == .none)
+        testing.expect(test, os.close(&changed))
+    }
+    testing.expect(test, poll_disk(&buffer) == .conflict)
+    testing.expect(test, buffer.disk_conflict)
+    testing.expect(test, !can_close(&buffer))
+    testing.expect(test, can_close(&buffer, true))
+    testing.expect(test, !save(&buffer))
+    testing.expect(test, buffer.disk_conflict && buffer.dirty)
+    testing.expect(test, save(&buffer, true))
+    testing.expect(test, !buffer.disk_conflict && !buffer.dirty)
+}
+
+test_editor_paint_and_syntax_style :: proc(test: ^testing.Test) {
+    buffer: Buffer
+    buffer_init(&buffer, Test_Path)
+    defer buffer_destroy(&buffer)
+    insert_text(&buffer, "pub main")
+    buffer.dirty = false
+    buffer.cursor = len("pub")
+
+    surface: tui.Surface
+    tui.surface_init(&surface, 30, 5)
+    defer tui.surface_destroy(&surface)
+    ui: turbo_ui.State
+    turbo_ui.begin_frame(
+        &ui,
+        &surface,
+        turbo_ui.no_event(),
+        turbo_ui.turbo_theme(),
+    )
+    spans := [2]Syntax_Span{
+        Syntax_Span{start = 0, end = 3, kind = .keyword},
+        Syntax_Span{start = 4, end = 8, kind = .declaration},
+    }
+    edit(
+        &buffer,
+        &ui,
+        50,
+        turbo_ui.Rect{width = 30, height = 5},
+        spans[:],
+        turbo_editor_theme(),
+    )
+    turbo_ui.end_frame(&ui)
+
+    // Five gutter cells place source column zero at Surface column five.
+    (keyword, keyword_valid) := tui.cell_at(&surface, 5, 0)
+    (declaration, declaration_valid) := tui.cell_at(&surface, 9, 0)
+    testing.expect(test, keyword_valid && keyword.value == 'p')
+    testing.expect(test, keyword.style.foreground.index == 14)
+    testing.expect(test, declaration_valid && declaration.value == 'm')
+    testing.expect(test, declaration.style.bold)
+}

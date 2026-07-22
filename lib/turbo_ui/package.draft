@@ -1,0 +1,24 @@
+// The turbo_ui package is a reusable immediate-mode cell UI layered over
+// core/tui. It owns no terminal, renderer, event loop, application document,
+// or compiler state. A caller begins one frame with a borrowed Surface and one
+// already-decoded event, invokes ordinary widget procedures in deterministic
+// draw order, and ends the frame before either borrow expires.
+//
+// State retains only interaction identity across frames: the hot, active, and
+// keyboard-focused widget/window IDs plus drag metadata. Persistent values such
+// as checkbox contents, list selection, window bounds, visibility, and z-order
+// remain in explicit caller-owned records. This keeps the library independently
+// reusable by the gallery, editor, and later applications without callbacks,
+// inheritance, a retained widget tree, or hidden allocation.
+//
+// The package depends only on core/tui for cells and core/unicode for clipped
+// grapheme painting. It performs no I/O. Relevant Draft specification: sections
+// 5-7; core/tui owns the Unicode cell and rendering contract.
+package turbo_ui
+
+// Widget_Id is the explicit cross-frame identity supplied by the application.
+// Zero is reserved for "no widget/window" so a zero State is ready for its
+// first frame. IDs need only be unique among live controls in one application.
+pub Widget_Id :: u64
+
+pub No_Widget :: cast[Widget_Id](0)

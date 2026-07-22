@@ -99,9 +99,18 @@ struct ConformanceCase {
 
     ConformanceCase test;
     test.workspace = fields[0];
-    test.package = fields[1] == "."
-        ? test.workspace
-        : test.workspace + "/" + fields[1];
+    if (test.workspace == ".") {
+      test.package = fields[1];
+    } else {
+      test.package = fields[1] == "."
+          ? test.workspace
+          : test.workspace + "/" + fields[1];
+    }
+    if (!test.package.starts_with("examples/")) {
+      std::cerr << "runnable example is outside examples/: " << test.package
+                << '\n';
+      std::exit(EXIT_FAILURE);
+    }
     test.name = test.package.substr(std::string("examples/").size());
     for (char &byte : test.name) {
       if (byte == '/') byte = '-';
@@ -112,7 +121,9 @@ struct ConformanceCase {
       // and clean shutdown paths without leaving a source-tree artifact.
       test.argument = "document.txt";
       test.standard_input = "q\n";
-    } else if (test.package == "examples/tetris") {
+    } else if (test.package == "examples/tetris" ||
+               test.package == "examples/turbo-editor" ||
+               test.package == "examples/turbo-ui-gallery") {
       // Full gameplay requires a terminal whose native mode can be changed.
       // The example's deterministic smoke path still executes simulation and
       // complete TUI cell painting under the ordinary pipe used for every

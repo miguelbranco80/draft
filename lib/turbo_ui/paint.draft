@@ -1,0 +1,223 @@
+// Painting translates clipped rectangles and UTF-8 labels into core/tui's
+// exact cell operations. Every procedure borrows the Surface and retains no
+// storage. Clipping never splits a wide grapheme: a glyph which is only partly
+// visible is skipped as a whole, preserving core/tui's continuation invariant.
+package turbo_ui
+
+import core/tui
+import core/unicode
+
+surface_bounds :: proc(surface: ^tui.Surface) -> Rect {
+    return Rect{width = surface^.columns, height = surface^.rows}
+}
+
+// visible_rect applies both the current UI clip and the physical Surface
+// bounds. Keeping this operation central makes every widget safe on small or
+// transiently zero-sized terminals.
+visible_rect :: proc(surface: ^tui.Surface, clip, requested: Rect) -> Rect {
+    return intersect(intersect(requested, clip), surface_bounds(surface))
+}
+
+pub fill_rect :: proc(
+    surface: ^tui.Surface,
+    clip, rect: Rect,
+    value: rune,
+    style_value: tui.Style,
+) -> bool {
+    visible := visible_rect(surface, clip, rect)
+    if rect_empty(visible) {
+        return true
+    }
+    return tui.fill(
+        surface,
+        visible.column,
+        visible.row,
+        visible.width,
+        visible.height,
+        value,
+        style_value,
+    )
+}
+
+put_clipped :: proc(
+    surface: ^tui.Surface,
+    clip: Rect,
+    point: Point,
+    value: rune,
+    style_value: tui.Style,
+) -> bool {
+    if !point_in_rect(point, clip) || !point_in_rect(point, surface_bounds(surface)) {
+        return true
+    }
+    return tui.put_rune(surface, point.column, point.row, value, style_value)
+}
+
+// write_clipped walks extended graphemes so clipping is measured in terminal
+// columns rather than UTF-8 bytes or Unicode scalars. Invalid or nonprinting
+// input returns false after any earlier visible clusters; callers use trusted
+// UI labels, while document rendering performs its own validation policy.
+pub write_clipped :: proc(
+    surface: ^tui.Surface,
+    clip: Rect,
+    origin: Point,
+    text: string,
+    style_value: tui.Style,
+) -> bool {
+    if origin.row < clip.row || origin.row >= rect_bottom(clip) ||
+        origin.row >= surface^.rows {
+        return true
+    }
+    column := origin.column
+    offset: usize
+    for offset < len(text) {
+        (end, columns, error) := unicode.next_grapheme(text, offset)
+        if error != .none {
+            return false
+        }
+        glyph_end := saturated_add(column, columns)
+        if column >= rect_right(clip) || column >= surface^.columns {
+            break
+        }
+        if column >= clip.column && glyph_end <= rect_right(clip) &&
+            glyph_end <= surface^.columns {
+            if !tui.write_utf8(
+                surface,
+                column,
+                origin.row,
+                text[offset:end],
+                style_value,
+            ) {
+                return false
+            }
+        }
+        column = glyph_end
+        offset = end
+    }
+    return true
+}
+
+// write_clipped_bytes is the byte-owning application counterpart. It retains
+// the exact grapheme/clipping policy of write_clipped while borrowing mutable
+// bytes only for this call; malformed UTF-8 returns false after earlier visible
+// clusters, allowing an editor to choose an explicit replacement policy.
+pub write_clipped_bytes :: proc(
+    surface: ^tui.Surface,
+    clip: Rect,
+    origin: Point,
+    bytes: []u8,
+    style_value: tui.Style,
+) -> bool {
+    if origin.row < clip.row || origin.row >= rect_bottom(clip) ||
+        origin.row >= surface^.rows {
+        return true
+    }
+    column := origin.column
+    offset: usize
+    for offset < len(bytes) {
+        (end, columns, error) := unicode.next_grapheme_bytes(bytes, offset)
+        if error != .none {
+            return false
+        }
+        glyph_end := saturated_add(column, columns)
+        if column >= rect_right(clip) || column >= surface^.columns {
+            break
+        }
+        if column >= clip.column && glyph_end <= rect_right(clip) &&
+            glyph_end <= surface^.columns {
+            data := cast[[^]u8](&bytes[offset])
+            if !tui.write_utf8_bytes(
+                surface,
+                column,
+                origin.row,
+                data[:end - offset],
+                style_value,
+            ) {
+                return false
+            }
+        }
+        column = glyph_end
+        offset = end
+    }
+    return true
+}
+
+pub Border_Kind :: enum u8 {
+    single,
+    double,
+}
+
+// draw_border paints a one-cell outline when both extents permit it. Tiny
+// rectangles degrade to a styled fill instead of inventing partial corner
+// semantics. Box-drawing runes have deterministic one-column width under
+// core/unicode's terminal policy.
+pub draw_border :: proc(
+    surface: ^tui.Surface,
+    clip, rect: Rect,
+    kind: Border_Kind,
+    style_value: tui.Style,
+) -> bool {
+    if rect_empty(rect) {
+        return true
+    }
+    if rect.width < 2 || rect.height < 2 {
+        return fill_rect(surface, clip, rect, ' ', style_value)
+    }
+
+    horizontal := '─'
+    vertical := '│'
+    top_left := '┌'
+    top_right := '┐'
+    bottom_left := '└'
+    bottom_right := '┘'
+    if kind == .double {
+        horizontal = '═'
+        vertical = '║'
+        top_left = '╔'
+        top_right = '╗'
+        bottom_left = '╚'
+        bottom_right = '╝'
+    }
+
+    right := rect_right(rect) - 1
+    bottom := rect_bottom(rect) - 1
+    for column := rect.column + 1; column < right; column += 1 {
+        if !put_clipped(surface, clip, Point{column = column, row = rect.row}, horizontal, style_value) ||
+            !put_clipped(surface, clip, Point{column = column, row = bottom}, horizontal, style_value) {
+            return false
+        }
+    }
+    for row := rect.row + 1; row < bottom; row += 1 {
+        if !put_clipped(surface, clip, Point{column = rect.column, row = row}, vertical, style_value) ||
+            !put_clipped(surface, clip, Point{column = right, row = row}, vertical, style_value) {
+            return false
+        }
+    }
+    return put_clipped(surface, clip, Point{column = rect.column, row = rect.row}, top_left, style_value) &&
+        put_clipped(surface, clip, Point{column = right, row = rect.row}, top_right, style_value) &&
+        put_clipped(surface, clip, Point{column = rect.column, row = bottom}, bottom_left, style_value) &&
+        put_clipped(surface, clip, Point{column = right, row = bottom}, bottom_right, style_value)
+}
+
+// draw_shadow paints the conventional one-cell right/bottom shadow outside a
+// window. The requested shadow is still clipped against the Surface and parent
+// clip, so windows at an edge remain harmless.
+pub draw_shadow :: proc(
+    surface: ^tui.Surface,
+    clip, rect: Rect,
+    style_value: tui.Style,
+) -> bool {
+    right_shadow := Rect{
+        column = rect_right(rect),
+        row = saturated_add(rect.row, 1),
+        width = 1,
+        height = rect.height,
+    }
+    bottom_shadow := Rect{
+        column = saturated_add(rect.column, 1),
+        row = rect_bottom(rect),
+        width = rect.width,
+        height = 1,
+    }
+    return fill_rect(surface, clip, right_shadow, ' ', style_value) &&
+        fill_rect(surface, clip, bottom_shadow, ' ', style_value)
+}

@@ -1,0 +1,138 @@
+package turbo_editor_app
+
+import core/testing
+import lib/draft_compiler_api
+
+Fake_Root_State :: c struct {
+    selected: usize,
+    fail_selection: u8,
+}
+
+fake_selected_root :: c proc(user: rawptr) -> usize {
+    state := cast[^Fake_Root_State](user)
+    return state^.selected
+}
+
+fake_select_root :: c proc(user: rawptr, index: usize) -> u8 {
+    state := cast[^Fake_Root_State](user)
+    if state^.fail_selection != 0 {
+        return 0
+    }
+    state^.selected = index
+    return 1
+}
+
+fake_build :: c proc(
+    user: rawptr,
+    source: [^]u8,
+    length: usize,
+    result: ^draft_compiler_api.Result,
+) {
+    _ = user
+    _ = source
+    _ = length
+    result^.success = 1
+}
+
+fake_artifact_path :: c proc(
+    user: rawptr,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    path := "/usr/bin/true"
+    when target.os == .windows {
+        path = "C:\\Windows\\System32\\where.exe"
+    }
+    if capacity != 0 && destination != nil {
+        count := len(path)
+        if count >= capacity {
+            count = capacity - 1
+        }
+        data := raw_data(path)
+        for index: usize = 0; index < count; index += 1 {
+            destination[index] = data[index]
+        }
+        destination[count] = 0
+    }
+    return len(path)
+}
+
+// The real compiler-service test proves native Build. This same-package test
+// proves the Draft-owned half of Run: the application consumes an artifact
+// path through the host table and launches it through core/process rather than
+// delegating process policy back to C++.
+test_draft_owned_run :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-editor-run-test.draft"))
+    defer destroy_app(&app)
+    app.host.build = fake_build
+    app.host.copy_artifact_path = fake_artifact_path
+    execute_host_action(&app, true)
+    when target.os == .windows {
+        testing.expect(
+            test,
+            text_equal(app.status, "Built program returned a nonzero status"),
+        )
+    } else {
+        testing.expect(test, text_equal(app.status, "Run completed"))
+    }
+}
+
+// Quit is a workspace-wide operation even though the dialog shows one buffer
+// at a time. Provisional discard bits let the user cancel a later prompt
+// without mutating the earlier dirty buffers or silently losing their state.
+test_all_dirty_buffers_require_quit_decisions :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-quit-first.draft"))
+    testing.expect(test, init_one_buffer(&app, "turbo-quit-second.draft"))
+    defer destroy_app(&app)
+    app.buffers[0].dirty = true
+    app.buffers[1].dirty = true
+
+    testing.expect(test, !request_quit(&app))
+    testing.expect(test, app.active == 0)
+    testing.expect(test, app.windows[Window_Quit].visible)
+    app.quit_discard_mask |= 1
+    testing.expect(test, !continue_quit(&app))
+    testing.expect(test, app.active == 1)
+    testing.expect(test, app.buffers[0].dirty)
+    app.quit_discard_mask |= 2
+    testing.expect(test, continue_quit(&app))
+
+    app.quit_discard_mask = 0
+    app.windows[Window_Quit].visible = false
+    testing.expect(test, !request_quit(&app))
+    testing.expect(test, app.active == 0)
+}
+
+// Every compiler-backed buffer is tied to the root which published its source
+// path. This regression proves that choosing an older buffer restores that root
+// before the editor can later send its bytes to Check or F5.
+test_buffer_activation_restores_compiler_root :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-root-zero.draft"))
+    testing.expect(test, init_one_buffer(&app, "turbo-root-one.draft"))
+    defer destroy_app(&app)
+
+    roots := Fake_Root_State{selected = 0}
+    app.host.user = cast[rawptr](&roots)
+    app.host.selected_root = fake_selected_root
+    app.host.select_root = fake_select_root
+    app.buffer_has_root[0] = true
+    app.buffer_root[0] = 0
+    app.buffer_has_root[1] = true
+    app.buffer_root[1] = 1
+
+    testing.expect(test, activate_buffer(&app, 1))
+    testing.expect(test, app.active == 1)
+    testing.expect(test, roots.selected == 1)
+
+    roots.fail_selection = 1
+    testing.expect(test, !activate_buffer(&app, 0))
+    testing.expect(test, app.active == 1)
+    testing.expect(test, roots.selected == 1)
+}

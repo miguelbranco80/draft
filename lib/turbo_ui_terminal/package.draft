@@ -1,0 +1,152 @@
+// turbo_ui_terminal is the optional adapter between core/terminal's streaming
+// byte decoder and turbo_ui's caller-supplied semantic events. Keeping this as
+// a sibling package preserves turbo_ui's independence from terminal I/O while
+// giving applications one shared, tested mapping. It owns no descriptor,
+// screen, Surface, or text storage and retains no input values.
+package turbo_ui_terminal
+
+import core/terminal
+import lib/turbo_ui
+
+// key_code maps every terminal key kind. Ordinary bytes remain character-key
+// bytes, including control and UTF-8 bytes; a text editor may insert or compose
+// those bytes according to its own input policy. The higher-level text event
+// remains available for paste/IME adapters that already own a string.
+key_code :: proc(kind: terminal.Key_Kind) -> turbo_ui.Key_Code {
+    switch kind {
+    case .none:
+        return .none
+    case .byte:
+        return .character
+    case .escape:
+        return .escape
+    case .enter:
+        return .enter
+    case .tab:
+        return .tab
+    case .backspace:
+        return .backspace
+    case .up:
+        return .up
+    case .down:
+        return .down
+    case .right:
+        return .right
+    case .left:
+        return .left
+    case .home:
+        return .home
+    case .end:
+        return .end
+    case .insert:
+        return .insert
+    case .delete:
+        return .delete
+    case .page_up:
+        return .page_up
+    case .page_down:
+        return .page_down
+    case .f1:
+        return .f1
+    case .f2:
+        return .f2
+    case .f3:
+        return .f3
+    case .f4:
+        return .f4
+    case .f5:
+        return .f5
+    case .f6:
+        return .f6
+    case .f7:
+        return .f7
+    case .f8:
+        return .f8
+    case .f9:
+        return .f9
+    case .f10:
+        return .f10
+    case .f11:
+        return .f11
+    case .f12:
+        return .f12
+    }
+}
+
+mouse_button :: proc(button: terminal.Mouse_Button) -> turbo_ui.Mouse_Button {
+    switch button {
+    case .none:
+        return .none
+    case .primary:
+        return .primary
+    case .middle:
+        return .middle
+    case .secondary:
+        return .secondary
+    }
+}
+
+mouse_action :: proc(action: terminal.Mouse_Action) -> turbo_ui.Mouse_Action {
+    switch action {
+    case .none:
+        return .none
+    case .move:
+        return .move
+    case .press:
+        return .press
+    case .release:
+        return .release
+    case .wheel:
+        return .wheel
+    }
+}
+
+// event maps one completed terminal decoder result. none remains a zero event;
+// callers simply continue feeding bytes until a semantic event appears.
+pub event :: proc(input: terminal.Input) -> turbo_ui.Event {
+    switch input.kind {
+    case .none:
+        return turbo_ui.no_event()
+    case .key:
+        key := input.key
+        return turbo_ui.key_event(turbo_ui.Key_Event{
+            code = key_code(key.kind),
+            byte_value = key.byte_value,
+            shift = key.shift,
+            alt = key.alt,
+            control = key.control,
+        })
+    case .mouse:
+        mouse := input.mouse
+        return turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+            position = turbo_ui.Point{
+                column = mouse.column,
+                row = mouse.row,
+            },
+            action = mouse_action(mouse.action),
+            button = mouse_button(mouse.button),
+            primary_down = mouse.primary_down,
+            wheel_delta = mouse.wheel_delta,
+            shift = mouse.shift,
+            alt = mouse.alt,
+            control = mouse.control,
+        })
+    }
+}
+
+// decode consumes one raw terminal byte through the caller-owned persistent
+// Decoder and immediately maps any completed result.
+pub decode :: proc(
+    decoder: ^terminal.Decoder,
+    byte: u8,
+) -> turbo_ui.Event {
+    return event(terminal.decode_input(decoder, byte))
+}
+
+pub flush :: proc(decoder: ^terminal.Decoder) -> turbo_ui.Event {
+    return event(terminal.flush_input(decoder))
+}
+
+pub resize :: proc(size: terminal.Size) -> turbo_ui.Event {
+    return turbo_ui.resize_event(size.columns, size.rows)
+}

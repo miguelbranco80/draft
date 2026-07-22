@@ -1,0 +1,469 @@
+// The editor view maps one turbo_ui focus area and semantic event onto Buffer
+// operations, then paints visible graphemes into the borrowed cell Surface.
+// Syntax spans are optional caller-owned semantic data sorted by byte start;
+// the view contains only color policy, never a Draft lexer. Invalid UTF-8 is
+// displayed as one replacement cell per recovery byte without changing source.
+package turbo_editor
+
+import core/array
+import core/format
+import core/tui
+import core/unicode
+import lib/turbo_ui
+
+Tab_Columns :: 4
+Gutter_Columns :: 5
+
+pub Syntax_Kind :: enum u8 {
+    plain,
+    keyword,
+    comment,
+    string,
+    number,
+    declaration,
+    invalid,
+}
+
+pub Syntax_Kind_Count :: 7
+
+// Syntax_Span borrows the editor Buffer's byte-offset domain. Spans are sorted,
+// nonoverlapping half-open ranges and may omit plain text. They remain valid
+// only for the exact source generation being painted.
+pub Syntax_Span :: struct {
+    start: usize,
+    end: usize,
+    kind: Syntax_Kind,
+}
+
+pub Editor_Theme :: struct {
+    text: tui.Style,
+    gutter: tui.Style,
+    current_gutter: tui.Style,
+    selection: tui.Style,
+    keyword: tui.Style,
+    comment: tui.Style,
+    string: tui.Style,
+    number: tui.Style,
+    declaration: tui.Style,
+    invalid: tui.Style,
+}
+
+editor_style :: proc(foreground, background: u8, bold: bool = false) -> tui.Style {
+    return tui.Style{
+        foreground = tui.indexed_color(foreground),
+        background = tui.indexed_color(background),
+        bold = bold,
+    }
+}
+
+// turbo_editor_theme reproduces the legible Turbo Pascal/C editor palette:
+// yellow keywords, cyan strings, light-gray comments, white declarations, and
+// red invalid text over the common blue editing surface.
+pub turbo_editor_theme :: proc() -> Editor_Theme {
+    return Editor_Theme{
+        text = editor_style(15, 1),
+        gutter = editor_style(8, 1),
+        current_gutter = editor_style(14, 1, true),
+        selection = editor_style(15, 4),
+        keyword = editor_style(14, 1, true),
+        comment = editor_style(7, 1),
+        string = editor_style(11, 1),
+        number = editor_style(10, 1),
+        declaration = editor_style(15, 1, true),
+        invalid = editor_style(15, 4, true),
+    }
+}
+
+pub Edit_Result :: struct {
+    changed: bool,
+    save_requested: bool,
+    search_requested: bool,
+}
+
+line_number :: proc(buffer: ^Buffer, offset: usize) -> usize {
+    number: usize
+    for index: usize = 0; index < offset; index += 1 {
+        if buffer^.bytes.data[index] == cast[u8]('\n') {
+            number += 1
+        }
+    }
+    return number
+}
+
+line_at_number :: proc(buffer: ^Buffer, number: usize) -> usize {
+    current: usize
+    offset: usize
+    for offset < buffer^.bytes.length && current < number {
+        if buffer^.bytes.data[offset] == cast[u8]('\n') {
+            current += 1
+        }
+        offset += 1
+    }
+    return offset
+}
+
+ensure_cursor_visible :: proc(buffer: ^Buffer, text_bounds: turbo_ui.Rect) {
+    row := line_number(buffer, buffer^.cursor)
+    if row < buffer^.scroll_line {
+        buffer^.scroll_line = row
+    } else if text_bounds.height != 0 &&
+        row >= buffer^.scroll_line + text_bounds.height {
+        buffer^.scroll_line = row - text_bounds.height + 1
+    }
+    start := line_start(buffer, buffer^.cursor)
+    column := display_column(buffer, start, buffer^.cursor)
+    if column < buffer^.scroll_column {
+        buffer^.scroll_column = column
+    } else if text_bounds.width != 0 &&
+        column >= buffer^.scroll_column + text_bounds.width {
+        buffer^.scroll_column = column - text_bounds.width + 1
+    }
+}
+
+mouse_offset :: proc(
+    buffer: ^Buffer,
+    text_bounds: turbo_ui.Rect,
+    point: turbo_ui.Point,
+) -> usize {
+    row := buffer^.scroll_line
+    if point.row >= text_bounds.row {
+        row += point.row - text_bounds.row
+    }
+    start := line_at_number(buffer, row)
+    end := line_end(buffer, start)
+    column := buffer^.scroll_column
+    if point.column >= text_bounds.column {
+        column += point.column - text_bounds.column
+    }
+    return offset_at_column(buffer, start, end, column)
+}
+
+apply_key :: proc(buffer: ^Buffer, key: turbo_ui.Key_Event) -> Edit_Result {
+    result: Edit_Result
+    if key.code == .character && key.control {
+        switch key.byte_value {
+        case 6: // Ctrl-F
+            result.search_requested = true
+        case 19: // Ctrl-S
+            result.save_requested = true
+        case 25: // Ctrl-Y
+            result.changed = redo(buffer)
+        case 26: // Ctrl-Z
+            result.changed = undo(buffer)
+        case:
+        }
+        return result
+    }
+
+    old_dirty := buffer^.dirty
+    switch key.code {
+    case .character:
+        byte := [1]u8{key.byte_value}
+        insert(buffer, byte[:])
+    case .enter:
+        byte := [1]u8{cast[u8]('\n')}
+        insert(buffer, byte[:])
+    case .tab:
+        byte := [1]u8{cast[u8]('\t')}
+        insert(buffer, byte[:])
+    case .backspace:
+        backspace(buffer)
+    case .delete:
+        delete_forward(buffer)
+    case .left:
+        move_left(buffer, key.shift)
+    case .right:
+        move_right(buffer, key.shift)
+    case .up:
+        move_up(buffer, key.shift)
+    case .down:
+        move_down(buffer, key.shift)
+    case .home:
+        move_home(buffer, key.shift)
+    case .end:
+        move_end(buffer, key.shift)
+    case .page_up:
+        for count: usize = 0; count < 10; count += 1 {
+            move_up(buffer, key.shift)
+        }
+    case .page_down:
+        for count: usize = 0; count < 10; count += 1 {
+            move_down(buffer, key.shift)
+        }
+    case:
+    }
+    result.changed = old_dirty != buffer^.dirty ||
+        key.code == .character || key.code == .enter || key.code == .tab ||
+        key.code == .backspace || key.code == .delete
+    return result
+}
+
+style_for_offset :: proc(
+    spans: []Syntax_Span,
+    offset: usize,
+    theme: Editor_Theme,
+) -> tui.Style {
+    kind: Syntax_Kind = .plain
+    for span in spans {
+        if offset < span.start {
+            break
+        }
+        if offset >= span.start && offset < span.end {
+            kind = span.kind
+            break
+        }
+    }
+    switch kind {
+    case .plain:
+        return theme.text
+    case .keyword:
+        return theme.keyword
+    case .comment:
+        return theme.comment
+    case .string:
+        return theme.string
+    case .number:
+        return theme.number
+    case .declaration:
+        return theme.declaration
+    case .invalid:
+        return theme.invalid
+    }
+}
+
+paint_gutter :: proc(
+    state: ^turbo_ui.State,
+    bounds: turbo_ui.Rect,
+    line: usize,
+    current: bool,
+    theme: Editor_Theme,
+) {
+    style_value := theme.gutter
+    if current {
+        style_value = theme.current_gutter
+    }
+    turbo_ui.fill_rect(state^.surface, bounds, bounds, ' ', style_value)
+    storage: [20]u8
+    (digits, valid) := format.unsigned_decimal(storage[:], cast[u64](line + 1))
+    if !valid {
+        return
+    }
+    column := bounds.column
+    if len(digits) + 1 < bounds.width {
+        column += bounds.width - len(digits) - 1
+    }
+    tui.write_ascii_bytes(
+        state^.surface,
+        column,
+        bounds.row,
+        digits,
+        style_value,
+    )
+}
+
+paint_text_row :: proc(
+    buffer: ^Buffer,
+    state: ^turbo_ui.State,
+    bounds: turbo_ui.Rect,
+    start, end: usize,
+    spans: []Syntax_Span,
+    theme: Editor_Theme,
+) {
+    (selection_start, selection_end, has_selection) := selection(buffer)
+    bytes := array.view(&buffer^.bytes)
+    logical_column: usize
+    offset := start
+    for offset < end {
+        next := offset + 1
+        width: usize = 1
+        error: unicode.Grapheme_Error = .none
+        if bytes[offset] == cast[u8]('\t') {
+            width = Tab_Columns - logical_column % Tab_Columns
+        } else {
+            (next, width, error) = unicode.next_grapheme_bytes(bytes, offset)
+            if next <= offset {
+                next = offset + 1
+                width = 1
+                error = .invalid_encoding
+            }
+        }
+        visible_start := logical_column >= buffer^.scroll_column
+        screen_column := bounds.column
+        if visible_start {
+            screen_column += logical_column - buffer^.scroll_column
+        }
+        style_value := style_for_offset(spans, offset, theme)
+        if has_selection && offset < selection_end && next > selection_start {
+            style_value = theme.selection
+        }
+        if visible_start && screen_column < turbo_ui.rect_right(bounds) {
+            available := turbo_ui.rect_right(bounds) - screen_column
+            if bytes[offset] == cast[u8]('\t') {
+                draw_width := width
+                if draw_width > available {
+                    draw_width = available
+                }
+                turbo_ui.fill_rect(
+                    state^.surface,
+                    bounds,
+                    turbo_ui.Rect{
+                        column = screen_column,
+                        row = bounds.row,
+                        width = draw_width,
+                        height = 1,
+                    },
+                    ' ',
+                    style_value,
+                )
+            } else if error == .none && width <= available {
+                data := cast[[^]u8](&bytes[offset])
+                tui.write_utf8_bytes(
+                    state^.surface,
+                    screen_column,
+                    bounds.row,
+                    data[:next - offset],
+                    style_value,
+                )
+            } else if error != .none {
+                tui.put_rune(
+                    state^.surface,
+                    screen_column,
+                    bounds.row,
+                    '\u{fffd}',
+                    theme.invalid,
+                )
+            }
+        }
+        logical_column += width
+        offset = next
+    }
+
+    if buffer^.cursor >= start && buffer^.cursor <= end {
+        cursor_column := display_column(buffer, start, buffer^.cursor)
+        if cursor_column >= buffer^.scroll_column {
+            screen_column := bounds.column + cursor_column - buffer^.scroll_column
+            if screen_column < turbo_ui.rect_right(bounds) {
+                (cell, valid) := tui.cell_at(
+                    state^.surface,
+                    screen_column,
+                    bounds.row,
+                )
+                cursor_style := theme.text
+                cursor_style.reverse = true
+                value := ' '
+                if valid && !cell.continuation {
+                    value = cell.value
+                    cursor_style = cell.style
+                    cursor_style.reverse = !cursor_style.reverse
+                }
+                tui.put_rune(
+                    state^.surface,
+                    screen_column,
+                    bounds.row,
+                    value,
+                    cursor_style,
+                )
+            }
+        }
+    }
+}
+
+// edit applies one event when focused, keeps the cursor visible, and paints the
+// complete viewport. The caller owns search UI and save error reporting; their
+// shortcuts are returned as explicit requests.
+pub edit :: proc(
+    buffer: ^Buffer,
+    state: ^turbo_ui.State,
+    id: turbo_ui.Widget_Id,
+    bounds: turbo_ui.Rect,
+    spans: []Syntax_Span,
+    theme: Editor_Theme,
+) -> Edit_Result {
+    result: Edit_Result
+    if turbo_ui.rect_empty(bounds) {
+        return result
+    }
+    gutter_width: usize = Gutter_Columns
+    if gutter_width >= bounds.width {
+        gutter_width = 0
+    }
+    text_bounds := turbo_ui.Rect{
+        column = bounds.column + gutter_width,
+        row = bounds.row,
+        width = bounds.width - gutter_width,
+        height = bounds.height,
+    }
+    focus := turbo_ui.focus_area(state, id, text_bounds)
+    if state^.event.kind == .mouse {
+        mouse := state^.event.mouse
+        if focus.activated || (focus.held && mouse.action == .move) {
+            old := buffer^.cursor
+            buffer^.cursor = mouse_offset(buffer, text_bounds, mouse.position)
+            prepare_movement(buffer, old, mouse.shift || mouse.action == .move)
+        } else if focus.hot && mouse.action == .wheel {
+            if mouse.wheel_delta < 0 {
+                if buffer^.scroll_line > 2 {
+                    buffer^.scroll_line -= 3
+                } else {
+                    buffer^.scroll_line = 0
+                }
+            } else if mouse.wheel_delta > 0 {
+                buffer^.scroll_line += 3
+            }
+            state^.event_handled = true
+        }
+    }
+    if state^.focused_id == id && !state^.event_handled {
+        if state^.event.kind == .key {
+            result = apply_key(buffer, state^.event.key)
+            state^.event_handled = true
+        } else if state^.event.kind == .text {
+            insert_text(buffer, state^.event.text)
+            result.changed = true
+            state^.event_handled = true
+        }
+    }
+
+    ensure_cursor_visible(buffer, text_bounds)
+    turbo_ui.fill_rect(state^.surface, bounds, bounds, ' ', theme.text)
+    current_line := line_number(buffer, buffer^.cursor)
+    start := line_at_number(buffer, buffer^.scroll_line)
+    line := buffer^.scroll_line
+    for row: usize = 0; row < bounds.height; row += 1 {
+        if gutter_width != 0 {
+            paint_gutter(
+                state,
+                turbo_ui.Rect{
+                    column = bounds.column,
+                    row = bounds.row + row,
+                    width = gutter_width,
+                    height = 1,
+                },
+                line,
+                line == current_line,
+                theme,
+            )
+        }
+        end := line_end(buffer, start)
+        paint_text_row(
+            buffer,
+            state,
+            turbo_ui.Rect{
+                column = text_bounds.column,
+                row = text_bounds.row + row,
+                width = text_bounds.width,
+                height = 1,
+            },
+            start,
+            end,
+            spans,
+            theme,
+        )
+        if end == buffer^.bytes.length {
+            break
+        }
+        start = end + 1
+        line += 1
+    }
+    return result
+}

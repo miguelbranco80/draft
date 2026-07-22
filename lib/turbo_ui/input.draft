@@ -1,0 +1,123 @@
+// Input records are semantic, caller-constructed frame values. turbo_ui does
+// not read terminal bytes or retain text storage; an application adapter maps
+// core/terminal keys, future mouse reports, resize observations, and decoded
+// UTF-8 text into these records. Synthetic tests construct the same values,
+// keeping interaction behavior independent of a terminal.
+package turbo_ui
+
+pub Event_Kind :: enum u8 {
+    none,
+    key,
+    text,
+    mouse,
+    resize,
+}
+
+pub Key_Code :: enum u8 {
+    none,
+    character,
+    escape,
+    enter,
+    tab,
+    backspace,
+    up,
+    down,
+    right,
+    left,
+    home,
+    end,
+    insert,
+    delete,
+    page_up,
+    page_down,
+    f1,
+    f2,
+    f3,
+    f4,
+    f5,
+    f6,
+    f7,
+    f8,
+    f9,
+    f10,
+    f11,
+    f12,
+}
+
+pub Key_Event :: struct {
+    code: Key_Code,
+    byte_value: u8,
+    shift: bool,
+    alt: bool,
+    control: bool,
+}
+
+pub Mouse_Action :: enum u8 {
+    none,
+    move,
+    press,
+    release,
+    wheel,
+}
+
+pub Mouse_Button :: enum u8 {
+    none,
+    primary,
+    middle,
+    secondary,
+}
+
+// Mouse_Event describes one terminal-cell observation. primary_down carries
+// state on movement so a drag remains explicit even when a terminal protocol
+// reports movement separately from the original press. wheel_delta is negative
+// for upward/backward motion and positive for downward/forward motion.
+pub Mouse_Event :: struct {
+    position: Point,
+    action: Mouse_Action,
+    button: Mouse_Button,
+    primary_down: bool,
+    wheel_delta: i32,
+    shift: bool,
+    alt: bool,
+    control: bool,
+}
+
+pub Resize_Event :: struct {
+    columns: usize,
+    rows: usize,
+}
+
+// Event owns no dynamic storage. text borrows valid UTF-8 bytes through the
+// matching end_frame call and is otherwise empty. Fields not selected by kind
+// are ignored and remain zero in the convenient constructors below.
+pub Event :: struct {
+    kind: Event_Kind,
+    key: Key_Event,
+    text: string,
+    mouse: Mouse_Event,
+    resize: Resize_Event,
+}
+
+pub no_event :: proc() -> Event {
+    empty: Event
+    return empty
+}
+
+pub key_event :: proc(key: Key_Event) -> Event {
+    return Event{kind = .key, key = key}
+}
+
+pub text_event :: proc(text: string) -> Event {
+    return Event{kind = .text, text = text}
+}
+
+pub mouse_event :: proc(mouse: Mouse_Event) -> Event {
+    return Event{kind = .mouse, mouse = mouse}
+}
+
+pub resize_event :: proc(columns, rows: usize) -> Event {
+    return Event{
+        kind = .resize,
+        resize = Resize_Event{columns = columns, rows = rows},
+    }
+}

@@ -1,0 +1,341 @@
+// Windows add explicit persistent bounds and z-order to the immediate frame.
+// The caller owns the Window_State array, chooses deterministic draw order,
+// and decides visibility. turbo_ui mutates only bounds and z when a supplied
+// mouse event completes the corresponding direct manipulation. Covered
+// windows still paint but cannot receive that frame's pointer event.
+package turbo_ui
+
+import core/tui
+
+// Window_State is freely movable application state. id is a nonzero stable
+// identity. bounds and z persist across frames. Minimum extents include the
+// border; a zero minimum selects the library's conservative defaults.
+pub Window_State :: struct {
+    id: Widget_Id,
+    bounds: Rect,
+    z: u32,
+    visible: bool,
+    minimum_width: usize,
+    minimum_height: usize,
+}
+
+// Window_Context records the content clip installed by begin_window. Call
+// end_window exactly once for every visible context so sibling windows do not
+// inherit clipping or identity. painted reports whether every cell operation
+// accepted its trusted label and coordinates.
+pub Window_Context :: struct {
+    visible: bool,
+    painted: bool,
+    content: Rect,
+    previous_clip: Rect,
+}
+
+pub window_init :: proc(id: Widget_Id, bounds: Rect, z: u32) -> Window_State {
+    assert(id != No_Widget, "turbo_ui window ID zero is reserved")
+    return Window_State{
+        id = id,
+        bounds = bounds,
+        z = z,
+        visible = true,
+        minimum_width = 12,
+        minimum_height = 4,
+    }
+}
+
+// top_window_at returns the visible window with greatest z at point. Equal z
+// values are resolved by later slice position, matching stable back-to-front
+// drawing with window_order. No identity is returned for uncovered desktop.
+top_window_at :: proc(windows: []Window_State, point: Point) -> Widget_Id {
+    selected := No_Widget
+    selected_z: u32
+    found := false
+    for window in windows {
+        if window.visible && point_in_rect(point, window.bounds) &&
+            (!found || window.z >= selected_z) {
+            selected = window.id
+            selected_z = window.z
+            found = true
+        }
+    }
+    return selected
+}
+
+// raise_window moves one window above all visible peers. If z approaches its
+// maximum, the caller-visible array is first renumbered in stable draw order;
+// this preserves every ordering relation without wraparound.
+raise_window :: proc(windows: []Window_State, id: Widget_Id) {
+    maximum: u32
+    target_index := len(windows)
+    for index: usize = 0; index < len(windows); index += 1 {
+        if windows[index].visible && windows[index].z > maximum {
+            maximum = windows[index].z
+        }
+        if windows[index].id == id {
+            target_index = index
+        }
+    }
+    if target_index == len(windows) {
+        return
+    }
+    if maximum == ~cast[u32](0) {
+        // Halving every rank preserves all strict order relations and every
+        // equal-rank tie. It creates ample headroom without scratch storage.
+        maximum = 0
+        for index: usize = 0; index < len(windows); index += 1 {
+            windows[index].z /= 2
+            if windows[index].visible && windows[index].z > maximum {
+                maximum = windows[index].z
+            }
+        }
+    }
+    windows[target_index].z = maximum + 1
+}
+
+// window_order writes slice indices in stable back-to-front order and returns
+// the number written. The caller supplies at least len(windows) slots when it
+// wants every entry; invisible entries remain present because visibility is an
+// application property checked by begin_window.
+pub window_order :: proc(windows: []Window_State, output: []usize) -> usize {
+    count := len(windows)
+    if count > len(output) {
+        count = len(output)
+    }
+    for index: usize = 0; index < count; index += 1 {
+        output[index] = index
+        cursor := index
+        for cursor > 0 {
+            left := output[cursor - 1]
+            right := output[cursor]
+            ordered := windows[left].z < windows[right].z ||
+                (windows[left].z == windows[right].z && left < right)
+            if ordered {
+                break
+            }
+            output[cursor - 1] = right
+            output[cursor] = left
+            cursor -= 1
+        }
+    }
+    return count
+}
+
+// begin_window_frame starts a frame and selects exactly one mouse recipient.
+// An in-progress drag/resize retains capture outside the window. A new primary
+// press raises the hit window before normal window painting begins.
+pub begin_window_frame :: proc(
+    state: ^State,
+    surface: ^tui.Surface,
+    event: Event,
+    theme: Theme,
+    windows: []Window_State,
+) {
+    begin_frame(state, surface, event, theme)
+    if event.kind != .mouse {
+        return
+    }
+    if state^.active_kind == .window_drag ||
+        state^.active_kind == .window_resize {
+        state^.target_window = state^.active_id
+        return
+    }
+    state^.target_window = top_window_at(windows, event.mouse.position)
+    if event.mouse.action == .press && event.mouse.button == .primary &&
+        state^.target_window != No_Widget {
+        raise_window(windows, state^.target_window)
+    }
+}
+
+// moved_origin applies a captured pointer offset without unsigned underflow.
+moved_origin :: proc(pointer, offset: usize) -> usize {
+    if pointer < offset {
+        return 0
+    }
+    return pointer - offset
+}
+
+// resized_extent applies a signed pointer delta using only checked unsigned
+// arithmetic, then enforces the caller's minimum extent.
+resized_extent :: proc(
+    original_extent, original_pointer, current_pointer, minimum: usize,
+) -> usize {
+    result := original_extent
+    if current_pointer >= original_pointer {
+        result = saturated_add(result, current_pointer - original_pointer)
+    } else {
+        reduction := original_pointer - current_pointer
+        if reduction >= result {
+            result = 0
+        } else {
+            result -= reduction
+        }
+    }
+    if result < minimum {
+        result = minimum
+    }
+    return result
+}
+
+// begin_window handles direct manipulation, paints the frame, and installs the
+// inner content clip. The title bar is the top border; the lower-right border
+// cell is the resize handle. A window is clamped to the physical Surface after
+// every mutation so terminal shrink cannot strand it beyond the viewport.
+pub begin_window :: proc(
+    state: ^State,
+    window: ^Window_State,
+    title: string,
+) -> Window_Context {
+    assert(state^.frame_open, "turbo_ui window outside a frame")
+    assert(state^.current_window == No_Widget,
+        "turbo_ui windows may not be nested")
+    result := Window_Context{painted = true}
+    if !window^.visible {
+        return result
+    }
+    assert(window^.id != No_Widget, "turbo_ui window ID zero is reserved")
+
+    minimum_width := window^.minimum_width
+    if minimum_width == 0 {
+        minimum_width = 12
+    }
+    minimum_height := window^.minimum_height
+    if minimum_height == 0 {
+        minimum_height = 4
+    }
+    surface_rect := surface_bounds(state^.surface)
+    if minimum_width > surface_rect.width {
+        minimum_width = surface_rect.width
+    }
+    if minimum_height > surface_rect.height {
+        minimum_height = surface_rect.height
+    }
+
+    if window^.bounds.width < minimum_width {
+        window^.bounds.width = minimum_width
+    }
+    if window^.bounds.height < minimum_height {
+        window^.bounds.height = minimum_height
+    }
+    window^.bounds = clamp_rect(window^.bounds, surface_rect)
+
+    is_target := state^.target_window == window^.id
+    if is_target && state^.event.kind == .mouse &&
+        !rect_empty(window^.bounds) {
+        mouse := state^.event.mouse
+        resize_point := Point{
+            column = rect_right(window^.bounds) - 1,
+            row = rect_bottom(window^.bounds) - 1,
+        }
+        on_resize := mouse.position.column == resize_point.column &&
+            mouse.position.row == resize_point.row
+        on_title := mouse.position.row == window^.bounds.row &&
+            mouse.position.column >= window^.bounds.column &&
+            mouse.position.column < rect_right(window^.bounds)
+
+        if !state^.event_handled && mouse.action == .press &&
+            mouse.button == .primary && (on_resize || on_title) {
+            state^.active_id = window^.id
+            state^.active_kind = .window_drag
+            if on_resize {
+                state^.active_kind = .window_resize
+            }
+            state^.drag_start = mouse.position
+            state^.drag_start_rect = window^.bounds
+            state^.drag_column_offset = mouse.position.column - window^.bounds.column
+            state^.drag_row_offset = mouse.position.row - window^.bounds.row
+            state^.event_handled = true
+        } else if state^.active_id == window^.id &&
+            state^.active_kind == .window_drag &&
+            mouse.action == .move && mouse.primary_down {
+            window^.bounds.column = moved_origin(
+                mouse.position.column,
+                state^.drag_column_offset,
+            )
+            window^.bounds.row = moved_origin(
+                mouse.position.row,
+                state^.drag_row_offset,
+            )
+            state^.event_handled = true
+        } else if state^.active_id == window^.id &&
+            state^.active_kind == .window_resize &&
+            mouse.action == .move && mouse.primary_down {
+            window^.bounds.width = resized_extent(
+                state^.drag_start_rect.width,
+                state^.drag_start.column,
+                mouse.position.column,
+                minimum_width,
+            )
+            window^.bounds.height = resized_extent(
+                state^.drag_start_rect.height,
+                state^.drag_start.row,
+                mouse.position.row,
+                minimum_height,
+            )
+            state^.event_handled = true
+        } else if state^.active_id == window^.id &&
+            (state^.active_kind == .window_drag ||
+                state^.active_kind == .window_resize) &&
+            mouse.action == .release && mouse.button == .primary {
+            state^.active_id = No_Widget
+            state^.active_kind = .none
+            state^.event_handled = true
+        }
+    }
+
+    window^.bounds = clamp_rect(window^.bounds, surface_rect)
+    result.visible = true
+    result.previous_clip = state^.clip
+    result.content = inset(window^.bounds, 1)
+    state^.current_window = window^.id
+    state^.clip = result.content
+
+    result.painted = draw_shadow(
+        state^.surface,
+        surface_rect,
+        window^.bounds,
+        state^.theme.shadow,
+    ) && fill_rect(
+        state^.surface,
+        surface_rect,
+        window^.bounds,
+        ' ',
+        state^.theme.window,
+    ) && draw_border(
+        state^.surface,
+        surface_rect,
+        window^.bounds,
+        .double,
+        state^.theme.border,
+    )
+    title_style := state^.theme.title
+    if is_target || state^.active_id == window^.id {
+        title_style = state^.theme.active_title
+    }
+    if window^.bounds.width > 3 && window^.bounds.height != 0 {
+        title_clip := Rect{
+            column = saturated_add(window^.bounds.column, 2),
+            row = window^.bounds.row,
+            width = window^.bounds.width - 3,
+            height = 1,
+        }
+        result.painted = result.painted && write_clipped(
+            state^.surface,
+            title_clip,
+            Point{column = title_clip.column, row = title_clip.row},
+            title,
+            title_style,
+        )
+    }
+    return result
+}
+
+// end_window restores the parent clip and desktop identity. Invisible windows
+// installed no state and therefore require no restoration.
+pub end_window :: proc(state: ^State, window_context: Window_Context) {
+    if !window_context.visible {
+        return
+    }
+    assert(state^.current_window != No_Widget,
+        "turbo_ui window context is not active")
+    state^.clip = window_context.previous_clip
+    state^.current_window = No_Widget
+}

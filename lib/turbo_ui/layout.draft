@@ -1,0 +1,72 @@
+// Layout is an explicit, copyable cursor over one caller-owned rectangle. It
+// provides the small row/column/padding vocabulary needed by immediate widgets;
+// it owns no children and performs no deferred layout pass. next returns an
+// empty rectangle when the requested extent cannot fit and consumes no space.
+package turbo_ui
+
+pub Axis :: enum u8 {
+    horizontal,
+    vertical,
+}
+
+pub Layout :: struct {
+    remaining: Rect,
+    axis: Axis,
+    gap: usize,
+}
+
+pub layout_begin :: proc(
+    bounds: Rect,
+    axis: Axis,
+    padding: usize = 0,
+    gap: usize = 0,
+) -> Layout {
+    return Layout{remaining = inset(bounds, padding), axis = axis, gap = gap}
+}
+
+pub layout_next :: proc(layout: ^Layout, extent: usize) -> Rect {
+    result: Rect
+    if layout^.axis == .horizontal {
+        if extent > layout^.remaining.width {
+            return result
+        }
+        result = Rect{
+            column = layout^.remaining.column,
+            row = layout^.remaining.row,
+            width = extent,
+            height = layout^.remaining.height,
+        }
+        consumed := extent
+        if layout^.remaining.width - consumed > layout^.gap {
+            consumed += layout^.gap
+        } else {
+            consumed = layout^.remaining.width
+        }
+        layout^.remaining.column += consumed
+        layout^.remaining.width -= consumed
+        return result
+    }
+
+    if extent > layout^.remaining.height {
+        return result
+    }
+    result = Rect{
+        column = layout^.remaining.column,
+        row = layout^.remaining.row,
+        width = layout^.remaining.width,
+        height = extent,
+    }
+    consumed := extent
+    if layout^.remaining.height - consumed > layout^.gap {
+        consumed += layout^.gap
+    } else {
+        consumed = layout^.remaining.height
+    }
+    layout^.remaining.row += consumed
+    layout^.remaining.height -= consumed
+    return result
+}
+
+pub layout_rest :: proc(layout: ^Layout) -> Rect {
+    return layout^.remaining
+}

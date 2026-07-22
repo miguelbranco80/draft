@@ -1,0 +1,55 @@
+// Theme is the complete style vocabulary used by reusable widgets. It contains
+// only core/tui cell styles and may be copied freely. The default constructor
+// recreates the high-contrast blue, cyan, white, yellow, and shadowed look of
+// classic Borland text interfaces without hard-coding those colors in widget
+// algorithms; an application can supply another complete Theme per frame.
+package turbo_ui
+
+import core/tui
+
+pub Theme :: struct {
+    desktop: tui.Style,
+    window: tui.Style,
+    border: tui.Style,
+    title: tui.Style,
+    active_title: tui.Style,
+    shadow: tui.Style,
+    text: tui.Style,
+    disabled: tui.Style,
+    button: tui.Style,
+    hot: tui.Style,
+    active: tui.Style,
+    selected: tui.Style,
+    menu: tui.Style,
+    menu_selected: tui.Style,
+    dialog: tui.Style,
+    status: tui.Style,
+}
+style :: proc(foreground, background: u8, bold: bool = false) -> tui.Style {
+    return tui.Style{
+        foreground = tui.indexed_color(foreground),
+        background = tui.indexed_color(background),
+        bold = bold,
+    }
+}
+
+pub turbo_theme :: proc() -> Theme {
+    return Theme{
+        desktop = style(7, 1),
+        window = style(15, 1),
+        border = style(15, 1, true),
+        title = style(0, 7, true),
+        active_title = style(14, 1, true),
+        shadow = style(0, 0),
+        text = style(15, 1),
+        disabled = style(8, 1),
+        button = style(0, 7, true),
+        hot = style(14, 1, true),
+        active = style(15, 4, true),
+        selected = style(0, 3, true),
+        menu = style(0, 7),
+        menu_selected = style(15, 4, true),
+        dialog = style(15, 1),
+        status = style(0, 7),
+    }
+}

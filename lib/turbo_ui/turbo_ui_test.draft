@@ -1,0 +1,252 @@
+// These same-package tests exercise turbo_ui entirely through in-memory cell
+// surfaces and synthetic events. They open no terminal, sleep for no timeout,
+// and destroy every owning Surface before returning. Private interaction fields
+// are inspected only where they are the invariant under test.
+package turbo_ui
+
+import core/testing
+import core/tui
+
+// test_geometry_layout_and_paint fixes half-open rectangle arithmetic,
+// clipping, explicit row layout, and Unicode border output.
+test_geometry_layout_and_paint :: proc(test: ^testing.Test) {
+    overlap := intersect(
+        Rect{column = 2, row = 1, width = 5, height = 4},
+        Rect{column = 5, row = 0, width = 4, height = 3},
+    )
+    testing.expect(test, rect_equal(
+        overlap,
+        Rect{column = 5, row = 1, width = 2, height = 2},
+    ))
+    testing.expect(test, point_in_rect(Point{column = 5, row = 2}, overlap))
+    testing.expect(test, !point_in_rect(Point{column = 7, row = 2}, overlap))
+
+    layout := layout_begin(
+        Rect{width = 20, height = 5},
+        .horizontal,
+        1,
+        1,
+    )
+    first := layout_next(&layout, 4)
+    second := layout_next(&layout, 6)
+    testing.expect(test, rect_equal(
+        first,
+        Rect{column = 1, row = 1, width = 4, height = 3},
+    ))
+    testing.expect(test, second.column == 6 && second.width == 6)
+    testing.expect(test, layout_rest(&layout).column == 13)
+
+    surface: tui.Surface
+    tui.surface_init(&surface, 12, 6)
+    clip := Rect{column = 1, row = 1, width = 9, height = 4}
+    testing.expect(test, draw_border(
+        &surface,
+        clip,
+        Rect{column = 0, row = 0, width = 12, height = 6},
+        .double,
+        turbo_theme().border,
+    ))
+    // The outer border is completely clipped, so the untouched origin remains
+    // a blank while a direct clipped label appears in the visible region.
+    (origin, origin_valid) := tui.cell_at(&surface, 0, 0)
+    testing.expect(test, origin_valid && origin.value == ' ')
+    testing.expect(test, write_clipped(
+        &surface,
+        clip,
+        Point{column = 2, row = 2},
+        "Draft",
+        turbo_theme().text,
+    ))
+    (letter, letter_valid) := tui.cell_at(&surface, 2, 2)
+    testing.expect(test, letter_valid && letter.value == 'D')
+    tui.surface_destroy(&surface)
+}
+
+// test_button_and_focus proves mouse press/release activation and deterministic
+// forward/backward keyboard traversal without a retained control list.
+test_button_and_focus :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 30, 8)
+    state: State
+    theme := turbo_theme()
+    bounds := Rect{column = 2, row = 2, width = 8, height = 1}
+
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 3, row = 2},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    testing.expect(test, !button(&state, 10, bounds, "Open"))
+    end_frame(&state)
+    testing.expect(test, state.active_id == 10 && state.focused_id == 10)
+
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 3, row = 2},
+        action = .release,
+        button = .primary,
+    }), theme)
+    testing.expect(test, button(&state, 10, bounds, "Open"))
+    end_frame(&state)
+    testing.expect(test, state.active_id == No_Widget)
+
+    state.focused_id = No_Widget
+    begin_frame(&state, &surface, key_event(Key_Event{code = .tab}), theme)
+    button(&state, 10, bounds, "One")
+    button(&state, 11, Rect{column = 11, row = 2, width = 8, height = 1}, "Two")
+    end_frame(&state)
+    testing.expect(test, state.focused_id == 10)
+
+    begin_frame(&state, &surface, key_event(Key_Event{code = .tab}), theme)
+    button(&state, 10, bounds, "One")
+    button(&state, 11, Rect{column = 11, row = 2, width = 8, height = 1}, "Two")
+    end_frame(&state)
+    testing.expect(test, state.focused_id == 11)
+
+    begin_frame(&state, &surface, key_event(Key_Event{code = .tab, shift = true}), theme)
+    button(&state, 10, bounds, "One")
+    button(&state, 11, Rect{column = 11, row = 2, width = 8, height = 1}, "Two")
+    end_frame(&state)
+    testing.expect(test, state.focused_id == 10)
+    tui.surface_destroy(&surface)
+}
+
+// test_value_widgets proves explicit caller ownership for checkbox state, list
+// selection/scrolling, scrollbar offset, and splitter geometry.
+test_value_widgets :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 40, 12)
+    state: State
+    theme := turbo_theme()
+    checked := false
+    state.focused_id = 20
+
+    begin_frame(&state, &surface, key_event(Key_Event{code = .enter}), theme)
+    testing.expect(test, checkbox(
+        &state,
+        20,
+        Rect{column = 1, row = 1, width = 16, height = 1},
+        "Enabled",
+        &checked,
+    ))
+    end_frame(&state)
+    testing.expect(test, checked)
+
+    items := [5]string{"zero", "one", "two", "three", "four"}
+    selected: usize
+    scroll: usize
+    state.focused_id = 21
+    begin_frame(&state, &surface, key_event(Key_Event{code = .page_down}), theme)
+    testing.expect(test, list(
+        &state,
+        21,
+        Rect{column = 1, row = 3, width = 12, height = 2},
+        items[:],
+        &selected,
+        &scroll,
+    ))
+    end_frame(&state)
+    testing.expect(test, selected == 2 && scroll == 1)
+
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 15, row = 6},
+        action = .wheel,
+        wheel_delta = 1,
+    }), theme)
+    scrollbar_vertical(
+        &state,
+        22,
+        Rect{column = 15, row = 3, width = 1, height = 4},
+        10,
+        4,
+        &scroll,
+    )
+    end_frame(&state)
+    testing.expect(test, scroll == 2)
+
+    split: usize = 5
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 5, row = 8},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    splitter(
+        &state,
+        23,
+        Rect{column = 0, row = 8, width = 20, height = 2},
+        .horizontal,
+        &split,
+        2,
+        18,
+    )
+    end_frame(&state)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 9, row = 8},
+        action = .move,
+        primary_down = true,
+    }), theme)
+    testing.expect(test, splitter(
+        &state,
+        23,
+        Rect{column = 0, row = 8, width = 20, height = 2},
+        .horizontal,
+        &split,
+        2,
+        18,
+    ))
+    end_frame(&state)
+    testing.expect(test, split == 9)
+    tui.surface_destroy(&surface)
+}
+
+// test_window_order_drag_and_resize fixes z selection, explicit capture, and
+// viewport clamping. The same public frame/window calls are used by the gallery.
+test_window_order_drag_and_resize :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 50, 20)
+    state: State
+    theme := turbo_theme()
+    windows := [2]Window_State{
+        window_init(30, Rect{column = 1, row = 1, width = 20, height = 8}, 1),
+        window_init(31, Rect{column = 5, row = 3, width = 20, height = 8}, 2),
+    }
+    order: [2]usize
+    testing.expect(test, window_order(windows[:], order[:]) == 2)
+    testing.expect(test, order[0] == 0 && order[1] == 1)
+
+    // Press the uncovered part of window 30's title, then drag it four cells.
+    begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 1},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme, windows[:])
+    first := begin_window(&state, &windows[0], "First")
+    end_window(&state, first)
+    end_frame(&state)
+    testing.expect(test, state.active_kind == .window_drag)
+    testing.expect(test, windows[0].z > windows[1].z)
+
+    begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 6, row = 3},
+        action = .move,
+        primary_down = true,
+    }), theme, windows[:])
+    first = begin_window(&state, &windows[0], "First")
+    end_window(&state, first)
+    end_frame(&state)
+    testing.expect(test, windows[0].bounds.column == 5)
+    testing.expect(test, windows[0].bounds.row == 3)
+
+    begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 6, row = 3},
+        action = .release,
+        button = .primary,
+    }), theme, windows[:])
+    first = begin_window(&state, &windows[0], "First")
+    end_window(&state, first)
+    end_frame(&state)
+    testing.expect(test, state.active_kind == .none)
+    tui.surface_destroy(&surface)
+}

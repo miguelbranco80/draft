@@ -1,0 +1,249 @@
+// Frame state is the complete transient interaction memory for immediate-mode
+// controls. It borrows one caller-owned Surface and Event only between
+// begin_frame and end_frame. Active and focused IDs deliberately survive the
+// frame boundary; every geometric fact is rediscovered from ordinary widget
+// calls on the next frame, so no retained widget tree can become stale.
+package turbo_ui
+
+import core/tui
+
+// Active_Kind distinguishes an ordinary pressed control from the two window
+// gestures whose movement continues outside their original hit rectangle.
+// none is the zero resting state.
+Active_Kind :: enum u8 {
+    none,
+    widget,
+    window_drag,
+    window_resize,
+    splitter,
+    scrollbar,
+}
+
+// State belongs to the application and must remain at one stable address while
+// a frame is open. surface is borrowed and becomes nil in end_frame. hot_id is
+// recomputed each frame. active_id and focused_id persist across frames. The
+// focus traversal fields describe only the current deterministic call order.
+// target_window prevents covered controls in lower windows from consuming a
+// mouse event; zero identifies widgets drawn directly on the desktop.
+pub State :: struct {
+    surface: ^tui.Surface,
+    event: Event,
+    theme: Theme,
+    clip: Rect,
+    frame_open: bool,
+    event_handled: bool,
+
+    hot_id: Widget_Id,
+    active_id: Widget_Id,
+    focused_id: Widget_Id,
+    active_kind: Active_Kind,
+
+    target_window: Widget_Id,
+    current_window: Widget_Id,
+
+    first_focus: Widget_Id,
+    last_focus: Widget_Id,
+    previous_focus: Widget_Id,
+    next_focus: Widget_Id,
+    saw_focused: bool,
+
+    drag_column_offset: usize,
+    drag_row_offset: usize,
+    drag_start: Point,
+    drag_start_rect: Rect,
+}
+
+// Interaction is a frame-local observation returned by the common control
+// primitive. activated is one completed mouse click or keyboard activation;
+// held remains true while the initiating mouse press is active.
+pub Interaction :: struct {
+    hot: bool,
+    held: bool,
+    activated: bool,
+}
+
+// begin_frame borrows surface and event for one immediate traversal. It is the
+// form used when no overlapping application windows participate in hit
+// testing. Applications with windows use begin_window_frame, which delegates
+// to the same reset operation after selecting the topmost target.
+pub begin_frame :: proc(
+    state: ^State,
+    surface: ^tui.Surface,
+    event: Event,
+    theme: Theme,
+) {
+    assert(!state^.frame_open, "turbo_ui frame is already open")
+    state^.surface = surface
+    state^.event = event
+    state^.theme = theme
+    state^.clip = surface_bounds(surface)
+    state^.frame_open = true
+    state^.event_handled = false
+    state^.hot_id = No_Widget
+    state^.target_window = No_Widget
+    state^.current_window = No_Widget
+    state^.first_focus = No_Widget
+    state^.last_focus = No_Widget
+    state^.previous_focus = No_Widget
+    state^.next_focus = No_Widget
+    state^.saw_focused = false
+}
+
+// register_focus records one focusable control in deterministic call order.
+// The bookkeeping permits wraparound Tab traversal without retaining a list or
+// allocating. Duplicate live IDs violate the public uniqueness contract.
+register_focus :: proc(state: ^State, id: Widget_Id) {
+    if state^.first_focus == No_Widget {
+        state^.first_focus = id
+    }
+    if state^.saw_focused && state^.next_focus == No_Widget {
+        state^.next_focus = id
+    }
+    if id == state^.focused_id {
+        state^.previous_focus = state^.last_focus
+        state^.saw_focused = true
+    }
+    state^.last_focus = id
+}
+
+// mouse_reaches_current_scope enforces both clipping and window z-order. A
+// root control receives mouse input only when no visible window covered the
+// pointer at frame start.
+mouse_reaches_current_scope :: proc(state: ^State, bounds: Rect) -> bool {
+    if state^.event.kind != .mouse {
+        return false
+    }
+    if state^.target_window != state^.current_window {
+        return false
+    }
+    point := state^.event.mouse.position
+    return point_in_rect(point, state^.clip) && point_in_rect(point, bounds)
+}
+
+// interact is the one button-like state transition shared by controls. Mouse
+// activation occurs on release over the same ID that accepted the press.
+// Enter and Space activate the focused control once. The event-handled bit
+// prevents overlapping controls with erroneous duplicate geometry from both
+// reacting, while painting remains independent of event consumption.
+interact :: proc(state: ^State, id: Widget_Id, bounds: Rect) -> Interaction {
+    assert(state^.frame_open, "turbo_ui interaction outside a frame")
+    assert(id != No_Widget, "turbo_ui widget ID zero is reserved")
+    register_focus(state, id)
+
+    result := Interaction{held = state^.active_id == id}
+    reaches := mouse_reaches_current_scope(state, bounds)
+    if reaches {
+        state^.hot_id = id
+        result.hot = true
+    }
+
+    if !state^.event_handled && state^.event.kind == .mouse {
+        mouse := state^.event.mouse
+        if reaches && mouse.action == .press && mouse.button == .primary {
+            state^.active_id = id
+            state^.active_kind = .widget
+            state^.focused_id = id
+            state^.event_handled = true
+            result.held = true
+        } else if mouse.action == .release && mouse.button == .primary &&
+            state^.active_id == id && state^.active_kind == .widget {
+            result.activated = reaches
+            state^.active_id = No_Widget
+            state^.active_kind = .none
+            state^.event_handled = true
+            result.held = false
+        }
+    }
+
+    if !state^.event_handled && state^.focused_id == id &&
+        state^.event.kind == .key {
+        key := state^.event.key
+        space := key.code == .character && key.byte_value == cast[u8](' ')
+        if key.code == .enter || space {
+            result.activated = true
+            state^.event_handled = true
+        }
+    }
+    return result
+}
+
+// focus_area is the non-button interaction primitive for editors and custom
+// canvases. A primary press focuses and captures the ID; motion with the button
+// down retains capture outside bounds; release ends it. Keyboard events are
+// never consumed. activated means a new press, while held covers press/drag.
+pub focus_area :: proc(
+    state: ^State,
+    id: Widget_Id,
+    bounds: Rect,
+) -> Interaction {
+    assert(state^.frame_open, "turbo_ui focus area outside a frame")
+    assert(id != No_Widget, "turbo_ui widget ID zero is reserved")
+    register_focus(state, id)
+    reaches := mouse_reaches_current_scope(state, bounds)
+    result := Interaction{
+        hot = reaches,
+        held = state^.active_id == id && state^.active_kind == .widget,
+    }
+    if reaches {
+        state^.hot_id = id
+    }
+    if state^.event.kind != .mouse {
+        return result
+    }
+    mouse := state^.event.mouse
+    if !state^.event_handled && reaches && mouse.action == .press &&
+        mouse.button == .primary {
+        state^.focused_id = id
+        state^.active_id = id
+        state^.active_kind = .widget
+        state^.event_handled = true
+        result.activated = true
+        result.held = true
+    } else if state^.active_id == id && state^.active_kind == .widget &&
+        mouse.action == .move && mouse.primary_down {
+        state^.event_handled = true
+        result.held = true
+    } else if state^.active_id == id && state^.active_kind == .widget &&
+        mouse.action == .release && mouse.button == .primary {
+        state^.active_id = No_Widget
+        state^.active_kind = .none
+        state^.event_handled = true
+        result.held = false
+    }
+    return result
+}
+
+// end_frame resolves Tab after every focusable control has registered. Forward
+// and backward traversal wrap at the ends. If the focused ID disappeared, Tab
+// starts at the first or last current control. All frame-only borrows and
+// scopes are then cleared; persistent interaction identity remains explicit.
+pub end_frame :: proc(state: ^State) {
+    assert(state^.frame_open, "turbo_ui frame is not open")
+    if !state^.event_handled && state^.event.kind == .key &&
+        state^.event.key.code == .tab && state^.first_focus != No_Widget {
+        if state^.event.key.shift {
+            if state^.saw_focused && state^.previous_focus != No_Widget {
+                state^.focused_id = state^.previous_focus
+            } else {
+                state^.focused_id = state^.last_focus
+            }
+        } else {
+            if state^.saw_focused && state^.next_focus != No_Widget {
+                state^.focused_id = state^.next_focus
+            } else {
+                state^.focused_id = state^.first_focus
+            }
+        }
+    }
+
+    state^.surface = nil
+    state^.frame_open = false
+    state^.event_handled = false
+    state^.target_window = No_Widget
+    state^.current_window = No_Widget
+    state^.first_focus = No_Widget
+    state^.last_focus = No_Widget
+    state^.previous_focus = No_Widget
+    state^.next_focus = No_Widget
+    state^.saw_focused = false
+}

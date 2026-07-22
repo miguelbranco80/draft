@@ -1,0 +1,503 @@
+// turbo-ui-gallery is the independent interactive proof for lib/turbo_ui. It
+// owns the terminal resources, event loop, persistent window/control values,
+// and renderer; the UI library sees only one borrowed Surface and semantic
+// event at a time. The program demonstrates menus, buttons, checkboxes, lists,
+// scrollbars, splitters, dialogs, overlapping movable windows, mouse capture,
+// keyboard focus, resize handling, and differential presentation.
+package turbo_ui_gallery
+
+import core/io
+import core/os
+import core/terminal
+import core/time
+import core/tui
+import lib/turbo_ui
+import lib/turbo_ui_terminal
+
+Input_Buffer_Size :: 128
+Maximum_Columns :: 240
+Maximum_Rows :: 100
+
+Window_Controls :: 0
+Window_Files :: 1
+Window_Layout :: 2
+Window_Dialog :: 3
+
+// Gallery_State contains every persistent application value. The UI owns none
+// of these records, which makes state changes inspectable in the smoke test.
+Gallery_State :: struct {
+    ui: turbo_ui.State,
+    windows: [4]turbo_ui.Window_State,
+    checked: bool,
+    selected: usize,
+    scroll: usize,
+    split: usize,
+    clicks: usize,
+}
+
+init_gallery :: proc(gallery: ^Gallery_State) {
+    gallery^.windows[Window_Controls] = turbo_ui.window_init(
+        100,
+        turbo_ui.Rect{column = 3, row = 3, width = 34, height = 11},
+        1,
+    )
+    gallery^.windows[Window_Files] = turbo_ui.window_init(
+        101,
+        turbo_ui.Rect{column = 30, row = 6, width = 32, height = 14},
+        2,
+    )
+    gallery^.windows[Window_Layout] = turbo_ui.window_init(
+        102,
+        turbo_ui.Rect{column = 12, row = 16, width = 52, height = 9},
+        3,
+    )
+    gallery^.windows[Window_Dialog] = turbo_ui.window_init(
+        103,
+        turbo_ui.Rect{column = 22, row = 8, width = 36, height = 9},
+        4,
+    )
+    gallery^.windows[Window_Dialog].visible = false
+    gallery^.checked = true
+    gallery^.split = 21
+}
+
+// paint_controls renders ordinary value widgets in the first window.
+paint_controls :: proc(
+    gallery: ^Gallery_State,
+    content: turbo_ui.Rect,
+) {
+    layout := turbo_ui.layout_begin(content, .vertical, 1, 1)
+    check_bounds := turbo_ui.layout_next(&layout, 1)
+    turbo_ui.checkbox(
+        &gallery^.ui,
+        200,
+        check_bounds,
+        "Enable diagnostics",
+        &gallery^.checked,
+    )
+    button_bounds := turbo_ui.layout_next(&layout, 1)
+    if turbo_ui.button(&gallery^.ui, 201, button_bounds, "Count activation") {
+        gallery^.clicks += 1
+    }
+    dialog_bounds := turbo_ui.layout_next(&layout, 1)
+    if turbo_ui.button(&gallery^.ui, 202, dialog_bounds, "Open dialog") {
+        gallery^.windows[Window_Dialog].visible = true
+        gallery^.windows[Window_Dialog].z += 10
+    }
+    turbo_ui.status_bar(
+        &gallery^.ui,
+        turbo_ui.layout_rest(&layout),
+        "Tab moves focus; drag titles and corners",
+    )
+}
+
+// paint_files couples one list and one explicit scrollbar through caller-owned
+// selected/scroll values. The borrowed literals remain valid for the call.
+paint_files :: proc(
+    gallery: ^Gallery_State,
+    content: turbo_ui.Rect,
+) {
+    files := [9]string{
+        "README.md",
+        "package.draft",
+        "geometry.draft",
+        "state.draft",
+        "window.draft",
+        "widgets.draft",
+        "terminal_adapter.draft",
+        "turbo_ui_test.draft",
+        "TODO_editor.md",
+    }
+    if content.width == 0 {
+        return
+    }
+    list_width := content.width - 1
+    turbo_ui.list(
+        &gallery^.ui,
+        210,
+        turbo_ui.Rect{
+            column = content.column,
+            row = content.row,
+            width = list_width,
+            height = content.height,
+        },
+        files[:],
+        &gallery^.selected,
+        &gallery^.scroll,
+    )
+    turbo_ui.scrollbar_vertical(
+        &gallery^.ui,
+        211,
+        turbo_ui.Rect{
+            column = content.column + list_width,
+            row = content.row,
+            width = 1,
+            height = content.height,
+        },
+        len(files),
+        content.height,
+        &gallery^.scroll,
+    )
+}
+
+// paint_layout demonstrates a reusable splitter and clipped panel drawing.
+paint_layout :: proc(
+    gallery: ^Gallery_State,
+    content: turbo_ui.Rect,
+    theme: turbo_ui.Theme,
+) {
+    if content.width < 3 || content.height == 0 {
+        return
+    }
+    maximum := content.width - 2
+    turbo_ui.splitter(
+        &gallery^.ui,
+        220,
+        content,
+        .horizontal,
+        &gallery^.split,
+        8,
+        maximum,
+    )
+    left := turbo_ui.Rect{
+        column = content.column,
+        row = content.row,
+        width = gallery^.split,
+        height = content.height,
+    }
+    right := turbo_ui.Rect{
+        column = content.column + gallery^.split + 1,
+        row = content.row,
+        width = content.width - gallery^.split - 1,
+        height = content.height,
+    }
+    turbo_ui.fill_rect(gallery^.ui.surface, content, left, ' ', theme.window)
+    turbo_ui.fill_rect(gallery^.ui.surface, content, right, ' ', theme.dialog)
+    turbo_ui.write_clipped(
+        gallery^.ui.surface,
+        left,
+        turbo_ui.Point{column = left.column + 1, row = left.row + 1},
+        "Editor pane",
+        theme.text,
+    )
+    turbo_ui.write_clipped(
+        gallery^.ui.surface,
+        right,
+        turbo_ui.Point{column = right.column + 1, row = right.row + 1},
+        "Diagnostics",
+        theme.text,
+    )
+}
+
+paint_dialog :: proc(
+    gallery: ^Gallery_State,
+    content: turbo_ui.Rect,
+    theme: turbo_ui.Theme,
+) {
+    turbo_ui.write_clipped(
+        gallery^.ui.surface,
+        content,
+        turbo_ui.Point{column = content.column + 2, row = content.row + 1},
+        "A reusable immediate-mode dialog.",
+        theme.text,
+    )
+    if content.height > 3 && turbo_ui.button(
+        &gallery^.ui,
+        230,
+        turbo_ui.Rect{
+            column = content.column + 10,
+            row = content.row + 3,
+            width = 10,
+            height = 1,
+        },
+        "OK",
+    ) {
+        gallery^.windows[Window_Dialog].visible = false
+    }
+}
+
+// paint_gallery is one complete immediate traversal. Window ordering is
+// computed into fixed caller storage; each case uses only the public library.
+paint_gallery :: proc(
+    gallery: ^Gallery_State,
+    surface: ^tui.Surface,
+    event: turbo_ui.Event,
+) {
+    theme := turbo_ui.turbo_theme()
+    tui.clear(surface, theme.desktop)
+    turbo_ui.begin_window_frame(
+        &gallery^.ui,
+        surface,
+        event,
+        theme,
+        gallery^.windows[:],
+    )
+
+    turbo_ui.menu_bar(
+        &gallery^.ui,
+        turbo_ui.Rect{width = surface^.columns, height = 1},
+    )
+    if turbo_ui.menu_item(
+        &gallery^.ui,
+        190,
+        turbo_ui.Rect{column = 1, width = 9, height = 1},
+        "Dialog",
+    ) {
+        gallery^.windows[Window_Dialog].visible = true
+        gallery^.windows[Window_Dialog].z += 10
+    }
+    turbo_ui.menu_item(
+        &gallery^.ui,
+        191,
+        turbo_ui.Rect{column = 11, width = 8, height = 1},
+        "Options",
+    )
+
+    order: [4]usize
+    count := turbo_ui.window_order(gallery^.windows[:], order[:])
+    for order_index: usize = 0; order_index < count; order_index += 1 {
+        index := order[order_index]
+        window := &gallery^.windows[index]
+        window_context: turbo_ui.Window_Context
+        if index == Window_Dialog {
+            window_context = turbo_ui.dialog_begin(
+                &gallery^.ui,
+                window,
+                "Message",
+            )
+        } else {
+            title := "Controls"
+            if index == Window_Files {
+                title = "Files"
+            } else if index == Window_Layout {
+                title = "Layout"
+            }
+            window_context = turbo_ui.begin_window(
+                &gallery^.ui,
+                window,
+                title,
+            )
+        }
+        if window_context.visible {
+            switch index {
+            case Window_Controls:
+                paint_controls(gallery, window_context.content)
+            case Window_Files:
+                paint_files(gallery, window_context.content)
+            case Window_Layout:
+                paint_layout(gallery, window_context.content, theme)
+            case Window_Dialog:
+                paint_dialog(gallery, window_context.content, theme)
+            case:
+            }
+        }
+        turbo_ui.end_window(&gallery^.ui, window_context)
+    }
+
+    if surface^.rows != 0 {
+        turbo_ui.status_bar(
+            &gallery^.ui,
+            turbo_ui.Rect{
+                row = surface^.rows - 1,
+                width = surface^.columns,
+                height = 1,
+            },
+            "Esc quits  |  Mouse moves/resizes  |  Tab changes focus",
+        )
+    }
+    turbo_ui.end_frame(&gallery^.ui)
+}
+
+render_size :: proc(size: terminal.Size) -> (usize, usize, bool) {
+    if size.columns == 0 || size.rows == 0 {
+        return (0, 0, false)
+    }
+    columns := size.columns
+    rows := size.rows
+    if columns > Maximum_Columns {
+        columns = Maximum_Columns
+    }
+    if rows > Maximum_Rows {
+        rows = Maximum_Rows
+    }
+    return (columns, rows, true)
+}
+
+text_equal :: proc(left, right: string) -> bool {
+    if len(left) != len(right) {
+        return false
+    }
+    for index: usize = 0; index < len(left); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
+}
+
+has_smoke_argument :: proc() -> bool {
+    for argument in os.args() {
+        if text_equal(argument, "--smoke") {
+            return true
+        }
+    }
+    return false
+}
+
+run_smoke :: proc() -> int {
+    gallery: Gallery_State
+    init_gallery(&gallery)
+    surface: tui.Surface
+    tui.surface_init(&surface, 80, 28)
+    defer tui.surface_destroy(&surface)
+    paint_gallery(&gallery, &surface, turbo_ui.no_event())
+    (cell, valid) := tui.cell_at(&surface, 0, 0)
+    if !valid || cell.value == cast[rune](0) {
+        return 1
+    }
+    if os.write_text_all(
+        os.standard_output,
+        "turbo ui gallery smoke ok\n",
+    ) != .none {
+        return 1
+    }
+    return 0
+}
+
+run_interactive :: proc(
+    session: ^terminal.Session,
+    screen: ^terminal.Screen,
+    watcher: ^terminal.Resize_Watcher,
+    initial_size: terminal.Size,
+) -> io.Error {
+    (columns, rows, available) := render_size(initial_size)
+    if !available {
+        return .unavailable
+    }
+    renderer: tui.Renderer
+    tui.renderer_init(&renderer, columns, rows)
+    defer tui.renderer_destroy(&renderer)
+    gallery: Gallery_State
+    init_gallery(&gallery)
+    decoder: terminal.Decoder
+    input: [Input_Buffer_Size]u8
+
+    paint_gallery(&gallery, tui.surface(&renderer), turbo_ui.no_event())
+    if tui.present(&renderer, screen) != .none {
+        return .unavailable
+    }
+    for {
+        (size, changed, size_error) := terminal.poll_resize(watcher)
+        if size_error != .none {
+            return size_error
+        }
+        if changed {
+            (new_columns, new_rows, new_available) := render_size(size)
+            if !new_available {
+                return .unavailable
+            }
+            tui.renderer_resize(&renderer, new_columns, new_rows)
+            paint_gallery(
+                &gallery,
+                tui.surface(&renderer),
+                turbo_ui_terminal.resize(size),
+            )
+            if tui.present(&renderer, screen) != .none {
+                return .unavailable
+            }
+        }
+
+        (count, read_error) := terminal.read(
+            session,
+            input[:],
+            100 * time.millisecond,
+        )
+        if read_error == .end_of_input {
+            return .none
+        }
+        if read_error != .none {
+            return read_error
+        }
+        repaint := false
+        for index: usize = 0; index < count; index += 1 {
+            event := turbo_ui_terminal.decode(&decoder, input[index])
+            if event.kind == .none {
+                continue
+            }
+            if event.kind == .key && event.key.code == .escape {
+                return .none
+            }
+            paint_gallery(&gallery, tui.surface(&renderer), event)
+            repaint = true
+        }
+        // Resolve an ambiguous lone Escape after one quiet input interval. CSI
+        // and mouse sequences arriving in the same read are already completed
+        // above; an incomplete control sequence is deliberately discarded.
+        if count == 0 {
+            event := turbo_ui_terminal.flush(&decoder)
+            if event.kind == .key && event.key.code == .escape {
+                return .none
+            }
+            if event.kind != .none {
+                paint_gallery(&gallery, tui.surface(&renderer), event)
+                repaint = true
+            }
+        }
+        if repaint && tui.present(&renderer, screen) != .none {
+            return .unavailable
+        }
+    }
+    return .none
+}
+
+report_error :: proc(message: string) {
+    result := os.write_text_all(os.standard_error, message)
+    if result != .none {
+        return
+    }
+}
+
+// main acquires resources in input, resize, screen, mouse order and releases
+// them in exact reverse order. Every cleanup is attempted even after failure.
+main :: proc() -> int {
+    if has_smoke_argument() {
+        return run_smoke()
+    }
+    session: terminal.Session
+    if terminal.begin_raw(&session, os.standard_input) != .none {
+        report_error("turbo-ui-gallery: input is not a terminal; use --smoke\n")
+        return 1
+    }
+    watcher: terminal.Resize_Watcher
+    (initial_size, resize_error) := terminal.begin_resize_watch(
+        &watcher,
+        os.standard_output,
+    )
+    screen: terminal.Screen
+    reporting: terminal.Mouse_Reporting
+    run_error: io.Error = .unavailable
+    if resize_error == .none &&
+        terminal.begin_screen(&screen, os.standard_output) == .none &&
+        terminal.begin_mouse_reporting(&reporting, &screen) == .none {
+        run_error = run_interactive(
+            &session,
+            &screen,
+            &watcher,
+            initial_size,
+        )
+    }
+
+    mouse_restored := terminal.restore_mouse_reporting(&reporting)
+    screen_restored := terminal.restore_screen(&screen)
+    watch_ended := terminal.end_resize_watch(&watcher)
+    input_restored := terminal.restore(&session)
+    if !mouse_restored || !screen_restored || !watch_ended || !input_restored {
+        report_error("turbo-ui-gallery: terminal cleanup failed\n")
+        return 1
+    }
+    if run_error != .none {
+        report_error("turbo-ui-gallery: terminal I/O failed\n")
+        return 1
+    }
+    return 0
+}

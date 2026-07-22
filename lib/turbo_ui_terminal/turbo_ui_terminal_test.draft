@@ -1,0 +1,38 @@
+// Adapter tests prove the optional terminal dependency maps portable values
+// without opening a console or retaining source storage.
+package turbo_ui_terminal
+
+import core/terminal
+import core/testing
+import lib/turbo_ui
+
+test_terminal_adapter :: proc(test: ^testing.Test) {
+    decoder: terminal.Decoder
+    key := decode(&decoder, cast[u8]('A'))
+    testing.expect(test, key.kind == .key)
+    testing.expect(test, key.key.code == .character)
+    testing.expect(test, key.key.byte_value == cast[u8]('A'))
+
+    sequence := "\x1b[<0;9;5M"
+    mouse: turbo_ui.Event
+    for index: usize = 0; index < len(sequence); index += 1 {
+        result := decode(&decoder, sequence[index])
+        if result.kind != .none {
+            mouse = result
+        }
+    }
+    testing.expect(test, mouse.kind == .mouse)
+    testing.expect(test, mouse.mouse.position.column == 8)
+    testing.expect(test, mouse.mouse.position.row == 4)
+    testing.expect(test, mouse.mouse.action == .press)
+    testing.expect(test, mouse.mouse.button == .primary)
+
+    testing.expect(test, decode(&decoder, 27).kind == .none)
+    escape := flush(&decoder)
+    testing.expect(test, escape.kind == .key)
+    testing.expect(test, escape.key.code == .escape)
+
+    size := resize(terminal.Size{columns = 100, rows = 40})
+    testing.expect(test, size.kind == .resize)
+    testing.expect(test, size.resize.columns == 100 && size.resize.rows == 40)
+}
