@@ -49,7 +49,8 @@ void test_target_object_and_assembly(TestState &state) {
   for (const draft::TargetProfile &target : {
            draft::make_aarch64_macos_profile(),
            draft::make_aarch64_linux_profile(),
-           draft::make_x86_64_linux_profile()}) {
+           draft::make_x86_64_linux_profile(),
+           draft::make_x86_64_windows_profile()}) {
     const std::string module = minimal_module(target);
     const draft::LlvmObjectEmissionResult first =
         draft::emit_llvm_object_in_process(target, "minimal", module, {});
@@ -70,6 +71,13 @@ void test_target_object_and_assembly(TestState &state) {
       EXPECT(state, first.bytes[1] == 'E');
       EXPECT(state, first.bytes[2] == 'L');
       EXPECT(state, first.bytes[3] == 'F');
+    }
+    if (target.facts.object_format == "coff" && first.bytes.size() >= 2) {
+      // IMAGE_FILE_MACHINE_AMD64 is stored little endian in the first COFF
+      // header field. This assertion detects an accidental ELF host object
+      // without needing a platform SDK or linker on the test host.
+      EXPECT(state, static_cast<unsigned char>(first.bytes[0]) == 0x64U);
+      EXPECT(state, static_cast<unsigned char>(first.bytes[1]) == 0x86U);
     }
 
     draft::LlvmObjectEmissionOptions assembly_options;
@@ -92,7 +100,8 @@ void test_o0_and_o2_pipelines(TestState &state) {
   for (const draft::TargetProfile &target : {
            draft::make_aarch64_macos_profile(),
            draft::make_aarch64_linux_profile(),
-           draft::make_x86_64_linux_profile()}) {
+           draft::make_x86_64_linux_profile(),
+           draft::make_x86_64_windows_profile()}) {
     const std::string module =
         "target triple = \"" + target.llvm_triple + "\"\n"
         "target datalayout = \"" + target.llvm_data_layout + "\"\n"

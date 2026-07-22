@@ -112,6 +112,12 @@ struct TargetProfile {
 // distinct SysV AMD64 C ABI and LLVM machine contract.
 [[nodiscard]] TargetProfile make_x86_64_linux_profile();
 
+// Constructs the initial 64-bit Windows profile. It selects the Microsoft x64
+// ABI, LLP64 C data model, COFF objects, and the Windows 10 SDK system boundary.
+// Parsed inline assembly remains unavailable, just as it does on x86-64 Linux;
+// exact package assembly remains a separately supported input kind.
+[[nodiscard]] TargetProfile make_x86_64_windows_profile();
+
 // Resolves the stable command-line selector for a built-in profile.  The
 // default remains aarch64-macos for compatibility.  Returning a value rather
 // than a reference keeps profiles immutable-by-convention and lets tests alter

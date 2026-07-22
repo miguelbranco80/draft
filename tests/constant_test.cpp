@@ -2199,6 +2199,7 @@ callback_identity :: proc(value: i32) -> i32 {
 }
 Target_MacOS :: cast[Target_Operating_System](cast[u8](0))
 Target_Linux :: cast[Target_Operating_System](cast[u8](1))
+Target_Windows :: cast[Target_Operating_System](cast[u8](2))
 Target_Linux_Through_Type_Value :: cast[Target_OS_Type_Value](cast[u8](1))
 Integer_Through_Type_Value :: cast[Integer_Type_Value](42)
 Element_Type :: type_element(^u64)
@@ -2428,7 +2429,7 @@ Bad_Raw_Data_Type :: type_of(raw_data(42))
 Bad_Feature_Missing :: type_of(target.has_feature())
 Bad_Feature_Extra :: type_of(target.has_feature("neon", "extra"))
 Bad_Feature_Argument :: type_of(target.has_feature(42))
-Bad_Target_OS_Value :: cast[Target_Operating_System](cast[u8](2))
+Bad_Target_OS_Value :: cast[Target_Operating_System](cast[u8](3))
 
 runtime_text_with_value :: proc(value: int) -> string {
     return "runtime text"
@@ -2546,7 +2547,7 @@ when (target).os == .macos &&
     EXPECT(state, value->kind == draft::ConstantKind::Integer);
     EXPECT(state, value->integer.to_decimal() == expected);
   };
-  expect_integer_constant("Target_OS_Member_Count", "2");
+  expect_integer_constant("Target_OS_Member_Count", "3");
   expect_integer_constant("Target_OS_First_Value", "0");
   const std::optional<draft::SymbolId> target_os_first =
       find_symbol(valid.analysis.package, "Target_OS_First_Member");

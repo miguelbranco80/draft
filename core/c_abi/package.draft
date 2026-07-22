@@ -2,10 +2,10 @@
 // binary interface. These aliases keep a foreign declaration readable without
 // turning `c` into both a language modifier and an unrelated package name.
 //
-// The current AArch64 Darwin, AArch64 GNU/Linux, and x86-64 GNU/Linux profiles
-// are LP64, so this common source can state their widths directly. A future
-// target with a different C data model must select its own definitions rather
-// than silently reusing this file. These are ordinary Draft aliases: source
+// Darwin and GNU/Linux use LP64, while 64-bit Windows uses Microsoft's LLP64:
+// pointers remain 64 bits but C long remains 32 bits. The target-selected
+// aliases below make that difference explicit without making user foreign
+// declarations target-qualified. These are ordinary Draft aliases: source
 // tools can inspect every width, and the package owns no runtime state or
 // native resource.
 // Draft specification: sections 7 and 12, plus the selected target profile.
@@ -18,8 +18,13 @@ pub short :: i16
 pub unsigned_short :: u16
 pub int :: i32
 pub unsigned_int :: u32
-pub long :: i64
-pub unsigned_long :: u64
+when target.abi == .win64 {
+    pub long :: i32
+    pub unsigned_long :: u32
+} else {
+    pub long :: i64
+    pub unsigned_long :: u64
+}
 pub long_long :: i64
 pub unsigned_long_long :: u64
 pub size_t :: usize

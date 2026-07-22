@@ -456,6 +456,10 @@ if(BUILD_TESTING)
   target_link_libraries(draft_x86_64_abi_tests PRIVATE draft_compiler)
   add_test(NAME draft_x86_64_abi_tests COMMAND draft_x86_64_abi_tests)
 
+  add_executable(draft_win64_abi_tests tests/win64_abi_test.cpp)
+  target_link_libraries(draft_win64_abi_tests PRIVATE draft_compiler)
+  add_test(NAME draft_win64_abi_tests COMMAND draft_win64_abi_tests)
+
   add_executable(draft_c_header_tests tests/c_header_test.cpp)
   target_link_libraries(draft_c_header_tests PRIVATE draft_compiler)
   add_test(NAME draft_c_header_tests COMMAND draft_c_header_tests)
@@ -735,6 +739,25 @@ if(BUILD_TESTING)
     draft_x86_64_linux_check_driver
     PROPERTIES PASS_REGULAR_EXPRESSION
       "checked package graph rooted at tetris"
+  )
+  add_test(
+    NAME draft_x86_64_windows_target_driver
+    COMMAND draftc target --target x86_64-windows
+  )
+  set_tests_properties(
+    draft_x86_64_windows_target_driver
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "identity draft-x86_64-windows-msvc-v1.*triple x86_64-pc-windows-msvc"
+  )
+  add_test(
+    NAME draft_x86_64_windows_c_abi_check_driver
+    COMMAND draftc check "${CMAKE_CURRENT_SOURCE_DIR}/core/c_abi"
+      --target x86_64-windows
+  )
+  set_tests_properties(
+    draft_x86_64_windows_c_abi_check_driver
+    PROPERTIES PASS_REGULAR_EXPRESSION
+      "checked package graph rooted at c_abi"
   )
 
   # Timing is a process-facing diagnostic contract. Exercise both report

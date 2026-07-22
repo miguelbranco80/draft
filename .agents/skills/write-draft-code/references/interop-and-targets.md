@@ -25,13 +25,16 @@ editing.
 
 ## Current target boundary
 
-The compiler currently emits native code for exactly three target profiles:
+The compiler currently selects four native target profiles. The first three
+are fully hosted; the Windows row currently reaches semantic checking and COFF
+object emission while its PE linker/runtime stage is completed:
 
 | CLI target | Profile identity | ABI and object format | Page size | File tag |
 | --- | --- | --- | --- | --- |
 | `aarch64-macos` | `draft-aarch64-macos-v5` | Darwin arm64, Mach-O | 16 KiB | `aarch64-macos` |
 | `aarch64-linux` | `draft-aarch64-linux-gnu-v1` | GNU AAPCS64, ELF/glibc 2.39 | 4 KiB | `aarch64-linux` |
 | `x86_64-linux` | `draft-x86_64-linux-gnu-v1` | SysV AMD64, ELF/glibc 2.39 | 4 KiB | `x86_64-linux` |
+| `x86_64-windows` | `draft-x86_64-windows-msvc-v1` | Microsoft x64, COFF/UCRT | 4 KiB | `x86_64-windows` |
 
 All are 64-bit little-endian native profiles, but they are not one generic
 platform. C aggregate rules, narrow scalar extension, enum ABI,
@@ -39,7 +42,8 @@ pthread and termios layouts, poll count types, open flags, object/linker
 behavior, page size, and assembly profile identity differ.
 
 macOS is the CLI compatibility default. Portable code should be checked
-explicitly against all three profiles. Windows, other libcs, and other
+explicitly against all four profiles; native execution remains required only
+where the selected hosted stage is implemented. Other libcs and other
 operating systems are not implemented Draft targets. Parsed inline assembly is
 available only on AArch64; x86-64 still supports ordinary native code and exact
 target-qualified package assembly.
@@ -58,9 +62,11 @@ implementation differs:
 platform@aarch64-macos.draft
 platform@aarch64-linux.draft
 platform@x86_64-linux.draft
+platform@x86_64-windows.draft
 native@aarch64-macos.s
 native@aarch64-linux.s
 native@x86_64-linux.s
+native@x86_64-windows.s
 ```
 
 Only the matching file is selected. Unqualified files participate on every
@@ -394,10 +400,10 @@ or wrappers outside parsed inline assembly. Its boundary to Draft remains an
 explicit `foreign`/`export` C ABI symbol. Assembly cannot name private Draft
 symbols or bypass package/provider accounting.
 
-Keep target-specific assembly in exact `@aarch64-macos`, `@aarch64-linux`, and
-`@x86_64-linux` files. Symbol prefixes, visibility, section directives,
-unwind metadata, and object conventions differ between Mach-O and ELF even
-when instructions look identical.
+Keep target-specific assembly in exact `@aarch64-macos`, `@aarch64-linux`,
+`@x86_64-linux`, and `@x86_64-windows` files. Symbol prefixes, visibility,
+section directives, unwind metadata, and object conventions differ between
+Mach-O, ELF, and COFF even when instructions look identical.
 
 ## Native artifact kinds
 
@@ -453,8 +459,8 @@ nondeterministic archive metadata, or filesystem enumeration order.
 
 ## Portability checklist
 
-- Check `--target aarch64-macos`, `--target aarch64-linux`, and
-  `--target x86_64-linux`.
+- Check `--target aarch64-macos`, `--target aarch64-linux`,
+  `--target x86_64-linux`, and `--target x86_64-windows`.
 - Use exact target-tagged files for whole platform implementations.
 - Use `target` facts, never host environment guesses, for compile-time choice.
 - Audit every C-visible type recursively and generate/compile the C header.

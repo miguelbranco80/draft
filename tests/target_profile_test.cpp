@@ -126,6 +126,44 @@ void test_x86_64_linux_profile(TestState &state) {
   EXPECT(state, reason.find("unknown target") != std::string::npos);
 }
 
+void test_x86_64_windows_profile(TestState &state) {
+  const draft::TargetProfile profile = draft::make_x86_64_windows_profile();
+  std::string reason;
+  EXPECT(state, draft::validate_target_profile(profile, reason));
+  EXPECT(state, reason.empty());
+  EXPECT(state, profile.facts.identity == "draft-x86_64-windows-msvc-v1");
+  EXPECT(state, profile.facts.arch == "x86_64");
+  EXPECT(state, profile.facts.os == "windows");
+  EXPECT(state, profile.facts.abi == "win64");
+  EXPECT(state, profile.facts.object_format == "coff");
+  EXPECT(state, profile.facts.file_tag == "x86_64-windows");
+  EXPECT(state, profile.facts.page_size == 4096);
+  EXPECT(state, profile.facts.features == std::vector<std::string>({"sse2"}));
+  EXPECT(state, profile.llvm_triple == "x86_64-pc-windows-msvc");
+  EXPECT(state, profile.llvm_data_layout.find("m:w") != std::string::npos);
+  EXPECT(state, profile.llvm_cpu == "x86-64");
+  EXPECT(state, !profile.supports_parsed_assembly);
+  EXPECT(state, profile.system_link_providers ==
+      std::vector<std::string>({"libc", "windows"}));
+  EXPECT(state, profile.system_link_library == "kernel32");
+  EXPECT(state, profile.system_foreign_summaries.size() == 31);
+  EXPECT(state, profile.system_foreign_summaries[13].linker_name ==
+      "CreateThread");
+  EXPECT(state,
+      profile.system_foreign_summaries[13].callback_parameters ==
+          std::vector<std::uint32_t>{2});
+  EXPECT(state, profile.system_foreign_summaries[14].linker_name ==
+      "FlsAlloc");
+  EXPECT(state,
+      profile.system_foreign_summaries[14].callback_parameters ==
+          std::vector<std::uint32_t>{0});
+
+  draft::TargetProfile selected;
+  EXPECT(state, draft::select_builtin_target_profile(
+      "x86_64-windows", selected, reason));
+  EXPECT(state, selected.facts.identity == profile.facts.identity);
+}
+
 void test_invalid_profile_reports_reason(TestState &state) {
   draft::TargetProfile profile = draft::make_aarch64_macos_profile();
   profile.facts.page_size = 12000;
@@ -194,6 +232,7 @@ int main() {
   test_initial_profile(state);
   test_linux_profile(state);
   test_x86_64_linux_profile(state);
+  test_x86_64_windows_profile(state);
   test_invalid_profile_reports_reason(state);
   test_simd_semantic_boundary(state);
 

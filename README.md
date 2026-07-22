@@ -79,6 +79,7 @@ particular:
 - [AArch64 macOS target profile](docs/targets/aarch64-macos.md)
 - [AArch64 Linux target and qualification](docs/targets/aarch64-linux.md)
 - [x86-64 Linux target profile](docs/targets/x86-64-linux.md)
+- [x86-64 Windows target profile](docs/targets/x86-64-windows.md)
 - [Compiler command reference](docs/operations/command-reference.md)
 - [Native host qualification](docs/releases/native-host-qualification.md)
 - [Historical first implementation plan](docs/history/first-implementation-plan.md)

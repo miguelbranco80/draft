@@ -666,6 +666,75 @@ call_one_after_five :: proc(value: One_Integer) -> One_Integer {
   EXPECT(state, !object.bytes.empty());
 }
 
+// Win64 uses integer carriers only for records whose complete size is exactly
+// 1, 2, 4, or 8 bytes. Other records use plain pointers for parameters and a
+// hidden sret pointer for results. The plain-pointer assertion is important:
+// SysV's `byval` spelling would request a caller copy and select a different
+// Windows ABI contract.
+void test_win64_aggregate_signatures_and_calls(TestState &state) {
+  const draft::TargetProfile target = draft::make_x86_64_windows_profile();
+  const EmittedFixture emitted = emit_fixture_for_target(R"draft(
+package win64_aggregate
+
+Eight :: c struct { bytes: [8]u8, }
+Float_Pair :: c struct { first: f32, second: f32, }
+Six :: c struct { bytes: [6]u8, }
+Sixteen :: c struct { first: u64, second: u64, }
+
+export float_pair_identity as "draft_float_pair_identity" :: c proc(
+    value: Float_Pair,
+) -> Float_Pair {
+    return value
+}
+
+export six_identity as "draft_six_identity" :: c proc(value: Six) -> Six {
+    return value
+}
+
+foreign windows {
+    take_eight as "draft_take_eight" :: c proc(value: Eight) -> Eight
+    take_sixteen as "draft_take_sixteen" :: c proc(
+        value: Sixteen,
+    ) -> Sixteen
+}
+
+call_eight :: proc(value: Eight) -> Eight {
+    return take_eight(value)
+}
+
+call_sixteen :: proc(value: Sixteen) -> Sixteen {
+    return take_sixteen(value)
+}
+)draft",
+                                                         target);
+  if (!emitted.ok)
+    std::cerr << emitted.diagnostics;
+  EXPECT(state, emitted.ok);
+  EXPECT(state, emitted.text.find(
+      "define i64 @\"draft_float_pair_identity\"(i64 %arg0)") !=
+      std::string::npos);
+  EXPECT(state, emitted.text.find(
+      "define void @\"draft_six_identity\"(ptr sret(") !=
+      std::string::npos);
+  EXPECT(state, emitted.text.find("ptr byval(") == std::string::npos);
+  EXPECT(state, emitted.text.find("@\"draft_take_eight\"(i64)") !=
+      std::string::npos);
+  EXPECT(state, emitted.text.find("@\"draft_take_sixteen\"(ptr sret(") !=
+      std::string::npos);
+
+  const draft::LlvmObjectEmissionResult object =
+      draft::emit_llvm_object_in_process(target, "win64-aggregate", emitted.text,
+                                         {});
+  if (!object.ok)
+    std::cerr << object.failure << '\n';
+  EXPECT(state, object.ok);
+  EXPECT(state, object.bytes.size() >= 2);
+  if (object.bytes.size() >= 2) {
+    EXPECT(state, static_cast<unsigned char>(object.bytes[0]) == 0x64U);
+    EXPECT(state, static_cast<unsigned char>(object.bytes[1]) == 0x86U);
+  }
+}
+
 // Verifies that tuple extraction uses the tuple's logical member numbers even
 // when semantic layout places alignment padding before a member. LLVM owns the
 // implicit padding of tuple types; only named packed structs contain explicit
@@ -1258,12 +1327,14 @@ int main() {
   test_static_argument_pack_emits_fixed_signature(state);
   test_c_variadic_call_emits_promoted_tail(state);
   test_sysv_aggregate_signatures_and_calls(state);
+  test_win64_aggregate_signatures_and_calls(state);
   test_padded_tuple_extraction_uses_logical_indices(state);
   test_scalar_executable_module(
       state, draft::make_aarch64_macos_profile());
   test_scalar_executable_module(
       state, draft::make_aarch64_linux_profile());
   test_scalar_executable_module(state, draft::make_x86_64_linux_profile());
+  test_scalar_executable_module(state, draft::make_x86_64_windows_profile());
   if (state.failures != 0) {
     std::cerr << state.failures << " LLVM IR expectation(s) failed\n";
     return EXIT_FAILURE;

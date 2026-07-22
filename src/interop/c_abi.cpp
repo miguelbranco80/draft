@@ -391,6 +391,45 @@ classify_sysv_member(const TypeStore &types, TypeId type_id, std::uint64_t base,
   return result;
 }
 
+// Microsoft x64 treats a naturally laid-out record as one integer scalar only
+// when its complete size is exactly 1, 2, 4, or 8 bytes. Every other record is
+// passed by reference; a result uses the ABI's hidden return pointer. Record
+// contents do not create SSE classes: even an eight-byte pair of floats travels
+// in the integer slot. These compact rules are intentionally separate from the
+// SysV eightbyte walk despite sharing the x86-64 instruction architecture.
+[[nodiscard]] CAbiType classify_win64_with_active_procedures(
+    const TypeStore &types, TypeId type_id, const TargetFacts &target,
+    std::vector<TypeId> &active_procedures) {
+  const Type &type = types.type(type_id);
+  CAbiType result;
+  result.size = type.layout.size;
+  result.alignment = type.layout.alignment;
+
+  if (direct_scalar(types, type_id, target, active_procedures)) {
+    result.classification = CAbiClass::Direct;
+    return result;
+  }
+  if ((type.kind != TypeKind::Struct && type.kind != TypeKind::Union) ||
+      !type.c_representation || !type.layout.known || type.layout.size == 0 ||
+      !aggregate_member_legal(types, type_id, target, active_procedures)) {
+    return result;
+  }
+
+  if (type.layout.size == 1 || type.layout.size == 2 ||
+      type.layout.size == 4 || type.layout.size == 8) {
+    result.classification = CAbiClass::SmallAggregate;
+    result.argument_integer_bits =
+        static_cast<std::uint32_t>(type.layout.size * 8U);
+    result.argument_integer_count = 1;
+    result.result_integer_bits = result.argument_integer_bits;
+    result.result_integer_count = 1;
+    return result;
+  }
+
+  result.classification = CAbiClass::Indirect;
+  return result;
+}
+
 [[nodiscard]] CAbiType
 classify_with_active_procedures(const TypeStore &types, TypeId type_id,
                                 const TargetFacts &target,
@@ -403,6 +442,10 @@ classify_with_active_procedures(const TypeStore &types, TypeId type_id,
   if (target.arch == "x86_64" && target.abi == "sysv_amd64") {
     return classify_sysv_amd64_with_active_procedures(types, type_id, target,
                                                       active_procedures);
+  }
+  if (target.arch == "x86_64" && target.abi == "win64") {
+    return classify_win64_with_active_procedures(types, type_id, target,
+                                                 active_procedures);
   }
   return {};
 }

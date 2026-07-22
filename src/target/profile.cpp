@@ -127,6 +127,47 @@ linux_system_foreign_summaries() {
   };
 }
 
+// The Windows profile deliberately trusts individual UCRT and Kernel32 entry
+// points rather than treating either DLL as an opaque provider. The callback
+// positions are part of denial analysis: CreateThread may invoke parameter 2,
+// while FlsAlloc may invoke its parameter 0 during thread teardown.
+[[nodiscard]] std::vector<SystemForeignSummary>
+windows_system_foreign_summaries() {
+  return {
+      {"libc", "_close", {}},
+      {"libc", "_exit", {}},
+      {"libc", "_get_osfhandle", {}},
+      {"libc", "_open", {}},
+      {"libc", "_read", {}},
+      {"libc", "_setmode", {}},
+      {"libc", "_unlink", {}},
+      {"libc", "_write", {}},
+      {"libc", "calloc", {}},
+      {"libc", "free", {}},
+      {"libc", "realloc", {}},
+      {"libc", "strlen", {}},
+      {"windows", "CloseHandle", {}},
+      {"windows", "CreateThread", {2}},
+      {"windows", "FlsAlloc", {0}},
+      {"windows", "FlsFree", {}},
+      {"windows", "FlsGetValue", {}},
+      {"windows", "FlsSetValue", {}},
+      {"windows", "GetConsoleMode", {}},
+      {"windows", "GetConsoleScreenBufferInfo", {}},
+      {"windows", "GetCurrentProcessId", {}},
+      {"windows", "GetCurrentThreadId", {}},
+      {"windows", "QueryPerformanceCounter", {}},
+      {"windows", "QueryPerformanceFrequency", {}},
+      {"windows", "SetConsoleMode", {}},
+      {"windows", "Sleep", {}},
+      {"windows", "SwitchToThread", {}},
+      {"windows", "VirtualAlloc", {}},
+      {"windows", "VirtualFree", {}},
+      {"windows", "VirtualProtect", {}},
+      {"windows", "WaitForSingleObject", {}},
+  };
+}
+
 } // namespace
 
 TargetProfile make_aarch64_macos_profile() {
@@ -289,6 +330,47 @@ TargetProfile make_x86_64_linux_profile() {
   return profile;
 }
 
+TargetProfile make_x86_64_windows_profile() {
+  TargetProfile profile;
+  profile.facts.identity = "draft-x86_64-windows-msvc-v1";
+  profile.facts.arch = "x86_64";
+  profile.facts.os = "windows";
+  profile.facts.abi = "win64";
+  profile.facts.byte_order = "little";
+  profile.facts.object_format = "coff";
+  profile.facts.file_tag = "x86_64-windows";
+  profile.facts.pointer_bits = 64;
+  profile.facts.page_size = 4096;
+  profile.facts.known_features = {"avx", "avx2", "sse2"};
+  profile.facts.features = {"sse2"};
+  profile.facts.simd_shapes = baseline_simd_shapes();
+
+  // Windows 10 is the first distribution boundary. The version is semantic
+  // profile identity, while LLVM needs only the MSVC environment triple to
+  // select Win64 calling convention and COFF lowering.
+  profile.minimum_os_version = "windows-10";
+  profile.llvm_triple = "x86_64-pc-windows-msvc";
+  profile.llvm_data_layout =
+      "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-"
+      "f80:128-n8:16:32:64-S128";
+  profile.llvm_cpu = "x86-64";
+  profile.llvm_feature_string = "+sse2";
+  profile.relocation_model = TargetRelocationModel::PositionIndependent;
+  profile.code_model = TargetCodeModel::Small;
+  profile.tls_model = TargetTlsModel::GeneralDynamic;
+  profile.supports_parsed_assembly = false;
+
+  // `libc` names the Universal CRT surface. `windows` names Kernel32, whose
+  // import library is part of the selected Windows SDK. The native toolchain
+  // links the UCRT through the MSVC driver defaults and adds Kernel32
+  // explicitly for core/runtime operating-system primitives.
+  profile.system_link_providers = {"libc", "windows"};
+  profile.system_link_library = "kernel32";
+  profile.system_foreign_summaries = windows_system_foreign_summaries();
+  profile.assembly_files = assembly_file_rules();
+  return profile;
+}
+
 bool select_builtin_target_profile(std::string_view selector,
                                    TargetProfile &profile,
                                    std::string &reason) {
@@ -305,8 +387,13 @@ bool select_builtin_target_profile(std::string_view selector,
     profile = make_x86_64_linux_profile();
     return true;
   }
+  if (selector == "x86_64-windows") {
+    profile = make_x86_64_windows_profile();
+    return true;
+  }
   reason = "unknown target '" + std::string(selector) +
-      "'; expected aarch64-macos, aarch64-linux, or x86_64-linux";
+      "'; expected aarch64-macos, aarch64-linux, x86_64-linux, or "
+      "x86_64-windows";
   return false;
 }
 
@@ -340,7 +427,10 @@ bool validate_target_profile(const TargetProfile &profile,
   const bool x86_64_linux =
       profile.facts.arch == "x86_64" && profile.facts.os == "linux" &&
       profile.facts.abi == "sysv_amd64" && profile.facts.object_format == "elf";
-  if (!macos && !aarch64_linux && !x86_64_linux) {
+  const bool x86_64_windows =
+      profile.facts.arch == "x86_64" && profile.facts.os == "windows" &&
+      profile.facts.abi == "win64" && profile.facts.object_format == "coff";
+  if (!macos && !aarch64_linux && !x86_64_linux && !x86_64_windows) {
     reason =
         "target OS, ABI, and object format are not a supported coherent set";
     return false;
@@ -401,8 +491,10 @@ bool validate_target_profile(const TargetProfile &profile,
   }
   const std::vector<std::string> expected_system_providers =
       macos ? std::vector<std::string>{"darwin", "libc"}
-            : std::vector<std::string>{"libc", "linux"};
-  const std::string_view expected_system_library = macos ? "System" : "c";
+      : x86_64_windows ? std::vector<std::string>{"libc", "windows"}
+                       : std::vector<std::string>{"libc", "linux"};
+  const std::string_view expected_system_library =
+      macos ? "System" : x86_64_windows ? "kernel32" : "c";
   if (profile.system_link_library != expected_system_library ||
       profile.system_link_providers != expected_system_providers ||
       !bytewise_sorted_unique(profile.system_link_providers)) {

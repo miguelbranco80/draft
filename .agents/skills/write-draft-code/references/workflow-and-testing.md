@@ -69,6 +69,7 @@ Recognized direct children are:
 name@aarch64-macos.<extension>
 name@aarch64-linux.<extension>
 name@x86_64-linux.<extension>
+name@x86_64-windows.<extension>
 ```
 
 Nested directories are separate packages or non-source content; they do not
@@ -148,6 +149,7 @@ build/draftc syntax path/to/file.draft
 build/draftc check path/to/workspace --root package --target aarch64-macos
 build/draftc check path/to/workspace --root package --target aarch64-linux
 build/draftc check path/to/workspace --root package --target x86_64-linux
+build/draftc check path/to/workspace --root package --target x86_64-windows
 build/draftc expand path/to/workspace --root package --out /tmp/expanded-source \
   --target aarch64-macos
 build/draftc resolve path/to/workspace --root package --build -o /tmp/program \
@@ -171,6 +173,7 @@ Other useful inspections:
 build/draftc target --target aarch64-macos
 build/draftc target --target aarch64-linux
 build/draftc target --target x86_64-linux
+build/draftc target --target x86_64-windows
 build/draftc emit-llvm path/to/workspace --root package --target aarch64-macos
 build/draftc emit-c-header path/to/workspace --root package -o /tmp/package.h \
   --target aarch64-macos
@@ -383,10 +386,12 @@ ctest --test-dir build -L examples --output-on-failure
 ```
 
 `examples/qualification.tsv` must classify every tracked Draft/assembly package
-directory. Its rows drive all-three-target frontend checks, every ordinary native
-example execution, special C-library and foreign-provider link gates, and all
-example-owned Draft tests and benchmarks. Do not add an example source package
-without adding its explicit final-state classification.
+directory. Its rows currently drive the three fully hosted target frontend
+checks, every ordinary native example execution, special C-library and
+foreign-provider link gates, and all example-owned Draft tests and benchmarks.
+Windows is checked only by its focused foundation fixtures until the core and
+examples are ported. Do not add an example source package without adding its
+explicit final-state classification.
 
 Run one or a small regular-expression slice while iterating:
 
@@ -407,12 +412,13 @@ cmake --build build --target \
   draft_native_interop_tests \
   draft_aarch64_abi_tests \
   draft_x86_64_abi_tests \
+  draft_win64_abi_tests \
   draft_c_header_tests \
   draft_toolchain_tests \
   --parallel
 
 ctest --test-dir build --output-on-failure \
-  -R '^(draft_mir_tests|draft_native_interop_tests|draft_aarch64_abi_tests|draft_x86_64_abi_tests|draft_c_header_tests|draft_toolchain_tests|draft_target_profile_tests|draft_assembly_tests|draft_llvm_ir_tests|draft_llvm_object_emitter_tests|draft_native_object_tasks_tests|draft_compiler_tests)$'
+  -R '^(draft_mir_tests|draft_native_interop_tests|draft_aarch64_abi_tests|draft_x86_64_abi_tests|draft_win64_abi_tests|draft_c_header_tests|draft_toolchain_tests|draft_target_profile_tests|draft_assembly_tests|draft_llvm_ir_tests|draft_llvm_object_emitter_tests|draft_native_object_tasks_tests|draft_compiler_tests)$'
 ```
 
 On any supported native host, artifact closure also includes

@@ -28,10 +28,10 @@ the stable compile-time fields `identity: string`,
 `pointer_bits: uint`, and `page_size: usize`.
 The categorical types are distinct compiler-defined enums. Draft 1 defines
 `Target_Architecture` with `.aarch64` and `.x86_64`;
-`Target_Operating_System` with `.macos` and `.linux`; `Target_ABI` with
-`.darwin_arm64`, `.aapcs64_gnu`, and `.sysv_amd64`;
+`Target_Operating_System` with `.macos`, `.linux`, and `.windows`; `Target_ABI`
+with `.darwin_arm64`, `.aapcs64_gnu`, `.sysv_amd64`, and `.win64`;
 `Target_Byte_Order` with `.little` and `.big`; and `Target_Object_Format` with
-`.macho` and `.elf`, in the stated source order. A later target profile may
+`.macho`, `.elf`, and `.coff`, in the stated source order. A later target profile may
 append alternatives but cannot reorder or conflate existing types. Consequently
 `target.os == target.arch` and `target.os == .aarch64` are type errors even when
 the underlying labels or integer representations happen to coincide.

@@ -5048,14 +5048,14 @@ private:
     return semantic_.types.builtins().invalid;
   }
 
-  // Selects the compatible integer type used by an unfixed C enum on the
-  // current Darwin arm64, GNU AAPCS64, and SysV AMD64 targets. Their default
-  // ABI keeps an enum at C `int` width even when every enumerator would fit in
-  // u8 or u16. At that
-  // width it uses
+  // Selects the compatible integer type used by an unfixed C enum. Every
+  // current ABI keeps an enum at C `int` width even when every enumerator would
+  // fit in u8 or u16. At that width it uses
   // unsigned int for a wholly nonnegative set and signed int when any member
   // is negative. Values outside 32 bits widen by the same signedness rule to
-  // unsigned long or signed long, both 64 bits in this target ABI.
+  // unsigned long or signed long on LP64 targets. Win64 uses Microsoft's LLP64
+  // data model and keeps unfixed enums at 32 bits; a value outside that range
+  // must use Draft's explicit fixed-backing C-enum form.
   //
   // Do not reuse inferred_enum_backing(): Draft's ordinary enum rule chooses
   // the smallest fixed-width representation, while c explicitly asks
@@ -5067,7 +5067,7 @@ private:
     if (target_ != nullptr && !target_->abi.empty() &&
         target_->abi != "darwin_arm64" &&
         target_->abi != "aapcs64_gnu" &&
-        target_->abi != "sysv_amd64") {
+        target_->abi != "sysv_amd64" && target_->abi != "win64") {
       // Applying the current LP64 rule to another ABI would manufacture the
       // wrong public type. Fail closed until that profile supplies a complete
       // rule alongside its ABI classifier and header lowering.
@@ -5077,9 +5077,18 @@ private:
     for (const BigInteger &value : values) {
       has_negative = has_negative || value.is_negative();
     }
-    static constexpr std::string_view unsigned_names[] = {"u32", "u64"};
-    static constexpr std::string_view signed_names[] = {"i32", "i64"};
-    const auto &names = has_negative ? signed_names : unsigned_names;
+    static constexpr std::string_view unsigned_lp64_names[] = {"u32", "u64"};
+    static constexpr std::string_view signed_lp64_names[] = {"i32", "i64"};
+    static constexpr std::string_view unsigned_win64_names[] = {"u32"};
+    static constexpr std::string_view signed_win64_names[] = {"i32"};
+    const std::span<const std::string_view> names =
+        target_ != nullptr && target_->abi == "win64"
+            ? (has_negative
+                   ? std::span<const std::string_view>(signed_win64_names)
+                   : std::span<const std::string_view>(unsigned_win64_names))
+            : (has_negative
+                   ? std::span<const std::string_view>(signed_lp64_names)
+                   : std::span<const std::string_view>(unsigned_lp64_names));
     for (std::string_view name : names) {
       const std::optional<TypeId> candidate = semantic_.types.find_builtin(name);
       if (!candidate.has_value()) continue;

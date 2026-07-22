@@ -26,6 +26,7 @@ are explicitly non-normative.
 - [AArch64 macOS target profile](targets/aarch64-macos.md)
 - [AArch64 Linux GNU target profile](targets/aarch64-linux.md)
 - [x86-64 Linux GNU target profile](targets/x86-64-linux.md)
+- [x86-64 Windows MSVC target profile](targets/x86-64-windows.md)
 - [AArch64 parsed assembly profile](targets/aarch64-macos-assembly.md)
 
 Target documents define versioned machine, ABI, and assembly facts. They do not

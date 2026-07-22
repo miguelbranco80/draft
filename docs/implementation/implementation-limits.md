@@ -121,15 +121,18 @@ parallel package-module representation remain in compiler state.
 
 ## Native host and instrumentation limits
 
-Status: explicit three-target bootstrap boundary.
+Status: three hosted targets plus the in-progress x86-64 Windows target.
 
 The bootstrap compiler runs and executes its complete native integration suite
 on AArch64 macOS, AArch64 GNU/Linux, and x86-64 GNU/Linux. It links a selected
 LLVM 22 library for ordinary package-module object emission. Matching
 Clang/`ld.lld`/`llvm-ar`/`dsymutil`, the Apple linker, `libtool`, SDK, and system
 runtime remain ordinary tooling prerequisites rather than Draft program inputs.
-Windows, other Linux libcs/distribution contracts, and other architectures still
-have no target profile. Parsed inline assembly remains AArch64-only; x86-64
+The x86-64 Windows profile currently reaches target selection, LLP64/Win64 ABI
+semantics, and COFF object emission, but not PE linking or its hosted
+runtime/core platform implementation. Other Linux libcs/distribution contracts
+and other architectures still have no target profile. Parsed inline assembly
+remains AArch64-only; x86-64
 supports ordinary native code and target-qualified package assembly but rejects
 selected `asm` constructs.
 

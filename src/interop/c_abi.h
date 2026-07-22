@@ -54,9 +54,9 @@ struct CAbiType {
   std::uint32_t alignment = 1;
 
   // HomogeneousFloatAggregate uses one f16/f32/f64 lane kind repeated one to
-  // four times. SmallAggregate uses integer containers: arguments occupy one
-  // or two 64-bit registers, while results at most eight bytes use exactly the
-  // meaningful bit count (i8, i24, i40, and so on).
+  // four times. SmallAggregate uses integer containers. AArch64 arguments may
+  // occupy one or two 64-bit registers and exact-width results; Win64 uses one
+  // exact-width i8/i16/i32/i64 carrier for its four legal record sizes.
   std::uint32_t homogeneous_element_bits = 0;
   std::uint32_t homogeneous_element_count = 0;
   std::uint32_t argument_integer_bits = 0;

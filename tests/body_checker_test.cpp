@@ -2432,6 +2432,7 @@ code :: proc(value: i64) -> Code {
 target_os :: proc(value: u8) -> Target_Operating_System {
     static_assert(cast[Target_Operating_System](cast[u8](0)) == .macos)
     static_assert(cast[Target_Operating_System](cast[u8](1)) == .linux)
+    static_assert(cast[Target_Operating_System](cast[u8](2)) == .windows)
     static_assert(cast[Target_OS_Type_Value](cast[u8](1)) == .linux)
     return cast[Target_Operating_System](value)
 }
@@ -2463,7 +2464,7 @@ invalid_code :: proc() -> Code {
 }
 
 invalid_target_os :: proc() -> Target_Operating_System {
-    return cast[Target_Operating_System](cast[u8](2))
+    return cast[Target_Operating_System](cast[u8](3))
 }
 )draft");
   EXPECT(state, !failing.bodies.ok);

@@ -138,15 +138,18 @@ Import directly as:
 import core/c_abi
 ```
 
-It provides LP64 aliases for the current AArch64 Darwin, AArch64 GNU/Linux,
-and x86-64 GNU/Linux targets:
+It provides target-selected C scalar aliases for the current profiles:
 `char`, `signed_char`, `unsigned_char`, `short`, `unsigned_short`, `int`,
 `unsigned_int`, `long`, `unsigned_long`, `long_long`,
 `unsigned_long_long`, `size_t`, `ssize_t`, `intptr_t`, and `uintptr_t`.
 
+Darwin and GNU/Linux are LP64, so C `long` is i64/u64. Windows is LLP64, so C
+`long` is i32/u32 while pointers, `size_t`, `ssize_t`, and pointer-sized Draft
+integers remain 64 bits; C `long long` remains i64/u64.
+
 Use qualified names such as `c_abi.int` and `c_abi.size_t`. It does not provide
-libc procedures, errno, C file APIs, `float`, `double`, or variadic helpers. Do
-not assume these aliases describe a future Windows or 32-bit C ABI.
+libc procedures, errno, C file APIs, `float`, `double`, or variadic helpers. A
+future 32-bit C ABI still requires its own explicit target definitions.
 
 ## `core/console`
 

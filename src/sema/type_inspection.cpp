@@ -85,14 +85,14 @@ constexpr std::array<std::string_view, 2> kCallingConventionNames = {
 // alternatives, but must not reorder an existing vocabulary.
 constexpr std::array<std::string_view, 2> kTargetArchitectureNames = {
     "aarch64", "x86_64"};
-constexpr std::array<std::string_view, 2> kTargetOperatingSystemNames = {
-    "macos", "linux"};
-constexpr std::array<std::string_view, 3> kTargetAbiNames = {
-    "darwin_arm64", "aapcs64_gnu", "sysv_amd64"};
+constexpr std::array<std::string_view, 3> kTargetOperatingSystemNames = {
+    "macos", "linux", "windows"};
+constexpr std::array<std::string_view, 4> kTargetAbiNames = {
+    "darwin_arm64", "aapcs64_gnu", "sysv_amd64", "win64"};
 constexpr std::array<std::string_view, 2> kTargetByteOrderNames = {
     "little", "big"};
-constexpr std::array<std::string_view, 2> kTargetObjectFormatNames = {
-    "macho", "elf"};
+constexpr std::array<std::string_view, 3> kTargetObjectFormatNames = {
+    "macho", "elf", "coff"};
 
 [[nodiscard]] TypeInspectionAttempt failure(std::string error) {
   TypeInspectionAttempt result;
