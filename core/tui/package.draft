@@ -499,6 +499,80 @@ pub write_utf8 :: proc(
     return true
 }
 
+// write_utf8_bytes is the mutable-byte-view counterpart needed by text editors
+// and other byte-owning applications. It has the same complete preflight,
+// grapheme storage, and all-or-nothing contract as write_utf8, and never mutates
+// or retains the caller's slice. The parallel implementation is intentional:
+// Draft 1 cannot convert a mutable byte slice to an immutable string view.
+pub write_utf8_bytes :: proc(
+    surface: ^Surface,
+    column, row: usize,
+    bytes: []u8,
+    style: Style,
+) -> bool {
+    if row >= surface^.rows || column > surface^.columns {
+        return false
+    }
+
+    total_columns: usize
+    offset: usize
+    for offset < len(bytes) {
+        (end, columns, error) := unicode.next_grapheme_bytes(bytes, offset)
+        if error != .none || columns > surface^.columns - column ||
+            total_columns > surface^.columns - column - columns {
+            return false
+        }
+        total_columns += columns
+        offset = end
+    }
+
+    compact_if_useful(surface)
+    offset = 0
+    painted_columns: usize
+    for offset < len(bytes) {
+        (end, columns, error) := unicode.next_grapheme_bytes(bytes, offset)
+        assert(error == .none, "validated TUI grapheme changed while painting")
+        (first, scalar_bytes, decode_error) :=
+            utf8.decode_next_bytes(bytes, offset)
+        assert(decode_error == .none,
+            "validated TUI grapheme has an invalid first scalar")
+
+        target_column := column + painted_columns
+        if offset + scalar_bytes == end {
+            install_scalar(surface, target_column, row, first, columns, style)
+        } else {
+            clear_glyph_at(surface, target_column, row)
+            if columns == 2 {
+                clear_glyph_at(surface, target_column + 1, row)
+            }
+            start := surface^.grapheme_bytes.length
+            for byte_index := offset; byte_index < end; byte_index += 1 {
+                array.append(&surface^.grapheme_bytes, bytes[byte_index])
+            }
+            byte_length := end - offset
+            surface^.live_grapheme_bytes += byte_length
+            index := cell_index(surface, target_column, row)
+            surface^.cells.data[index] = Stored_Cell{
+                kind = .grapheme,
+                scalar = first,
+                byte_start = start,
+                byte_length = byte_length,
+                columns = cast[u8](columns),
+                style = style,
+            }
+            if columns == 2 {
+                surface^.cells.data[index + 1] = Stored_Cell{
+                    kind = .continuation,
+                    style = style,
+                }
+            }
+        }
+        painted_columns += columns
+        offset = end
+    }
+    return true
+}
+
 // cell_at returns a non-owning description by value. Additional scalars in a
 // multi-scalar grapheme deliberately remain private; rendering and replacement
 // use the Surface-owned exact bytes, while inspection can identify its first

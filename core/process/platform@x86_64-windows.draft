@@ -1,0 +1,158 @@
+// Windows process creation converts the borrowed UTF-8 path to UTF-16, passes
+// it as an explicit application name, waits for the process handle, reads its
+// DWORD exit code, and closes both returned handles exactly once. No command
+// line is needed for the first no-argument surface, which also avoids a second
+// quoting language in core/process.
+package process
+
+import core/c_abi
+
+Cp_Utf8 :: cast[c_abi.unsigned_int](65001)
+Mb_Err_Invalid_Chars :: cast[c_abi.unsigned_long](0x00000008)
+Wait_Object_0 :: cast[c_abi.unsigned_long](0)
+Infinite :: cast[c_abi.unsigned_long](0xffffffff)
+
+Startup_Info :: c struct {
+    byte_size: c_abi.unsigned_long,
+    reserved: rawptr,
+    desktop: rawptr,
+    title: rawptr,
+    x: c_abi.unsigned_long,
+    y: c_abi.unsigned_long,
+    x_size: c_abi.unsigned_long,
+    y_size: c_abi.unsigned_long,
+    x_character_count: c_abi.unsigned_long,
+    y_character_count: c_abi.unsigned_long,
+    fill_attributes: c_abi.unsigned_long,
+    flags: c_abi.unsigned_long,
+    show_window: c_abi.unsigned_short,
+    reserved_byte_count: c_abi.unsigned_short,
+    reserved_bytes: rawptr,
+    standard_input: rawptr,
+    standard_output: rawptr,
+    standard_error: rawptr,
+}
+
+Process_Information :: c struct {
+    process: rawptr,
+    thread: rawptr,
+    process_id: c_abi.unsigned_long,
+    thread_id: c_abi.unsigned_long,
+}
+
+foreign windows_ucrt {
+    native_malloc as "malloc" :: c proc(size: usize) -> rawptr
+    native_free as "free" :: c proc(storage: rawptr)
+}
+
+foreign windows_kernel {
+    multi_byte_to_wide_char as "MultiByteToWideChar" :: c proc(
+        code_page: c_abi.unsigned_int,
+        flags: c_abi.unsigned_long,
+        source: cstring,
+        source_length: c_abi.int,
+        destination: [^]u16,
+        destination_length: c_abi.int,
+    ) -> c_abi.int
+    create_process as "CreateProcessW" :: c proc(
+        application_name: [^]u16,
+        command_line: [^]u16,
+        process_attributes: rawptr,
+        thread_attributes: rawptr,
+        inherit_handles: i32,
+        creation_flags: c_abi.unsigned_long,
+        environment: rawptr,
+        current_directory: [^]u16,
+        startup: ^Startup_Info,
+        information: ^Process_Information,
+    ) -> i32
+    wait_for_single_object as "WaitForSingleObject" :: c proc(
+        handle: rawptr,
+        milliseconds: c_abi.unsigned_long,
+    ) -> c_abi.unsigned_long
+    get_exit_code as "GetExitCodeProcess" :: c proc(
+        process: rawptr,
+        exit_code: ^c_abi.unsigned_long,
+    ) -> i32
+    close_handle as "CloseHandle" :: c proc(handle: rawptr) -> i32
+}
+
+utf16_path :: proc(path: cstring) -> [^]u16 {
+    required := multi_byte_to_wide_char(
+        Cp_Utf8,
+        Mb_Err_Invalid_Chars,
+        path,
+        -1,
+        nil,
+        0,
+    )
+    if required <= 0 {
+        return nil
+    }
+    count := cast[usize](required)
+    if count > ~cast[usize](0) / size_of(u16) {
+        return nil
+    }
+    storage := cast[[^]u16](native_malloc(count * size_of(u16)))
+    if storage == nil {
+        return nil
+    }
+    converted := multi_byte_to_wide_char(
+        Cp_Utf8,
+        Mb_Err_Invalid_Chars,
+        path,
+        -1,
+        storage,
+        required,
+    )
+    if converted != required {
+        native_free(cast[rawptr](storage))
+        return nil
+    }
+    return storage
+}
+
+native_run :: proc(path: cstring) -> Result {
+    static_assert(size_of(Startup_Info) == 104)
+    static_assert(align_of(Startup_Info) == 8)
+    static_assert(size_of(Process_Information) == 24)
+    static_assert(align_of(Process_Information) == 8)
+    wide_path := utf16_path(path)
+    if wide_path == nil {
+        return Result{error = .unavailable}
+    }
+    startup: Startup_Info
+    startup.byte_size = cast[c_abi.unsigned_long](size_of(Startup_Info))
+    information: Process_Information
+    created := create_process(
+        wide_path,
+        nil,
+        nil,
+        nil,
+        0,
+        0,
+        nil,
+        nil,
+        &startup,
+        &information,
+    )
+    native_free(cast[rawptr](wide_path))
+    if created == 0 {
+        return Result{error = .unavailable}
+    }
+
+    waited := wait_for_single_object(information.process, Infinite)
+    exit_code: c_abi.unsigned_long
+    read_exit := waited == Wait_Object_0 &&
+        get_exit_code(information.process, &exit_code) != 0
+    thread_closed := close_handle(information.thread) != 0
+    process_closed := close_handle(information.process) != 0
+    if !read_exit || !thread_closed || !process_closed {
+        return Result{error = .unavailable}
+    }
+    return Result{
+        error = .none,
+        exited = true,
+        exit_code = exit_code,
+    }
+}

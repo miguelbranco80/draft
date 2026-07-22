@@ -1,0 +1,33 @@
+// core/process is the small hosted child-process boundary shared by Draft
+// development tools. The first surface launches one executable with no extra
+// arguments, inherits the parent environment and working directory, waits for
+// completion, and reports exit or signal status explicitly. It performs no
+// shell parsing, command lookup, redirection, or background lifetime.
+//
+// Target files own UTF-8/UTF-16 conversion and native process handles. The
+// common package owns the stable Draft result contract. The input cstring is
+// borrowed synchronously and retained only by the child process image after a
+// successful exec/CreateProcess transition.
+package process
+
+pub Error :: enum u8 {
+    none,
+    unavailable,
+}
+
+// Result distinguishes failure to create/wait from an ordinary nonzero exit.
+// signal is meaningful only when exited is false and error is none; Windows
+// currently reports all completed processes as exited with their DWORD code.
+pub Result :: struct {
+    error: Error,
+    exited: bool,
+    exit_code: u32,
+    signal: u32,
+}
+
+pub run :: proc(path: cstring) -> Result {
+    if path == nil {
+        return Result{error = .unavailable}
+    }
+    return native_run(path)
+}

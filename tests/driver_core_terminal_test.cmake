@@ -29,7 +29,7 @@ execute_process(
   ERROR_VARIABLE standard_error
 )
 if(NOT status EQUAL 0 OR
-   NOT standard_output MATCHES "test passed: 4 selected procedures")
+   NOT standard_output MATCHES "test passed: 5 selected procedures")
   message(FATAL_ERROR
     "core/terminal tests failed (${status})\n"
     "stdout:\n${standard_output}\nstderr:\n${standard_error}")

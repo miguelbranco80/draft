@@ -377,3 +377,63 @@ pub next_grapheme :: proc(
     }
     return (end, 2 if wide else 1, .none)
 }
+
+// next_grapheme_bytes is the mutable-byte-view counterpart used by editors and
+// other byte-owning applications. It has exactly the same boundary, width, and
+// recovery contract as next_grapheme and never mutates or retains input. The
+// implementation is intentionally parallel because Draft 1 has no declaration
+// overloading or read-only slice conversion through which the string procedure
+// could safely reuse mutable storage.
+pub next_grapheme_bytes :: proc(
+    bytes: []u8,
+    offset: usize,
+) -> (usize, usize, Grapheme_Error) {
+    assert(offset <= len(bytes), "Unicode grapheme offset is out of bounds")
+    if offset == len(bytes) {
+        return (offset, 0, .end_of_input)
+    }
+
+    (first, first_width, first_error) := utf8.decode_next_bytes(bytes, offset)
+    if first_error != .none {
+        return (offset + first_width, 0, .invalid_encoding)
+    }
+    first_property := grapheme_property(first)
+    first_indic := indic_property(first)
+    first_pictographic := is_extended_pictographic(first)
+    state := Cluster_State{previous = first_property}
+    advance_state(
+        &state,
+        first_property,
+        first_indic,
+        first_pictographic,
+    )
+    has_base := false
+    wide := false
+    contains_control := is_control_scalar(first) ||
+        is_break_control(first_property)
+    observe_width(first, first_property, &has_base, &wide)
+
+    end := offset + first_width
+    for end < len(bytes) {
+        (current, width, error) := utf8.decode_next_bytes(bytes, end)
+        if error != .none {
+            return (end + width, 0, .invalid_encoding)
+        }
+        property := grapheme_property(current)
+        indic := indic_property(current)
+        pictographic := is_extended_pictographic(current)
+        if !joins_cluster(&state, property, indic, pictographic) {
+            break
+        }
+        contains_control = contains_control || is_control_scalar(current) ||
+            is_break_control(property)
+        observe_width(current, property, &has_base, &wide)
+        advance_state(&state, property, indic, pictographic)
+        end += width
+    }
+
+    if contains_control || (!has_base && !wide) {
+        return (end, 0, .nonprinting)
+    }
+    return (end, 2 if wide else 1, .none)
+}

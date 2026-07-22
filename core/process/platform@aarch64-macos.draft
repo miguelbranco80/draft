@@ -1,0 +1,59 @@
+// Darwin process creation uses fork/execv and a blocking waitpid. The child
+// owns no Draft cleanup after fork: a failed exec terminates through _exit(127),
+// while successful exec replaces the complete image. The parent retries only
+// EINTR and interprets Darwin's wait status with the POSIX bit layout.
+package process
+
+import core/c_abi
+
+Eintr :: cast[c_abi.int](4)
+
+foreign darwin {
+    fork :: c proc() -> c_abi.int
+    execv :: c proc(path: cstring, arguments: [^]cstring) -> c_abi.int
+    waitpid :: c proc(
+        process: c_abi.int,
+        status: ^c_abi.int,
+        options: c_abi.int,
+    ) -> c_abi.int
+    process_exit as "_exit" :: c proc(status: c_abi.int)
+    errno_pointer as "__error" :: c proc() -> ^c_abi.int
+}
+
+native_run :: proc(path: cstring) -> Result {
+    child := fork()
+    if child < 0 {
+        return Result{error = .unavailable}
+    }
+    if child == 0 {
+        arguments: [2]cstring
+        arguments[0] = path
+        arguments[1] = nil
+        execv(path, cast[[^]cstring](&arguments[0]))
+        process_exit(127)
+    }
+
+    status: c_abi.int
+    for {
+        waited := waitpid(child, &status, 0)
+        if waited == child {
+            break
+        }
+        if waited < 0 && errno_pointer()^ == Eintr {
+            continue
+        }
+        return Result{error = .unavailable}
+    }
+    terminating_signal := cast[u32](status & 0x7f)
+    if terminating_signal == 0 {
+        return Result{
+            error = .none,
+            exited = true,
+            exit_code = cast[u32]((status >> 8) & 0xff),
+        }
+    }
+    return Result{
+        error = .none,
+        signal = terminating_signal,
+    }
+}

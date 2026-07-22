@@ -67,6 +67,11 @@ eight-aligned `sigaction` record: one handler pointer, 32-bit signal mask, and
 32-bit flags. The core watcher installs only over `SIG_DFL`, uses an empty mask
 and zero flags, and restores the complete prior record.
 
+`core/process` uses Darwin's LP64 `fork`/`execv`/`waitpid` boundary. It retries
+wait only for Darwin `EINTR = 4`, interprets the standard low-seven-bit signal
+and high-eight-bit exit fields, and terminates a failed child exec through
+`_exit(127)`.
+
 ## C enum ABI
 
 A `c enum` without an explicit backing follows Apple Clang's default

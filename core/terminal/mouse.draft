@@ -1,0 +1,95 @@
+// This file owns the scoped ANSI mouse-reporting lifetime. Mouse_Reporting
+// borrows an active Screen and enables button, drag, all-motion, and SGR
+// coordinate reports. It owns no input descriptor and performs no decoding;
+// key.draft's generalized streaming decoder consumes the resulting bytes.
+//
+// The resource mirrors Screen suspension. Applications disable mouse reporting
+// before suspending the screen, re-enter the screen before resuming reporting,
+// and restore reporting before final screen restoration. Both POSIX terminals
+// and the Windows virtual-terminal console use the same control sequences.
+package terminal
+
+import core/io
+import core/os
+
+Begin_Mouse_Sequence :: "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h"
+End_Mouse_Sequence :: "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l"
+
+pub Mouse_Reporting_State :: enum u8 {
+    inactive,
+    active,
+    suspended,
+}
+
+// Mouse_Reporting is a move-by-convention restoration obligation borrowing one
+// stable Screen. A failed begin may have emitted a state-changing prefix, so it
+// publishes active before writing and must still be restored. Failed cleanup
+// retains active state for reporting or retry.
+pub Mouse_Reporting :: struct {
+    screen: ^Screen,
+    state: Mouse_Reporting_State,
+}
+
+write_mouse_sequence :: proc(screen: ^Screen, sequence: string) -> io.Error {
+    if screen^.state != .active {
+        return .invalid
+    }
+    return os.write_text_all(screen^.output, sequence)
+}
+
+pub begin_mouse_reporting :: proc(
+    reporting: ^Mouse_Reporting,
+    screen: ^Screen,
+) -> io.Error {
+    if reporting^.state != .inactive || screen == nil ||
+        screen^.state != .active {
+        return .invalid
+    }
+    reporting^.screen = screen
+    reporting^.state = .active
+    return write_mouse_sequence(screen, Begin_Mouse_Sequence)
+}
+
+pub suspend_mouse_reporting :: proc(reporting: ^Mouse_Reporting) -> bool {
+    if reporting^.state == .inactive {
+        return false
+    }
+    if reporting^.state == .suspended {
+        return true
+    }
+    if write_mouse_sequence(reporting^.screen, End_Mouse_Sequence) != .none {
+        return false
+    }
+    reporting^.state = .suspended
+    return true
+}
+
+pub resume_mouse_reporting :: proc(reporting: ^Mouse_Reporting) -> bool {
+    if reporting^.state == .inactive {
+        return false
+    }
+    if reporting^.state == .active {
+        return true
+    }
+    // A failed prefix may already have enabled one mode, so active records the
+    // cleanup obligation before the write begins.
+    reporting^.state = .active
+    return write_mouse_sequence(reporting^.screen, Begin_Mouse_Sequence) == .none
+}
+
+pub restore_mouse_reporting :: proc(reporting: ^Mouse_Reporting) -> bool {
+    if reporting^.state == .inactive {
+        return true
+    }
+    if reporting^.state == .suspended {
+        reporting^.state = .inactive
+        reporting^.screen = nil
+        return true
+    }
+    if write_mouse_sequence(reporting^.screen, End_Mouse_Sequence) != .none {
+        return false
+    }
+    reporting^.state = .inactive
+    reporting^.screen = nil
+    return true
+}

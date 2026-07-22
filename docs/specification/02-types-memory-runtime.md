@@ -1045,6 +1045,7 @@ The initial core set includes:
 | `core/utf8` | Allocation-free strict UTF-8 validation, decoding, encoding, and scalar counting. |
 | `core/io` | Stream and input/output interfaces and utilities. |
 | `core/os` | Process, argument, environment, file, and operating-system facilities. |
+| `core/process` | Exact-path synchronous child-process execution and explicit completion status. |
 | `core/atomic` | Compiler-backed atomic values and memory-order operations. |
 | `core/thread` | Threads, synchronization, and Draft TLS/context establishment. |
 | `core/c_abi` | C ABI scalar aliases for interoperation declarations. |
@@ -1093,6 +1094,16 @@ not secrets, keys, nonces, or tokens.
 `core/time` defines `Duration` as a distinct signed integer type and constants
 such as `time.nanosecond: Duration`; the distinct-operator rules make
 `200 * time.nanosecond` a `Duration`.
+
+`core/process.run` is the initial hosted child-process operation. It borrows one
+exact zero-terminated executable path, supplies no additional arguments,
+inherits the parent environment, current directory, and standard handles, waits
+synchronously, and distinguishes host process-operation failure from a normal
+exit or signal termination. A POSIX child whose exact `execv` fails reports
+exit 127; Windows creation failure reports `.unavailable`. It performs no path
+search or shell interpretation. More
+argument, I/O, and lifetime policy can grow in the package without becoming a
+language or compiler feature.
 
 ### Growable arrays and maps
 

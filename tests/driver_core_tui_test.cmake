@@ -28,10 +28,10 @@ execute_process(
   ERROR_VARIABLE standard_error
 )
 # Validation discovery includes three tui tests, core/unicode's four tests, and
-# core/terminal's four tests. Keeping the total exact proves all three layers
+# core/terminal's five tests. Keeping the total exact proves all three layers
 # compose in the same selected native graph.
 if(NOT status EQUAL 0 OR
-   NOT standard_output MATCHES "test passed: 11 selected procedures")
+   NOT standard_output MATCHES "test passed: 12 selected procedures")
   message(FATAL_ERROR
     "core/tui tests failed (${status})\n"
     "stdout:\n${standard_output}\nstderr:\n${standard_error}")

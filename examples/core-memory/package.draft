@@ -88,6 +88,19 @@ main :: proc() {
     assert(memory.owned_string_cstring(&owned) != nil)
     memory.owned_string_destroy(&owned)
 
+    exact_source := [3]u8{97, 0, 98}
+    exact: memory.Owned_String
+    memory.owned_string_copy_bytes_with_allocator(
+        &exact,
+        exact_source[:],
+        provided.allocator,
+    )
+    exact_bytes := memory.owned_string_bytes(&exact)
+    assert(len(exact_bytes) == 3)
+    assert(exact_bytes[0] == 97 && exact_bytes[1] == 0 && exact_bytes[2] == 98)
+    assert(exact.data[3] == 0)
+    memory.owned_string_destroy(&exact)
+
     (region, reserved) := memory.virtual_reserve(16384)
     assert(reserved)
     assert(memory.virtual_commit(&region))

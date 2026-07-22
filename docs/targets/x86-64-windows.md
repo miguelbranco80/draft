@@ -92,6 +92,13 @@ allocator state and destructor. General allocations use a small aligned-header
 scheme over `malloc` so every supported alignment has one matching release
 operation.
 
+`core/process` uses the LLP64 104-byte/eight-aligned `STARTUPINFOW` and
+24-byte/eight-aligned `PROCESS_INFORMATION` records, converts an exact UTF-8
+application path with `MultiByteToWideChar`, starts it through `CreateProcessW`,
+waits indefinitely, reads the DWORD exit code, and closes both process and
+thread handles. It does not construct a command-line string for the first
+zero-extra-argument operation.
+
 ## Native artifacts and assembly
 
 The embedded LLVM 22 adapter registers the X86 target and emits deterministic

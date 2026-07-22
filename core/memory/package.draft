@@ -398,6 +398,38 @@ pub owned_string_copy :: proc(owned: ^Owned_String, source: string) {
     owned_string_copy_with_allocator(owned, source, context.allocator)
 }
 
+// owned_string_copy_bytes is the mutable-byte-view counterpart used at C and
+// editor boundaries. It copies exact bytes, permits embedded NUL in the bounded
+// view, appends one independent terminator, and retains no source pointer.
+pub owned_string_copy_bytes :: proc(owned: ^Owned_String, source: []u8) {
+    owned_string_copy_bytes_with_allocator(owned, source, context.allocator)
+}
+
+// The explicit-allocator form captures allocator into the resulting owner so
+// destruction always returns the exact length-plus-terminator allocation to the
+// same provider. The destination must be empty, matching the immutable-string
+// copy contract; allocation failure follows core/memory's assertion policy.
+pub owned_string_copy_bytes_with_allocator :: proc(
+    owned: ^Owned_String,
+    source: []u8,
+    allocator: runtime.Allocator,
+) {
+    assert(owned^.data == nil, "owned string must be empty before copy")
+    assert(allocator.procedure != nil, "owned string allocator is nil")
+    assert(len(source) != ~cast[usize](0), "owned string size overflows")
+    owned^.allocator = allocator
+    owned^.length = len(source)
+    owned^.data = cast[[^]u8](allocate_with_allocator(
+        len(source) + 1,
+        1,
+        allocator,
+    ))
+    for index: usize = 0; index < len(source); index += 1 {
+        owned^.data[index] = source[index]
+    }
+    owned^.data[len(source)] = 0
+}
+
 pub owned_string_copy_with_allocator :: proc(
     owned: ^Owned_String,
     source: string,

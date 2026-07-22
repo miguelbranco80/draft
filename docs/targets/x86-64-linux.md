@@ -87,6 +87,10 @@ Target-selected core files fix the following x86-64 glibc 2.39 facts:
 - `timespec` is two signed 64-bit words; and
 - Linux anonymous private mapping uses `MAP_PRIVATE | MAP_ANONYMOUS = 0x22`.
 
+`core/process` uses glibc `fork`/`execv`/`waitpid`, retries wait for
+`EINTR = 4`, interprets the Linux/POSIX low-seven-bit signal and high-eight-bit
+exit fields, and terminates a failed child exec through `_exit(127)`.
+
 The common runtime, allocator, files, threads, terminal, TUI, and validation
 policy is otherwise the same target-independent Draft source used on AArch64.
 

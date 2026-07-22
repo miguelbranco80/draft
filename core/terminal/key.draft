@@ -62,6 +62,54 @@ pub Key :: struct {
     control: bool,
 }
 
+// Mouse_Action and Mouse_Button describe the portable facts available from
+// SGR mouse reporting. Motion preserves the pressed button when the protocol
+// supplies one. Wheel direction uses a signed step: negative is up/backward,
+// positive is down/forward.
+pub Mouse_Action :: enum u8 {
+    none,
+    move,
+    press,
+    release,
+    wheel,
+}
+
+pub Mouse_Button :: enum u8 {
+    none,
+    primary,
+    middle,
+    secondary,
+}
+
+// Mouse is one zero-based terminal-cell observation. Modifier bits come from
+// the report itself. primary_down is true on primary drag motion, allowing an
+// immediate UI to retain capture without consulting native console state.
+pub Mouse :: struct {
+    column: usize,
+    row: usize,
+    action: Mouse_Action,
+    button: Mouse_Button,
+    primary_down: bool,
+    wheel_delta: i32,
+    shift: bool,
+    alt: bool,
+    control: bool,
+}
+
+pub Input_Kind :: enum u8 {
+    none,
+    key,
+    mouse,
+}
+
+// Input is the tagged result of the generalized decoder. Fields not selected
+// by kind are zero. It owns no storage and may be copied freely.
+pub Input :: struct {
+    kind: Input_Kind,
+    key: Key,
+    mouse: Mouse,
+}
+
 // Decoder_State is private because callers react only to completed Key values.
 // csi_parameter records the at-most-two numeric fields used by the supported
 // sequences. csi_ignore consumes a well-formed but unsupported sequence through
@@ -71,6 +119,7 @@ Decoder_State :: enum u8 {
     escape,
     csi,
     csi_parameter,
+    csi_mouse,
     csi_ignore,
     ss3,
 }
@@ -84,6 +133,12 @@ pub Decoder :: struct {
     first_parameter: u16,
     modifier_parameter: u16,
     parameter_index: u8,
+    mouse_code: u32,
+    mouse_column: u32,
+    mouse_row: u32,
+    mouse_parameter_index: u8,
+    mouse_ready: bool,
+    pending_mouse: Mouse,
 }
 
 // reset_decoder returns the streaming state to the exact zero resting state.
@@ -94,6 +149,92 @@ reset_decoder :: proc(decoder: ^Decoder) {
     decoder^.first_parameter = 0
     decoder^.modifier_parameter = 0
     decoder^.parameter_index = 0
+    decoder^.mouse_code = 0
+    decoder^.mouse_column = 0
+    decoder^.mouse_row = 0
+    decoder^.mouse_parameter_index = 0
+}
+
+// append_mouse_digit accumulates one of the three SGR fields. Values saturate
+// above the terminal package's 65535 coordinate domain; completion rejects the
+// resulting report rather than wrapping it into a valid cell.
+append_mouse_digit :: proc(decoder: ^Decoder, digit: u32) {
+    destination := &decoder^.mouse_code
+    if decoder^.mouse_parameter_index == 1 {
+        destination = &decoder^.mouse_column
+    } else if decoder^.mouse_parameter_index == 2 {
+        destination = &decoder^.mouse_row
+    }
+    if destination^ <= 65535 {
+        destination^ = destination^ * 10 + digit
+    }
+    if destination^ > 65535 {
+        destination^ = 65536
+    }
+}
+
+// complete_mouse validates and translates xterm SGR fields. Coordinates in the
+// byte protocol are one based. Button code bits 2/3/4 are Shift/Alt/Control,
+// bit 5 means motion, and bit 6 means a wheel report.
+complete_mouse :: proc(
+    decoder: ^Decoder,
+    final_byte: u8,
+) {
+    code := decoder^.mouse_code
+    column := decoder^.mouse_column
+    row := decoder^.mouse_row
+    valid_final := final_byte == cast[u8]('M') || final_byte == cast[u8]('m')
+    if !valid_final || decoder^.mouse_parameter_index != 2 ||
+        column == 0 || row == 0 || column > 65535 || row > 65535 {
+        return
+    }
+
+    result := Mouse{
+        column = cast[usize](column - 1),
+        row = cast[usize](row - 1),
+        shift = (code & 4) != 0,
+        alt = (code & 8) != 0,
+        control = (code & 16) != 0,
+    }
+    button_code := code & 3
+    if (code & 64) != 0 {
+        // The portable event currently models a vertical wheel only. Xterm
+        // button codes 66/67 are horizontal wheel observations; discarding
+        // them is more honest than converting left/right into up/down.
+        if button_code > 1 {
+            return
+        }
+        result.action = .wheel
+        result.wheel_delta = -1
+        if button_code == 1 {
+            result.wheel_delta = 1
+        }
+    } else {
+        switch button_code {
+        case 0:
+            result.button = .primary
+        case 1:
+            result.button = .middle
+        case 2:
+            result.button = .secondary
+        case:
+            result.button = .none
+        }
+        // Motion is classified before the legacy no-button code. With mode
+        // 1003 enabled, xterm reports ordinary pointer motion as code 35:
+        // motion bit set plus button bits 3. Treating button 3 as release first
+        // would turn every hover observation into a synthetic button release.
+        if (code & 32) != 0 {
+            result.action = .move
+            result.primary_down = result.button == .primary
+        } else if final_byte == cast[u8]('m') || button_code == 3 {
+            result.action = .release
+        } else {
+            result.action = .press
+        }
+    }
+    decoder^.pending_mouse = result
+    decoder^.mouse_ready = true
 }
 
 // byte_key constructs one exact ordinary-byte result. Control-shaped bytes are
@@ -279,7 +420,7 @@ append_parameter_digit :: proc(decoder: ^Decoder, digit: u16) {
 // decode_key consumes one byte and returns at most one key. An ordinary byte
 // immediately after ESC is returned with Alt set rather than swallowed.
 // Unsupported CSI content is discarded as one complete terminal sequence.
-pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
+decode_stream_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
     // Escape restarts a damaged or incomplete sequence. Two consecutive Escape
     // bytes complete the first key while leaving the second pending.
     if byte == 27 && decoder^.state != .plain {
@@ -315,6 +456,11 @@ pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
         reset_decoder(decoder)
         return plain_key(byte, true)
     case .csi:
+        if byte == cast[u8]('<') {
+            decoder^.state = .csi_mouse
+            empty: Key
+            return empty
+        }
         if byte >= cast[u8]('0') && byte <= cast[u8]('9') {
             append_parameter_digit(
                 decoder,
@@ -364,6 +510,24 @@ pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
             modifier_parameter,
             byte,
         )
+    case .csi_mouse:
+        if byte >= cast[u8]('0') && byte <= cast[u8]('9') {
+            append_mouse_digit(
+                decoder,
+                cast[u32](byte - cast[u8]('0')),
+            )
+            empty: Key
+            return empty
+        }
+        if byte == cast[u8](';') && decoder^.mouse_parameter_index < 2 {
+            decoder^.mouse_parameter_index += 1
+            empty: Key
+            return empty
+        }
+        complete_mouse(decoder, byte)
+        reset_decoder(decoder)
+        empty: Key
+        return empty
     case .csi_ignore:
         if byte >= 0x40 && byte <= 0x7e {
             reset_decoder(decoder)
@@ -373,6 +537,38 @@ pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
     case .ss3:
         reset_decoder(decoder)
         return direct_sequence_key(byte)
+    }
+    empty: Key
+    return empty
+}
+
+// decode_input consumes one byte and returns at most one key or mouse report.
+// Both forms share one streaming state so a mouse CSI sequence can never leak
+// punctuation into the keyboard stream. A completed result is returned only on
+// the sequence's final byte.
+pub decode_input :: proc(decoder: ^Decoder, byte: u8) -> Input {
+    key := decode_stream_key(decoder, byte)
+    if key.kind != .none {
+        return Input{kind = .key, key = key}
+    }
+    if decoder^.mouse_ready {
+        mouse := decoder^.pending_mouse
+        decoder^.mouse_ready = false
+        empty: Mouse
+        decoder^.pending_mouse = empty
+        return Input{kind = .mouse, mouse = mouse}
+    }
+    empty: Input
+    return empty
+}
+
+// decode_key retains the original key-only API. Mouse reports are consumed as
+// indivisible sequences and deliberately discarded, which keeps applications
+// that never enabled mouse reporting source-compatible and punctuation-safe.
+pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
+    result := decode_input(decoder, byte)
+    if result.kind == .key {
+        return result.key
     }
     empty: Key
     return empty
@@ -388,5 +584,16 @@ pub flush_key :: proc(decoder: ^Decoder) -> Key {
         return Key{kind = .escape}
     }
     empty: Key
+    return empty
+}
+
+// flush_input is the generalized counterpart. Only an ambiguous lone Escape
+// produces a result; incomplete key or mouse control sequences are discarded.
+pub flush_input :: proc(decoder: ^Decoder) -> Input {
+    key := flush_key(decoder)
+    if key.kind != .none {
+        return Input{kind = .key, key = key}
+    }
+    empty: Input
     return empty
 }

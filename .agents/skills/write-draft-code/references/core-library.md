@@ -23,6 +23,7 @@ from another standard library is not evidence that Draft provides it.
 - [`core/memory`](#corememory)
 - [`core/option` and `core/result`](#coreoption-and-coreresult)
 - [`core/os`](#coreos)
+- [`core/process`](#coreprocess)
 - [`core/random`](#corerandom)
 - [`core/runtime`](#coreruntime)
 - [`core/testing`](#coretesting)
@@ -329,6 +330,8 @@ Owned terminated bytes:
 memory.Owned_String
 memory.owned_string_copy(&owned, source)
 memory.owned_string_copy_with_allocator(&owned, source, allocator)
+memory.owned_string_copy_bytes(&owned, source_bytes)
+memory.owned_string_copy_bytes_with_allocator(&owned, source_bytes, allocator)
 memory.owned_string_bytes(&owned) -> []u8
 memory.owned_string_cstring(&owned) -> cstring
 memory.owned_string_destroy(&owned)
@@ -417,8 +420,28 @@ complete source is accepted or an error prevents progress. Text writes use
 or `bool`.
 
 There is no path type, environment lookup, directory traversal, metadata,
-seek, flush/fsync, rename, pipe, socket, subprocess, signal, permission API,
-detailed errno, or asynchronous I/O.
+seek, flush/fsync, rename, pipe, socket, signal, permission API, detailed
+errno, or asynchronous I/O. The separate minimal child-process boundary is in
+`core/process`.
+
+## `core/process`
+
+Blocking execution of one exact executable path:
+
+```draft
+process.Error // .none, .unavailable
+process.Result{error, exited, exit_code, signal}
+process.run(path: cstring) -> process.Result
+```
+
+`run` supplies no extra arguments, inherits the current directory, environment,
+and standard handles, and waits for completion. A nonzero child exit still has
+`error == .none`; inspect `exited`, `exit_code`, and `signal`. The path must be
+an exact zero-terminated executable path: there is no PATH lookup, command
+string, shell, quoting, pipes, redirection, detached/background lifetime,
+cancellation, or asynchronous API. A POSIX `execv` failure appears as exit 127;
+a Windows creation failure returns `.unavailable`. Keep the input cstring alive
+through the synchronous call.
 
 ## `core/random`
 
@@ -536,6 +559,21 @@ terminal.Key_Kind // byte, escape, enter/tab/backspace, navigation/editing,
 terminal.decode_key(&decoder, byte: u8) -> terminal.Key
 terminal.flush_key(&decoder) -> terminal.Key
 
+terminal.Input
+terminal.Input_Kind // none, key, mouse
+terminal.Mouse
+terminal.Mouse_Action // move, press, release, wheel, none
+terminal.Mouse_Button // primary, middle, secondary, none
+terminal.decode_input(&decoder, byte: u8) -> terminal.Input
+terminal.flush_input(&decoder) -> terminal.Input
+
+terminal.Mouse_Reporting
+terminal.Mouse_Reporting_State // inactive, active, suspended
+terminal.begin_mouse_reporting(&reporting, &screen) -> io.Error
+terminal.suspend_mouse_reporting(&reporting) -> bool
+terminal.resume_mouse_reporting(&reporting) -> bool
+terminal.restore_mouse_reporting(&reporting) -> bool
+
 terminal.cursor_home
 terminal.erase_line_tail
 terminal.erase_screen_tail
@@ -587,10 +625,17 @@ caller's chosen timeout. An Escape-prefixed ordinary byte carries Alt; xterm
 modifier parameters carry Shift/Alt/Control on semantic keys. It does not decode
 UTF-8: each source byte remains available to the application or `core/utf8`.
 Physical combinations that a byte protocol cannot distinguish—such as Enter
-and Ctrl-M—are not guessed.
+and Ctrl-M—are not guessed. `decode_input` additionally recognizes fragmented
+xterm SGR mouse reports with zero-based coordinates, press/release, primary
+drag state, wheel direction, and modifiers. `decode_key` consumes those reports
+without emitting punctuation when a key-only application enabled no mouse.
+
+`Mouse_Reporting` borrows an active Screen and owns the obligation to disable
+ANSI button, drag, motion, and SGR modes. Disable/suspend it before suspending a
+Screen, resume it after the Screen, and restore it before `restore_screen`.
 
 The package deliberately has no frame/layout builder, general signal/job-
-control layer, mouse protocol, event loop, terminfo, or ncurses dependency.
+control layer, event loop, terminfo, or ncurses dependency.
 The current native-mode implementation exists for AArch64 macOS, AArch64/
 x86-64 GNU/Linux, and x86-64 Windows. POSIX owns exact termios, poll, and ioctl
 contracts; Windows owns console modes, handle waits, and visible-window size.
@@ -624,6 +669,7 @@ tui.fill(&surface, column, row, width, height, value, style) -> bool
 tui.write_ascii(&surface, column, row, text, style) -> bool
 tui.write_ascii_bytes(&surface, column, row, bytes, style) -> bool
 tui.write_utf8(&surface, column, row, text, style) -> bool
+tui.write_utf8_bytes(&surface, column, row, bytes, style) -> bool
 tui.cell_at(&surface, column, row) -> (tui.Cell, bool)
 
 tui.Renderer
@@ -650,8 +696,8 @@ Coordinates are zero-based terminal columns. `put` remains the printable-ASCII
 byte operation; `put_rune` accepts one printable standalone scalar. `fill`
 requires a one-column scalar because its width is measured in cells. ASCII and
 UTF-8 writers validate their complete input and range before mutation and do
-not clip. `write_utf8` copies multi-scalar graphemes into Surface-owned storage,
-so caller text is never retained.
+not clip. `write_utf8` and `write_utf8_bytes` copy multi-scalar graphemes into
+Surface-owned storage, so caller text/bytes are never retained.
 
 A wide glyph owns one leading cell plus a continuation. Replacing either half
 clears the complete old glyph. `cell_at` exposes the first scalar, width, style,
@@ -674,9 +720,11 @@ unicode.Grapheme_Error // none, end_of_input, invalid_encoding, nonprinting
 unicode.rune_columns(value) -> (columns: usize, printable: bool)
 unicode.next_grapheme(text, byte_offset)
     -> (end_byte: usize, columns: usize, unicode.Grapheme_Error)
+unicode.next_grapheme_bytes(bytes, byte_offset)
+    -> (end_byte: usize, columns: usize, unicode.Grapheme_Error)
 ```
 
-`next_grapheme` borrows strict UTF-8 and returns one extended grapheme boundary
+Both forms borrow strict UTF-8 and return one extended grapheme boundary
 using UAX #29, including Hangul, Indic conjuncts, emoji ZWJ sequences, and
 regional-indicator pairs. Width is deterministic across targets: East-Asian
 W/F, emoji, flags, and keycaps are two columns; ambiguous characters are one.
@@ -775,8 +823,9 @@ The current core does not yet supply several facilities a larger application
 may need:
 
 - path manipulation, directories, metadata, random-access files, or rename;
-- mouse input or general signal-safe terminal recovery;
-- sockets, subprocesses, signals, dynamic libraries, or event loops;
+- general signal-safe terminal recovery beyond the scoped resize handler;
+- sockets, argument-bearing/redirected/background processes, general signals,
+  dynamic libraries, or event loops;
 - Unicode normalization, general property queries, case mapping, shaping, bidi,
   locale tailoring, or line breaking;
 - general formatting/parsing and string builders;

@@ -200,6 +200,108 @@ test_key_decoder :: proc(test: ^testing.Test) {
     testing.expect(test, flush_key(&decoder).kind == .none)
 }
 
+// test_general_input_decoder proves SGR mouse reports remain indivisible from
+// keyboard input and translate one-based protocol coordinates, buttons,
+// modifiers, drag state, release, and wheel direction into portable values.
+test_general_input_decoder :: proc(test: ^testing.Test) {
+    decoder: Decoder
+    press_sequence := "\x1b[<4;4;3M"
+    press: Input
+    for index: usize = 0; index < len(press_sequence); index += 1 {
+        result := decode_input(&decoder, press_sequence[index])
+        if result.kind != .none {
+            press = result
+        }
+    }
+    testing.expect(test, press.kind == .mouse)
+    testing.expect(test, press.mouse.action == .press)
+    testing.expect(test, press.mouse.button == .primary)
+    testing.expect(test, press.mouse.column == 3 && press.mouse.row == 2)
+    testing.expect(test, press.mouse.shift)
+
+    drag_sequence := "\x1b[<32;8;6M"
+    drag: Input
+    for index: usize = 0; index < len(drag_sequence); index += 1 {
+        result := decode_input(&decoder, drag_sequence[index])
+        if result.kind != .none {
+            drag = result
+        }
+    }
+    testing.expect(test, drag.kind == .mouse)
+    testing.expect(test, drag.mouse.action == .move)
+    testing.expect(test, drag.mouse.primary_down)
+    testing.expect(test, drag.mouse.column == 7 && drag.mouse.row == 5)
+
+    hover_sequence := "\x1b[<35;9;7M"
+    hover: Input
+    for index: usize = 0; index < len(hover_sequence); index += 1 {
+        result := decode_input(&decoder, hover_sequence[index])
+        if result.kind != .none {
+            hover = result
+        }
+    }
+    testing.expect(test, hover.kind == .mouse)
+    testing.expect(test, hover.mouse.action == .move)
+    testing.expect(test, hover.mouse.button == .none)
+    testing.expect(test, !hover.mouse.primary_down)
+
+    release_sequence := "\x1b[<0;8;6m"
+    release: Input
+    for index: usize = 0; index < len(release_sequence); index += 1 {
+        result := decode_input(&decoder, release_sequence[index])
+        if result.kind != .none {
+            release = result
+        }
+    }
+    testing.expect(test, release.kind == .mouse)
+    testing.expect(test, release.mouse.action == .release)
+    testing.expect(test, release.mouse.button == .primary)
+
+    wheel_sequence := "\x1b[<65;2;2M"
+    wheel: Input
+    for index: usize = 0; index < len(wheel_sequence); index += 1 {
+        result := decode_input(&decoder, wheel_sequence[index])
+        if result.kind != .none {
+            wheel = result
+        }
+    }
+    testing.expect(test, wheel.kind == .mouse)
+    testing.expect(test, wheel.mouse.action == .wheel)
+    testing.expect(test, wheel.mouse.wheel_delta == 1)
+
+    horizontal_wheel := "\x1b[<66;2;2M"
+    horizontal: Input
+    for index: usize = 0; index < len(horizontal_wheel); index += 1 {
+        result := decode_input(&decoder, horizontal_wheel[index])
+        if result.kind != .none {
+            horizontal = result
+        }
+    }
+    testing.expect(test, horizontal.kind == .none)
+
+    // Key-only consumers discard a complete mouse sequence and still decode
+    // the following q exactly once, with no CSI punctuation leaked as keys.
+    key_only_decoder: Decoder
+    emitted_keys: usize
+    for index: usize = 0; index < len(press_sequence); index += 1 {
+        key := decode_key(&key_only_decoder, press_sequence[index])
+        if key.kind != .none {
+            emitted_keys += 1
+        }
+    }
+    testing.expect(test, emitted_keys == 0)
+    q := decode_key(&key_only_decoder, cast[u8]('q'))
+    testing.expect(test, q.kind == .byte && q.byte_value == cast[u8]('q'))
+
+    reporting: Mouse_Reporting
+    screen: Screen
+    testing.expect(test,
+        begin_mouse_reporting(&reporting, &screen) == .invalid)
+    testing.expect(test, !suspend_mouse_reporting(&reporting))
+    testing.expect(test, !resume_mouse_reporting(&reporting))
+    testing.expect(test, restore_mouse_reporting(&reporting))
+}
+
 // test_inactive_screen fixes the zero-state contract without writing control
 // bytes to the test runner. Invalid output is rejected before it can create a
 // restoration obligation, and inactive cleanup remains idempotent.

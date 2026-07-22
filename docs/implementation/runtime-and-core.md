@@ -110,10 +110,11 @@ backing allocator, so no compiler ownership mechanism is hidden behind the
 handle.
 
 `memory.Buffer[T]` owns one fixed-length typed allocation. `Owned_String` owns a
-zero-terminated byte copy and exposes a mutable bounded byte view plus `cstring`;
-Draft's built-in `string` remains an immutable non-owning view and the library
-does not fabricate one through an undocumented cast. Both handles store their
-allocator and require explicit destruction.
+zero-terminated copy made from either an immutable `string` or a borrowed byte
+slice and exposes a mutable bounded byte view plus `cstring`; Draft's built-in
+`string` remains an immutable non-owning view and the library does not fabricate
+one through an undocumented cast. Both handles store their allocator and
+require explicit destruction.
 
 ## Formatting and console output
 
@@ -236,13 +237,24 @@ byte-oriented Session stream.
 
 The allocation-free `Decoder` preserves ordinary input—including control and
 UTF-8 bytes—as byte keys and recognizes Enter, Tab, Backspace, cursor,
-home/end, insert/delete, page, and F1-F12 forms across arbitrary read
-boundaries. A lone Escape remains pending until the application calls
+home/end, insert/delete, page, F1-F12, and xterm SGR mouse forms across
+arbitrary read boundaries. `decode_input` returns a tagged key or mouse result;
+the original `decode_key` consumes and discards complete mouse sequences for
+key-only applications. Mouse results carry zero-based cells, press/release,
+drag motion, wheel direction, and explicit Shift/Alt/Control state. A lone
+Escape remains pending until the application calls `flush_input` or
 `flush_key` after its own timeout. Escape-prefixed bytes and xterm numeric
-parameters preserve explicit Alt/Shift/Control state, while combinations the
-byte protocol cannot distinguish are not guessed. Mouse input, Unicode text
-interpretation, general signal/job-control policy, and event-loop composition
-remain application or future-library concerns.
+parameters preserve explicit modifiers, while combinations the byte protocol
+cannot distinguish are not guessed.
+
+`Mouse_Reporting` is a separate move-by-convention restoration obligation that
+borrows an active `Screen`. It enables button, drag, all-motion, and SGR reports
+with ANSI modes 1000/1002/1003/1006 and disables them in reverse order. Its
+active/suspended states compose with screen job control: suspend reporting
+before the screen, resume it after the screen, and restore it before final
+screen restoration. The Windows virtual-terminal console and POSIX terminals
+share those byte sequences. Unicode text interpretation, broader signal/job-
+control policy, and event-loop composition remain application concerns.
 
 Darwin stores a 72-byte, eight-aligned termios record and uses 32-bit `nfds_t`;
 the selected glibc contract stores a 60-byte, four-aligned record and uses
@@ -278,8 +290,9 @@ use live-byte accounting and deterministic row-major arena compaction; a full
 surface clear reuses the allocation with zero live bytes.
 
 Public ASCII byte/string operations retain their all-or-nothing contract.
-`put_rune` accepts one standalone printable scalar, and `write_utf8` first
-validates and measures every extended grapheme before changing any cell. The
+`put_rune` accepts one standalone printable scalar, and `write_utf8` plus its
+mutable-byte-view counterpart `write_utf8_bytes` first validate and measure
+every extended grapheme before changing any cell. The
 renderer emits complete stored graphemes and advances by terminal columns, so a
 diff never splits a combining sequence or addresses the middle of a wide glyph.
 The zero style maps to terminal defaults; colors are either default or one ANSI
@@ -303,9 +316,11 @@ or after output performed outside the renderer. `present` rejects a non-active
 Screen even for an empty diff and invalidates its correspondence. A
 dimension-changing resize discards both old frames and returns a blank desired
 surface; equal dimensions are an exact no-op. Focus, input dispatch, clipping,
-text wrapping, widgets, layout, and event loops remain application or
-future-library policy. Unicode normalization, shaping, bidi, locale tailoring,
-and line breaking deliberately remain outside this cell surface.
+text wrapping, widgets, layout, and event loops remain outside this core cell
+surface. The ordinary `lib/turbo_ui` package builds those policies over a
+borrowed Surface without changing `core/tui`. Unicode normalization, shaping,
+bidi, locale tailoring, and line breaking deliberately remain outside this
+cell surface.
 
 The virtual-memory seam uses target-qualified source with fixed signatures.
 POSIX calls `mmap`, `mprotect`, and `munmap`; Windows calls `VirtualAlloc`,
@@ -314,6 +329,31 @@ commit/protect change whole-region permissions, and release clears the move-by-
 convention handle. Darwin selects `MAP_ANON = 0x1000`; Linux selects
 `MAP_ANONYMOUS = 0x20`; Windows owns its allocation/protection constants. These
 are versioned core/target facts, not values inferred from host headers.
+
+## Minimal child-process execution
+
+Status: ordinary target-selected Draft implementation on every current hosted
+target; no shell, runtime helper, or compiler intrinsic.
+
+`core/process.run` launches one exact zero-terminated executable path, supplies
+no additional arguments, inherits the current directory, environment, and
+standard handles, waits synchronously, and returns an explicit launch/wait
+`Result` separating parent-side failure from exit/signal completion. A nonzero
+child exit is a successful process operation and remains
+distinguishable from failure to create the parent-side process or wait. The
+operation performs no path search, shell parsing, quoting, pipe/redirection,
+detachment, cancellation, or background lifetime.
+
+Darwin and Linux use `fork`, an exact two-entry `execv` argument vector, and a
+retrying `waitpid`. The child does no Draft work after `fork`; failed `execv`
+ends through `_exit(127)`. The parent interprets the POSIX status as either an
+eight-bit exit code or terminating signal; consequently an `execv` failure is
+reported as exit 127 rather than `.unavailable`. Windows converts the borrowed
+UTF-8 path to owned UTF-16, passes it as `CreateProcessW`'s explicit application
+name, waits for completion, reads the DWORD exit code, and closes both returned
+handles. The first surface exists for IDE Build/Run; a future argument-bearing
+or redirected operation should extend this package without adding a shell
+language to it.
 
 ## Hosted process views and core threads
 

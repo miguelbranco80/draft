@@ -1,0 +1,34 @@
+package process
+
+import core/testing
+
+// This native integration test launches an operating-system executable rather
+// than mocking the ABI. POSIX true proves a zero exit; Windows where.exe with no
+// arguments may return nonzero, but creation, waiting, exit-code retrieval, and
+// handle cleanup must still complete successfully.
+test_native_process_launch :: proc(test: ^testing.Test) {
+    testing.expect(test, run(nil).error == .unavailable)
+    when target.os == .windows {
+        result := run(cast[cstring](raw_data("C:\\Windows\\System32\\where.exe")))
+        testing.expect(test, result.error == .none)
+        testing.expect(test, result.exited)
+        testing.expect(test, result.exit_code != 0)
+        missing := run(cast[cstring](raw_data(
+            "C:\\Windows\\System32\\draft-missing-program.exe",
+        )))
+        testing.expect(test, missing.error == .unavailable)
+    } else {
+        result := run(cast[cstring](raw_data("/usr/bin/true")))
+        testing.expect(test, result.error == .none)
+        testing.expect(test, result.exited)
+        testing.expect(test, result.exit_code == 0)
+        failed := run(cast[cstring](raw_data("/usr/bin/false")))
+        testing.expect(test, failed.error == .none)
+        testing.expect(test, failed.exited)
+        testing.expect(test, failed.exit_code != 0)
+        missing := run(cast[cstring](raw_data("/draft-missing-program")))
+        testing.expect(test, missing.error == .none)
+        testing.expect(test, missing.exited)
+        testing.expect(test, missing.exit_code == 127)
+    }
+}
