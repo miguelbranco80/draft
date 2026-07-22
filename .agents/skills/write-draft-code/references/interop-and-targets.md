@@ -144,8 +144,8 @@ Draft 1 permits these types by value at a user C boundary:
 
 - machine scalars with defined C lowering and `core/c` scalar aliases;
 - data pointers, `rawptr`, `cstring`, and C procedure pointers;
-- recursively legal `@repr(C)` structs and raw unions;
-- legal `@repr(C)` enums;
+- recursively legal `c struct` and `c raw union` types;
+- legal `c enum` types;
 - fixed arrays as members of recursively legal C aggregates.
 
 Pointers may point to opaque or non-C Draft types because only the pointer is
@@ -160,8 +160,8 @@ These are rejected by value:
 - `runtime.Context` in a user C signature.
 
 Represent a string as `cstring` or explicit pointer plus length. Represent a
-slice as pointer plus length. Define a purpose-built `@repr(C)` record for a
-stable external layout. Never add `@repr(C)` solely to silence a diagnostic
+slice as pointer plus length. Define a purpose-built `c struct` for a stable
+external layout. Never add C layout solely to silence a diagnostic
 without auditing every member and both target ABIs.
 
 Inside the compiler, C legality and lowering consume one published
@@ -186,7 +186,7 @@ provider:
 import core/c as c
 
 foreign zlib {
-    compress_bytes :: c "compress" proc(
+    compress_bytes as "compress" :: c proc(
         destination: [^]u8,
         destination_length: ^c.unsigned_long,
         source: [^]u8,
@@ -196,8 +196,8 @@ foreign zlib {
 ```
 
 `zlib` is provider identity, not a source namespace. Declarations enter the
-containing package. The optional quoted string is the exact linker symbol; the
-local Draft name remains `compress_bytes`.
+containing package. The optional `as "compress"` clause is the exact linker
+symbol; the local Draft name remains `compress_bytes`.
 
 The resolver or CLI maps non-system providers to an exact object, archive, or
 shared library:
@@ -223,12 +223,12 @@ symbols. Use an explicit fixed-signature wrapper.
 `export` creates a linker-visible C definition:
 
 ```draft
-export add_for_c :: c "draft_add" proc(left, right: u32) -> u32 {
+export add_for_c as "draft_add" :: c proc(left, right: u32) -> u32 {
     return left + right
 }
 ```
 
-The quoted linker name is optional. `pub` is independent: it controls Draft
+The `as "draft_add"` linker-name clause is optional. `pub` is independent: it controls Draft
 package visibility and is neither implied by nor sufficient for C export.
 
 To enter ordinary Draft from an exported `c proc`, obtain and pass Context:
@@ -240,7 +240,7 @@ add_impl :: proc(left, right: u32) -> u32 {
     return left + right
 }
 
-export add_for_c :: c "draft_add" proc(left, right: u32) -> u32 {
+export add_for_c as "draft_add" :: c proc(left, right: u32) -> u32 {
     ctx := runtime.default_context()
     return runtime.call_with_context(&ctx, add_impl, left, right)
 }
@@ -269,7 +269,7 @@ int draft_open_fixed(const char *path, int flags, unsigned mode) {
 
 ```draft
 foreign package_assembly {
-    native_open :: c "draft_open_fixed" proc(
+    native_open as "draft_open_fixed" :: c proc(
         path: cstring,
         flags: c.int,
         mode: c.unsigned_int,

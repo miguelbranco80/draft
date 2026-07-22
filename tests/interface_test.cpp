@@ -201,7 +201,7 @@ pub Point :: struct {
     y: i64,
 }
 
-pub C_Point :: @repr(C) @align(16) struct {
+pub C_Point :: c align(16) struct {
     x: i64,
     y: i64,
 }

@@ -100,7 +100,7 @@ Computed_Layout_Buffer :: struct {
     values: [computed_layout_count(2)]i64,
 }
 
-Computed_Aligned :: @align(computed_layout_choice(false)) struct {
+Computed_Aligned :: align(computed_layout_choice(false)) struct {
     value: u8,
 }
 

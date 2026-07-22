@@ -54,7 +54,7 @@ struct DeclarationTypeProductAttempt {
 // Publishes only the selected member namespace of one authored nominal root.
 // The task creates or reuses the nominal's Type scope, declares member symbols
 // in source order, and advances TypeFacet::Members. It does not resolve member
-// types, enum values, representation attributes, or natural layout. Missing
+// types, enum values, layout modifiers, or natural layout. Missing
 // member conditions are returned through condition_dependencies.
 [[nodiscard]] DeclarationTypeProductAttempt
 resolve_package_type_members_product(

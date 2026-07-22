@@ -21,7 +21,7 @@ pub Allocator_Proc :: proc(
     old_size, new_size, alignment: usize,
 ) -> rawptr
 
-pub Allocator :: @repr(C) struct {
+pub Allocator :: c struct {
     procedure: Allocator_Proc,
     user: rawptr,
 }
@@ -35,7 +35,7 @@ pub Log_Level :: enum u8 {
 
 pub Logger_Proc :: proc(user: rawptr, level: Log_Level, message: string)
 
-pub Logger :: @repr(C) struct {
+pub Logger :: c struct {
     procedure: Logger_Proc,
     user: rawptr,
 }
@@ -46,7 +46,7 @@ pub Random_Generator_Proc :: proc(
     count: usize,
 ) -> bool
 
-pub Random_Generator :: @repr(C) struct {
+pub Random_Generator :: c struct {
     procedure: Random_Generator_Proc,
     user: rawptr,
 }
@@ -60,7 +60,7 @@ pub Assertion_Failure_Proc :: proc(
 // Keep this declaration synchronized with the layout facts tested by the
 // backend. Provider records are two pointers each on both current AArch64
 // profiles.
-pub Context :: @repr(C) struct {
+pub Context :: c struct {
     allocator: Allocator,
     temp_allocator: Allocator,
     assertion_failure_proc: Assertion_Failure_Proc,
@@ -76,23 +76,23 @@ pub Context :: @repr(C) struct {
 // Draft TLS and acquire its thread-local default Context snapshot before it
 // enters an ordinary Draft procedure.
 foreign draft_runtime {
-    pub default_context :: c "__draft.runtime.default_context" proc() -> Context
+    pub default_context as "__draft.runtime.default_context" :: c proc() -> Context
     // core/thread uses this context-free C bridge before entering its ordinary
     // callback. It replaces the calling thread's TLS snapshot with the
     // spawning Context fields and a fresh hosted temporary allocator; foreign
     // hosts normally use the lazy default path.
-    pub install_thread_context :: c "__draft.runtime.install_thread_context" proc(
+    pub install_thread_context as "__draft.runtime.install_thread_context" :: c proc(
         value: ^Context,
     )
     // Releases every allocation owned by the calling thread's hosted temporary
     // allocator. Existing pointers into that storage become invalid. The next
     // temporary allocation lazily reuses the empty per-thread state.
-    pub reset_temporary_allocator :: c "__draft.runtime.reset_temporary_allocator" proc()
+    pub reset_temporary_allocator as "__draft.runtime.reset_temporary_allocator" :: c proc()
     // The surface declaration is a stable capability name. The compiler checks
     // and specializes the callback's complete parameter/result signature at
     // each call site, so no erased or variadic runtime ABI is involved. The
     // compiler also attaches a foreign-created thread before the direct call.
-    pub call_with_context :: c "__draft.runtime.call_with_context" proc()
+    pub call_with_context as "__draft.runtime.call_with_context" :: c proc()
 }
 
 // A deliberately empty value remains useful for tests and for explicitly

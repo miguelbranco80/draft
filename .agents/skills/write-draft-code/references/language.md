@@ -244,12 +244,12 @@ Outcome :: union {
     complete: usize,
 }
 
-C_Value :: @repr(C) raw union {
+C_Value :: c raw union {
     bits: u64,
     pointer: rawptr,
 }
 
-Cache_Line :: @align(64) struct {
+Cache_Line :: align(64) struct {
     bytes: [64]u8,
 }
 ```
@@ -264,9 +264,10 @@ and operators but a separate identity; cross its boundary with an explicit
 cast. Enums require a zero-valued member for a valid zero value. The first
 implicit enum member is zero; values then increment.
 
-`@repr(C)` is available on structs, raw unions, and enums under the selected C
-ABI. `@align(N)` may raise struct/raw-union alignment. Do not guess C layout:
-read the target profile and add ABI tests against Clang.
+Use `c struct`, `c raw union`, or `c enum` for selected-target C layout.
+`align(N)` may raise struct/raw-union alignment; combine them as
+`c align(N) struct`. These are direct modifiers, not annotations. Do not guess
+C layout: read the target profile and add ABI tests against Clang.
 
 `core/option.Option[T]` and `core/result.Result[T, E]` are ordinary tagged
 unions, not magic. A zero `Result` selects its first `.err` alternative.

@@ -122,7 +122,7 @@ Required type/layout integers retain their contextual TypeId alongside the
 source recipe. Interface discovery runs the full constant interpreter without
 diagnosing an ordinary fixed-point failure; only a recipe that actually reaches
 synthesis defers the generic type-resolution diagnostic. Direct array/SIMD
-counts, generic value arguments, alignment attributes, and explicitly backed
+counts, generic value arguments, `align(N)` requests, and explicitly backed
 enum values therefore publish typed expression obligations. Procedure-produced
 values publish the reached body site instead. While any such obligation is
 pending, the package interface is withheld rather than exporting an invalid

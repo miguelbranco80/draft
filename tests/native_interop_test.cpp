@@ -74,10 +74,10 @@ void test_valid_import_and_export(TestState &state) {
 package native
 
 foreign libc {
-    puts :: c "puts" proc(text: cstring) -> i32
+    puts :: c proc(text: cstring) -> i32
 }
 
-export increment :: c "draft_increment" proc(value: i32) -> i32 {
+export increment as "draft_increment" :: c proc(value: i32) -> i32 {
     return value + 1
 }
 )draft");
@@ -128,10 +128,10 @@ void test_linux_narrow_integer_abi(TestState &state) {
 package native
 
 foreign linux {
-    narrow :: c "narrow" proc(signed: i8, unsigned: u16) -> i8
+    narrow :: c proc(signed: i8, unsigned: u16) -> i8
 }
 
-export wrap_narrow :: c "wrap_narrow" proc(
+export wrap_narrow :: c proc(
     signed: i8,
     unsigned: u16,
 ) -> i8 {
@@ -205,100 +205,100 @@ void test_aggregate_c_abi_lowering(TestState &state) {
   CheckedSource source(R"draft(
 package native
 
-C8 :: @repr(C) struct {
+C8 :: c struct {
     left: i32,
     right: i32,
 }
 
-C3 :: @repr(C) struct {
+C3 :: c struct {
     bytes: [3]u8,
 }
 
-C16_Aligned :: @repr(C) @align(16) struct {
+C16_Aligned :: c align(16) struct {
     word: i64,
 }
 
-HF2 :: @repr(C) struct {
+HF2 :: c struct {
     left: f32,
     right: f32,
 }
 
-HH3 :: @repr(C) struct {
+HH3 :: c struct {
     values: [3]f16,
 }
 
-Float_Overlay :: @repr(C) raw union {
+Float_Overlay :: c raw union {
     scalar: f32,
     pair: [2]f32,
 }
 
-Unsigned_Code :: @repr(C) enum u8 {
+Unsigned_Code :: c enum u8 {
     zero,
     one,
 }
 
-Signed_Code :: @repr(C) enum i8 {
+Signed_Code :: c enum i8 {
     negative = -1,
     zero = 0,
     positive = 1,
 }
 
-C24 :: @repr(C) struct {
+C24 :: c struct {
     words: [3]i64,
 }
 
 foreign provider {
-    small :: c "small" proc(value: C8) -> C8
-    odd :: c "odd" proc(value: C3) -> C3
-    aligned :: c "aligned" proc(value: C16_Aligned) -> C16_Aligned
-    floats :: c "floats" proc(value: HF2) -> HF2
-    halves :: c "halves" proc(value: HH3) -> HH3
-    float_overlay :: c "float_overlay" proc(value: Float_Overlay) -> Float_Overlay
-    unsigned_code :: c "unsigned_code" proc(value: Unsigned_Code) -> Unsigned_Code
-    signed_code :: c "signed_code" proc(value: Signed_Code) -> Signed_Code
-    large :: c "large" proc(value: C24) -> C24
-    narrow :: c "narrow" proc(signed: i8, unsigned: u16) -> i8
+    small :: c proc(value: C8) -> C8
+    odd :: c proc(value: C3) -> C3
+    aligned :: c proc(value: C16_Aligned) -> C16_Aligned
+    floats :: c proc(value: HF2) -> HF2
+    halves :: c proc(value: HH3) -> HH3
+    float_overlay :: c proc(value: Float_Overlay) -> Float_Overlay
+    unsigned_code :: c proc(value: Unsigned_Code) -> Unsigned_Code
+    signed_code :: c proc(value: Signed_Code) -> Signed_Code
+    large :: c proc(value: C24) -> C24
+    narrow :: c proc(signed: i8, unsigned: u16) -> i8
 }
 
-export wrap_small :: c "wrap_small" proc(value: C8) -> C8 {
+export wrap_small :: c proc(value: C8) -> C8 {
     return small(value)
 }
 
-export wrap_odd :: c "wrap_odd" proc(value: C3) -> C3 {
+export wrap_odd :: c proc(value: C3) -> C3 {
     return odd(value)
 }
 
-export wrap_aligned :: c "wrap_aligned" proc(value: C16_Aligned) -> C16_Aligned {
+export wrap_aligned :: c proc(value: C16_Aligned) -> C16_Aligned {
     return aligned(value)
 }
 
-export wrap_floats :: c "wrap_floats" proc(value: HF2) -> HF2 {
+export wrap_floats :: c proc(value: HF2) -> HF2 {
     return floats(value)
 }
 
-export wrap_halves :: c "wrap_halves" proc(value: HH3) -> HH3 {
+export wrap_halves :: c proc(value: HH3) -> HH3 {
     return halves(value)
 }
 
-export wrap_float_overlay :: c "wrap_float_overlay" proc(
+export wrap_float_overlay :: c proc(
     value: Float_Overlay,
 ) -> Float_Overlay {
     return float_overlay(value)
 }
 
-export wrap_unsigned_code :: c "wrap_unsigned_code" proc(
+export wrap_unsigned_code :: c proc(
     value: Unsigned_Code,
 ) -> Unsigned_Code {
     return unsigned_code(value)
 }
 
-export wrap_signed_code :: c "wrap_signed_code" proc(
+export wrap_signed_code :: c proc(
     value: Signed_Code,
 ) -> Signed_Code {
     return signed_code(value)
 }
 
-export wrap_large :: c "wrap_large" proc(value: C24) -> C24 {
+export wrap_large :: c proc(value: C24) -> C24 {
     return large(value)
 }
 )draft");
@@ -385,7 +385,7 @@ void test_invalid_c_aggregate_member(TestState &state) {
   CheckedSource source(R"draft(
 package native
 
-Bad :: @repr(C) struct {
+Bad :: c struct {
     view: []u8,
 }
 

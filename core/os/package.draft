@@ -20,10 +20,10 @@ import core/io
 // materialized Draft string records through this private runtime ABI. The
 // wrappers below return non-owning views valid until process exit.
 foreign draft_runtime {
-    process_args_data :: c "__draft.os.args_data" proc() -> rawptr
-    process_args_count :: c "__draft.os.args_count" proc() -> usize
-    process_environment_data :: c "__draft.os.environment_data" proc() -> rawptr
-    process_environment_count :: c "__draft.os.environment_count" proc() -> usize
+    process_args_data as "__draft.os.args_data" :: c proc() -> rawptr
+    process_args_count as "__draft.os.args_count" :: c proc() -> usize
+    process_environment_data as "__draft.os.environment_data" :: c proc() -> rawptr
+    process_environment_count as "__draft.os.environment_count" :: c proc() -> usize
 }
 
 pub args :: proc() -> []string {
@@ -43,7 +43,7 @@ pub environment :: proc() -> []string {
 // copied File aliases the same OS resource. A failed open returns a File whose
 // descriptor is -1. Keeping that sentinel in the ordinary value means callers
 // can initialize and clean up a handle without a second representation.
-pub File :: @repr(C) struct {
+pub File :: c struct {
     descriptor: c.int,
 }
 
@@ -68,7 +68,7 @@ pub default_creation_permissions :: cast[c.unsigned_int](438)
 // each target assembly file supplies this fixed three-argument C ABI wrapper.
 // The kernel ignores the third value when O_CREAT is absent.
 foreign package_assembly {
-    native_open :: c "draft_os_open_fixed" proc(
+    native_open as "draft_os_open_fixed" :: c proc(
         path: cstring,
         flags: c.int,
         mode: c.unsigned_int,

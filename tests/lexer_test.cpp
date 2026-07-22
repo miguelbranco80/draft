@@ -243,6 +243,15 @@ void test_utf8_and_identifier_rules(TestState &state) {
                     .find("non-ASCII character") != std::string::npos);
 }
 
+void test_removed_annotation_prefix(TestState &state) {
+  const LexedSource source = lex("Record :: @repr(C) struct {}\n");
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, source.diagnostics.error_count() == 1);
+  EXPECT(state, rendered.find("unexpected character in Draft source") !=
+                    std::string::npos);
+}
+
 void test_caret_and_uninitialized_end_lines(TestState &state) {
   const LexedSource source = lex("pointer^\nvalue: int = ---\n");
   int inserted_semicolons = 0;
@@ -294,6 +303,7 @@ int main() {
   test_literals(state);
   test_malformed_literals(state);
   test_utf8_and_identifier_rules(state);
+  test_removed_annotation_prefix(state);
   test_caret_and_uninitialized_end_lines(state);
   test_keyword_alternative_end_lines(state);
 

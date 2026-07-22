@@ -57,7 +57,7 @@ the fixed `tcgetattr`, `tcsetattr`, `cfmakeraw`, and `poll` libc signatures.
 
 ## C enum ABI
 
-An `@repr(C)` enum without an explicit backing follows Apple Clang's default
+A `c enum` without an explicit backing follows Apple Clang's default
 enum rule for this target instead of Draft's smallest-fitting rule. Its backing
 is at least 32 bits: a wholly nonnegative member set uses `u32`, a set
 containing a negative member uses `i32`, and either widens with the same

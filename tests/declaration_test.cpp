@@ -91,7 +91,7 @@ when target.pointer_bits == 64 {
 }
 
 foreign libc {
-    puts :: c "puts" proc(message: cstring) -> int
+    puts :: c proc(message: cstring) -> int
 }
 )draft");
 
@@ -102,7 +102,7 @@ import core/c as c
 
 judge "The exported entry has a stable C boundary."
 
-export entry :: c "draft_entry" proc() -> int {
+export entry as "draft_entry" :: c proc() -> int {
     return 0
 }
 
@@ -174,7 +174,7 @@ export entry :: c "draft_entry" proc() -> int {
   EXPECT(state, package.native_bindings.size() == 2);
   if (package.native_bindings.size() == 2) {
     EXPECT(state, package.native_bindings[0].provider == "libc");
-    EXPECT(state, package.native_bindings[0].linker_name_spelling == "\"puts\"");
+    EXPECT(state, package.native_bindings[0].linker_name_spelling == "puts");
     EXPECT(state, package.native_bindings[1].linker_name_spelling == "\"draft_entry\"");
   }
 
@@ -328,15 +328,19 @@ thread_local Constant :: 1
 
 Value[T: type]: u32
 Compile_Time[N: usize] :: 1
+ordinary as "native_ordinary" :: proc() {
+}
 )draft");
   EXPECT(state, !diagnostics.has_errors());
 
   (void)draft::collect_package_declarations(sources, loaded, diagnostics);
-  EXPECT(state, diagnostics.error_count() == 5);
+  EXPECT(state, diagnostics.error_count() == 6);
   const std::string rendered = draft::render_diagnostics(sources, diagnostics);
   EXPECT(state, rendered.find("thread_local is valid only on a package variable") !=
                     std::string::npos);
   EXPECT(state, rendered.find("parametric parameters are valid only on type and procedure") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("valid only on a foreign or exported procedure") !=
                     std::string::npos);
 }
 

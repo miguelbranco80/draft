@@ -628,22 +628,29 @@ private:
     return SymbolKind::Constant;
   }
 
-  [[nodiscard]] std::string explicit_linker_name(
-      const SyntaxTree &tree, const std::optional<NodeId> &payload) const {
-    if (!payload.has_value()) {
-      return {};
-    }
-    const SyntaxNode &node = tree.node(*payload);
-    for (std::uint32_t index = node.token_begin; index < node.token_end; ++index) {
-      const TokenKind kind = tree.token(index).kind;
-      if (kind == TokenKind::KeywordProc) {
-        break;
+  // Returns the exact quoted spelling from a declaration's `as "symbol"`
+  // clause. Keeping this beside the local binding, rather than inside its
+  // procedure type, makes linker identity unambiguous even when the procedure
+  // returns another procedure type.
+  [[nodiscard]] std::optional<SourceName> explicit_linker_name(
+      const SyntaxTree &tree, const SyntaxNode &declaration) const {
+    for (NodeId child_id : declaration.children) {
+      const SyntaxNode &child = tree.node(child_id);
+      if (child.kind != NodeKind::LinkNameClause) {
+        continue;
       }
-      if (kind == TokenKind::StringLiteral) {
-        return std::string(sources_.text(tree.token(index).range));
+      for (std::uint32_t index = child.token_begin;
+           index < child.token_end; ++index) {
+        const Token &token = tree.token(index);
+        if (token.kind == TokenKind::StringLiteral) {
+          return SourceName{
+              std::string(sources_.text(token.range)),
+              token.range,
+          };
+        }
       }
     }
-    return {};
+    return std::nullopt;
   }
 
   // Static heterogeneous packs participate in procedure specialization even
@@ -704,6 +711,8 @@ private:
         tree, declaration, pattern.token_begin, TokenKind::KeywordPub)
         ? Visibility::Public
         : Visibility::Private;
+    const std::optional<SourceName> linker_name =
+        explicit_linker_name(tree, declaration);
 
     if (flags.is_thread_local && kind != SymbolKind::Variable) {
       diagnostics_.error(
@@ -716,6 +725,11 @@ private:
       diagnostics_.error(
           declaration.range,
           "parametric parameters are valid only on type and procedure declarations");
+    }
+    if (linker_name.has_value() && !flags.foreign && !flags.exported) {
+      diagnostics_.error(
+          linker_name->range,
+          "a linker symbol name is valid only on a foreign or exported procedure");
     }
 
     const std::vector<SourceName> names = names_in_pattern(tree, pattern_id);
@@ -761,9 +775,11 @@ private:
       }
 
       if (flags.foreign || flags.exported) {
-        std::string linker_name = explicit_linker_name(tree, payload);
-        if (linker_name.empty()) {
-          linker_name = name.text;
+        std::string linker_name_spelling;
+        if (linker_name.has_value()) {
+          linker_name_spelling = linker_name->text;
+        } else {
+          linker_name_spelling = name.text;
         }
         NativeBinding binding;
         binding.kind = flags.foreign
@@ -771,7 +787,7 @@ private:
             : NativeBindingKind::CExport;
         binding.symbol = id;
         binding.provider = context.foreign_provider;
-        binding.linker_name_spelling = std::move(linker_name);
+        binding.linker_name_spelling = std::move(linker_name_spelling);
         binding.syntax = {tree.file(), declaration_id};
         semantic_.native_bindings.push_back(std::move(binding));
       }

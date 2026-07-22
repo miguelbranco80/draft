@@ -3,7 +3,7 @@ package time
 // Value 4 is CLOCK_MONOTONIC_RAW in the selected Darwin SDK. The returned
 // nanosecond counter has no wall-clock adjustments.
 foreign darwin {
-    clock_gettime_nsec_np :: c "clock_gettime_nsec_np" proc(clock: u32) -> u64
+    clock_gettime_nsec_np :: c proc(clock: u32) -> u64
 }
 
 pub monotonic_now :: proc() -> Duration {

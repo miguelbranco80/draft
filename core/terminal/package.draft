@@ -23,7 +23,7 @@ import core/time
 // profiles. Only native_poll writes revents. The package requests readable
 // input and interprets hangup as end-of-input; all remaining error events become
 // io.Error.unavailable because core/io does not yet expose native errno detail.
-Poll_Descriptor :: @repr(C) struct {
+Poll_Descriptor :: c struct {
     descriptor: c.int,
     events: c.short,
     returned_events: c.short,

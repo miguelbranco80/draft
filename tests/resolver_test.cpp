@@ -256,7 +256,7 @@ struct TemporaryWorkspace {
            << "    values: [N]u8,\n"
            << "}\n\n"
            << "Applied :: Box[... \"choose value argument\"]\n\n"
-           << "Aligned :: @align(... \"choose alignment\") struct {\n"
+           << "Aligned :: align(... \"choose alignment\") struct {\n"
            << "    value: u8,\n"
            << "}\n\n"
            << "Vector :: #simd[... \"choose SIMD lanes\"]u32\n\n"

@@ -1,18 +1,18 @@
 package memory
 
 foreign darwin {
-    native_mmap :: c "mmap" proc(
+    native_mmap as "mmap" :: c proc(
         address: rawptr,
         size: usize,
         protection, flags, descriptor: i32,
         offset: i64,
     ) -> rawptr
-    native_mprotect :: c "mprotect" proc(
+    native_mprotect as "mprotect" :: c proc(
         address: rawptr,
         size: usize,
         protection: i32,
     ) -> i32
-    native_munmap :: c "munmap" proc(address: rawptr, size: usize) -> i32
+    native_munmap as "munmap" :: c proc(address: rawptr, size: usize) -> i32
 }
 
 // MAP_PRIVATE | MAP_ANON is 0x0002 | 0x1000 in the selected Darwin SDK.

@@ -102,8 +102,8 @@ A foreign exception or `longjmp` that crosses a Draft frame has undefined
 behavior.
 
 A Draft 1 C signature may contain machine scalars with defined C lowering, C scalar
-aliases, pointers, `cstring`, C procedure pointers, and `@repr(C)` structs, raw
-unions, and enums. Slices, strings, tuples, tagged unions, SIMD values,
+aliases, pointers, `cstring`, C procedure pointers, and `c struct`, `c raw
+union`, and `c enum` types. Slices, strings, tuples, tagged unions, SIMD values,
 and default-layout aggregates are rejected by value; wrappers may pass them
 through pointers or explicit C representations.
 
@@ -115,7 +115,7 @@ responsible for the nonmutation contract. This bridge does not make a string
 zero terminated. An API requiring a C string still requires explicit owned
 terminated storage such as `memory.Owned_String`.
 
-An `@repr(C)` aggregate is legal by value only when every member is recursively
+A C-layout aggregate is legal by value only when every member is recursively
 C-ABI-legal; a fixed array is legal as a member when its element type is.
 Pointers may point to opaque or non-C Draft types.
 
@@ -131,7 +131,7 @@ A `foreign` block declares C symbols supplied by a link provider:
 import core/c as c
 
 foreign zlib {
-    zcompress :: c "compress" proc(dst: [^]u8, dst_len: ^usize,
+    zcompress as "compress" :: c proc(dst: [^]u8, dst_len: ^usize,
                                     src: [^]u8, src_len: usize) -> c.int
 }
 ```
@@ -143,16 +143,18 @@ containing package normally. In the declaration above:
 | Part | Meaning |
 | --- | --- |
 | `zcompress` | Local Draft declaration name used by source code. |
+| `as "compress"` | Optional exact symbol requested from the linker. |
 | `c` | C calling convention and ABI lowering. |
-| `"compress"` | Exact symbol requested from the linker. |
 | `proc(...) -> c.int` | Draft-visible signature of that symbol. |
 
 The leading `c` is a Draft calling-convention modifier. The `c` in `c.int`
 is merely the file-local alias introduced by `import core/c as c`; the shared
 spelling is conventional and creates no semantic relationship.
 
-If the quoted symbol is omitted, the linker symbol is the local declaration
-name. The resolver or command line maps `zlib` to a system library, object file,
+If the `as "compress"` clause is omitted, the linker symbol is the local
+declaration name. The alias sits beside the local binding rather than inside the
+procedure type, so it remains unambiguous when a procedure returns another
+procedure type. The resolver or command line maps `zlib` to a system library, object file,
 static archive, or dynamic library for the selected target. Choosing static or
 dynamic linkage does not require a different source declaration or source-list
 build file.
@@ -214,7 +216,7 @@ decode_for_c_impl :: proc(
     ... "validate the C buffers and call decode"
 }
 
-export decode_for_c :: c "jpeg_decode" proc(
+export decode_for_c as "jpeg_decode" :: c proc(
     input: [^]u8,
     input_len: usize,
     output: [^]u8,
@@ -229,18 +231,18 @@ export decode_for_c :: c "jpeg_decode" proc(
 }
 ```
 
-In `export decode_for_c :: c "jpeg_decode" proc(...)`, the parts have precise
+In `export decode_for_c as "jpeg_decode" :: c proc(...)`, the parts have precise
 roles:
 
 | Part | Meaning |
 | --- | --- |
 | `export` | Emit an externally visible definition rather than a foreign import. |
 | `decode_for_c` | Local Draft declaration name. |
+| `as "jpeg_decode"` | Optional exact exported linker symbol. |
 | `c` | C calling convention and ABI lowering; no hidden `^runtime.Context`. |
-| `"jpeg_decode"` | Exact exported linker symbol. |
 | `proc(...) { ... }` | Draft signature and implementation body. |
 
-Omitting `"jpeg_decode"` exports the local name `decode_for_c`. The quoted
+Omitting `as "jpeg_decode"` exports the local name `decode_for_c`. The quoted
 string is only a linker-symbol alias: it is not an import alias, package name,
 or second source-level declaration. `pub` controls visibility to importing
 Draft packages independently and is not implied by `export`.
@@ -271,7 +273,8 @@ and the bridge never retains its pointer afterward. Before either operation, a
 
 ### ABI artifacts
 
-`@repr(C)` types, C integer aliases, symbol names, linkage strength, visibility,
+`c struct`/`c raw union`/`c enum` types, C integer aliases, symbol names,
+linkage strength, visibility,
 and calling conventions have explicit lowering. The compiler emits object
 files, static libraries, dynamic libraries, executables, C headers, assembly,
 and LLVM IR.

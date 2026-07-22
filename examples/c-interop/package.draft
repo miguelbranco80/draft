@@ -1,10 +1,10 @@
 package c_interop
 
 foreign libc {
-    labs :: c "labs" proc(value: i64) -> i64
+    labs :: c proc(value: i64) -> i64
 }
 
-export increment :: c "draft_increment" proc(value: i32) -> i32 {
+export increment as "draft_increment" :: c proc(value: i32) -> i32 {
     return value + 1
 }
 

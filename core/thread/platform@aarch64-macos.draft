@@ -7,18 +7,18 @@ import core/c as c
 // would create two aliases to one join right.
 Pthread_Handle :: rawptr
 
-pub Thread :: @repr(C) struct {
+pub Thread :: c struct {
     handle: Pthread_Handle,
 }
 
 // Darwin's LP64 pthread mutex contains an eight-byte signature plus 56 opaque
 // bytes; its condition contains the signature plus 40 bytes.
-pub Mutex :: @repr(C) struct {
+pub Mutex :: c struct {
     signature: i64,
     opaque: [56]u8,
 }
 
-pub Condition :: @repr(C) struct {
+pub Condition :: c struct {
     signature: i64,
     opaque: [40]u8,
 }

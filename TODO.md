@@ -6,7 +6,7 @@
 - [ ] Add an x86-64 Linux native target.
 - [ ] Add a Windows native target, starting with x86-64.
 - [ ] Add explicit C variadic interoperation when fixed wrappers are insufficient.
-- [ ] Unify declaration syntax around `import`, `pub`, `export`, `foreign <provider> {}`, `c proc`/`c struct`/`c enum`/`c raw union`, `packed struct`, `align(N)`, `asm <architecture> {}`, and future `gpu proc`; replace `@repr`/`@align` and settle external-symbol spelling.
+- [x] Unify current declaration syntax around `import`, `pub`, `export <name> as "<symbol>"`, `foreign <provider> {}`, `c proc`/`c struct`/`c enum`/`c raw union`, `align(N)`, and `asm <architecture> {}`; remove annotations.
 - [ ] Add GPU compute with `gpu proc`.
 - [ ] Extend `deny` coverage to more built-ins and effects.
 - [ ] Add remaining layout forms: bit sets, transparent wrappers, niche unions, and broader SIMD.

@@ -125,7 +125,7 @@ pub condition_broadcast :: proc(condition: ^Condition) {
         "condition broadcast failed")
 }
 
-Timespec :: @repr(C) struct {
+Timespec :: c struct {
     seconds: i64,
     nanoseconds: i64,
 }

@@ -28,18 +28,18 @@ pub page_size :: proc() -> usize {
 // both declarations use [^]u8; the write nonmutation/nonretention contract is
 // what permits package.draft to pass raw_data(string) without copying.
 foreign linux {
-    native_read :: c "read" proc(
+    native_read as "read" :: c proc(
         descriptor: c.int,
         destination: [^]u8,
         count: c.size_t,
     ) -> c.ssize_t
-    native_write :: c "write" proc(
+    native_write as "write" :: c proc(
         descriptor: c.int,
         source: [^]u8,
         count: c.size_t,
     ) -> c.ssize_t
-    native_close :: c "close" proc(descriptor: c.int) -> c.int
-    native_unlink :: c "unlink" proc(path: cstring) -> c.int
-    native_process_id :: c "getpid" proc() -> c.int
-    native_exit :: c "_exit" proc(status: c.int)
+    native_close as "close" :: c proc(descriptor: c.int) -> c.int
+    native_unlink as "unlink" :: c proc(path: cstring) -> c.int
+    native_process_id as "getpid" :: c proc() -> c.int
+    native_exit as "_exit" :: c proc(status: c.int)
 }

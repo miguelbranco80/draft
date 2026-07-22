@@ -1376,7 +1376,7 @@ when size_of(Measured) == 13 {
     Wrong_Layout_Selected :: bool
 }
 
-Aligned :: @align(choose_size(false)) struct {
+Aligned :: align(choose_size(false)) struct {
     value: u8,
 }
 
@@ -1504,7 +1504,7 @@ Bad_Array :: struct {
 
 Bad_Vector :: #simd[wrong_count()]u32
 
-Bad_Aligned :: @align(wrong_count()) struct {
+Bad_Aligned :: align(wrong_count()) struct {
     value: u8,
 }
 )draft");
@@ -1527,7 +1527,7 @@ Bad_Aligned :: @align(wrong_count()) struct {
                     std::string::npos);
   EXPECT(state, rendered.find("SIMD lane count must have type 'usize'") !=
                     std::string::npos);
-  EXPECT(state, rendered.find("'@align' argument must have type 'usize'") !=
+  EXPECT(state, rendered.find("'align' argument must have type 'usize'") !=
                     std::string::npos);
 }
 

@@ -86,7 +86,7 @@ import core/memory
 
 judge "The fixture intentionally reaches every concrete parser production."
 
-Container[T: type, N: usize] :: @align(16) @fixture struct {
+Container[T: type, N: usize] :: c align(16) struct {
     docs "Member metadata."
     judge "Member judgment."
     ... "generate one member"
@@ -114,7 +114,7 @@ Choice :: union u8 {
     some: u32,
 }
 
-Bits :: @repr(C) raw union {
+Bits :: c raw union {
     integer: u64,
     pointer: rawptr,
 }
@@ -139,13 +139,13 @@ deny asm {
 }
 
 foreign libc {
-    puts :: c "puts" proc(message: cstring) -> c.int
+    puts :: c proc(message: cstring) -> c.int
 }
 
 pack_proc :: proc(values: ..type) {
 }
 
-export draft_entry :: c "draft_entry" proc(argument: u32) -> c.int {
+export draft_entry as "grammar_entry" :: c proc(argument: u32) -> c.int {
     values := [4]u32{1, 2, 3, 4}
     record := Container[u32, 4]{first = 1, second = 2}
     left, right: u32 = 1
@@ -259,7 +259,7 @@ Pair[T: type, U: type] :: struct {
     second: U,
 }
 
-Buffer[T: type, N: usize] :: @align(16) struct {
+Buffer[T: type, N: usize] :: align(16) struct {
     data: [N]T,
 }
 
@@ -273,7 +273,7 @@ Choice :: union u16 {
     some: u32,
 }
 
-C_Value :: @repr(C) raw union {
+C_Value :: c raw union {
     bits: u64,
     pointer: rawptr,
 }
@@ -292,10 +292,10 @@ deny asm {
 }
 
 foreign libc {
-    puts :: c "puts" proc(message: cstring) -> c.int
+    puts :: c proc(message: cstring) -> c.int
 }
 
-export draft_entry :: c "draft_entry" proc() -> c.int {
+export draft_entry :: c proc() -> c.int {
     return 0
 }
 )draft");
@@ -468,9 +468,10 @@ void test_invalid_production_recovery(TestState &state) {
       {"missing parametric colon", "package bad\nBox[T type] :: struct {}\n", "expected ':' after parametric parameter name"},
       {"missing parametric close", "package bad\nBox[T: type :: struct {}\n", "expected ']' after parametric parameters"},
       {"missing parameter colon", "package bad\nrun :: proc(value u32) {}\n", "expected ':' after parameter name"},
-      {"missing procedure keyword", "package bad\nrun :: c \"run\" u32\n", "expected 'proc'"},
-      {"missing attribute name", "package bad\nRecord :: @() struct {}\n", "expected attribute name after '@'"},
-      {"missing attribute close", "package bad\nRecord :: @align(16 struct {}\n", "expected ')' after attribute arguments"},
+      {"missing linker name", "package bad\nexport run as :: c proc() {}\n", "expected exact linker symbol string after 'as'"},
+      {"missing alignment open", "package bad\nRecord :: align 16) struct {}\n", "expected '(' after 'align'"},
+      {"missing alignment value", "package bad\nRecord :: align() struct {}\n", "align requires one compile-time usize expression"},
+      {"missing alignment close", "package bad\nRecord :: align(16 struct {}\n", "expected ')' after alignment expression"},
       {"missing multi-pointer close", "package bad\nPointer :: [^u32\n", "expected ']' in multi-pointer type"},
       {"missing array close", "package bad\nArray :: [4 u32\n", "expected ']' after array length"},
       {"missing simd open", "package bad\nVector :: #simd 4]f32\n", "expected '[' before SIMD lane count"},

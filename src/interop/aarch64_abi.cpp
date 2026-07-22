@@ -92,7 +92,7 @@ struct HomogeneousFloatInfo {
   const Type &type = types.type(id);
   if (type.kind == TypeKind::Array) {
     // C11 has no zero-length fixed array. Clang accepts one as an extension,
-    // but using that extension here would make @repr(C) layout depend on host
+    // but using that extension here would make Draft C layout depend on host
     // flags and would let generated -std=c11 headers describe a non-C type.
     // A pointer to the Draft array remains legal through the ordinary opaque
     // pointer rule; only embedding the array by value is rejected.

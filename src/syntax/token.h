@@ -37,6 +37,7 @@ enum class TokenKind {
   KeywordPub,
   KeywordProc,
   KeywordC,
+  KeywordAlign,
   KeywordStruct,
   KeywordEnum,
   KeywordUnion,
@@ -89,7 +90,6 @@ enum class TokenKind {
   Dot,
   DotDot,
   Ellipsis,
-  At,
   Hash,
 
   Plus,

@@ -29,7 +29,7 @@ floating aggregates occupy one to four matching floating lanes, other records
 of at most 16 bytes use one or two integer containers, and larger records are
 indirect. Unlike Darwin arm64, GNU AAPCS64 does not attach LLVM `signext` or
 `zeroext` contracts to sub-32-bit C scalar parameters and results. An unfixed
-`@repr(C)` enum retains the default 32-bit C width and widens to 64 bits only
+`c enum` retains the default 32-bit C width and widens to 64 bits only
 when its values require it.
 
 The enabled and known CPU feature vocabulary and legal baseline SIMD shapes

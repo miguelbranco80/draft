@@ -186,10 +186,13 @@ continuations of an active `docs`, `judge`, or `...` construct and suppresses
 insertion before them; an explicit semicolon or the first other non-trivia token
 ends the attachment group. Consequently, `} else {` remains on one line.
 
-`c` is contextual rather than globally reserved. It introduces the C calling
-convention only in the procedure forms defined by section 12; elsewhere it may
-be an ordinary local import alias or the first component of a qualified name
-such as `c.int`. Those identifier uses receive ordinary semicolon behavior.
+`c` is contextual rather than globally reserved. Before `proc` it selects the C
+calling convention; before `struct`, `enum`, or `raw union` it selects C layout,
+as defined by sections 5 and 12. Elsewhere it may be an ordinary local import
+alias or the first component of a qualified name such as `c.int`. Those
+identifier uses receive ordinary semicolon behavior. `align` is the reserved
+aggregate-layout modifier defined by section 5; Draft has no general annotation
+prefix or user-defined declaration modifier.
 
 Draft 1 syntax remains provisional around a newline following `^`, because the
 same token is postfix dereference and binary XOR. The bootstrap rule treats

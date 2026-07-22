@@ -128,7 +128,7 @@ NaturalLayoutProductAttempt evaluate_natural_layout_product(
     if (type.requested_alignment < layout.alignment) {
       diagnostics.error(
           type.declaration,
-          "'@align' cannot reduce the type's natural alignment");
+          "'align' cannot reduce the type's natural alignment");
       return result;
     }
     const std::optional<std::uint64_t> size =

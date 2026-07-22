@@ -7,19 +7,19 @@ import core/c as c
 // both occupy one 64-bit argument register.
 Pthread_Handle :: uintptr
 
-pub Thread :: @repr(C) struct {
+pub Thread :: c struct {
     handle: Pthread_Handle,
 }
 
 // glibc 2.39 AArch64 gives pthread_mutex_t and pthread_cond_t 48-byte storage
 // with eight-byte alignment. The leading i64 establishes the required
 // alignment; all bytes remain opaque and are touched only by pthread.
-pub Mutex :: @repr(C) struct {
+pub Mutex :: c struct {
     alignment: i64,
     opaque: [40]u8,
 }
 
-pub Condition :: @repr(C) struct {
+pub Condition :: c struct {
     alignment: i64,
     opaque: [40]u8,
 }

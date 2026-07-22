@@ -660,7 +660,7 @@ private:
       }
       if (value.kind == TypeKind::Struct) {
         // A packed LLVM body plus explicit byte fields reproduces the semantic
-        // offsets exactly. This is required for @align tail stride and for a
+        // offsets exactly. This is required for requested-alignment tail stride and for a
         // nested over-aligned member; LLVM's implicit aggregate alignment does
         // not know Draft's requested_alignment metadata.
         output_ << "%draft.type." << index << " = type <{ ";

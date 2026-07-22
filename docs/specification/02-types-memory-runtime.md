@@ -218,28 +218,34 @@ negative. A tagged union uses the smallest fitting unsigned discriminator.
 `enum u16 { ... }` and `union u16 { ... }` select these types explicitly; every
 value must fit the selected backing type.
 
-`@repr(C)` delegates layout and ABI lowering to the selected target's C ABI and
-is valid in Draft 1 only on structs, raw unions, and enums. It replaces their default
-layout and, for an enum without an explicit backing type, default backing rule.
-An explicit enum backing may combine with `@repr(C)` only when the target C ABI
+`c struct`, `c raw union`, and `c enum` delegate layout and ABI lowering to the
+selected target's C ABI. C layout replaces the default aggregate layout and,
+for an enum without an explicit backing type, the default backing rule. An
+explicit enum backing may combine with `c enum` only when the target C ABI
 supports it; otherwise the declaration is invalid.
-`@align(N)` is valid on structs and raw unions when `N` is a positive,
-power-of-two compile-time `usize`. It may raise but not reduce alignment; size
-and array stride are rounded to the resulting alignment. It may follow
-`@repr(C)` and is then applied after C layout. Attributes precede the type
-constructor:
+
+`align(N) struct` and `align(N) raw union` require a positive, power-of-two
+compile-time `usize`. The request may raise but not reduce alignment; size and
+array stride are rounded to the resulting alignment. C layout and requested
+alignment compose as `c align(N) struct` or `c align(N) raw union`: C layout is
+computed first and the requested alignment is applied afterward. These are a
+closed set of direct type-constructor modifiers, not annotations:
 
 ```draft
-Header :: @repr(C) struct {
+Header :: c struct {
     kind: u32,
 }
 
-C_Value :: @repr(C) raw union {
+C_Value :: c raw union {
     bits:    u64,
     pointer: rawptr,
 }
 
-Cache_Line :: @align(64) struct {
+C_Cache_Line :: c align(64) struct {
+    bytes: [64]u8,
+}
+
+Cache_Line :: align(64) struct {
     bytes: [64]u8,
 }
 ```
@@ -298,7 +304,7 @@ The remaining structural queries are compile-time intrinsics:
   Calling conventions are `.draft` and `.c`.
 - `type_is_c_repr(T) -> bool` applies to structs, enums, and raw unions.
   `type_requested_alignment(T) -> usize` applies to structs and raw unions and
-  returns zero when no `@align` was requested.
+  returns zero when no `align(N)` was requested.
 
 An inapplicable query or an out-of-range index is a compile-time error at the
 query. These operations expose language structure and natural Draft layout;
@@ -746,7 +752,7 @@ pub Assertion_Failure_Proc :: proc(
     line, column: usize,
 )
 
-pub Context :: @repr(C) struct {
+pub Context :: c struct {
     allocator:              Allocator,
     temp_allocator:         Allocator,
     assertion_failure_proc: Assertion_Failure_Proc,

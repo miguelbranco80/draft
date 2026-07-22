@@ -159,7 +159,7 @@ struct ConstantProductAttempt {
 
 // IntegerExpressionProductAttempt is the task-owned result of evaluating one
 // declaration-owned integer recipe, such as an array count, enum value, or
-// `@align` argument. The recipe is deliberately part of its owning declaration
+// `align(N)` expression. The recipe is deliberately part of its owning declaration
 // product rather than a graph node per expression. Blocked names the exact
 // declaration, constant, and type-facet products which must publish before the
 // owner can be attempted again. Complete retains the interpreter's exact Draft

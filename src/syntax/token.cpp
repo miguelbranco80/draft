@@ -26,6 +26,7 @@ std::string_view token_kind_name(TokenKind kind) {
   case TokenKind::KeywordPub: return "pub";
   case TokenKind::KeywordProc: return "proc";
   case TokenKind::KeywordC: return "c";
+  case TokenKind::KeywordAlign: return "align";
   case TokenKind::KeywordStruct: return "struct";
   case TokenKind::KeywordEnum: return "enum";
   case TokenKind::KeywordUnion: return "union";
@@ -77,7 +78,6 @@ std::string_view token_kind_name(TokenKind kind) {
   case TokenKind::Dot: return ".";
   case TokenKind::DotDot: return "..";
   case TokenKind::Ellipsis: return "...";
-  case TokenKind::At: return "@";
   case TokenKind::Hash: return "#";
   case TokenKind::Plus: return "+";
   case TokenKind::Minus: return "-";

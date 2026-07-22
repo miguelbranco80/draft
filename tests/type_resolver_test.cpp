@@ -459,17 +459,17 @@ Overlay :: raw union {
     word: u64,
 }
 
-C_Header :: @repr(C) struct {
+C_Header :: c struct {
     tag: u8,
     value: u64,
 }
 
-C_Overlay :: @repr(C) @align(16) raw union {
+C_Overlay :: c align(16) raw union {
     byte: u8,
     word: u64,
 }
 
-Aligned :: @align(Cache_Alignment) struct {
+Aligned :: align(Cache_Alignment) struct {
     bytes: [3]u8,
 }
 
@@ -485,7 +485,7 @@ Signed :: enum {
     High = 130,
 }
 
-C_Kind :: @repr(C) enum {
+C_Kind :: c enum {
     First,
     Second,
 }
@@ -514,7 +514,7 @@ Pair[T: type, U: type] :: struct {
     second: U,
 }
 
-Aligned_Box[T: type] :: @align(32) struct {
+Aligned_Box[T: type] :: align(32) struct {
     value: T,
 }
 
@@ -856,7 +856,7 @@ Bad_Array :: struct {
 
 Bad_Vector :: #simd[cast[u64](4)]u32
 
-Bad_Aligned :: @align(cast[u64](4)) struct {
+Bad_Aligned :: align(cast[u64](4)) struct {
     value: u8,
 }
 )draft");
@@ -869,7 +869,7 @@ Bad_Aligned :: @align(cast[u64](4)) struct {
                     std::string::npos);
   EXPECT(state, rendered.find("SIMD lane count must have type 'usize'") !=
                     std::string::npos);
-  EXPECT(state, rendered.find("'@align' argument must have type 'usize'") !=
+  EXPECT(state, rendered.find("'align' argument must have type 'usize'") !=
                     std::string::npos);
 }
 
@@ -966,7 +966,7 @@ foreign libc {
     foreign_variadic :: proc(values: ..type)
 }
 
-export exported_variadic :: c "exported_variadic" proc(values: ..type) {}
+export exported_variadic :: c proc(values: ..type) {}
 )draft");
 
   EXPECT(state, source.diagnostics.has_errors());
@@ -1047,7 +1047,7 @@ Missing_Zero :: enum {
     Only = 1,
 }
 
-Too_Wide_C :: @repr(C) enum {
+Too_Wide_C :: c enum {
     Zero,
     Value = 18446744073709551616,
 }
@@ -1068,22 +1068,22 @@ void test_c_enum_default_backing(TestState &state) {
   SemanticSource source(R"draft(
 package types
 
-Positive :: @repr(C) enum {
+Positive :: c enum {
     Zero,
     Largest_Int = 2147483647,
 }
 
-Negative :: @repr(C) enum {
+Negative :: c enum {
     Minimum_Int = -2147483648,
     Zero = 0,
 }
 
-Wide_Positive :: @repr(C) enum {
+Wide_Positive :: c enum {
     Zero,
     Beyond_U32 = 4294967296,
 }
 
-Wide_Negative :: @repr(C) enum {
+Wide_Negative :: c enum {
     Beyond_I32 = -2147483649,
     Zero = 0,
 }
@@ -1124,17 +1124,15 @@ void test_tagged_union_discriminator_capacity(TestState &state) {
                     std::string::npos);
 }
 
-void test_invalid_representation_attributes(TestState &state) {
+void test_invalid_layout_modifiers(TestState &state) {
   SemanticSource source(R"draft(
 package types
 
-Bad_Alignment :: @align(3) struct { value: u8, }
-Reduced_Alignment :: @align(2) struct { value: u64, }
-Aligned_Enum :: @align(8) enum { Value, }
-C_Union :: @repr(C) union { none, }
-Wrong_Repr :: @repr(Rust) struct { value: u8, }
-Unknown :: @packed struct { value: u8, }
-Attributed_Scalar :: @align(8) u64
+Bad_Alignment :: align(3) struct { value: u8, }
+Reduced_Alignment :: align(2) struct { value: u64, }
+Aligned_Enum :: align(8) enum { Value, }
+C_Union :: c union { none, }
+Attributed_Scalar :: align(8) u64
 )draft");
 
   EXPECT(state, source.diagnostics.has_errors());
@@ -1145,11 +1143,6 @@ Attributed_Scalar :: @align(8) u64
   EXPECT(state, rendered.find("valid only on structs and raw unions") !=
                     std::string::npos);
   EXPECT(state, rendered.find("valid only on structs, raw unions, and enums") !=
-                    std::string::npos);
-  EXPECT(state, rendered.find("supports only '@repr(C)'") != std::string::npos);
-  EXPECT(state, rendered.find("unknown type representation attribute") !=
-                    std::string::npos);
-  EXPECT(state, rendered.find("valid only on aggregate type constructors") !=
                     std::string::npos);
 }
 
@@ -1229,7 +1222,7 @@ int main() {
   test_invalid_enum_values(state);
   test_c_enum_default_backing(state);
   test_tagged_union_discriminator_capacity(state);
-  test_invalid_representation_attributes(state);
+  test_invalid_layout_modifiers(state);
   test_cyclic_layout_constant(state);
   test_type_declaration_depth_is_bounded(state);
 

@@ -25,7 +25,7 @@ struct CHeaderResult {
 };
 
 // Emits only explicit `export ... :: c proc` declarations. Every transitively
-// required @repr(C) aggregate, enum, fixed array member, and C procedure-pointer
+// required C-layout aggregate, enum, fixed array member, and C procedure-pointer
 // typedef is emitted first, with size/alignment/offset assertions that make a
 // mismatched C compiler fail at header compilation rather than at runtime.
 [[nodiscard]] CHeaderResult emit_c_header(

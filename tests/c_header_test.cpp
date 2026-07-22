@@ -42,52 +42,52 @@ void test_header_covers_exported_abi(TestState &state) {
   file.source = sources.add_source("package.draft", R"draft(
 package c_library
 
-Pair :: @repr(C) struct {
+Pair :: c struct {
     left: i32,
     right: i32,
 }
 
-Aligned :: @repr(C) @align(16) struct {
+Aligned :: c align(16) struct {
     bytes: [3]u8,
 }
 
-Choice :: @repr(C) enum {
+Choice :: c enum {
     neither = -1,
     none = 0,
     first = 2,
 }
 
-Unsigned_Choice :: @repr(C) enum {
+Unsigned_Choice :: c enum {
     none,
     largest = 4294967295,
 }
 
-Wide_Choice :: @repr(C) enum {
+Wide_Choice :: c enum {
     none,
     large = 4294967296,
 }
 
-Maximum_Choice :: @repr(C) enum {
+Maximum_Choice :: c enum {
     none,
     maximum = 18446744073709551615,
 }
 
-Minimum_Choice :: @repr(C) enum {
+Minimum_Choice :: c enum {
     minimum = -9223372036854775808,
     none = 0,
 }
 
-Huge_Choice :: @repr(C) enum u128 {
+Huge_Choice :: c enum u128 {
     none,
     huge = 340282366920938463463374607431768211455,
 }
 
-Number :: @repr(C) raw union {
+Number :: c raw union {
     integer: i64,
     decimal: f64,
 }
 
-Wide :: @repr(C) struct {
+Wide :: c struct {
     value: i128,
 }
 
@@ -95,22 +95,22 @@ Hidden :: struct {
     value: i64,
 }
 
-Opaque_View :: @repr(C) struct {
+Opaque_View :: c struct {
     view: []u8,
 }
 
-Opaque_View_Box :: @repr(C) struct {
+Opaque_View_Box :: c struct {
     value: ^Opaque_View,
 }
 
-export map_pair :: c "draft_map_pair" proc(
+export map_pair as "draft_map_pair" :: c proc(
     value: Pair,
     callback: c proc(value: i32) -> i32,
 ) -> Pair {
     return value
 }
 
-export inspect :: c "draft.inspect" proc(
+export inspect as "draft.inspect" :: c proc(
     pair: ^Pair,
     aligned: Aligned,
     choice: Choice,
@@ -124,7 +124,7 @@ export inspect :: c "draft.inspect" proc(
     return 0
 }
 
-export widen :: c "draft_widen" proc(
+export widen as "draft_widen" :: c proc(
     value: i128,
     output: ^^u8,
     record: ^Wide,
@@ -132,38 +132,38 @@ export widen :: c "draft_widen" proc(
     return cast[u128](value)
 }
 
-export return_grid :: c "draft_return_grid" proc(
+export return_grid as "draft_return_grid" :: c proc(
     value: ^[4]u8,
 ) -> ^[4]u8 {
     return value
 }
 
-export opaque_chain :: c "draft_opaque_chain" proc(
+export opaque_chain as "draft_opaque_chain" :: c proc(
     value: ^^Hidden,
 ) -> ^^Hidden {
     return value
 }
 
-export opaque_draft_callback :: c "draft_opaque_draft_callback" proc(
+export opaque_draft_callback as "draft_opaque_draft_callback" :: c proc(
     value: ^proc(value: i32) -> i32,
     slot: ^^proc(value: i32) -> i32,
 ) -> ^proc(value: i32) -> i32 {
     return value
 }
 
-export opaque_view :: c "draft_opaque_view" proc(
+export opaque_view as "draft_opaque_view" :: c proc(
     value: ^Opaque_View,
 ) -> ^Opaque_View {
     return value
 }
 
-export opaque_view_box :: c "draft_opaque_view_box" proc(
+export opaque_view_box as "draft_opaque_view_box" :: c proc(
     value: Opaque_View_Box,
 ) -> Opaque_View_Box {
     return value
 }
 
-export echo_rune :: c "draft_echo_rune" proc(value: rune) -> rune {
+export echo_rune as "draft_echo_rune" :: c proc(value: rune) -> rune {
     return value
 }
 )draft");

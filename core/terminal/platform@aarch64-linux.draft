@@ -14,7 +14,7 @@ import core/c as c
 // Native_Mode is stored opaquely by Session. libc's cfmakeraw owns flag policy;
 // exposing the physical fields here exists solely to give the C boundary the
 // exact selected glibc layout and alignment.
-Native_Mode :: @repr(C) struct {
+Native_Mode :: c struct {
     input_flags: c.unsigned_int,
     output_flags: c.unsigned_int,
     control_flags: c.unsigned_int,
@@ -28,17 +28,17 @@ Native_Mode :: @repr(C) struct {
 Native_Apply_Now :: cast[c.int](0)
 
 foreign linux {
-    native_get_mode :: c "tcgetattr" proc(
+    native_get_mode as "tcgetattr" :: c proc(
         descriptor: c.int,
         mode: ^Native_Mode,
     ) -> c.int
-    native_set_mode :: c "tcsetattr" proc(
+    native_set_mode as "tcsetattr" :: c proc(
         descriptor: c.int,
         action: c.int,
         mode: ^Native_Mode,
     ) -> c.int
-    native_make_raw :: c "cfmakeraw" proc(mode: ^Native_Mode)
-    native_poll :: c "poll" proc(
+    native_make_raw as "cfmakeraw" :: c proc(mode: ^Native_Mode)
+    native_poll as "poll" :: c proc(
         descriptors: ^Poll_Descriptor,
         count: c.unsigned_long,
         timeout_milliseconds: c.int,

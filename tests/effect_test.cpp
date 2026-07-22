@@ -568,7 +568,7 @@ void test_target_and_package_assembly_summaries(TestState &state) {
 
 Callback :: c proc(user: rawptr) -> rawptr
 
-Callback_Box :: @repr(C) struct {
+Callback_Box :: c struct {
     callback: Callback,
 }
 

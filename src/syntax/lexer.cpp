@@ -39,6 +39,7 @@ constexpr std::array kKeywords{
     Keyword{"pub", TokenKind::KeywordPub},
     Keyword{"proc", TokenKind::KeywordProc},
     Keyword{"c", TokenKind::KeywordC},
+    Keyword{"align", TokenKind::KeywordAlign},
     Keyword{"struct", TokenKind::KeywordStruct},
     Keyword{"enum", TokenKind::KeywordEnum},
     Keyword{"union", TokenKind::KeywordUnion},
@@ -589,7 +590,6 @@ private:
     case ';': kind = TokenKind::Semicolon; break;
     case ':': kind = TokenKind::Colon; break;
     case '.': kind = TokenKind::Dot; break;
-    case '@': kind = TokenKind::At; break;
     case '#': kind = TokenKind::Hash; break;
     case '+': kind = TokenKind::Plus; break;
     case '-': kind = TokenKind::Minus; break;

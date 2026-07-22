@@ -46,7 +46,7 @@ canonical concrete applications, not the template pattern, own runtime layout.
 Imported interface nominals are already-complete upstream inputs and never
 become local declaration work.
 
-Array counts, SIMD widths, enum values, `@align` arguments, and parametric value
+Array counts, SIMD widths, enum values, `align(N)` expressions, and parametric value
 arguments remain fields of their owning declaration product; the graph does not
 create a node per expression. The resolver handles the small literal/arithmetic
 vocabulary directly, then uses the ordinary compile-time interpreter for full

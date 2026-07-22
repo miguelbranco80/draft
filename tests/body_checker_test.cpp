@@ -3242,7 +3242,7 @@ void test_compile_time_type_inspection(TestState &state) {
   CheckedSource valid(R"draft(
 package bodies
 
-Record :: @repr(C) @align(16) struct {
+Record :: c align(16) struct {
     tag: u8,
     value: u64,
 }
@@ -3259,7 +3259,7 @@ Choice :: union {
 
 Meters :: distinct i64
 
-Overlay :: @repr(C) @align(8) raw union {
+Overlay :: c align(8) raw union {
     byte: u8,
     word: u64,
 }

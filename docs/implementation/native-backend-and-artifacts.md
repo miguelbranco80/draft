@@ -163,7 +163,7 @@ Generated C headers cover root-package exports and transitively required C
 records, raw unions, enums, fixed-array fields, and callback types. Layout
 assertions make size, alignment, and field-offset disagreement a C compile error.
 
-An `@repr(C)` enum without an explicit backing follows the selected AArch64 C
+A `c enum` without an explicit backing follows the selected AArch64 C
 compiler's default enum rule instead of Draft's smallest-fitting rule. Its backing
 is at least 32 bits: a wholly nonnegative member set uses `u32`, a set containing
 a negative member uses `i32`, and either widens with the same signedness to 64

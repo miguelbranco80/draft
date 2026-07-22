@@ -104,8 +104,9 @@ std::string_view node_kind_name(NodeKind kind) {
   case NodeKind::TuplePattern: return "TuplePattern";
   case NodeKind::ParametricParameterList: return "ParametricParameterList";
   case NodeKind::ParametricParameter: return "ParametricParameter";
-  case NodeKind::AttributeList: return "AttributeList";
-  case NodeKind::Attribute: return "Attribute";
+  case NodeKind::CRepresentationSpecifier: return "CRepresentationSpecifier";
+  case NodeKind::AlignmentSpecifier: return "AlignmentSpecifier";
+  case NodeKind::LinkNameClause: return "LinkNameClause";
   case NodeKind::ForeignBlock: return "ForeignBlock";
   case NodeKind::ExportDeclaration: return "ExportDeclaration";
   case NodeKind::Documentation: return "Documentation";

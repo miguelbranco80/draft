@@ -5,12 +5,12 @@ import core/runtime
 // This package has no Draft `main`: it is a native library fixture. Its public
 // C surface exercises records, enums, raw unions, and callback pointers through
 // the exact same selected AArch64 C ABI classifier used by call lowering.
-Pair :: @repr(C) struct {
+Pair :: c struct {
     left: i32,
     right: i32,
 }
 
-Choice :: @repr(C) enum {
+Choice :: c enum {
     neither = -1,
     none = 0,
     left = 1,
@@ -21,22 +21,22 @@ Choice :: @repr(C) enum {
 // uses the unsigned form, and a value beyond u32 widens to 64 bits on both
 // current AArch64 C ABIs. These types keep that target rule visible in the real
 // generated-header and C-client boundary below.
-Unsigned_Choice :: @repr(C) enum {
+Unsigned_Choice :: c enum {
     none,
     largest = 4294967295,
 }
 
-Wide_Choice :: @repr(C) enum {
+Wide_Choice :: c enum {
     none,
     large = 4294967296,
 }
 
-Maximum_Choice :: @repr(C) enum {
+Maximum_Choice :: c enum {
     none,
     maximum = 18446744073709551615,
 }
 
-Minimum_Choice :: @repr(C) enum {
+Minimum_Choice :: c enum {
     minimum = -9223372036854775808,
     none = 0,
 }
@@ -44,12 +44,12 @@ Minimum_Choice :: @repr(C) enum {
 // Explicit fixed backings use the same C scalar ABI. The generated header has
 // to construct 128-bit constants from two exact 64-bit halves because C has no
 // portable `__int128` literal suffix or INT128_C macro.
-Huge_Choice :: @repr(C) enum u128 {
+Huge_Choice :: c enum u128 {
     none,
     huge = 340282366920938463463374607431768211455,
 }
 
-Number :: @repr(C) raw union {
+Number :: c raw union {
     integer: i64,
     decimal: f64,
 }
@@ -58,15 +58,15 @@ Number :: @repr(C) raw union {
 // The C client below calls every one through a real shared library, so changes
 // to packing, register classification, or sret handling cannot hide behind an
 // LLVM text snapshot.
-Odd_Bytes :: @repr(C) struct {
+Odd_Bytes :: c struct {
     bytes: [3]u8,
 }
 
-Aligned_Word :: @repr(C) @align(16) struct {
+Aligned_Word :: c align(16) struct {
     word: i64,
 }
 
-Float_Pair :: @repr(C) struct {
+Float_Pair :: c struct {
     left: f32,
     right: f32,
 }
@@ -74,7 +74,7 @@ Float_Pair :: @repr(C) struct {
 // A three-lane half-precision record is still an HFA. Its six-byte physical
 // payload is especially useful here: treating it as an ordinary small record
 // would put the argument in an integer register and disagree with Clang.
-Half_Triple :: @repr(C) struct {
+Half_Triple :: c struct {
     values: [3]f16,
 }
 
@@ -82,17 +82,17 @@ Half_Triple :: @repr(C) struct {
 // nested records. Union alternatives overlap, so their lane count is the maximum of
 // the alternatives rather than their sum. Nested_Floats is therefore four
 // f32 lanes: two from overlay plus two from tail.
-Float_Overlay :: @repr(C) raw union {
+Float_Overlay :: c raw union {
     scalar: f32,
     pair: [2]f32,
 }
 
-Nested_Floats :: @repr(C) struct {
+Nested_Floats :: c struct {
     overlay: Float_Overlay,
     tail: [2]f32,
 }
 
-Large_Record :: @repr(C) struct {
+Large_Record :: c struct {
     words: [3]i64,
 }
 
@@ -104,11 +104,11 @@ Private_Record :: struct {
 // C11 field spelling, but the C ABI still permits a pointer to the record as an
 // opaque address. Header generation must expose only void * and must not emit
 // the record definition.
-Opaque_View_Record :: @repr(C) struct {
+Opaque_View_Record :: c struct {
     view: []u8,
 }
 
-Opaque_View_Box :: @repr(C) struct {
+Opaque_View_Box :: c struct {
     value: ^Opaque_View_Record,
 }
 
@@ -120,85 +120,85 @@ bridge_ordinary :: proc(value: i32) -> i32 {
     return result
 }
 
-export pair_identity :: c "draft_pair_identity" proc(value: Pair) -> Pair {
+export pair_identity as "draft_pair_identity" :: c proc(value: Pair) -> Pair {
     return value
 }
 
-export choice_identity :: c "draft_choice_identity" proc(value: Choice) -> Choice {
+export choice_identity as "draft_choice_identity" :: c proc(value: Choice) -> Choice {
     return value
 }
 
-export unsigned_choice_identity :: c "draft_unsigned_choice_identity" proc(
+export unsigned_choice_identity as "draft_unsigned_choice_identity" :: c proc(
     value: Unsigned_Choice,
 ) -> Unsigned_Choice {
     return value
 }
 
-export wide_choice_identity :: c "draft_wide_choice_identity" proc(
+export wide_choice_identity as "draft_wide_choice_identity" :: c proc(
     value: Wide_Choice,
 ) -> Wide_Choice {
     return value
 }
 
-export maximum_choice_identity :: c "draft_maximum_choice_identity" proc(
+export maximum_choice_identity as "draft_maximum_choice_identity" :: c proc(
     value: Maximum_Choice,
 ) -> Maximum_Choice {
     return value
 }
 
-export minimum_choice_identity :: c "draft_minimum_choice_identity" proc(
+export minimum_choice_identity as "draft_minimum_choice_identity" :: c proc(
     value: Minimum_Choice,
 ) -> Minimum_Choice {
     return value
 }
 
-export huge_choice_identity :: c "draft_huge_choice_identity" proc(
+export huge_choice_identity as "draft_huge_choice_identity" :: c proc(
     value: Huge_Choice,
 ) -> Huge_Choice {
     return value
 }
 
-export number_identity :: c "draft_number_identity" proc(value: Number) -> Number {
+export number_identity as "draft_number_identity" :: c proc(value: Number) -> Number {
     return value
 }
 
-export odd_bytes_identity :: c "draft_odd_bytes_identity" proc(
+export odd_bytes_identity as "draft_odd_bytes_identity" :: c proc(
     value: Odd_Bytes,
 ) -> Odd_Bytes {
     return value
 }
 
-export aligned_word_identity :: c "draft_aligned_word_identity" proc(
+export aligned_word_identity as "draft_aligned_word_identity" :: c proc(
     value: Aligned_Word,
 ) -> Aligned_Word {
     return value
 }
 
-export float_pair_identity :: c "draft_float_pair_identity" proc(
+export float_pair_identity as "draft_float_pair_identity" :: c proc(
     value: Float_Pair,
 ) -> Float_Pair {
     return value
 }
 
-export half_triple_identity :: c "draft_half_triple_identity" proc(
+export half_triple_identity as "draft_half_triple_identity" :: c proc(
     value: Half_Triple,
 ) -> Half_Triple {
     return value
 }
 
-export float_overlay_identity :: c "draft_float_overlay_identity" proc(
+export float_overlay_identity as "draft_float_overlay_identity" :: c proc(
     value: Float_Overlay,
 ) -> Float_Overlay {
     return value
 }
 
-export nested_floats_identity :: c "draft_nested_floats_identity" proc(
+export nested_floats_identity as "draft_nested_floats_identity" :: c proc(
     value: Nested_Floats,
 ) -> Nested_Floats {
     return value
 }
 
-export large_record_identity :: c "draft_large_record_identity" proc(
+export large_record_identity as "draft_large_record_identity" :: c proc(
     value: Large_Record,
 ) -> Large_Record {
     return value
@@ -207,31 +207,31 @@ export large_record_identity :: c "draft_large_record_identity" proc(
 // Return declarators are more subtle than parameters in C: the function name
 // must be nested inside every pointer/array layer. These two exports keep the
 // generated header and the physical direct-pointer ABI honest.
-export pointer_pointer_identity :: c "draft_pointer_pointer_identity" proc(
+export pointer_pointer_identity as "draft_pointer_pointer_identity" :: c proc(
     value: ^^u8,
 ) -> ^^u8 {
     return value
 }
 
-export row_pointer_identity :: c "draft_row_pointer_identity" proc(
+export row_pointer_identity as "draft_row_pointer_identity" :: c proc(
     value: ^[3]u8,
 ) -> ^[3]u8 {
     return value
 }
 
-export opaque_pointer_pointer_identity :: c "draft_opaque_pointer_pointer_identity" proc(
+export opaque_pointer_pointer_identity as "draft_opaque_pointer_pointer_identity" :: c proc(
     value: ^^Private_Record,
 ) -> ^^Private_Record {
     return value
 }
 
-export opaque_view_identity :: c "draft_opaque_view_identity" proc(
+export opaque_view_identity as "draft_opaque_view_identity" :: c proc(
     value: ^Opaque_View_Record,
 ) -> ^Opaque_View_Record {
     return value
 }
 
-export opaque_view_box_identity :: c "draft_opaque_view_box_identity" proc(
+export opaque_view_box_identity as "draft_opaque_view_box_identity" :: c proc(
     value: Opaque_View_Box,
 ) -> Opaque_View_Box {
     return value
@@ -240,12 +240,12 @@ export opaque_view_box_identity :: c "draft_opaque_view_box_identity" proc(
 // A C-convention export has no hidden Context and cannot enter an ordinary
 // Draft procedure directly. These explicit runtime bridges also attach a
 // foreign-created pthread lazily before bridge_ordinary touches package TLS.
-export bridge_from_c :: c "draft_bridge_from_c" proc(value: i32) -> i32 {
+export bridge_from_c as "draft_bridge_from_c" :: c proc(value: i32) -> i32 {
     thread_context := runtime.default_context()
     return runtime.call_with_context(&thread_context, bridge_ordinary, value)
 }
 
-export apply :: c "draft_apply" proc(
+export apply as "draft_apply" :: c proc(
     callback: c proc(value: i32) -> i32,
     value: i32,
 ) -> i32 {

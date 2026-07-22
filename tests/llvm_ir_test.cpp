@@ -304,13 +304,13 @@ expose :: proc(text: string) -> [^]u8 {
 void test_multistep_call_lowering_keeps_debug_locations(TestState &state) {
   const EmittedFixture emitted = emit_fixture(R"draft(package call_debug
 
-Pair :: @repr(C) struct {
+Pair :: c struct {
     left: i32,
     right: i32,
 }
 
 foreign debug_provider {
-    pair_identity :: c "draft_debug_pair_identity" proc(value: Pair) -> Pair
+    pair_identity as "draft_debug_pair_identity" :: c proc(value: Pair) -> Pair
 }
 
 sink :: proc(value: i32) {

@@ -544,10 +544,10 @@ private:
 
   [[nodiscard]] bool begins_type() const {
     switch (current().kind) {
-    case TokenKind::At:
     case TokenKind::Caret:
     case TokenKind::LeftBracket:
     case TokenKind::Hash:
+    case TokenKind::KeywordAlign:
     case TokenKind::KeywordProc:
     case TokenKind::KeywordStruct:
     case TokenKind::KeywordEnum:
@@ -556,7 +556,12 @@ private:
     case TokenKind::KeywordDistinct:
       return true;
     case TokenKind::KeywordC:
-      return lookahead(1).kind == TokenKind::KeywordProc;
+      return lookahead(1).kind == TokenKind::KeywordProc ||
+          lookahead(1).kind == TokenKind::KeywordAlign ||
+          lookahead(1).kind == TokenKind::KeywordStruct ||
+          lookahead(1).kind == TokenKind::KeywordEnum ||
+          lookahead(1).kind == TokenKind::KeywordUnion ||
+          lookahead(1).kind == TokenKind::KeywordRaw;
     default:
       return false;
     }
@@ -577,6 +582,15 @@ private:
     }
     NodeId pattern = parse_binding_pattern();
     children.push_back(pattern);
+    if (at(TokenKind::KeywordAs)) {
+      const std::uint32_t clause_start = position_;
+      advance();
+      (void)expect(
+          TokenKind::StringLiteral,
+          "expected exact linker symbol string after 'as'");
+      children.push_back(tree_.add_node(
+          NodeKind::LinkNameClause, clause_start, position_));
+    }
     if (tree_.node(pattern).kind == NodeKind::BindingPattern && at(TokenKind::LeftBracket)) {
       children.push_back(parse_parametric_parameters());
     }
@@ -593,8 +607,7 @@ private:
     } else if (match(TokenKind::ColonColon)) {
       if (at(TokenKind::KeywordProc) ||
           (at(TokenKind::KeywordC) &&
-           (lookahead(1).kind == TokenKind::KeywordProc ||
-            lookahead(1).kind == TokenKind::StringLiteral))) {
+           lookahead(1).kind == TokenKind::KeywordProc)) {
         children.push_back(parse_procedure(true));
       } else if (begins_type()) {
         children.push_back(parse_type());
@@ -646,17 +659,15 @@ private:
     return parse_procedure(allow_body, position_, {});
   }
 
-  // Type attributes are parsed before the constructor is known. Retaining the
-  // prefix on a procedure type lets semantic analysis reject the unsupported
-  // attribute instead of silently orphaning its syntax node.
+  // A procedure's C convention is part of its type constructor. Linker names
+  // are deliberately absent here: `name as "symbol" :: c proc(...)` attaches
+  // that fact to the declaration, avoiding ambiguity when a result is itself a
+  // procedure type.
   [[nodiscard]] NodeId parse_procedure(
       bool allow_body,
       std::uint32_t start,
       std::vector<NodeId> children) {
     (void)match(TokenKind::KeywordC);
-    if (at(TokenKind::StringLiteral)) {
-      advance(); // Optional exact linker symbol on foreign/export declarations.
-    }
     (void)expect(TokenKind::KeywordProc, "expected 'proc'");
     children.push_back(parse_parameter_list());
     if (match(TokenKind::Arrow)) {
@@ -672,27 +683,22 @@ private:
     return tree_.add_node(NodeKind::ProcedureType, start, position_, std::move(children));
   }
 
-  [[nodiscard]] NodeId parse_attribute_list() {
+  // `align(N)` is a direct layout modifier rather than an open-ended
+  // annotation. Keeping its expression in a dedicated node lets constant
+  // evaluation and dependency discovery use the ordinary expression graph.
+  [[nodiscard]] NodeId parse_alignment_specifier() {
     const std::uint32_t start = position_;
-    std::vector<NodeId> attributes;
-    while (at(TokenKind::At)) {
-      const std::uint32_t attribute_start = position_;
-      advance();
-      (void)expect_name("expected attribute name after '@'");
-      std::vector<NodeId> children;
-      if (match(TokenKind::LeftParen)) {
-        if (!at(TokenKind::RightParen)) {
-          children.push_back(parse_expression());
-          while (match(TokenKind::Comma)) {
-            children.push_back(parse_expression());
-          }
-        }
-        (void)expect(TokenKind::RightParen, "expected ')' after attribute arguments");
-      }
-      attributes.push_back(tree_.add_node(
-          NodeKind::Attribute, attribute_start, position_, std::move(children)));
+    advance(); // `align`.
+    (void)expect(TokenKind::LeftParen, "expected '(' after 'align'");
+    std::vector<NodeId> children;
+    if (at(TokenKind::RightParen)) {
+      error_here("align requires one compile-time usize expression");
+    } else {
+      children.push_back(parse_expression());
     }
-    return tree_.add_node(NodeKind::AttributeList, start, position_, std::move(attributes));
+    (void)expect(TokenKind::RightParen, "expected ')' after alignment expression");
+    return tree_.add_node(
+        NodeKind::AlignmentSpecifier, start, position_, std::move(children));
   }
 
   [[nodiscard]] NodeId parse_type() {
@@ -702,8 +708,25 @@ private:
     const std::uint32_t start = position_;
     std::vector<NodeId> children;
 
-    if (at(TokenKind::At)) {
-      children.push_back(parse_attribute_list());
+    // `c` before an aggregate constructor selects the target C layout. It may
+    // precede align(N), which then raises the completed C layout. A `c` before
+    // `proc` remains the calling-convention modifier consumed by
+    // parse_procedure, while `c.int` remains an ordinary qualified name.
+    if (at(TokenKind::KeywordC) &&
+        (lookahead(1).kind == TokenKind::KeywordAlign ||
+         lookahead(1).kind == TokenKind::KeywordStruct ||
+         lookahead(1).kind == TokenKind::KeywordEnum ||
+         lookahead(1).kind == TokenKind::KeywordUnion ||
+         lookahead(1).kind == TokenKind::KeywordRaw)) {
+      const std::uint32_t modifier_start = position_;
+      advance();
+      children.push_back(tree_.add_node(
+          NodeKind::CRepresentationSpecifier,
+          modifier_start,
+          position_));
+    }
+    if (at(TokenKind::KeywordAlign)) {
+      children.push_back(parse_alignment_specifier());
     }
     if (match(TokenKind::Caret)) {
       children.push_back(parse_type());

@@ -14,7 +14,7 @@ import core/c as c
 // Native_Mode is stored opaquely by public Session after begin_raw. Field names
 // document the Darwin layout, but common code deliberately delegates all flag
 // mutation to libc's cfmakeraw so Draft does not duplicate platform policy.
-Native_Mode :: @repr(C) struct {
+Native_Mode :: c struct {
     input_flags: c.unsigned_long,
     output_flags: c.unsigned_long,
     control_flags: c.unsigned_long,
@@ -27,17 +27,17 @@ Native_Mode :: @repr(C) struct {
 Native_Apply_Now :: cast[c.int](0)
 
 foreign darwin {
-    native_get_mode :: c "tcgetattr" proc(
+    native_get_mode as "tcgetattr" :: c proc(
         descriptor: c.int,
         mode: ^Native_Mode,
     ) -> c.int
-    native_set_mode :: c "tcsetattr" proc(
+    native_set_mode as "tcsetattr" :: c proc(
         descriptor: c.int,
         action: c.int,
         mode: ^Native_Mode,
     ) -> c.int
-    native_make_raw :: c "cfmakeraw" proc(mode: ^Native_Mode)
-    native_poll :: c "poll" proc(
+    native_make_raw as "cfmakeraw" :: c proc(mode: ^Native_Mode)
+    native_poll as "poll" :: c proc(
         descriptors: ^Poll_Descriptor,
         count: c.unsigned_int,
         timeout_milliseconds: c.int,

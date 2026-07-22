@@ -3,7 +3,7 @@ package core_memory
 import core/memory
 import core/runtime
 
-Aligned_Value :: @align(64) struct {
+Aligned_Value :: align(64) struct {
     word: u64,
 }
 

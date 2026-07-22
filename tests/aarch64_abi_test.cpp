@@ -63,33 +63,33 @@ void test_darwin_arm64_classes(TestState &state) {
   SemanticSource source(R"draft(
 package abi
 
-C1 :: @repr(C) struct { bytes: [1]u8, }
-C3 :: @repr(C) struct { bytes: [3]u8, }
-C5 :: @repr(C) struct { bytes: [5]u8, }
-C9 :: @repr(C) struct { bytes: [9]u8, }
-C16 :: @repr(C) struct { words: [2]i64, }
-C16_Aligned :: @repr(C) @align(16) struct { word: i64, }
-C24 :: @repr(C) struct { words: [3]i64, }
-HF2 :: @repr(C) struct { first: f32, second: f32, }
-HH3 :: @repr(C) struct { values: [3]f16, }
-HD4 :: @repr(C) struct { values: [4]f64, }
-HD5 :: @repr(C) struct { values: [5]f64, }
-HF2_Aligned :: @repr(C) @align(16) struct { first: f32, second: f32, }
-Float_Union :: @repr(C) raw union { first: f32, second: f32, }
-Unequal_Float_Union :: @repr(C) raw union {
+C1 :: c struct { bytes: [1]u8, }
+C3 :: c struct { bytes: [3]u8, }
+C5 :: c struct { bytes: [5]u8, }
+C9 :: c struct { bytes: [9]u8, }
+C16 :: c struct { words: [2]i64, }
+C16_Aligned :: c align(16) struct { word: i64, }
+C24 :: c struct { words: [3]i64, }
+HF2 :: c struct { first: f32, second: f32, }
+HH3 :: c struct { values: [3]f16, }
+HD4 :: c struct { values: [4]f64, }
+HD5 :: c struct { values: [5]f64, }
+HF2_Aligned :: c align(16) struct { first: f32, second: f32, }
+Float_Union :: c raw union { first: f32, second: f32, }
+Unequal_Float_Union :: c raw union {
     scalar: f32,
     pair: [2]f32,
 }
-Nested_Union_HF4 :: @repr(C) struct {
+Nested_Union_HF4 :: c struct {
     union_value: Unequal_Float_Union,
     pair: [2]f32,
 }
-Mixed_Union :: @repr(C) raw union { first: f32, second: f64, }
+Mixed_Union :: c raw union { first: f32, second: f64, }
 Default_Record :: struct { value: i64, }
-Bad_Member :: @repr(C) struct { value: []u8, }
-C_Enum :: @repr(C) enum { off, on, }
+Bad_Member :: c struct { value: []u8, }
+C_Enum :: c enum { off, on, }
 Bad_Callback :: c proc(value: []u8)
-Recursive_Callback_Record :: @repr(C) struct {
+Recursive_Callback_Record :: c struct {
     callback: c proc(value: Recursive_Callback_Record),
 }
 )draft");
@@ -171,9 +171,9 @@ void test_linux_aapcs64_classes(TestState &state) {
   SemanticSource source(R"draft(
 package abi
 
-C3 :: @repr(C) struct { bytes: [3]u8, }
-C24 :: @repr(C) struct { words: [3]i64, }
-HF2 :: @repr(C) struct { first: f32, second: f32, }
+C3 :: c struct { bytes: [3]u8, }
+C24 :: c struct { words: [3]i64, }
+HF2 :: c struct { first: f32, second: f32, }
 )draft");
   const draft::TargetFacts target =
       draft::make_aarch64_linux_profile().facts;

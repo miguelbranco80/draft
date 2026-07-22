@@ -98,10 +98,11 @@ struct ResolverValueSubstitution {
   IntegerExpression symbolic_expression;
 };
 
-// Parsed representation attributes are kept small and explicit. Zero means no
-// requested alignment; C representation is independent so `@repr(C)` and
-// `@align(N)` compose without an attribute object hierarchy.
-struct AggregateAttributes {
+// Aggregate layout modifiers are separate grammatical facts, not entries in an
+// annotation bag. Zero means no requested alignment; C representation remains
+// independent so `c align(N) struct` says directly that requested alignment is
+// applied after the selected C layout.
+struct AggregateModifiers {
   bool c_representation = false;
   std::uint32_t requested_alignment = 0;
 };
@@ -1011,7 +1012,7 @@ private:
   }
 
   // Layout syntax accepts the same exact integer expression vocabulary used by
-  // enum values and @align. Conversion to u64 happens only after arbitrary-
+  // enum values and align(N). Conversion to u64 happens only after arbitrary-
   // precision evaluation, so overflow and negative values never wrap through
   // the bootstrap host.
   [[nodiscard]] std::optional<std::uint64_t>
@@ -3545,17 +3546,26 @@ private:
       const SyntaxTree &tree, NodeId type_id, ScopeId scope) {
     const SyntaxNode &node = tree.node(type_id);
     const TypeId invalid = semantic_.types.builtins().invalid;
-    const bool has_attributes = node.token_begin < node.token_end &&
-        tree.token(node.token_begin).kind == TokenKind::At;
     const bool aggregate = node.kind == NodeKind::StructType ||
         node.kind == NodeKind::EnumType ||
         node.kind == NodeKind::TaggedUnionType ||
         node.kind == NodeKind::RawUnionType;
-    if (has_attributes && !aggregate) {
-      diagnostics_.error(
-          node.range,
-          "representation attributes are valid only on aggregate type constructors");
-      return invalid;
+    if (!aggregate) {
+      for (NodeId child_id : node.children) {
+        const SyntaxNode &child = tree.node(child_id);
+        if (child.kind == NodeKind::AlignmentSpecifier) {
+          diagnostics_.error(
+              child.range,
+              "'align(N)' is valid only on structs and raw unions");
+          return invalid;
+        }
+        if (child.kind == NodeKind::CRepresentationSpecifier) {
+          diagnostics_.error(
+              child.range,
+              "'c' layout is valid only on structs, raw unions, and enums");
+          return invalid;
+        }
+      }
     }
     switch (node.kind) {
     case NodeKind::NamedType: {
@@ -4403,116 +4413,77 @@ private:
     return evaluated.value.integer;
   }
 
-  // Validates the closed Draft 1 representation-attribute vocabulary. The
-  // parser deliberately accepts arbitrary attribute spellings so this phase
-  // can issue type-aware diagnostics and keep malformed declarations in the
-  // same recovery path as ordinary layout failures.
-  [[nodiscard]] AggregateAttributes aggregate_attributes(
+  // Validates the closed Draft 1 aggregate-modifier vocabulary. The parser
+  // records C representation and requested alignment as distinct children so
+  // this phase never interprets an open-ended annotation language.
+  [[nodiscard]] AggregateModifiers aggregate_modifiers(
       const SyntaxTree &tree,
       const SyntaxNode &aggregate,
       TypeKind kind,
       ScopeId scope) {
-    AggregateAttributes result;
-    bool saw_repr = false;
-    bool saw_align = false;
+    AggregateModifiers result;
     for (NodeId child_id : aggregate.children) {
-      const SyntaxNode &list = tree.node(child_id);
-      if (list.kind != NodeKind::AttributeList) {
+      const SyntaxNode &modifier = tree.node(child_id);
+      if (modifier.kind == NodeKind::CRepresentationSpecifier) {
+        if (kind != TypeKind::Struct && kind != TypeKind::RawUnion &&
+            kind != TypeKind::Enum) {
+          diagnostics_.error(
+              modifier.range,
+              "'c' layout is valid only on structs, raw unions, and enums");
+          continue;
+        }
+        result.c_representation = true;
         continue;
       }
-      for (NodeId attribute_id : list.children) {
-        const SyntaxNode &attribute = tree.node(attribute_id);
-        const std::vector<SourceName> names = names_in_span(
-            tree, attribute.token_begin, attribute.token_end);
-        if (names.empty()) {
-          diagnostics_.error(attribute.range, "attribute requires a name");
-          continue;
-        }
-        const std::string &name = names.front().text;
-        if (name == "repr") {
-          if (saw_repr) {
-            diagnostics_.error(attribute.range, "duplicate '@repr' attribute");
-            continue;
-          }
-          saw_repr = true;
-          if (kind != TypeKind::Struct && kind != TypeKind::RawUnion &&
-              kind != TypeKind::Enum) {
-            diagnostics_.error(
-                attribute.range,
-                "'@repr(C)' is valid only on structs, raw unions, and enums");
-            continue;
-          }
-          if (attribute.children.size() != 1) {
-            diagnostics_.error(
-                attribute.range, "'@repr' requires exactly one argument");
-            continue;
-          }
-          const SyntaxNode &argument = tree.node(attribute.children.front());
-          const std::vector<SourceName> argument_names = names_in_span(
-              tree, argument.token_begin, argument.token_end);
-          if (argument_names.size() != 1 || argument_names.front().text != "C") {
-            diagnostics_.error(
-                argument.range, "Draft 1 supports only '@repr(C)'");
-            continue;
-          }
-          result.c_representation = true;
-          continue;
-        }
-        if (name == "align") {
-          if (saw_align) {
-            diagnostics_.error(attribute.range, "duplicate '@align' attribute");
-            continue;
-          }
-          saw_align = true;
-          if (kind != TypeKind::Struct && kind != TypeKind::RawUnion) {
-            diagnostics_.error(
-                attribute.range,
-                "'@align' is valid only on structs and raw unions");
-            continue;
-          }
-          if (attribute.children.size() != 1) {
-            diagnostics_.error(
-                attribute.range, "'@align' requires exactly one argument");
-            continue;
-          }
-          const SyntaxNode &argument = tree.node(attribute.children.front());
-          const std::optional<BigInteger> value = integer_constant_expression(
-              tree, attribute.children.front(), scope,
-              semantic_.types.builtins().usize_type);
-          if (!value.has_value()) {
-            require_integer_expression(
-                tree,
-                attribute.children.front(),
-                scope,
-                semantic_.types.builtins().usize_type);
-          }
-          const std::optional<std::uint64_t> alignment =
-              value.has_value() ? value->to_u64() : std::nullopt;
-          if (alignment.has_value() &&
-              !integer_constant_matches(
-                  tree,
-                  attribute.children.front(),
-                  scope,
-                  semantic_.types.builtins().usize_type,
-                  "'@align' argument")) {
-            continue;
-          }
-          if (!alignment.has_value() || *alignment == 0 ||
-              (*alignment & (*alignment - 1)) != 0 ||
-              *alignment > std::numeric_limits<std::uint32_t>::max()) {
-            diagnostics_.error(
-                argument.range,
-                "'@align' requires a positive power-of-two compile-time usize");
-            continue;
-          }
-          result.requested_alignment =
-              static_cast<std::uint32_t>(*alignment);
-          continue;
-        }
-        diagnostics_.error(
-            names.front().range,
-            "unknown type representation attribute '@" + name + "'");
+      if (modifier.kind != NodeKind::AlignmentSpecifier) {
+        continue;
       }
+      if (kind != TypeKind::Struct && kind != TypeKind::RawUnion) {
+        diagnostics_.error(
+            modifier.range,
+            "'align(N)' is valid only on structs and raw unions");
+        continue;
+      }
+      if (modifier.children.size() != 1) {
+        diagnostics_.error(
+            modifier.range,
+            "'align' requires exactly one compile-time usize expression");
+        continue;
+      }
+      const NodeId expression_id = modifier.children.front();
+      const SyntaxNode &expression = tree.node(expression_id);
+      const std::optional<BigInteger> value = integer_constant_expression(
+          tree,
+          expression_id,
+          scope,
+          semantic_.types.builtins().usize_type);
+      if (!value.has_value()) {
+        require_integer_expression(
+            tree,
+            expression_id,
+            scope,
+            semantic_.types.builtins().usize_type);
+      }
+      const std::optional<std::uint64_t> alignment =
+          value.has_value() ? value->to_u64() : std::nullopt;
+      if (alignment.has_value() &&
+          !integer_constant_matches(
+              tree,
+              expression_id,
+              scope,
+              semantic_.types.builtins().usize_type,
+              "'align' argument")) {
+        continue;
+      }
+      if (!alignment.has_value() || *alignment == 0 ||
+          (*alignment & (*alignment - 1)) != 0 ||
+          *alignment > std::numeric_limits<std::uint32_t>::max()) {
+        diagnostics_.error(
+            expression.range,
+            "'align' requires a positive power-of-two compile-time usize");
+        continue;
+      }
+      result.requested_alignment = static_cast<std::uint32_t>(*alignment);
     }
     return result;
   }
@@ -4529,7 +4500,7 @@ private:
     }
     if (requested < layout.alignment) {
       diagnostics_.error(
-          range, "'@align' cannot reduce the type's natural alignment");
+          range, "'align' cannot reduce the type's natural alignment");
       return layout;
     }
     layout.alignment = requested;
@@ -4801,7 +4772,7 @@ private:
   // unsigned long or signed long, both 64 bits in this target ABI.
   //
   // Do not reuse inferred_enum_backing(): Draft's ordinary enum rule chooses
-  // the smallest fixed-width representation, while @repr(C) explicitly asks
+  // the smallest fixed-width representation, while c explicitly asks
   // for the target C ABI's default. The target ABI identity is already part of
   // every resolved program. A future ABI must add its complete C-enum rule
   // here rather than inheriting this shared AArch64 result accidentally.
@@ -4875,7 +4846,7 @@ private:
     }
 
     // The TypeMembers product owns only selected member identities. It does not
-    // evaluate representation attributes, backing types, enum values, or field
+    // evaluate layout modifiers, backing types, enum values, or field
     // types; those operations can discover declaration/constant/layout blockers
     // and therefore belong to the dependent TypeMemberTypes product.
     if (goal_ == TypeResolutionGoal::NominalMembers &&
@@ -4922,12 +4893,12 @@ private:
       return;
     }
 
-    const AggregateAttributes attributes = aggregate_attributes(
+    const AggregateModifiers modifiers = aggregate_modifiers(
         tree, aggregate, kind, parent);
     semantic_.types.type_mut(nominal).c_representation =
-        attributes.c_representation;
+        modifiers.c_representation;
     semantic_.types.type_mut(nominal).requested_alignment =
-        attributes.requested_alignment;
+        modifiers.requested_alignment;
 
     TypeId explicit_backing_type;
     if (explicit_backing.has_value()) {
@@ -4962,13 +4933,13 @@ private:
         }
         TypeId backing = explicit_backing.has_value()
             ? explicit_backing_type
-            : (attributes.c_representation
+            : (modifiers.c_representation
                    ? inferred_c_enum_backing(data.enum_values)
                    : inferred_enum_backing(data.enum_values));
         if (!semantic_.types.is_integer(backing)) {
           diagnostics_.error(
               aggregate.range,
-              attributes.c_representation && !explicit_backing.has_value()
+              modifiers.c_representation && !explicit_backing.has_value()
                   ? "enum values do not fit the target C ABI's default backing types"
                   : "enum backing type must be an integer type");
           backing = semantic_.types.builtins().invalid;
