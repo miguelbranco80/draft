@@ -234,4 +234,18 @@ run_example(
   ""
 )
 
+# The graphical example uses raylib's platform-independent memory backend for
+# CI. That nested gate builds the vendored source as a DLL/import-library pair,
+# maps the import library through Draft's provider option, copies the runtime
+# DLL beside the executable, and renders one complete software frame.
+run_checked(
+  "Windows raylib Asteroids integration"
+  "${CMAKE_COMMAND}"
+    "-DDRAFTC=${DRAFTC}"
+    "-DSOURCE_ROOT=${SOURCE_ROOT}"
+    "-DTEST_ROOT=${TEST_ROOT}/raylib-asteroids"
+    "-DTARGET_SELECTOR=${target_selector}"
+    -P "${SOURCE_ROOT}/tests/driver_raylib_asteroids_test.cmake"
+)
+
 message(STATUS "Windows native Draft smoke qualification passed")

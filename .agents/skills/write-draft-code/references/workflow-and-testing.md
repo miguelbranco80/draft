@@ -387,7 +387,8 @@ ctest --test-dir build -L examples --output-on-failure
 
 `examples/qualification.tsv` must classify every tracked Draft/assembly package
 directory. Its rows drive all four target frontend checks, every ordinary
-native example execution, special C-library and foreign-provider link gates,
+native example execution, special C-library, foreign-provider, and vendored
+raylib link gates,
 and all example-owned Draft tests and benchmarks. Windows consumes the same
 ordinary executable inventory through
 `tests/driver_windows_native_smoke_test.cmake`; its validation-process runner
@@ -425,10 +426,11 @@ ctest --test-dir build --output-on-failure \
 On the macOS/Linux native hosts, artifact closure also includes
 `draft_native_determinism_tests`, `draft_native_backend_parity_tests`,
 `draft_native_conformance_tests`, `draft_c_client_integration_tests`, the
-foreign-provider link/run gate, and the example test/benchmark matrix. The first
-compares one-worker and four-worker output; the second exercises every artifact
-kind through embedded LLVM and the external Clang oracle. CMake deliberately
-omits unsupported native tests rather than reporting false skips. Windows
+foreign-provider and raylib link/run gates, and the example test/benchmark
+matrix. The first compares one-worker and four-worker output; the second
+exercises every artifact kind through embedded LLVM and the external Clang
+oracle. CMake deliberately omits unsupported native tests rather than reporting
+false skips. Windows
 instead requires its driver-level example, COFF artifact, foreign-provider,
 and C-client/DLL smoke script in CI.
 
@@ -436,7 +438,7 @@ Run that native closure directly on a supported host with:
 
 ```sh
 ctest --test-dir build --output-on-failure \
-  -R '^(draft_native_determinism_tests|draft_native_backend_parity_tests|draft_native_conformance_tests|draft_c_client_integration_tests|draft_foreign_provider_example|draft_example_validation_matrix)$'
+  -R '^(draft_native_determinism_tests|draft_native_backend_parity_tests|draft_native_conformance_tests|draft_c_client_integration_tests|draft_foreign_provider_example|draft_raylib_asteroids_example|draft_example_validation_matrix)$'
 ```
 
 There is currently no repository formatter or lint command. Do not invent one.
@@ -480,7 +482,10 @@ Every new or materially broadened example updates `examples/README.md` with:
 Keep intentionally invalid input in compiler tests, not a runnable examples
 directory. `examples/language-tour` is the readable language starting point;
 `examples/runtime-checks` is dense native conformance, not the style model for
-all applications. For agent constructs, `examples/judgment-tour` is the
+all applications. `examples/raylib-asteroids` is the complete vendored
+shared-library application pattern: its `game` package owns provider-free
+logic, its focused binding owns the C ABI, and its `app` package owns native
+resource lifetime. For agent constructs, `examples/judgment-tour` is the
 provider-free placement tour, `examples/agent-pending` is the smallest live
 Codex transaction, and `examples/agent-judgment-mix` demonstrates judgments
 guiding all five synthesis grammar categories.

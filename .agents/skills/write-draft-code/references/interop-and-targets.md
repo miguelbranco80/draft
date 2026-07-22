@@ -262,6 +262,15 @@ Provider artifact bytes are resolved inputs. A separate audited
 `--provider-summary` can describe denial effects. Do not invent provider
 mappings for target-owned libc/runtime or package assembly.
 
+[`examples/raylib-asteroids`](../../../../examples/raylib-asteroids/) is the
+complete downloaded-and-included shared-provider pattern. Its focused binding
+uses C records and `c proc` imports behind small ordinary wrappers, the vendored
+raylib source builds as a dylib/so/DLL, and a headless memory-backend test proves
+the exact artifact can link and render on every supported host. Pass the
+resolved regular library file to `--provider`; provider inputs may not be
+symlinks. On Windows the `.lib` import library is an `archive` provider input
+and the matching DLL remains a runtime file beside the executable.
+
 `check` and `build` are provider-free in the agent sense: they never invoke
 Codex, rerun judgments, or change generated-source pins. “Provider” in native
 linking means an explicit artifact supplier, not an elaboration model.
@@ -495,5 +504,7 @@ nondeterministic archive metadata, or filesystem enumeration order.
 - Keep complex or directive-heavy code in target package assembly.
 - Test ABI classification, symbol spelling, artifact kind, and an independent C
   client where the boundary is externally consumed.
+- For a shared native provider, test both the exact linker input and runtime
+  library discovery; a successful frontend check proves neither.
 - Record new machine facts in a versioned target profile; do not scatter them
   through semantic analysis or ordinary application code.

@@ -146,6 +146,15 @@ generated expansions, foreign artifacts, summaries, and runtime assets, but it
 does not contact Codex, execute judgments, require validation evidence, or
 modify the resolution manifest.
 
+Each `--provider` artifact path is absolute and names a real regular file;
+symlinks are rejected so hashing and later identity checks never depend on link
+retargeting. Resolve a build-system convenience symlink with `realpath` before
+passing a dylib or shared object. A `shared-library` mapping supplies the link
+input only: the application still arranges normal runtime discovery (for
+example `DYLD_LIBRARY_PATH`/`LD_LIBRARY_PATH`, an installed path, or a DLL beside
+the executable). The complete vendored example is
+[`examples/raylib-asteroids`](../../examples/raylib-asteroids/README.md).
+
 Native builds default to `-O0`, which skips LLVM middle-end optimization and
 selects LLVM's fastest no-optimization target-machine level. `-O2` runs LLVM's
 default O2 pipeline independently over each complete semantic-package module,

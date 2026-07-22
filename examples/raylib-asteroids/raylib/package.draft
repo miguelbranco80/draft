@@ -7,9 +7,11 @@
 //
 // Vector2 and Color match vendor/raylib/src/raylib.h exactly. raylib's public
 // `bool` is C `_Bool`, represented here as b8 at the ABI boundary and converted
-// to Draft bool by the query wrappers below. The provider borrows every cstring
-// only for the duration of its call. This package owns no window or allocation;
-// the application that successfully calls init_window must call close_window.
+// to Draft bool by the query wrappers below. draw_text borrows its cstring only
+// for the call, while init_window retains the title pointer until close_window;
+// the application must keep that storage alive for the complete window lifetime.
+// This package itself owns no window or allocation; a successful init_window
+// transfers the one explicit close_window obligation to its caller.
 // Draft specification: native interoperation section 12 and selected target
 // profiles; upstream ABI: raylib 6.0 raylib.h.
 package raylib
@@ -46,8 +48,9 @@ pub key_left :: cast[c_abi.int](263)
 pub key_up :: cast[c_abi.int](265)
 
 // The foreign declarations preserve upstream symbol spellings explicitly.
-// Every aggregate is passed by value exactly as in raylib.h; none of these
-// procedures retains a pointer supplied by the Draft application.
+// Every aggregate is passed by value exactly as in raylib.h. init_window is the
+// one retaining call: raylib stores title until close_window. draw_text observes
+// its text synchronously and retains no application pointer.
 foreign raylib {
     pub init_window as "InitWindow" :: c proc(
         width, height: c_abi.int,

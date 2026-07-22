@@ -2,7 +2,7 @@
 
 - [x] Add named and default procedure arguments.
 - [x] Add field-level `packed` and `bits(N)` layout.
-- [ ] Add Raylib bindings, native linking, ABI tests, and examples.
+- [x] Add Raylib bindings, native linking, ABI tests, and examples.
 - [x] Add an x86-64 Linux native target.
 - [x] Add a Windows native target, starting with x86-64.
 - [x] Add explicit C variadic interoperation when fixed wrappers are insufficient.

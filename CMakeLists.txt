@@ -989,5 +989,24 @@ if(BUILD_TESTING)
       draft_foreign_provider_example
       PROPERTIES LABELS "examples;integration"
     )
+
+    # Build the exact vendored raylib source with its software framebuffer,
+    # then map that shared artifact into the graphical Asteroids application.
+    # The headless backend exercises the real public ABI and renderer on every
+    # macOS/Linux native CI host without requiring a display server.
+    add_test(
+      NAME draft_raylib_asteroids_example
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/raylib-asteroids-example"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_raylib_asteroids_test.cmake"
+    )
+    set_tests_properties(
+      draft_raylib_asteroids_example
+      PROPERTIES LABELS "examples;integration"
+    )
   endif()
 endif()
