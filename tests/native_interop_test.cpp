@@ -40,7 +40,7 @@ struct CheckedSource {
   draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics;
   draft::PackageBodyWorkState bodies;
-  draft::Aarch64CAbiTable abi;
+  draft::CAbiTable abi;
 
   explicit CheckedSource(
       std::string text,
@@ -64,7 +64,7 @@ struct CheckedSource {
         semantics.constants,
         target.facts,
         diagnostics);
-    abi = draft::classify_aarch64_c_types(
+    abi = draft::classify_c_types(
         bodies.package.types, target.facts);
   }
 };

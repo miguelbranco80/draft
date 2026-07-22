@@ -1,6 +1,6 @@
 // Darwin and GNU AArch64 C ABI classification tests.
 
-#include "interop/aarch64_abi.h"
+#include "interop/c_abi.h"
 #include "sema/semantic.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
@@ -100,71 +100,71 @@ Recursive_Callback_Record :: c struct {
   EXPECT(state, !source.diagnostics.has_errors());
 
   const auto classify = [&source](std::string_view name) {
-    return draft::classify_aarch64_c_type(
+    return draft::classify_c_type(
         source.semantics.package.types,
         source.type(name),
         draft::make_aarch64_macos_profile().facts);
   };
-  const draft::Aarch64CAbiType c1 = classify("C1");
-  EXPECT(state, c1.classification == draft::Aarch64CAbiClass::SmallAggregate);
+  const draft::CAbiType c1 = classify("C1");
+  EXPECT(state, c1.classification == draft::CAbiClass::SmallAggregate);
   EXPECT(state, c1.argument_integer_bits == 64);
   EXPECT(state, c1.result_integer_bits == 8);
   EXPECT(state, classify("C3").result_integer_bits == 24);
   EXPECT(state, classify("C5").result_integer_bits == 40);
 
-  const draft::Aarch64CAbiType c9 = classify("C9");
+  const draft::CAbiType c9 = classify("C9");
   EXPECT(state, c9.argument_integer_bits == 64);
   EXPECT(state, c9.argument_integer_count == 2);
   EXPECT(state, c9.result_integer_count == 2);
   EXPECT(state, classify("C16").argument_integer_count == 2);
-  const draft::Aarch64CAbiType aligned = classify("C16_Aligned");
+  const draft::CAbiType aligned = classify("C16_Aligned");
   EXPECT(state, aligned.argument_integer_bits == 128);
   EXPECT(state, aligned.argument_integer_count == 1);
   EXPECT(state, classify("C24").classification ==
-                    draft::Aarch64CAbiClass::Indirect);
+                    draft::CAbiClass::Indirect);
 
-  const draft::Aarch64CAbiType hf2 = classify("HF2");
+  const draft::CAbiType hf2 = classify("HF2");
   EXPECT(state, hf2.classification ==
-                    draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
+                    draft::CAbiClass::HomogeneousFloatAggregate);
   EXPECT(state, hf2.homogeneous_element_bits == 32);
   EXPECT(state, hf2.homogeneous_element_count == 2);
-  const draft::Aarch64CAbiType hh3 = classify("HH3");
+  const draft::CAbiType hh3 = classify("HH3");
   EXPECT(state, hh3.classification ==
-                    draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
+                    draft::CAbiClass::HomogeneousFloatAggregate);
   EXPECT(state, hh3.homogeneous_element_bits == 16);
   EXPECT(state, hh3.homogeneous_element_count == 3);
-  const draft::Aarch64CAbiType hd4 = classify("HD4");
+  const draft::CAbiType hd4 = classify("HD4");
   EXPECT(state, hd4.homogeneous_element_bits == 64);
   EXPECT(state, hd4.homogeneous_element_count == 4);
   EXPECT(state, classify("HD5").classification ==
-                    draft::Aarch64CAbiClass::Indirect);
+                    draft::CAbiClass::Indirect);
   EXPECT(state, classify("HF2_Aligned").classification ==
-                    draft::Aarch64CAbiClass::SmallAggregate);
+                    draft::CAbiClass::SmallAggregate);
   EXPECT(state, classify("Float_Union").classification ==
-                    draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
-  const draft::Aarch64CAbiType unequal_union =
+                    draft::CAbiClass::HomogeneousFloatAggregate);
+  const draft::CAbiType unequal_union =
       classify("Unequal_Float_Union");
   EXPECT(state, unequal_union.classification ==
-                    draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
+                    draft::CAbiClass::HomogeneousFloatAggregate);
   EXPECT(state, unequal_union.homogeneous_element_bits == 32);
   EXPECT(state, unequal_union.homogeneous_element_count == 2);
-  const draft::Aarch64CAbiType nested_union = classify("Nested_Union_HF4");
+  const draft::CAbiType nested_union = classify("Nested_Union_HF4");
   EXPECT(state, nested_union.classification ==
-                    draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
+                    draft::CAbiClass::HomogeneousFloatAggregate);
   EXPECT(state, nested_union.homogeneous_element_count == 4);
   EXPECT(state, classify("Mixed_Union").classification ==
-                    draft::Aarch64CAbiClass::SmallAggregate);
+                    draft::CAbiClass::SmallAggregate);
 
   EXPECT(state, classify("Default_Record").classification ==
-                    draft::Aarch64CAbiClass::Illegal);
+                    draft::CAbiClass::Illegal);
   EXPECT(state, classify("Bad_Member").classification ==
-                    draft::Aarch64CAbiClass::Illegal);
+                    draft::CAbiClass::Illegal);
   EXPECT(state, classify("C_Enum").classification ==
-                    draft::Aarch64CAbiClass::Direct);
+                    draft::CAbiClass::Direct);
   EXPECT(state, classify("Bad_Callback").classification ==
-                    draft::Aarch64CAbiClass::Illegal);
+                    draft::CAbiClass::Illegal);
   EXPECT(state, classify("Recursive_Callback_Record").classification ==
-                    draft::Aarch64CAbiClass::SmallAggregate);
+                    draft::CAbiClass::SmallAggregate);
 }
 
 void test_linux_aapcs64_classes(TestState &state) {
@@ -178,22 +178,22 @@ HF2 :: c struct { first: f32, second: f32, }
   const draft::TargetFacts target =
       draft::make_aarch64_linux_profile().facts;
   const auto classify = [&source, &target](std::string_view name) {
-    return draft::classify_aarch64_c_type(
+    return draft::classify_c_type(
         source.semantics.package.types, source.type(name), target);
   };
   EXPECT(state, classify("C3").classification ==
-      draft::Aarch64CAbiClass::SmallAggregate);
+      draft::CAbiClass::SmallAggregate);
   EXPECT(state, classify("C3").result_integer_bits == 24);
   EXPECT(state, classify("C24").classification ==
-      draft::Aarch64CAbiClass::Indirect);
+      draft::CAbiClass::Indirect);
   EXPECT(state, classify("HF2").classification ==
-      draft::Aarch64CAbiClass::HomogeneousFloatAggregate);
+      draft::CAbiClass::HomogeneousFloatAggregate);
 
   draft::TargetFacts unknown = target;
   unknown.abi = "unknown";
-  EXPECT(state, draft::classify_aarch64_c_type(
+  EXPECT(state, draft::classify_c_type(
       source.semantics.package.types, source.type("C3"), unknown)
-          .classification == draft::Aarch64CAbiClass::Illegal);
+          .classification == draft::CAbiClass::Illegal);
 }
 
 } // namespace

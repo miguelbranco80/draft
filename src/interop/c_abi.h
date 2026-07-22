@@ -1,4 +1,4 @@
-// AArch64 C ABI classification for semantic Draft types.
+// Target C ABI classification for semantic Draft types.
 //
 // This module says how one already validated C source type crosses a native
 // call boundary. It intentionally does not emit LLVM syntax: the same compact
@@ -18,7 +18,7 @@ namespace draft {
 
 struct TargetFacts;
 
-enum class Aarch64CAbiClass {
+enum class CAbiClass {
   Illegal,
   Direct,
   HomogeneousFloatAggregate,
@@ -26,8 +26,8 @@ enum class Aarch64CAbiClass {
   Indirect,
 };
 
-struct Aarch64CAbiType {
-  Aarch64CAbiClass classification = Aarch64CAbiClass::Illegal;
+struct CAbiType {
+  CAbiClass classification = CAbiClass::Illegal;
   std::uint64_t size = 0;
   std::uint32_t alignment = 1;
 
@@ -42,22 +42,22 @@ struct Aarch64CAbiType {
   std::uint32_t result_integer_bits = 0;
   std::uint32_t result_integer_count = 0;
 
-  bool operator==(const Aarch64CAbiType &) const = default;
+  bool operator==(const CAbiType &) const = default;
 };
 
-// Aarch64CAbiTable is the immutable target-specific ABI facet for one package's
+// CAbiTable is the immutable target-specific ABI facet for one package's
 // source-semantic TypeId prefix. rows are indexed directly by TypeId and include
 // Illegal as an ordinary completed result for types which cannot cross a C
 // boundary. target_identity prevents a table classified for one profile from
 // being consumed by another profile with coincidentally similar aggregate
 // rules. Workspace compilation publishes rows through TypeAbiClassification
-// products; classify_aarch64_c_types constructs the same table for direct
+// products; classify_c_types constructs the same table for direct
 // subsystem tests.
-struct Aarch64CAbiTable {
+struct CAbiTable {
   std::string target_identity;
-  std::vector<Aarch64CAbiType> rows;
+  std::vector<CAbiType> rows;
 
-  [[nodiscard]] const Aarch64CAbiType *find(TypeId type) const;
+  [[nodiscard]] const CAbiType *find(TypeId type) const;
   // A semantic ABI table remains valid after MIR appends address-only pointer
   // types to the shared TypeStore. Those suffix rows cannot appear in a source
   // C signature and therefore have no TypeAbiClassification product. Consumers
@@ -73,20 +73,20 @@ struct Aarch64CAbiTable {
       const TargetFacts &target) const;
 };
 
-// Classifies a direct C parameter/result source type for one supported AArch64
-// ABI.  Darwin arm64 and GNU AAPCS64 share the aggregate register classes used
-// here; target-specific scalar extension attributes and symbol spelling remain
-// in their emission layers.  Arrays are legal recursively as aggregate members
-// but not as direct parameters or results.  An Illegal result also covers a
-// non-AArch64 or unknown ABI, so semantic validation fails closed before LLVM.
-[[nodiscard]] Aarch64CAbiType classify_aarch64_c_type(
+// Classifies a direct C parameter/result source type for the selected ABI.
+// Arrays are legal recursively as aggregate members but not as direct
+// parameters or results. An Illegal result also covers an unsupported ABI, so
+// semantic validation fails closed before LLVM. The architecture-specific
+// classifier remains private to this module; consumers receive only this one
+// target-owned product and cannot accidentally choose a different ABI rule.
+[[nodiscard]] CAbiType classify_c_type(
     const TypeStore &types, TypeId type, const TargetFacts &target);
 
 // Builds the complete table directly and deterministically. The workspace
 // compiler does not use this aggregate path: it schedules the same pure
 // per-TypeId operation as explicit products. Direct interop/backend unit tests
 // use it when they intentionally bypass workspace orchestration.
-[[nodiscard]] Aarch64CAbiTable classify_aarch64_c_types(
+[[nodiscard]] CAbiTable classify_c_types(
     const TypeStore &types,
     const TargetFacts &target);
 

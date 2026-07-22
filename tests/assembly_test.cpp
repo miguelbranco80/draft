@@ -55,7 +55,7 @@ struct CheckedAssembly {
   draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics;
   draft::PackageBodyWorkState bodies;
-  draft::Aarch64CAbiTable abi;
+  draft::CAbiTable abi;
   draft::AssemblyProgram assembly;
 
   explicit CheckedAssembly(std::string text) {
@@ -76,7 +76,7 @@ struct CheckedAssembly {
         semantics.constants,
         target.facts,
         diagnostics);
-    abi = draft::classify_aarch64_c_types(
+    abi = draft::classify_c_types(
         bodies.package.types, target.facts);
     assembly.ok = bodies.ok;
     if (bodies.ok) {

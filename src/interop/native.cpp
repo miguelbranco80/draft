@@ -2,7 +2,7 @@
 
 #include "interop/native.h"
 
-#include "interop/aarch64_abi.h"
+#include "interop/c_abi.h"
 #include "syntax/literal.h"
 
 #include <algorithm>
@@ -32,24 +32,24 @@ namespace {
 [[nodiscard]] bool valid_c_signature(
     const TypeStore &types,
     TypeId id,
-    const Aarch64CAbiTable &abi) {
+    const CAbiTable &abi) {
   const Type &procedure = types.type(id);
   if (procedure.kind != TypeKind::Procedure || !procedure.c_calling_convention ||
       procedure.members.empty()) {
     return false;
   }
   for (std::size_t index = 0; index + 1 < procedure.members.size(); ++index) {
-    const Aarch64CAbiType *parameter = abi.find(procedure.members[index]);
+    const CAbiType *parameter = abi.find(procedure.members[index]);
     if (parameter == nullptr ||
-        parameter->classification == Aarch64CAbiClass::Illegal) {
+        parameter->classification == CAbiClass::Illegal) {
       return false;
     }
   }
   const TypeId result = procedure.members.back();
   if (result == types.builtins().void_type) return true;
-  const Aarch64CAbiType *classified_result = abi.find(result);
+  const CAbiType *classified_result = abi.find(result);
   return classified_result != nullptr &&
-      classified_result->classification != Aarch64CAbiClass::Illegal;
+      classified_result->classification != CAbiClass::Illegal;
 }
 
 [[nodiscard]] std::optional<std::string> decode_linker_name(
@@ -139,7 +139,7 @@ void validate_c_procedure_type_graph(
     TypeId root,
     SourceRange diagnostic_range,
     bool exempt_root,
-    const Aarch64CAbiTable &abi,
+    const CAbiTable &abi,
     std::vector<TypeId> &diagnosed,
     DiagnosticSink &diagnostics) {
   std::vector<TypeId> visited;
@@ -148,9 +148,9 @@ void validate_c_procedure_type_graph(
     visited.push_back(type_id);
     const Type &type = semantic.types.type(type_id);
     if (type.kind == TypeKind::Procedure && type.c_calling_convention) {
-      const Aarch64CAbiType &classification = *abi.find(type_id);
+      const CAbiType &classification = *abi.find(type_id);
       const bool legal =
-          classification.classification != Aarch64CAbiClass::Illegal;
+          classification.classification != CAbiClass::Illegal;
       if (!legal) {
         if (!(is_root && exempt_root) && !contains_type(diagnosed, type_id)) {
           diagnostics.error(
@@ -178,7 +178,7 @@ NativeInteropResult validate_native_interop(
     const SemanticPackage &semantic,
     std::span<const ProcedureBodyHirResult> procedures,
     std::span<const std::size_t> selected_indices,
-    const Aarch64CAbiTable &abi,
+    const CAbiTable &abi,
     const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   NativeInteropResult result;
@@ -279,7 +279,7 @@ NativeInteropResult validate_native_interop(
 NativeInteropResult validate_native_interop(
     const SemanticPackage &semantic,
     std::span<const ProcedureBodyHirResult> procedures,
-    const Aarch64CAbiTable &abi,
+    const CAbiTable &abi,
     const TargetFacts &target,
     DiagnosticSink &diagnostics) {
   std::vector<std::size_t> selected;

@@ -2,7 +2,7 @@
 
 #include "interop/c_header.h"
 
-#include "interop/aarch64_abi.h"
+#include "interop/c_abi.h"
 #include "syntax/literal.h"
 
 #include <algorithm>
@@ -102,7 +102,7 @@ class Emitter {
 public:
   Emitter(
       const SemanticPackage &semantic,
-      const Aarch64CAbiTable &abi,
+      const CAbiTable &abi,
       const TargetProfile &target,
       const CHeaderOptions &options,
       DiagnosticSink &diagnostics)
@@ -137,9 +137,9 @@ private:
   // reached an MIR-only suffix type or an invalid internal reference; neither
   // may be exposed as a C declaration.
   [[nodiscard]] bool c_abi_legal(TypeId id) const {
-    const Aarch64CAbiType *classification = abi_.find(id);
+    const CAbiType *classification = abi_.find(id);
     return classification != nullptr &&
-        classification->classification != Aarch64CAbiClass::Illegal;
+        classification->classification != CAbiClass::Illegal;
   }
 
   [[nodiscard]] std::string package_prefix() const {
@@ -636,7 +636,7 @@ private:
   }
 
   const SemanticPackage &semantic_;
-  const Aarch64CAbiTable &abi_;
+  const CAbiTable &abi_;
   const TargetProfile &target_;
   const CHeaderOptions &options_;
   DiagnosticSink &diagnostics_;
@@ -653,7 +653,7 @@ private:
 
 CHeaderResult emit_c_header(
     const SemanticPackage &semantic,
-    const Aarch64CAbiTable &abi,
+    const CAbiTable &abi,
     const TargetProfile &target,
     const CHeaderOptions &options,
     DiagnosticSink &diagnostics) {

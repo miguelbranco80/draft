@@ -4695,7 +4695,7 @@ struct PackageBodyWavePublication {
 struct AbiClassificationTaskSlot {
   const TypeStore *types = nullptr;
   TypeId type;
-  Aarch64CAbiType result;
+  CAbiType result;
 };
 
 struct AbiClassificationWaveExecution {
@@ -4722,7 +4722,7 @@ struct AbiClassificationWaveExecution {
 
   AbiClassificationTaskSlot &slot = (*context.slots)[index];
   slot.result =
-      classify_aarch64_c_type(*slot.types, slot.type, *context.target);
+      classify_c_type(*slot.types, slot.type, *context.target);
   (*context.outcomes)[index].kind = SemanticProductOutcomeKind::Complete;
   return true;
 }
@@ -5873,7 +5873,7 @@ struct PackageLlvmModuleTaskSlot {
   const SourceManager *sources = nullptr;
   const TargetProfile *target = nullptr;
   const SemanticPackage *semantic = nullptr;
-  const Aarch64CAbiTable *abi = nullptr;
+  const CAbiTable *abi = nullptr;
   const ConstantTable *global_initializers = nullptr;
   std::vector<const MirProcedure *> procedures;
   LlvmIrOptions options;

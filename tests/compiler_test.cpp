@@ -279,7 +279,7 @@ void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
     EXPECT(state, compiled.semantic_products.type_by_product[product.value] ==
                       type);
     EXPECT(state, package.c_abi.rows[type_index] ==
-                      draft::classify_aarch64_c_type(
+                      draft::classify_c_type(
                           package.bodies.package.types,
                           type,
                           options.target.facts));

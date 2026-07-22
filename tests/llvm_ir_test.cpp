@@ -75,8 +75,8 @@ struct EmittedFixture {
   draft::test_support::LoweredProcedureProducts mir =
       draft::test_support::lower_procedure_products(
           bodies.package, bodies.procedures, diagnostics);
-  const draft::Aarch64CAbiTable abi =
-      draft::classify_aarch64_c_types(bodies.package.types, target.facts);
+  const draft::CAbiTable abi =
+      draft::classify_c_types(bodies.package.types, target.facts);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "agent-noop"};
   draft::LlvmIrResult module =
@@ -298,8 +298,8 @@ main :: proc() -> int {
   draft::test_support::LoweredProcedureProducts mir =
       draft::test_support::lower_procedure_products(
           bodies.package, bodies.procedures, diagnostics);
-  const draft::Aarch64CAbiTable abi =
-      draft::classify_aarch64_c_types(bodies.package.types, target.facts);
+  const draft::CAbiTable abi =
+      draft::classify_c_types(bodies.package.types, target.facts);
   std::vector<const draft::MirProcedure *> procedures;
   for (const draft::MirProcedure &procedure : mir.procedures) {
     procedures.push_back(&procedure);
@@ -945,8 +945,8 @@ main :: proc() -> int {
   draft::test_support::LoweredProcedureProducts mir =
       draft::test_support::lower_procedure_products(
           bodies.package, bodies.procedures, diagnostics);
-  const draft::Aarch64CAbiTable abi =
-      draft::classify_aarch64_c_types(bodies.package.types, target.facts);
+  const draft::CAbiTable abi =
+      draft::classify_c_types(bodies.package.types, target.facts);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "native"};
   options.emit_program_entry = true;

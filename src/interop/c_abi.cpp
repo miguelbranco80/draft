@@ -1,6 +1,6 @@
-// Shared Darwin/GNU AArch64 C ABI aggregate classification implementation.
+// Target-dispatched C ABI aggregate classification implementation.
 
-#include "interop/aarch64_abi.h"
+#include "interop/c_abi.h"
 
 #include "sema/constant.h"
 #include "target/profile.h"
@@ -18,7 +18,7 @@ struct HomogeneousFloatInfo {
   std::uint32_t count = 0;
 };
 
-[[nodiscard]] Aarch64CAbiType classify_with_active_procedures(
+[[nodiscard]] CAbiType classify_with_active_procedures(
     const TypeStore &types,
     TypeId type_id,
     std::vector<TypeId> &active_procedures);
@@ -59,7 +59,7 @@ struct HomogeneousFloatInfo {
     for (std::size_t index = 0; index + 1 < type.members.size(); ++index) {
       if (classify_with_active_procedures(
               types, type.members[index], active_procedures)
-              .classification == Aarch64CAbiClass::Illegal) {
+              .classification == CAbiClass::Illegal) {
         active_procedures.pop_back();
         return false;
       }
@@ -67,7 +67,7 @@ struct HomogeneousFloatInfo {
     const TypeId result = type.members.back();
     const bool legal_result = result == types.builtins().void_type ||
         classify_with_active_procedures(types, result, active_procedures)
-                .classification != Aarch64CAbiClass::Illegal;
+                .classification != CAbiClass::Illegal;
     active_procedures.pop_back();
     return legal_result;
   }
@@ -181,17 +181,17 @@ struct HomogeneousFloatInfo {
   return result;
 }
 
-[[nodiscard]] Aarch64CAbiType classify_with_active_procedures(
+[[nodiscard]] CAbiType classify_with_active_procedures(
     const TypeStore &types,
     TypeId type_id,
     std::vector<TypeId> &active_procedures) {
   const Type &type = types.type(type_id);
-  Aarch64CAbiType result;
+  CAbiType result;
   result.size = type.layout.size;
   result.alignment = type.layout.alignment;
 
   if (direct_scalar(types, type_id, active_procedures)) {
-    result.classification = Aarch64CAbiClass::Direct;
+    result.classification = CAbiClass::Direct;
     return result;
   }
   if ((type.kind != TypeKind::Struct && type.kind != TypeKind::Union) ||
@@ -202,14 +202,14 @@ struct HomogeneousFloatInfo {
 
   if (const std::optional<HomogeneousFloatInfo> homogeneous =
           homogeneous_float(types, type_id)) {
-    result.classification = Aarch64CAbiClass::HomogeneousFloatAggregate;
+    result.classification = CAbiClass::HomogeneousFloatAggregate;
     result.homogeneous_element_bits = homogeneous->bits;
     result.homogeneous_element_count = homogeneous->count;
     return result;
   }
 
   if (type.layout.size <= 16) {
-    result.classification = Aarch64CAbiClass::SmallAggregate;
+    result.classification = CAbiClass::SmallAggregate;
     if (type.layout.size <= 8) {
       result.argument_integer_bits = 64;
       result.argument_integer_count = 1;
@@ -230,13 +230,13 @@ struct HomogeneousFloatInfo {
     return result;
   }
 
-  result.classification = Aarch64CAbiClass::Indirect;
+  result.classification = CAbiClass::Indirect;
   return result;
 }
 
 } // namespace
 
-Aarch64CAbiType classify_aarch64_c_type(
+CAbiType classify_c_type(
     const TypeStore &types,
     TypeId type_id,
     const TargetFacts &target) {
@@ -252,31 +252,31 @@ Aarch64CAbiType classify_aarch64_c_type(
   return classify_with_active_procedures(types, type_id, active_procedures);
 }
 
-const Aarch64CAbiType *Aarch64CAbiTable::find(TypeId type) const {
+const CAbiType *CAbiTable::find(TypeId type) const {
   if (!type.is_valid() || type.value >= rows.size()) return nullptr;
   return &rows[type.value];
 }
 
-bool Aarch64CAbiTable::complete_for(
+bool CAbiTable::complete_for(
     const TypeStore &types,
     const TargetFacts &target) const {
   return valid_prefix_for(types, target) && rows.size() == types.size();
 }
 
-bool Aarch64CAbiTable::valid_prefix_for(
+bool CAbiTable::valid_prefix_for(
     const TypeStore &types,
     const TargetFacts &target) const {
   return target_identity == target.identity && rows.size() <= types.size();
 }
 
-Aarch64CAbiTable classify_aarch64_c_types(
+CAbiTable classify_c_types(
     const TypeStore &types,
     const TargetFacts &target) {
-  Aarch64CAbiTable result;
+  CAbiTable result;
   result.target_identity = target.identity;
   result.rows.reserve(types.size());
   for (std::size_t index = 0; index < types.size(); ++index) {
-    result.rows.push_back(classify_aarch64_c_type(
+    result.rows.push_back(classify_c_type(
         types, TypeId{static_cast<std::uint32_t>(index)}, target));
   }
   return result;

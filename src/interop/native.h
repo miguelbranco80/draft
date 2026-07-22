@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "interop/aarch64_abi.h"
+#include "interop/c_abi.h"
 #include "sema/analyzer.h"
 #include "sema/body_checker.h"
 #include "source/diagnostic.h"
@@ -30,7 +30,7 @@ struct NativeInteropResult {
     const SemanticPackage &semantic,
     std::span<const ProcedureBodyHirResult> procedures,
     std::span<const std::size_t> selected_indices,
-    const Aarch64CAbiTable &abi,
+    const CAbiTable &abi,
     const TargetFacts &target,
     DiagnosticSink &diagnostics);
 
@@ -39,7 +39,7 @@ struct NativeInteropResult {
 [[nodiscard]] NativeInteropResult validate_native_interop(
     const SemanticPackage &semantic,
     std::span<const ProcedureBodyHirResult> procedures,
-    const Aarch64CAbiTable &abi,
+    const CAbiTable &abi,
     const TargetFacts &target,
     DiagnosticSink &diagnostics);
 

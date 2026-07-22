@@ -3,7 +3,7 @@
 #pragma once
 
 #include "backend/source_correlation.h"
-#include "interop/aarch64_abi.h"
+#include "interop/c_abi.h"
 #include "mir/mir.h"
 #include "sema/analyzer.h"
 #include "sema/constant.h"
@@ -54,7 +54,7 @@ struct LlvmIrResult {
     const SourceManager &sources,
     const LlvmIrOptions &options,
     const SemanticPackage &semantic,
-    const Aarch64CAbiTable &abi,
+    const CAbiTable &abi,
     const ConstantTable &global_initializers,
     std::span<const MirProcedure *const> procedures,
     DiagnosticSink &diagnostics);

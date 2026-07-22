@@ -189,12 +189,12 @@ export accept_variadic_callback as "draft_accept_variadic_callback" :: c proc(
       semantics.constants,
       target.facts,
       diagnostics);
-  const draft::Aarch64CAbiTable abi =
-      draft::classify_aarch64_c_types(semantics.package.types, target.facts);
+  const draft::CAbiTable abi =
+      draft::classify_c_types(semantics.package.types, target.facts);
   const draft::TargetProfile linux_target =
       draft::make_aarch64_linux_profile();
-  const draft::Aarch64CAbiTable linux_abi =
-      draft::classify_aarch64_c_types(
+  const draft::CAbiTable linux_abi =
+      draft::classify_c_types(
           semantics.package.types, linux_target.facts);
   const draft::NativeInteropResult native = draft::validate_native_interop(
       semantics.package, bodies.procedures, abi, target.facts, diagnostics);

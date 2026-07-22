@@ -84,7 +84,7 @@ struct LoweredProcedureProducts {
     const SourceManager &sources,
     const LlvmIrOptions &options,
     const SemanticPackage &semantic,
-    const Aarch64CAbiTable &abi,
+    const CAbiTable &abi,
     const ConstantTable &global_initializers,
     std::span<const MirProcedure> procedures,
     DiagnosticSink &diagnostics) {

@@ -32,7 +32,7 @@
 #include "compile/semantic_work_graph.h"
 #include "elaborator/obligation.h"
 #include "elaborator/resolution.h"
-#include "interop/aarch64_abi.h"
+#include "interop/c_abi.h"
 #include "interop/native.h"
 #include "mir/mir.h"
 #include "sema/agent_metadata.h"
@@ -188,7 +188,7 @@ struct CompiledPackage {
   // and extend only when later command-local body work appends canonical types.
   // MIR reads this prefix immutably; compiler-only addresses carry their
   // pointee as MIR metadata instead of appending synthetic pointer TypeIds.
-  Aarch64CAbiTable c_abi;
+  CAbiTable c_abi;
   AgentMetadataResult metadata;
   AgentObligationResult obligations;
   std::vector<AgentValidationContext> validation_context;

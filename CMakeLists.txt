@@ -132,7 +132,7 @@ add_library(
   src/elaborator/resolution_overlay.cpp
   src/elaborator/resolved_program.cpp
   src/elaborator/resolution_store.cpp
-  src/interop/aarch64_abi.cpp
+  src/interop/c_abi.cpp
   src/interop/c_header.cpp
   src/interop/native.cpp
   src/judgment/codex_cli.cpp
