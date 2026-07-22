@@ -302,6 +302,35 @@ under-aligned because `^T` promises natural alignment. Do not use `packed` in a
 `type_member_is_packed(T, index)` and the resulting byte position with
 `type_member_offset(T, index)`.
 
+`bits(N) field: T` allocates an integer-like field from a continuous bit stream
+inside an ordinary Draft struct:
+
+```draft
+Header :: struct {
+    bits(3) kind: u8,
+    bits(6) delta: i16,
+    bits(1) active: bool,
+    payload_size: u16,
+}
+```
+
+`N` is a positive compile-time `usize` value which must be complete when the
+field declaration is checked. The logical type may be `bool`, a concrete
+signed or unsigned integer, an enum whose members fit, or a `distinct` wrapper
+around one of those; `bool` requires width one. Consecutive bit fields share
+bytes and may cross a byte boundary. Bit zero is the low bit of the first byte
+on every target. An ordinary or `packed` field closes a partial byte before
+applying its own alignment rule.
+
+Unsigned, boolean, and unsigned-backed enum reads zero-extend; signed reads
+sign-extend from `N`. Assignment retains the low `N` bits and preserves adjacent
+fields. A bit field is readable and assignable but has no address, so
+`&record.field` is invalid. Do not use `bits(N)` in a `c struct`, union, tuple,
+enum, or variant. Inspect it with `type_member_bit_width(T, index)` and
+`type_member_bit_offset(T, index)`; ordinary fields report width zero and their
+byte offset multiplied by eight. Structural member indices are zero-based and
+follow source order.
+
 `core/option.Option[T]` and `core/result.Result[T, E]` are ordinary variants,
 not magic. A zero `Result` selects its first `.err` alternative.
 

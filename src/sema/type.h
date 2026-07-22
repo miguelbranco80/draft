@@ -98,17 +98,23 @@ struct TypeLayout {
 
 // FieldLayout records how one source struct field participates in its owner's
 // physical layout. Natural fields retain the declared type alignment. Packed
-// fields lower only this storage occurrence to byte alignment; the value's
-// logical TypeId is unchanged when it is loaded or copied elsewhere. The
-// parallel Type::member_layouts vector is meaningful only for structs and has
-// exactly one row per member once the MemberTypes facet is complete.
+// fields lower only this storage occurrence to byte alignment. Bit fields use
+// exactly bit_width consecutive bits in the struct's source-order bit stream.
+// In every case the value's logical TypeId is unchanged when it is loaded or
+// copied elsewhere. The parallel Type::member_layouts vector is meaningful
+// only for structs and has exactly one row per member once MemberTypes is
+// complete.
 enum class FieldLayoutKind {
   Natural,
   Packed,
+  BitField,
 };
 
 struct FieldLayout {
   FieldLayoutKind kind = FieldLayoutKind::Natural;
+  // Nonzero only for BitField. Width is checked against the logical field type
+  // before layout publication and is therefore safe for backend lowering.
+  std::uint32_t bit_width = 0;
 
   bool operator==(const FieldLayout &) const = default;
 };
@@ -209,6 +215,10 @@ struct Type {
       std::numeric_limits<std::uint32_t>::max();
   std::vector<TypeId> members;
   std::vector<std::uint64_t> member_offsets;
+  // Absolute source-order bit positions. Ordinary fields use byte_offset * 8;
+  // bit fields may start at any bit. The vector is parallel to members and is
+  // published atomically with member_offsets and the aggregate layout.
+  std::vector<std::uint64_t> member_bit_offsets;
   std::vector<FieldLayout> member_layouts;
   bool c_calling_convention = false;
   bool c_representation = false;
@@ -364,7 +374,8 @@ public:
   void publish_nominal_natural_layout(
       TypeId id,
       TypeLayout layout,
-      std::vector<std::uint64_t> member_offsets = {});
+      std::vector<std::uint64_t> member_offsets = {},
+      std::vector<std::uint64_t> member_bit_offsets = {});
 
   [[nodiscard]] bool is_integer(TypeId id) const;
   [[nodiscard]] bool is_float(TypeId id) const;

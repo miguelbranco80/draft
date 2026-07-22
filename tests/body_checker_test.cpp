@@ -2017,7 +2017,39 @@ invalid_address :: proc(record: ^Record) -> ^u32 {
       draft::render_diagnostics(source.sources, source.diagnostics);
   EXPECT(state, rendered.find(
       "address-of cannot form a naturally aligned pointer to this packed field") !=
-      std::string::npos);
+                      std::string::npos);
+}
+
+// Bit fields retain ordinary scalar typing and assignment rules while the
+// storage occurrence itself remains non-addressable. Compound assignment must
+// therefore be accepted without pretending the selected bits form a ^T.
+void test_bit_field_address_diagnostic(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+Record :: struct {
+    bits(3) small: u8,
+    bits(6) signed_value: i16,
+    bits(1) flag: bool,
+}
+
+read_and_write :: proc(record: ^Record) -> i16 {
+    record^.small += 1
+    record^.signed_value = -3
+    record^.flag = !record^.flag
+    return cast[i16](record^.small) + record^.signed_value
+}
+
+invalid_address :: proc(record: ^Record) -> ^u8 {
+    return &record^.small
+}
+)draft");
+
+  EXPECT(state, source.diagnostics.has_errors());
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find("address-of is not defined for a bit field") !=
+                    std::string::npos);
 }
 
 void test_parameter_immutability(TestState &state) {
@@ -3394,6 +3426,11 @@ Packed_Record :: struct {
     packed value: u32,
 }
 
+Bit_Record :: struct {
+    bits(3) first: u8,
+    bits(6) second: i16,
+}
+
 Mode :: enum u8 {
     Off,
     On,
@@ -3503,6 +3540,11 @@ inspect_types :: proc() {
     static_assert(type_member_offset(Overlay, 1) == 0)
     static_assert(type_member_is_packed(Packed_Record, 0) == false)
     static_assert(type_member_is_packed(Packed_Record, 1))
+    static_assert(type_member_bit_width(Packed_Record, 1) == 0)
+    static_assert(type_member_bit_width(Bit_Record, 0) == 3)
+    static_assert(type_member_bit_width(Bit_Record, 1) == 6)
+    static_assert(type_member_bit_offset(Bit_Record, 0) == 0)
+    static_assert(type_member_bit_offset(Bit_Record, 1) == 3)
     static_assert(type_member_value(Mode, 1) == 1)
     static_assert(type_underlying(Meters) == i64)
     static_assert(type_underlying(Mode) == u8)
@@ -3845,6 +3887,7 @@ int main() {
   test_local_type_declarations(state);
   test_string_index_is_immutable(state);
   test_packed_field_address_diagnostic(state);
+  test_bit_field_address_diagnostic(state);
   test_parameter_immutability(state);
   test_multi_pointer_slice_shape(state);
   test_constant_bounds_diagnostics(state);

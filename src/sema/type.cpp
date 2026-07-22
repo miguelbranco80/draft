@@ -643,6 +643,7 @@ TypeId TypeStore::tuple(const std::vector<TypeId> &members) {
           round_up(next_offset, member_layout.alignment);
       assert(offset.has_value());
       result.member_offsets.push_back(*offset);
+      result.member_bit_offsets.push_back(*offset * 8U);
       next_offset = *offset + member_layout.size;
     }
   }
@@ -679,6 +680,10 @@ void TypeStore::complete_pending_tuple_layouts() {
       }
       pending.layout = layout;
       pending.member_offsets = std::move(offsets);
+      pending.member_bit_offsets.reserve(pending.member_offsets.size());
+      for (std::uint64_t offset : pending.member_offsets) {
+        pending.member_bit_offsets.push_back(offset * 8U);
+      }
       completion_[local_index].natural_layout = TypeFacetState::Complete;
       made_progress = true;
     }
@@ -836,7 +841,8 @@ void TypeStore::publish_nominal_member_types(
 void TypeStore::publish_nominal_natural_layout(
     TypeId id,
     TypeLayout layout,
-    std::vector<std::uint64_t> member_offsets) {
+    std::vector<std::uint64_t> member_offsets,
+    std::vector<std::uint64_t> member_bit_offsets) {
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::Variant || nominal.kind == TypeKind::Union);
@@ -846,6 +852,14 @@ void TypeStore::publish_nominal_natural_layout(
   assert(facets.member_types == TypeFacetState::Complete);
   nominal.layout = layout;
   nominal.member_offsets = std::move(member_offsets);
+  if (member_bit_offsets.empty()) {
+    member_bit_offsets.reserve(nominal.member_offsets.size());
+    for (std::uint64_t offset : nominal.member_offsets) {
+      member_bit_offsets.push_back(offset * 8U);
+    }
+  }
+  assert(member_bit_offsets.size() == nominal.member_offsets.size());
+  nominal.member_bit_offsets = std::move(member_bit_offsets);
   facets.natural_layout = TypeFacetState::Complete;
   // A return tuple can be interned from a procedure signature before a struct
   // declared in another selected package file is laid out. Body checking later

@@ -129,6 +129,17 @@ the actual occurrence alignment, and every emitted load/store uses that value.
 An under-aligned logical `u32`, for example, is still represented as `i32` but
 is accessed with `align 1` when its containing field guarantees only one byte.
 
+A struct containing `bits(N)` fields instead uses exact opaque byte-array
+storage. LLVM has no addressable aggregate field beginning at an arbitrary bit.
+The backend therefore emits bytewise extraction and read-modify-write from the
+explicit MIR bit range, with byte zero contributing the low bits regardless of
+target scalar endianness. Signed fields extend from their declared width;
+writes truncate to that width and preserve unowned bits in the first and last
+bytes. A partial write freezes the loaded containing byte before masking, so
+writing one field into deliberate `---` storage defines the selected bits
+without letting LLVM poison contaminate them. Runtime composite construction
+and constant-byte encoding follow the same checked member bit offsets.
+
 Strings and concrete procedure identities contain linker relocations and cannot
 be flattened into the byte-array storage used for variants and unions. An
 array, tuple, struct, variant, or union constant may contain those values at any

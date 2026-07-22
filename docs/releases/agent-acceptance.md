@@ -138,6 +138,17 @@ for AArch64 macOS and
 for AArch64 GNU/Linux; the generated source objects did not change. The full
 CTest matrix passed 74 of 74 tests on the qualified tree.
 
+Field-level `bits(N)` layout was requalified on 2026-07-22 with compiler
+content identity `draft-bootstrap-cpp-v142`. The embedded Draft coding skill
+changed with the language contract, so provider-free `resolve --revalidate`
+rechecked and reused all four saved expansions for each target with zero
+synthesis calls. The resulting committed program digests are
+`b6f7abb5992dfd0e7f89158a5fb18514b26bdfa9878a285eeb0e5559901f2193`
+for AArch64 macOS and
+`e170d9ff2b75a664c64ed4dfb46726ddafceb1192cc37121f19a28d7f81f6734`
+for AArch64 GNU/Linux; the generated source objects did not change. The full
+normal and ASan/UBSan CTest matrices each passed 74 of 74 tests.
+
 The repository example matrix classified all 36 tracked Draft/assembly package
 directories. Both-target frontend qualification passed for every declared
 positive or intentionally unresolved row. On the native macOS host, all 25

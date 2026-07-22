@@ -84,17 +84,17 @@ struct OwnedSemanticScope {
   ScopeId scope;
 };
 
-// AggregateMember connects nominal type identity to the member symbol and its
-// byte offset and source storage rule. An invalid/unknown layout uses offset
-// zero until instantiation or compile-time selection completes it; callers must
-// consult the owning Type's layout.known bit before treating the offset as
-// physical. field_layout is preserved before layout completion because a later
-// TypeNaturalLayout task needs the authored rule without re-reading syntax.
+// AggregateMember connects nominal type identity to one source-visible member
+// symbol and its byte offset. An invalid/unknown layout uses offset zero until
+// instantiation or compile-time selection completes it; callers must consult
+// the owning Type's layout.known bit before treating the offset as physical.
+// Field placement belongs to the owning Type's parallel member_layouts and
+// member_bit_offsets vectors. Keeping one authority matters because the Names
+// product creates these rows before a bits(N) width is evaluated.
 struct AggregateMember {
   SymbolId owner;
   SymbolId member;
   std::uint64_t offset = 0;
-  FieldLayout field_layout;
 };
 
 // Enum values are mathematical integers until backing selection has completed.

@@ -133,7 +133,7 @@ void ensure_runtime_context_type(
         package.symbols.declare(std::move(field), diagnostics);
     if (field_id.is_valid()) {
       package.aggregate_members.push_back(
-          {owner_id, field_id, offsets[index], {}});
+          {owner_id, field_id, offsets[index]});
     }
   }
   package.types.publish_nominal_members(context);

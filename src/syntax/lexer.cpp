@@ -47,6 +47,7 @@ constexpr std::array kKeywords{
     Keyword{"distinct", TokenKind::KeywordDistinct},
     Keyword{"simd", TokenKind::KeywordSimd},
     Keyword{"packed", TokenKind::KeywordPacked},
+    Keyword{"bits", TokenKind::KeywordBits},
     Keyword{"thread_local", TokenKind::KeywordThreadLocal},
     Keyword{"foreign", TokenKind::KeywordForeign},
     Keyword{"export", TokenKind::KeywordExport},

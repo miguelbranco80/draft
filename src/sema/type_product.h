@@ -40,13 +40,14 @@ enum class TypeProductStatus {
 };
 
 // NaturalLayoutProductAttempt owns one prospective natural-layout publication.
-// Complete carries a known layout and one byte offset per nominal member.
+// Complete carries a known layout and one byte/bit offset per nominal member.
 // Blocked carries only exact prerequisites. No field aliases TypeStore memory,
 // so the attempt remains valid while another task interns unrelated types.
 struct NaturalLayoutProductAttempt {
   TypeProductStatus status = TypeProductStatus::Error;
   TypeLayout layout;
   std::vector<std::uint64_t> member_offsets;
+  std::vector<std::uint64_t> member_bit_offsets;
   std::vector<TypeFacetDependency> dependencies;
 };
 

@@ -112,6 +112,25 @@ Packed_Header :: struct {
     checksum: u16,
 }
 
+// Consecutive bit fields share bytes in source order. The signed field crosses
+// a byte boundary; the following ordinary u16 closes the bit stream and resumes
+// natural alignment at byte offset two.
+Bit_Header :: struct {
+    bits(3) kind: u8,
+    bits(6) delta: i16,
+    bits(1) active: bool,
+    ordinary: u16,
+}
+
+Bit_Header_Constant :: Bit_Header{
+    kind = 5,
+    // More than one 6-bit modulus below zero: constant encoding must retain
+    // exactly the same low bits as a runtime store.
+    delta = -67,
+    active = true,
+    ordinary = 42,
+}
+
 Computed_Code :: enum i16 {
     Zero,
     Seven = computed_enum_value(),
@@ -963,6 +982,38 @@ main :: proc() {
     static_assert(type_member_offset(Packed_Header, 1) == 1)
     static_assert(type_member_offset(Packed_Header, 2) == 6)
     static_assert(type_member_is_packed(Packed_Header, 1))
+    bit_header := Bit_Header_Constant
+    assert(bit_header.kind == 5)
+    assert(bit_header.delta == -3)
+    assert(bit_header.active)
+    assert(bit_header.ordinary == 42)
+    bit_header.kind += 1
+    bit_header.delta += 1
+    bit_header.active = !bit_header.active
+    assert(bit_header.kind == 6)
+    assert(bit_header.delta == -2)
+    assert(!bit_header.active)
+    assert(bit_header.ordinary == 42)
+    bit_header.kind = 15
+    bit_header.delta = -33
+    assert(bit_header.kind == 7)
+    assert(bit_header.delta == 31)
+    uninitialized_bits: Bit_Header = ---
+    uninitialized_bits_pointer := &uninitialized_bits
+    uninitialized_bits_pointer^.kind = 5
+    assert(uninitialized_bits_pointer^.kind == 5)
+    uninitialized_bits_pointer^.delta = -3
+    assert(uninitialized_bits_pointer^.kind == 5)
+    assert(uninitialized_bits_pointer^.delta == -3)
+    uninitialized_bits_pointer^.active = true
+    assert(uninitialized_bits_pointer^.active)
+    assert(uninitialized_bits_pointer^.delta == -3)
+    static_assert(size_of(Bit_Header) == 4)
+    static_assert(align_of(Bit_Header) == 2)
+    static_assert(type_member_offset(Bit_Header, 1) == 0)
+    static_assert(type_member_offset(Bit_Header, 3) == 2)
+    static_assert(type_member_bit_offset(Bit_Header, 1) == 3)
+    static_assert(type_member_bit_width(Bit_Header, 1) == 6)
     computed_code: Computed_Code = .Seven
     assert(computed_code == .Seven)
     (left, _): (i64, i64) = (20, 0)

@@ -1,7 +1,7 @@
 # TODO
 
 - [x] Add named and default procedure arguments.
-- [ ] Add field-level `bits(N)` layout (field-level `packed` is implemented).
+- [x] Add field-level `packed` and `bits(N)` layout.
 - [ ] Add Raylib bindings, native linking, ABI tests, and examples.
 - [ ] Add an x86-64 Linux native target.
 - [ ] Add a Windows native target, starting with x86-64.

@@ -47,12 +47,19 @@ Imported interface nominals are already-complete upstream inputs and never
 become local declaration work.
 
 One `FieldLayout` row accompanies every struct member type. The row records the
-authored natural/packed placement choice independently from the member's
-logical `TypeId`; natural-layout production substitutes alignment one only for
-that occurrence. Aggregate-member side tables and package interfaces carry the
-same row so generic instantiation and imported nominal reconstruction never
-re-read source or silently naturalize a packed field. Interface hashing includes
-the row because changing it changes public layout and address semantics.
+authored natural, packed, or exact `bits(N)` placement independently from the
+member's logical `TypeId`. Natural-layout production retains both one byte
+offset and one absolute bit offset per member. Consecutive bit fields advance a
+bit cursor; an ordinary field closes it to a byte before applying natural or
+packed alignment. Package interfaces carry these vectors and hash the layout
+kind, width, and offsets, so generic instantiation and imported nominal
+reconstruction never re-read source or silently change physical layout.
+
+`AggregateMember` retains only owner/member identity and the published byte
+offset. The earlier Names product creates those identities before a bit-width
+expression is evaluated; duplicating `FieldLayout` there would create two
+authorities with different readiness. MemberTypes owns checked layout rules and
+NaturalLayout owns the final byte/bit offsets.
 
 Array counts, SIMD widths, enum values, `align(N)` expressions, and parametric value
 arguments remain fields of their owning declaration product; the graph does not

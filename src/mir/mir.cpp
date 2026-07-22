@@ -118,6 +118,8 @@ const char *mir_instruction_kind_name(MirInstructionKind kind) {
   case MirInstructionKind::RawData: return "raw_data";
   case MirInstructionKind::Assert: return "assert";
   case MirInstructionKind::MemberAddress: return "member_address";
+  case MirInstructionKind::LoadBitField: return "load_bit_field";
+  case MirInstructionKind::StoreBitField: return "store_bit_field";
   case MirInstructionKind::ExtractMember: return "extract_member";
   case MirInstructionKind::IndexAddress: return "index_address";
   case MirInstructionKind::BoundsCheck: return "bounds_check";

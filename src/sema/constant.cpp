@@ -107,6 +107,9 @@ struct LocalTarget {
   std::vector<std::size_t> path;
   ConstantValue value;
   TypeId type;
+  // Nonzero only when the final path component is a bits(N) struct field.
+  // Compile-time assignment must apply the same storage truncation as MIR.
+  std::uint32_t bit_width = 0;
 };
 
 struct LocalTargetResult {
@@ -118,7 +121,8 @@ struct LocalTargetResult {
   return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
          kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
          kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
-         kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
+         kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
+         kind == TokenKind::KeywordBits;
 }
 
 [[nodiscard]] EvalResult ready(ConstantValue value, TypeId type = {}) {
@@ -1725,6 +1729,36 @@ private:
     return remainder;
   }
 
+  // Applies the storage semantics of one bits(N) occurrence to an already
+  // converted logical value. Constants retain logical values rather than raw
+  // aggregate bytes, so normalizing at each store ensures a later constant
+  // member read observes exactly what native byte extraction would produce.
+  [[nodiscard]] ConstantValue bit_field_stored_value(
+      ConstantValue value,
+      TypeId logical_type,
+      std::uint32_t width) const {
+    if (width == 0 || value.kind != ConstantKind::Integer) return value;
+    const BigInteger modulus = BigInteger::from_u64(1).shifted_left(width);
+    BigInteger quotient;
+    BigInteger remainder;
+    if (!value.integer.divide(modulus, quotient, remainder)) return value;
+    if (remainder.is_negative()) remainder = remainder.added(modulus);
+
+    Type logical = runtime_type(logical_type);
+    if (logical.kind == TypeKind::Enum && logical.element.is_valid()) {
+      logical = runtime_type(logical.element);
+    }
+    if (logical.kind == TypeKind::SignedInteger) {
+      const BigInteger sign =
+          BigInteger::from_u64(1).shifted_left(width - 1U);
+      if (remainder.compare(sign) >= 0) {
+        remainder = remainder.subtracted(modulus);
+      }
+    }
+    value.integer = std::move(remainder);
+    return value;
+  }
+
   [[nodiscard]] bool valid_rune(const BigInteger &value) const {
     const BigInteger zero = BigInteger::from_u64(0);
     const BigInteger surrogate_begin = BigInteger::from_u64(0xd800);
@@ -1834,9 +1868,17 @@ private:
             type.kind == TypeKind::Array || type.kind == TypeKind::Simd
             ? type.element
             : type.members[index];
-        const EvalResult converted = convert_to_type(
+        EvalResult converted = convert_to_type(
             value.elements[index], element_type, false, range, required);
         if (converted.status != EvalStatus::Ready) return converted;
+        if (type.kind == TypeKind::Struct &&
+            index < type.member_layouts.size() &&
+            type.member_layouts[index].kind == FieldLayoutKind::BitField) {
+          converted.value = bit_field_stored_value(
+              std::move(converted.value),
+              element_type,
+              type.member_layouts[index].bit_width);
+        }
         value.elements[index] = converted.value;
       }
       return ready(std::move(value), type_id);
@@ -2914,6 +2956,8 @@ private:
     const bool indexed = *name == "type_member_name" ||
         *name == "type_member_type" || *name == "type_member_offset" ||
         *name == "type_member_is_packed" ||
+        *name == "type_member_bit_width" ||
+        *name == "type_member_bit_offset" ||
         *name == "type_member_value" || *name == "type_parameter_type";
     const std::size_t expected_children = indexed ? 3 : 2;
     if (call.children.size() != expected_children) {
@@ -4228,6 +4272,14 @@ private:
       }
       if (selected.has_value() && *selected < aggregate.members.size()) {
         selected_type = aggregate.members[*selected];
+        if (*selected < aggregate.member_layouts.size() &&
+            aggregate.member_layouts[*selected].kind ==
+                FieldLayoutKind::BitField) {
+          base.target->bit_width =
+              aggregate.member_layouts[*selected].bit_width;
+        } else {
+          base.target->bit_width = 0;
+        }
       }
     } else if (aggregate.kind == TypeKind::Tuple) {
       const SyntaxNode &base_node = tree.node(expression.children.front());
@@ -4279,7 +4331,8 @@ private:
       }
       slot = &slot->elements[index];
     }
-    *slot = std::move(value);
+    *slot = bit_field_stored_value(
+        std::move(value), target.type, target.bit_width);
     return assign_local(target.root, std::move(root));
   }
 
@@ -5828,13 +5881,22 @@ private:
                 required);
           }
         }
-        const EvalResult converted = convert_to_type(
+        EvalResult converted = convert_to_type(
             evaluated.value,
             element_type,
             false,
             value_node.range,
             required);
         if (converted.status != EvalStatus::Ready) return converted;
+        if (composite.kind == TypeKind::Struct &&
+            *destination < composite.member_layouts.size() &&
+            composite.member_layouts[*destination].kind ==
+                FieldLayoutKind::BitField) {
+          converted.value = bit_field_stored_value(
+              std::move(converted.value),
+              element_type,
+              composite.member_layouts[*destination].bit_width);
+        }
 
         if (composite.kind == TypeKind::Union) {
           ++explicit_union_members;

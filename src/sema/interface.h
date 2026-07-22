@@ -102,6 +102,7 @@ struct InterfaceType {
   bool owner_evaluated_type_application = false;
   std::vector<InterfaceTypeId> members;
   std::vector<std::uint64_t> member_offsets;
+  std::vector<std::uint64_t> member_bit_offsets;
   std::vector<FieldLayout> member_layouts;
   bool c_calling_convention = false;
   bool c_representation = false;

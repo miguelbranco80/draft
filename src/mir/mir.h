@@ -98,6 +98,10 @@ enum class MirInstructionKind {
   RawData,
   Assert,
   MemberAddress,
+  // Bit-field memory operations consume the address of the first containing
+  // byte. bit_offset is then relative to that byte and bit_width is exact.
+  LoadBitField,
+  StoreBitField,
   ExtractMember,
   IndexAddress,
   BoundsCheck,
@@ -144,9 +148,15 @@ struct MirInstruction {
   ConstantValue constant;
   std::uint64_t offset = 0;
   std::uint32_t alignment = 0;
+  std::uint32_t bit_offset = 0;
+  std::uint32_t bit_width = 0;
   // Aggregate construction may place each source operand at a different byte
-  // offset. Other instructions leave this vector empty and use offset alone.
+  // offset. A parallel nonzero aggregate_bit_width selects a bit-field write;
+  // aggregate_bit_offsets is then the absolute struct-relative bit position.
+  // Other instructions leave these vectors empty and use offset alone.
   std::vector<std::uint64_t> offsets;
+  std::vector<std::uint64_t> aggregate_bit_offsets;
+  std::vector<std::uint32_t> aggregate_bit_widths;
   std::string assembly_text;
   std::string assembly_constraints;
   bool passes_context = false;

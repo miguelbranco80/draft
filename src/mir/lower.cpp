@@ -46,6 +46,12 @@ struct ControlTarget {
   bool is_loop = false;
 };
 
+struct AggregatePlacement {
+  std::uint64_t byte_offset = 0;
+  std::uint64_t bit_offset = 0;
+  std::uint32_t bit_width = 0;
+};
+
 class ProcedureLowerer {
 public:
   ProcedureLowerer(
@@ -294,6 +300,63 @@ private:
     instruction.alignment = memory_alignment(
         address, procedure_.value(value).type);
     emit_void(std::move(instruction));
+  }
+
+  // Bit fields are assignable storage occurrences but not typed addresses.
+  // Their MIR operations retain the logical value type while consuming a raw
+  // address to the first containing byte. The backend alone performs the
+  // bytewise extract or read-modify-write required by the target-independent
+  // least-significant-bit-first layout rule.
+  [[nodiscard]] MirValueId load_bit_field(
+      MirValueId address,
+      const HirExpression &expression) {
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::LoadBitField;
+    instruction.range = expression.range;
+    instruction.type = expression.type;
+    instruction.operands.push_back(address);
+    instruction.bit_offset =
+        static_cast<std::uint32_t>(expression.bit_offset % 8U);
+    instruction.bit_width = expression.bit_width;
+    instruction.alignment = 1;
+    return emit_value(std::move(instruction));
+  }
+
+  void store_bit_field(
+      MirValueId address,
+      MirValueId value,
+      const HirExpression &expression,
+      SourceRange range) {
+    MirInstruction instruction;
+    instruction.kind = MirInstructionKind::StoreBitField;
+    instruction.range = range;
+    instruction.type = semantic_.types.builtins().void_type;
+    instruction.operands = {address, value};
+    instruction.bit_offset =
+        static_cast<std::uint32_t>(expression.bit_offset % 8U);
+    instruction.bit_width = expression.bit_width;
+    instruction.alignment = 1;
+    emit_void(std::move(instruction));
+  }
+
+  [[nodiscard]] MirValueId load_lvalue(
+      MirValueId address,
+      const HirExpression &expression) {
+    return expression.bit_field
+        ? load_bit_field(address, expression)
+        : load(address, expression.type, expression.range);
+  }
+
+  void store_lvalue(
+      MirValueId address,
+      MirValueId value,
+      const HirExpression &expression,
+      SourceRange range) {
+    if (expression.bit_field) {
+      store_bit_field(address, value, expression, range);
+    } else {
+      store(address, value, range);
+    }
   }
 
   [[nodiscard]] MirValueId constant(
@@ -792,17 +855,22 @@ private:
       MirInstruction instruction;
       instruction.kind = MirInstructionKind::MemberAddress;
       instruction.range = expression.range;
-      instruction.type = source_type.is_valid()
+      instruction.type = source_type.is_valid() && !expression.bit_field
           ? source_type
           : semantic_.types.builtins().rawptr_type;
-      instruction.addressed_type = expression.type;
+      instruction.addressed_type = expression.bit_field
+          ? semantic_.types.builtins().u8_type
+          : expression.type;
       instruction.symbol = expression.symbol;
-      instruction.offset = member_offset(expression);
+      instruction.offset = expression.bit_field
+          ? expression.bit_offset / 8U
+          : member_offset(expression);
       const std::uint32_t base_alignment = base.addressable
           ? base.storage_alignment
           : natural_alignment(base.type);
-      instruction.alignment = offset_alignment(
-          base_alignment, instruction.offset);
+      instruction.alignment = expression.bit_field
+          ? 1U
+          : offset_alignment(base_alignment, instruction.offset);
       instruction.operands.push_back(base_address);
       return emit_value(std::move(instruction));
     }
@@ -1067,24 +1135,55 @@ private:
     return emit_value(std::move(extract));
   }
 
-  [[nodiscard]] std::uint64_t aggregate_operand_offset(
+  [[nodiscard]] AggregatePlacement aggregate_operand_placement(
       const HirExpression &expression,
       std::size_t index) const {
     const Type type = runtime_scalar_type(expression.type);
     if (index < expression.operand_members.size() &&
         expression.operand_members[index].is_valid()) {
+      const SymbolId selected = expression.operand_members[index];
+      const Symbol &symbol = semantic_.symbols.symbol(selected);
+      const Scope &scope = semantic_.symbols.scope(symbol.scope);
+      const auto position = std::find(
+          scope.symbols.begin(), scope.symbols.end(), selected);
+      const std::size_t member_index = position == scope.symbols.end()
+          ? type.members.size()
+          : static_cast<std::size_t>(position - scope.symbols.begin());
       for (const AggregateMember &member :
            semantic_.aggregate_members_for_read()) {
-        if (member.member == expression.operand_members[index]) return member.offset;
+        if (member.member != selected) continue;
+        AggregatePlacement result;
+        result.byte_offset = member.offset;
+        result.bit_offset = member_index < type.member_bit_offsets.size()
+            ? type.member_bit_offsets[member_index]
+            : member.offset * 8U;
+        if (member_index < type.member_layouts.size() &&
+            type.member_layouts[member_index].kind ==
+                FieldLayoutKind::BitField) {
+          result.bit_width = type.member_layouts[member_index].bit_width;
+        }
+        return result;
       }
     }
     if (type.kind == TypeKind::Array) {
-      return type.element_count == 0
+      const std::uint64_t offset = type.element_count == 0
           ? 0
           : semantic_.types.type(type.element).layout.size * index;
+      return {offset, offset * 8U, 0};
     }
-    if (index < type.member_offsets.size()) return type.member_offsets[index];
-    return 0;
+    if (index < type.member_offsets.size()) {
+      return {
+          type.member_offsets[index],
+          index < type.member_bit_offsets.size()
+              ? type.member_bit_offsets[index]
+              : type.member_offsets[index] * 8U,
+          index < type.member_layouts.size() &&
+                  type.member_layouts[index].kind == FieldLayoutKind::BitField
+              ? type.member_layouts[index].bit_width
+              : 0U,
+      };
+    }
+    return {};
   }
 
   [[nodiscard]] MirValueId lower_slice(const HirExpression &expression) {
@@ -1210,9 +1309,14 @@ private:
       return expression.operands.empty() ? MirValueId{}
           : lower_address(expression.operands.front(), expression.type);
     case HirExpressionKind::Dereference:
-    case HirExpressionKind::Member:
     case HirExpressionKind::Index:
       return load(lower_address(expression_id), expression.type, expression.range);
+    case HirExpressionKind::Member: {
+      const MirValueId address = lower_address(expression_id);
+      return expression.bit_field
+          ? load_bit_field(address, expression)
+          : load(address, expression.type, expression.range);
+    }
     case HirExpressionKind::Unary: {
       MirInstruction instruction;
       instruction.kind = MirInstructionKind::Unary;
@@ -1404,14 +1508,22 @@ private:
             aggregate_type.element,
             expression.range));
         instruction.offsets.push_back(0);
+        instruction.aggregate_bit_offsets.push_back(0);
+        instruction.aggregate_bit_widths.push_back(0);
       }
       for (std::size_t index = 0; index < expression.operands.size(); ++index) {
         instruction.operands.push_back(lower_expression(expression.operands[index]));
         if (aggregate_type.kind == TypeKind::Variant) {
           instruction.offsets.push_back(
               aggregate_member_offset(expression.symbol).value_or(0));
+          instruction.aggregate_bit_offsets.push_back(0);
+          instruction.aggregate_bit_widths.push_back(0);
         } else {
-          instruction.offsets.push_back(aggregate_operand_offset(expression, index));
+          const AggregatePlacement placement =
+              aggregate_operand_placement(expression, index);
+          instruction.offsets.push_back(placement.byte_offset);
+          instruction.aggregate_bit_offsets.push_back(placement.bit_offset);
+          instruction.aggregate_bit_widths.push_back(placement.bit_width);
         }
       }
       return emit_value(std::move(instruction));
@@ -1646,9 +1758,10 @@ private:
         extract.type = tuple.members[member];
         extract.offset = tuple.member_offsets[member];
         extract.operands.push_back(tuple_value);
-        store(
+        store_lvalue(
             addresses[index],
             emit_value(std::move(extract)),
+            hir_.expression(statement.expressions[index]),
             statement.range);
       }
       return;
@@ -1657,7 +1770,7 @@ private:
       for (std::size_t index = 0; index < left_count; ++index) {
         const HirExpression &left = hir_.expression(statement.expressions[index]);
         if (left.kind == HirExpressionKind::Discard) continue;
-        left_values.push_back(load(addresses[index], left.type, left.range));
+        left_values.push_back(load_lvalue(addresses[index], left));
       }
     }
     const std::size_t right_count = statement.expressions.size() - left_count;
@@ -1679,7 +1792,7 @@ private:
             left.type,
             statement.range);
       }
-      store(addresses[index], value, statement.range);
+      store_lvalue(addresses[index], value, left, statement.range);
     }
   }
 

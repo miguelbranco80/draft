@@ -226,6 +226,35 @@ increment :: proc(record: ^Record) -> u32 {
   }
 }
 
+// Bit fields use opaque nominal byte storage plus explicit bytewise extraction
+// and read-modify-write. This covers a field crossing a byte boundary, signed
+// extension, and preservation of neighboring bits in the same storage unit.
+void test_bit_field_access_uses_explicit_bit_operations(TestState &state) {
+  const EmittedFixture emitted = emit_fixture(R"draft(
+package bit_field_access
+
+Record :: struct {
+    bits(3) small: u8,
+    bits(6) signed_value: i16,
+    bits(1) flag: bool,
+}
+
+update :: proc(record: ^Record) -> i16 {
+    record^.small += 1
+    record^.signed_value = -3
+    record^.flag = !record^.flag
+    return cast[i16](record^.small) + record^.signed_value
+}
+)draft");
+  if (!emitted.ok) std::cerr << emitted.diagnostics;
+  EXPECT(state, emitted.ok);
+  EXPECT(state, emitted.text.find(" = type [2 x i8]") != std::string::npos);
+  EXPECT(state, emitted.text.find("sext i6") != std::string::npos);
+  EXPECT(state, emitted.text.find("load i8, ptr") != std::string::npos);
+  EXPECT(state, emitted.text.find("freeze i8") != std::string::npos);
+  EXPECT(state, emitted.text.find("store i8") != std::string::npos);
+}
+
 // A semantic package lowers to one independently valid LLVM module containing
 // its package storage and every concrete procedure definition. Compiling that
 // complete unit through LLVM catches missing or conflicting definitions which
@@ -1076,6 +1105,7 @@ int main() {
   test_agent_constructs_have_no_runtime_footprint(state);
   test_generated_debug_locations_are_hermetic(state);
   test_packed_field_access_uses_occurrence_alignment(state);
+  test_bit_field_access_uses_explicit_bit_operations(state);
   test_package_module_is_independently_compilable(state);
   test_raw_string_data_is_direct_pointer_extraction(state);
   test_multistep_call_lowering_keeps_debug_locations(state);

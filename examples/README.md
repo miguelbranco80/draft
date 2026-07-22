@@ -93,7 +93,7 @@ policy rather than missing backend features.
 
 | Example | What it covers |
 | --- | --- |
-| [`runtime-checks`](runtime-checks/) | The dense native conformance matrix: scalar and storage types, endian values, aggregates, selective packed fields, unions and variants, globals and TLS, relocation-bearing initializers, parametrics, casts, procedure pointers, pointer operations, operators, loop forms, switches, assignment order, and `defer`. This is comprehensive verification, not the recommended tutorial. |
+| [`runtime-checks`](runtime-checks/) | The dense native conformance matrix: scalar and storage types, endian values, aggregates, selective packed and cross-byte bit fields, unions and variants, globals and TLS, relocation-bearing initializers, parametrics, casts, procedure pointers, pointer operations, operators, loop forms, switches, assignment order, and `defer`. This is comprehensive verification, not the recommended tutorial. |
 | [`runtime-traps`](runtime-traps/) | Runtime-selected mandatory trap paths for division, shifts, conversions, Unicode and enum checks, and bounds checks. The native test runner expects each selector to trap. |
 | [`nested-procedures`](nested-procedures/) | Static nested procedures, recursion, lexical compile-time bindings, parametric nesting, escaping procedure pointers, context propagation, and collision-free backend names. |
 | [`packages`](packages/) | Folder packages, file-local imports and aliases, `pub` declarations, package constants, qualified names, and compile-time `when`. |

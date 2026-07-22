@@ -196,7 +196,8 @@ private:
     return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
            kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
            kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
-           kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
+           kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
+           kind == TokenKind::KeywordBits;
   }
 
   [[nodiscard]] bool at_name() const {
@@ -904,10 +905,11 @@ private:
     const std::uint32_t start = position_;
     std::vector<NodeId> children;
 
-    // Packing is a property of one struct field's storage, not a qualified
-    // value type. Retaining it as a dedicated child keeps the final type child
-    // unchanged for every semantic consumer and lets grouped names share the
-    // one explicit placement rule.
+    // Field layout modifiers are properties of one storage occurrence, not
+    // qualified value types. Dedicated children keep the final type child
+    // unchanged for every semantic consumer. `bits` is contextual elsewhere:
+    // reserving its token only lets this exact member position recognize the
+    // modifier without taking the useful identifier away from ordinary code.
     if ((mode == MemberMode::Struct || mode == MemberMode::Union) &&
         match(TokenKind::KeywordPacked)) {
       children.push_back(tree_.add_node(
@@ -916,6 +918,25 @@ private:
         diagnostics_.error(
             tree_.node(children.back()).range,
             "packed is valid only on struct fields");
+      }
+    } else if ((mode == MemberMode::Struct || mode == MemberMode::Union) &&
+               at(TokenKind::KeywordBits) &&
+               lookahead(1).kind == TokenKind::LeftParen) {
+      advance();
+      std::vector<NodeId> modifier_children;
+      if (expect(TokenKind::LeftParen, "expected '(' after bits")) {
+        modifier_children.push_back(parse_expression());
+        (void)expect(TokenKind::RightParen, "expected ')' after bit-field width");
+      }
+      children.push_back(tree_.add_node(
+          NodeKind::BitFieldSpecifier,
+          start,
+          position_,
+          std::move(modifier_children)));
+      if (mode == MemberMode::Union) {
+        diagnostics_.error(
+            tree_.node(children.back()).range,
+            "bits(N) is valid only on struct fields");
       }
     }
     if (!expect_name("expected type member name")) {

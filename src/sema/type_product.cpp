@@ -114,6 +114,7 @@ NaturalLayoutProductAttempt evaluate_natural_layout_product(
     natural.status = NaturalLayoutStatus::Complete;
     natural.layout = backing;
     natural.member_offsets.assign(type.members.size(), 0);
+    natural.member_bit_offsets.assign(type.members.size(), 0);
   }
 
   if (natural.status == NaturalLayoutStatus::Waiting) {
@@ -146,6 +147,7 @@ NaturalLayoutProductAttempt evaluate_natural_layout_product(
   result.status = TypeProductStatus::Complete;
   result.layout = layout;
   result.member_offsets = std::move(natural.member_offsets);
+  result.member_bit_offsets = std::move(natural.member_bit_offsets);
   return result;
 }
 
@@ -183,10 +185,11 @@ bool publish_natural_layout_product(
   for (const AggregateMember &member : members) {
     if (member.owner == owner) ++member_count;
   }
-  if (member_count != attempt.member_offsets.size()) {
+  if (member_count != attempt.member_offsets.size() ||
+      member_count != attempt.member_bit_offsets.size()) {
     diagnostics.error(
         package.types.type(nominal).declaration,
-        "natural-layout offsets do not match the nominal member set");
+        "natural-layout byte/bit offsets do not match the nominal member set");
     return false;
   }
 
@@ -206,7 +209,8 @@ bool publish_natural_layout_product(
   package.types.publish_nominal_natural_layout(
       nominal,
       attempt.layout,
-      std::move(attempt.member_offsets));
+      std::move(attempt.member_offsets),
+      std::move(attempt.member_bit_offsets));
   return true;
 }
 

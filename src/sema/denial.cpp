@@ -22,7 +22,8 @@ namespace {
       kind == TokenKind::KeywordUnchecked || kind == TokenKind::KeywordC ||
       kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
       kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
-      kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
+      kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
+      kind == TokenKind::KeywordBits;
 }
 
 // Selector resolution is deliberately independent from HIR walking. The same

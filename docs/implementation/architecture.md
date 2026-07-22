@@ -316,6 +316,9 @@ formation propagates that power-of-two guarantee through byte offsets. MIR
 address instructions preserve it, MIR loads/stores record the clamped access
 alignment, and LLVM emits that exact fact. This is what permits direct packed
 field access without weakening the alignment promised by ordinary `^T` values.
+Bit-field members additionally retain their exact owner-relative bit range in
+HIR. MIR uses explicit bit loads/stores against the first containing byte;
+assignment lowering never manufactures a typed pointer to the field.
 
 LLVM types stay behind numeric, target, ABI, and code-generation adapters. The
 front end must not depend on LLVM IR details.

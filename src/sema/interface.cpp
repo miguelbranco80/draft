@@ -108,7 +108,10 @@ void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
   hash_u64(hash, static_cast<std::uint64_t>(type.member_layouts.size()));
   for (const FieldLayout &layout : type.member_layouts) {
     hash_u64(hash, static_cast<std::uint64_t>(layout.kind));
+    hash_u64(hash, layout.bit_width);
   }
+  hash_u64(hash, static_cast<std::uint64_t>(type.member_bit_offsets.size()));
+  for (std::uint64_t offset : type.member_bit_offsets) hash_u64(hash, offset);
   hash_u64(hash, type.c_calling_convention ? 1 : 0);
   hash_u64(hash, type.c_representation ? 1 : 0);
   hash_u64(hash, type.requested_alignment);
@@ -127,6 +130,7 @@ void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
       hash_type_id(hash, member.type);
       hash_u64(hash, member.offset);
       hash_u64(hash, static_cast<std::uint64_t>(member.field_layout.kind));
+      hash_u64(hash, member.field_layout.bit_width);
       hash_u64(hash, member.has_enum_value ? 1 : 0);
       hash_field(hash, member.enum_value.to_decimal());
     }
@@ -609,20 +613,6 @@ private:
     return 0;
   }
 
-  // Field layout is a property of the member's storage occurrence, not its
-  // logical TypeId. Preserve it beside the byte offset when a nominal type
-  // crosses a package interface; otherwise an imported packed field would be
-  // silently reconstructed as naturally aligned.
-  [[nodiscard]] FieldLayout member_field_layout(SymbolId member) const {
-    for (const AggregateMember &aggregate :
-         package_.aggregate_members_for_read()) {
-      if (aggregate.member == member) {
-        return aggregate.field_layout;
-      }
-    }
-    return {};
-  }
-
   [[nodiscard]] const EnumMemberValue *enum_member_value(
       SymbolId member) const {
     for (const EnumMemberValue &value :
@@ -775,6 +765,7 @@ private:
     translated.owner_evaluated_type_application =
         source_type.owner_evaluated_type_application;
     translated.member_offsets = source_type.member_offsets;
+    translated.member_bit_offsets = source_type.member_bit_offsets;
     translated.member_layouts = source_type.member_layouts;
     translated.c_calling_convention = source_type.c_calling_convention;
     translated.c_representation = source_type.c_representation;
@@ -825,6 +816,7 @@ private:
     }
 
     if (const std::optional<ScopeId> scope = nominal_scope(source)) {
+      std::size_t member_index = 0;
       for (SymbolId member_id : package_.symbols.scope(*scope).symbols) {
         const Symbol &member = package_.symbols.symbol(member_id);
         if (!member.type.is_valid()) {
@@ -838,7 +830,10 @@ private:
             member.kind,
             translate_type(member.type),
             member_offset(member_id),
-            member_field_layout(member_id),
+            source_type.kind == TypeKind::Struct &&
+                    member_index < source_type.member_layouts.size()
+                ? source_type.member_layouts[member_index]
+                : FieldLayout{},
             false,
             {},
         };
@@ -847,6 +842,7 @@ private:
           translated_member.enum_value = value->value;
         }
         translated.nominal_members.push_back(std::move(translated_member));
+        ++member_index;
       }
     }
     result_.types[id.value] = std::move(translated);
@@ -1434,7 +1430,10 @@ private:
           result, std::move(members), source.member_layouts);
       if (source.layout.known) {
         consumer_.types.publish_nominal_natural_layout(
-            result, source.layout, source.member_offsets);
+            result,
+            source.layout,
+            source.member_offsets,
+            source.member_bit_offsets);
       }
 
       // A nominal may arrive only as a nested procedure parameter or result,
@@ -1549,7 +1548,7 @@ private:
       const SymbolId member_id = consumer_.symbols.declare(std::move(symbol), diagnostics_);
       if (member_id.is_valid()) {
         consumer_.aggregate_members.push_back(
-            {owner, member_id, member.offset, member.field_layout});
+            {owner, member_id, member.offset});
         if (member.has_enum_value) {
           consumer_.enum_member_values.push_back(
               {member_id, member.enum_value});

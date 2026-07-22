@@ -53,7 +53,8 @@ namespace {
   return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
          kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
          kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
-         kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
+         kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
+         kind == TokenKind::KeywordBits;
 }
 
 [[nodiscard]] bool node_is_type_syntax(NodeKind kind) {
@@ -1849,6 +1850,21 @@ private:
     for (const AggregateMember &member :
          semantic_.aggregate_members_for_read()) {
       if (member.member == member_id) return member;
+    }
+    return std::nullopt;
+  }
+
+  // Type member vectors and the owning type scope use the same source order.
+  // Recovering the index from the already resolved member SymbolId avoids
+  // duplicating layout facts on AggregateMember rows created by the earlier
+  // Names product.
+  [[nodiscard]] std::optional<std::size_t> aggregate_member_index(
+      SymbolId member_id) const {
+    if (!member_id.is_valid()) return std::nullopt;
+    const Symbol &member = semantic_.symbols.symbol(member_id);
+    const Scope &scope = semantic_.symbols.scope(member.scope);
+    for (std::size_t index = 0; index < scope.symbols.size(); ++index) {
+      if (scope.symbols[index] == member_id) return index;
     }
     return std::nullopt;
   }
@@ -4819,6 +4835,8 @@ private:
           *intrinsic == "type_member_type" ||
           *intrinsic == "type_member_offset" ||
           *intrinsic == "type_member_is_packed" ||
+          *intrinsic == "type_member_bit_width" ||
+          *intrinsic == "type_member_bit_offset" ||
           *intrinsic == "type_member_value" ||
           *intrinsic == "type_parameter_type";
       const std::size_t required_arguments = indexed ? 2 : 1;
@@ -5677,6 +5695,10 @@ private:
         if (!operand.addressable) {
           diagnostics_.error(node.range, "address-of requires addressable storage");
           result = semantic_.types.builtins().invalid;
+        } else if (operand.bit_field) {
+          diagnostics_.error(
+              node.range, "address-of is not defined for a bit field");
+          result = semantic_.types.builtins().invalid;
         } else if (operand.storage_alignment < natural_alignment(operand.type)) {
           // A typed pointer promises the pointee type's natural alignment.
           // Direct packed-field reads and writes remain valid because MIR can
@@ -6323,7 +6345,21 @@ private:
           substitute_active(member_symbol.type, node.range), expected, node.range);
       expression.operands.push_back(base_id);
       expression.addressable = base.addressable && member_symbol.kind == SymbolKind::Field;
-      if (expression.addressable) {
+      const std::optional<std::size_t> member_index =
+          aggregate_member_index(*member);
+      const Type &owner_type = semantic_.types.type(
+          underlying_type_id(base.type));
+      if (member_index.has_value() &&
+          *member_index < owner_type.member_layouts.size() &&
+          owner_type.member_layouts[*member_index].kind ==
+              FieldLayoutKind::BitField) {
+        expression.bit_field = true;
+        expression.bit_width =
+            owner_type.member_layouts[*member_index].bit_width;
+        if (*member_index < owner_type.member_bit_offsets.size()) {
+          expression.bit_offset = owner_type.member_bit_offsets[*member_index];
+        }
+      } else if (expression.addressable) {
         const std::optional<AggregateMember> storage =
             aggregate_member(*member);
         if (storage.has_value()) {
@@ -6737,6 +6773,9 @@ private:
         expression.addressable = hir_.expression(value).addressable;
         expression.storage_alignment =
             hir_.expression(value).storage_alignment;
+        expression.bit_field = hir_.expression(value).bit_field;
+        expression.bit_width = hir_.expression(value).bit_width;
+        expression.bit_offset = hir_.expression(value).bit_offset;
         return hir_.add_expression(std::move(expression));
       }
       return invalid_expression(node.range);

@@ -122,6 +122,9 @@ enum class AtomicMemoryOrder {
 // expression has no source-visible storage. Keeping the occurrence guarantee
 // separate from TypeLayout is essential for `packed field: T`: the loaded value
 // still has type T, while its containing byte position may be under-aligned.
+// A bit-field Member additionally records its absolute owner-relative bit
+// offset and width. It remains assignable when its base is addressable, but no
+// source operation may turn the sub-byte occurrence into a typed pointer.
 struct HirExpression {
   HirExpressionKind kind = HirExpressionKind::Invalid;
   HirOperation operation = HirOperation::None;
@@ -159,6 +162,9 @@ struct HirExpression {
   bool bounds_proven = false;
   bool addressable = false;
   std::uint32_t storage_alignment = 0;
+  bool bit_field = false;
+  std::uint32_t bit_width = 0;
+  std::uint64_t bit_offset = 0;
 };
 
 enum class HirStatementKind {

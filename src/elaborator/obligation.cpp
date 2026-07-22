@@ -774,6 +774,24 @@ void append_constant_context(
     for (std::uint64_t offset : type.member_offsets) {
       append_context_field("TYPE_MEMBER_OFFSET", std::to_string(offset), output);
     }
+    output += "TYPE_MEMBER_BIT_OFFSETS ";
+    append_context_u64(
+        static_cast<std::uint64_t>(type.member_bit_offsets.size()), output);
+    for (std::uint64_t offset : type.member_bit_offsets) {
+      append_context_field(
+          "TYPE_MEMBER_BIT_OFFSET", std::to_string(offset), output);
+    }
+    output += "TYPE_MEMBER_LAYOUTS ";
+    append_context_u64(
+        static_cast<std::uint64_t>(type.member_layouts.size()), output);
+    for (const FieldLayout &layout : type.member_layouts) {
+      append_context_field(
+          "TYPE_MEMBER_LAYOUT_KIND",
+          std::to_string(static_cast<std::uint32_t>(layout.kind)),
+          output);
+      append_context_field(
+          "TYPE_MEMBER_BIT_WIDTH", std::to_string(layout.bit_width), output);
+    }
     output += "TYPE_NOMINAL_MEMBERS ";
     append_context_u64(
         static_cast<std::uint64_t>(type.nominal_members.size()), output);
@@ -784,6 +802,15 @@ void append_constant_context(
       append_context_field("MEMBER_TYPE", interface_id_text(member.type), output);
       append_context_field(
           "MEMBER_OFFSET", std::to_string(member.offset), output);
+      append_context_field(
+          "MEMBER_LAYOUT_KIND",
+          std::to_string(
+              static_cast<std::uint32_t>(member.field_layout.kind)),
+          output);
+      append_context_field(
+          "MEMBER_BIT_WIDTH",
+          std::to_string(member.field_layout.bit_width),
+          output);
       append_context_field(
           "MEMBER_HAS_ENUM_VALUE",
           member.has_enum_value ? "true" : "false",

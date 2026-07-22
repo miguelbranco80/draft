@@ -95,7 +95,8 @@ struct ParsedImport {
   return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
       kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
       kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
-      kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
+      kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
+      kind == TokenKind::KeywordBits;
 }
 
 [[nodiscard]] std::optional<std::string> package_name_from_tree(

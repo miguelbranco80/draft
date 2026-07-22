@@ -215,7 +215,9 @@ private:
         instruction.kind == MirInstructionKind::IndexAddress;
     const bool memory_instruction =
         instruction.kind == MirInstructionKind::Load ||
-        instruction.kind == MirInstructionKind::Store;
+        instruction.kind == MirInstructionKind::Store ||
+        instruction.kind == MirInstructionKind::LoadBitField ||
+        instruction.kind == MirInstructionKind::StoreBitField;
     if (address_instruction) {
       if (!valid_type(instruction.addressed_type)) {
         error(instruction.range, "address instruction has no addressed type");
@@ -239,7 +241,9 @@ private:
     }
     if (memory_instruction) {
       TypeId access_type = instruction.type;
-      if (instruction.kind == MirInstructionKind::Store && arity == 2 &&
+      if ((instruction.kind == MirInstructionKind::Store ||
+           instruction.kind == MirInstructionKind::StoreBitField) &&
+          arity == 2 &&
           valid_value(procedure, instruction.operands[1])) {
         access_type = procedure.value(instruction.operands[1]).type;
       }
@@ -255,6 +259,16 @@ private:
       }
     } else if (!address_instruction && instruction.alignment != 0) {
       error(instruction.range, "non-memory instruction carries alignment");
+    }
+    const bool bit_field_instruction =
+        instruction.kind == MirInstructionKind::LoadBitField ||
+        instruction.kind == MirInstructionKind::StoreBitField;
+    if (bit_field_instruction) {
+      if (instruction.bit_width == 0 || instruction.bit_offset >= 8) {
+        error(instruction.range, "bit-field instruction has an invalid bit range");
+      }
+    } else if (instruction.bit_width != 0 || instruction.bit_offset != 0) {
+      error(instruction.range, "non-bit-field instruction carries a bit range");
     }
     switch (instruction.kind) {
     case MirInstructionKind::Invalid:
@@ -279,6 +293,7 @@ private:
       if (arity != 0) error(instruction.range, "local address has operands");
       break;
     case MirInstructionKind::Load:
+    case MirInstructionKind::LoadBitField:
     case MirInstructionKind::Unary:
     case MirInstructionKind::Convert:
     case MirInstructionKind::Length:
@@ -308,6 +323,7 @@ private:
       }
       break;
     case MirInstructionKind::Store:
+    case MirInstructionKind::StoreBitField:
     case MirInstructionKind::Binary:
     case MirInstructionKind::PointerOffset:
     case MirInstructionKind::PointerSubtract:
@@ -342,6 +358,14 @@ private:
       }
       break;
     case MirInstructionKind::Aggregate:
+      if (instruction.offsets.size() != arity ||
+          instruction.aggregate_bit_offsets.size() != arity ||
+          instruction.aggregate_bit_widths.size() != arity) {
+        error(
+            instruction.range,
+            "aggregate placement vectors do not match its operands");
+      }
+      break;
     case MirInstructionKind::Assembly:
       break;
     case MirInstructionKind::Trap:

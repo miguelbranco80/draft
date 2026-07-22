@@ -85,7 +85,8 @@ struct SelectedFile {
   return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
       kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
       kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
-      kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
+      kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
+      kind == TokenKind::KeywordBits;
 }
 
 // Determines participation and returns the filename with a matching target

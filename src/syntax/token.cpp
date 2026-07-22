@@ -34,6 +34,7 @@ std::string_view token_kind_name(TokenKind kind) {
   case TokenKind::KeywordDistinct: return "distinct";
   case TokenKind::KeywordSimd: return "simd";
   case TokenKind::KeywordPacked: return "packed";
+  case TokenKind::KeywordBits: return "bits";
   case TokenKind::KeywordThreadLocal: return "thread_local";
   case TokenKind::KeywordForeign: return "foreign";
   case TokenKind::KeywordExport: return "export";
@@ -150,6 +151,7 @@ bool token_can_end_statement(TokenKind kind) {
   case TokenKind::KeywordNumber:
   case TokenKind::KeywordFlags:
   case TokenKind::KeywordMemory:
+  case TokenKind::KeywordBits:
   case TokenKind::KeywordBreak:
   case TokenKind::KeywordContinue:
   case TokenKind::KeywordReturn:
@@ -169,6 +171,7 @@ bool token_is_contextual_alternative_name(TokenKind kind) {
       kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
       kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
       kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
+      kind == TokenKind::KeywordBits ||
       kind == TokenKind::KeywordStruct || kind == TokenKind::KeywordVariant ||
       kind == TokenKind::KeywordUnion || kind == TokenKind::KeywordDistinct ||
       kind == TokenKind::KeywordSimd;

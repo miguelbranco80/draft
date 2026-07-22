@@ -532,6 +532,17 @@ private:
     return id;
   }
 
+  [[nodiscard]] bool struct_has_bit_fields(TypeId id) const {
+    const Type &value = type(runtime_scalar_id(id));
+    if (value.kind != TypeKind::Struct) return false;
+    return std::any_of(
+        value.member_layouts.begin(),
+        value.member_layouts.end(),
+        [](const FieldLayout &layout) {
+          return layout.kind == FieldLayoutKind::BitField;
+        });
+  }
+
   [[nodiscard]] bool endian_requires_swap(TypeId id) const {
     const Type &storage = type(runtime_scalar_id(id));
     if (storage.kind != TypeKind::EndianScalar) return false;
@@ -660,6 +671,18 @@ private:
         continue;
       }
       if (value.kind == TypeKind::Struct) {
+        if (struct_has_bit_fields(id)) {
+          if (!value.layout.known) {
+            error(value.declaration, "bit-field struct has no complete layout");
+            continue;
+          }
+          // LLVM has no aggregate field whose address begins at an arbitrary
+          // bit. Give the nominal value its exact byte storage and let explicit
+          // MIR bit operations interpret the source-visible members.
+          output_ << "%draft.type." << index << " = type ["
+                  << value.layout.size << " x i8]\n";
+          continue;
+        }
         // A packed LLVM body plus explicit byte fields reproduces the semantic
         // offsets exactly. This is required for requested-alignment tail stride and for a
         // nested over-aligned member; LLVM's implicit aggregate alignment does
@@ -2137,6 +2160,93 @@ private:
     return true;
   }
 
+  [[nodiscard]] std::optional<BigInteger> bit_field_constant_integer(
+      const ConstantValue &value,
+      TypeId type_id) const {
+    if (value.kind == ConstantKind::Bool) {
+      return BigInteger::from_u64(value.boolean ? 1U : 0U);
+    }
+    if (value.kind == ConstantKind::Integer) return value.integer;
+    if (value.kind == ConstantKind::Nil ||
+        value.kind == ConstantKind::Unavailable) {
+      return BigInteger::from_u64(0);
+    }
+    if (value.kind != ConstantKind::EnumLabel) return std::nullopt;
+
+    const TypeId enum_type = runtime_scalar_id(type_id);
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
+      if (!member.owner.is_valid() ||
+          semantic_.symbols.symbol(member.owner).type != enum_type ||
+          semantic_.symbols.symbol(member.member).name != value.text) {
+        continue;
+      }
+      for (const EnumMemberValue &entry :
+           semantic_.enum_member_values_for_read()) {
+        if (entry.member == member.member) return entry.value;
+      }
+    }
+    return std::nullopt;
+  }
+
+  // Writes a scalar into an already allocated struct byte image. Bit zero is
+  // the least-significant bit of the first byte on every target, so this loop
+  // is independent of the target's scalar byte order. Neighboring field bits
+  // are preserved, which also makes the helper suitable for successive fields
+  // sharing one byte.
+  [[nodiscard]] bool write_bit_field_constant(
+      const ConstantValue &value,
+      TypeId type_id,
+      std::vector<std::uint8_t> &bytes,
+      std::uint64_t storage_offset,
+      std::uint64_t bit_offset,
+      std::uint32_t bit_width,
+      SourceRange range) {
+    const std::optional<BigInteger> source =
+        bit_field_constant_integer(value, type_id);
+    if (!source.has_value() || bit_width == 0) {
+      error(range, "bit-field constant is not an integer-like value");
+      return false;
+    }
+    const BigInteger modulus = BigInteger::from_u64(1).shifted_left(bit_width);
+    BigInteger quotient;
+    BigInteger remainder;
+    if (!source->divide(modulus, quotient, remainder)) {
+      error(range, "could not encode bit-field constant");
+      return false;
+    }
+    // BigInteger division truncates toward zero and leaves a negative
+    // remainder for a negative dividend. Moving that remainder into [0, 2^N)
+    // produces the exact low-N-bit representation even when the source is
+    // several whole moduli below zero.
+    if (remainder.is_negative()) remainder = remainder.added(modulus);
+    BigInteger encoded = std::move(remainder);
+
+    for (std::uint32_t index = 0; index < bit_width; ++index) {
+      const std::uint64_t absolute = bit_offset + index;
+      const std::uint64_t byte_offset = storage_offset + absolute / 8U;
+      if (byte_offset >= bytes.size()) {
+        error(range, "bit-field constant exceeds aggregate byte storage");
+        return false;
+      }
+      const std::optional<std::uint64_t> bit = encoded
+          .shifted_right(index)
+          .bitwise_and(BigInteger::from_u64(1))
+          .to_u64();
+      if (!bit.has_value()) {
+        error(range, "could not encode bit-field constant bit");
+        return false;
+      }
+      const std::uint8_t mask = static_cast<std::uint8_t>(
+          1U << static_cast<unsigned>(absolute % 8U));
+      std::uint8_t &destination = bytes[static_cast<std::size_t>(byte_offset)];
+      destination = *bit == 0
+          ? static_cast<std::uint8_t>(destination & ~mask)
+          : static_cast<std::uint8_t>(destination | mask);
+    }
+    return true;
+  }
+
   [[nodiscard]] bool write_float_bytes(
       const ConstantValue &value,
       TypeId type_id,
@@ -2254,6 +2364,26 @@ private:
             : 0;
         ConstantSite child = site;
         child.path.push_back(index);
+        if (storage.kind == TypeKind::Struct &&
+            index < storage.member_layouts.size() &&
+            storage.member_layouts[index].kind ==
+                FieldLayoutKind::BitField) {
+          const std::uint64_t member_bit_offset =
+              index < storage.member_bit_offsets.size()
+              ? storage.member_bit_offsets[index]
+              : member_offset * 8U;
+          if (!write_bit_field_constant(
+                  value.elements[index],
+                  storage.members[index],
+                  bytes,
+                  offset,
+                  member_bit_offset,
+                  storage.member_layouts[index].bit_width,
+                  range)) {
+            return false;
+          }
+          continue;
+        }
         if (!write_constant_bytes(
                 value.elements[index],
                 storage.members[index],
@@ -2430,6 +2560,30 @@ private:
             : 0;
         ConstantSite child = site;
         child.path.push_back(index);
+        if (storage.kind == TypeKind::Struct &&
+            index < storage.member_layouts.size() &&
+            storage.member_layouts[index].kind ==
+                FieldLayoutKind::BitField) {
+          if (contains_relocation(value.elements[index])) {
+            error(range, "bit-field constant cannot contain a relocation");
+            return false;
+          }
+          const std::uint64_t member_bit_offset =
+              index < storage.member_bit_offsets.size()
+              ? storage.member_bit_offsets[index]
+              : member_offset * 8U;
+          if (!write_bit_field_constant(
+                  value.elements[index],
+                  storage.members[index],
+                  bytes,
+                  offset,
+                  member_bit_offset,
+                  storage.member_layouts[index].bit_width,
+                  range)) {
+            return false;
+          }
+          continue;
+        }
         if (!collect_relocatable_constant_fields(
                 value.elements[index],
                 storage.members[index],
@@ -2669,7 +2823,8 @@ private:
     }
     const Type &aggregate = type(type_id);
     if (aggregate.kind == TypeKind::Variant ||
-        aggregate.kind == TypeKind::Union) {
+        aggregate.kind == TypeKind::Union ||
+        struct_has_bit_fields(type_id)) {
       return selected_member_constant(value, type_id, std::move(site), range);
     }
 
@@ -3198,10 +3353,192 @@ private:
     }
     if (!candidate.is_valid()) return std::nullopt;
     const TypeKind kind = runtime_scalar_kind(candidate);
-    if (kind != TypeKind::Variant && kind != TypeKind::Union) {
+    if (kind != TypeKind::Variant && kind != TypeKind::Union &&
+        !struct_has_bit_fields(candidate)) {
       return std::nullopt;
     }
     return candidate;
+  }
+
+  // Loads the exact bytes touched by a bit field and assembles them with byte
+  // zero in the low bits. Doing this bytewise makes Draft's specified bit
+  // order independent of LLVM's target scalar endianness and avoids issuing an
+  // over-wide unaligned load which could touch storage outside the field.
+  void emit_bit_field_load(
+      const MirProcedure &,
+      const MirInstruction &instruction,
+      std::vector<std::string> &operands) {
+    const std::uint32_t covered_bits =
+        ((instruction.bit_offset + instruction.bit_width + 7U) / 8U) * 8U;
+    const std::uint32_t byte_count = covered_bits / 8U;
+    const std::string base = value_operand(
+        operands, instruction.operands.front(), instruction.range);
+    std::string assembled;
+    for (std::uint32_t byte = 0; byte < byte_count; ++byte) {
+      std::string address = base;
+      if (byte != 0) {
+        address = auxiliary();
+        output_ << "  " << address << " = getelementptr i8, ptr " << base
+                << ", i64 " << byte << '\n';
+      }
+      const std::string loaded = auxiliary();
+      output_ << "  " << loaded << " = load i8, ptr " << address
+              << ", align 1\n";
+      std::string part = loaded;
+      if (covered_bits != 8) {
+        part = auxiliary();
+        output_ << "  " << part << " = zext i8 " << loaded << " to i"
+                << covered_bits << '\n';
+      }
+      if (byte != 0) {
+        const std::string shifted = auxiliary();
+        output_ << "  " << shifted << " = shl i" << covered_bits << ' '
+                << part << ", " << byte * 8U << '\n';
+        part = shifted;
+      }
+      if (assembled.empty()) {
+        assembled = part;
+      } else {
+        const std::string combined = auxiliary();
+        output_ << "  " << combined << " = or i" << covered_bits << ' '
+                << assembled << ", " << part << '\n';
+        assembled = combined;
+      }
+    }
+
+    if (instruction.bit_offset != 0) {
+      const std::string shifted = auxiliary();
+      output_ << "  " << shifted << " = lshr i" << covered_bits << ' '
+              << assembled << ", " << instruction.bit_offset << '\n';
+      assembled = shifted;
+    }
+    if (covered_bits != instruction.bit_width) {
+      const std::string narrowed = auxiliary();
+      output_ << "  " << narrowed << " = trunc i" << covered_bits << ' '
+              << assembled << " to i" << instruction.bit_width << '\n';
+      assembled = narrowed;
+    }
+
+    const std::uint32_t logical_bits = integer_bits(instruction.type);
+    std::string value = assembled;
+    if (instruction.bit_width < logical_bits) {
+      value = "%v" + std::to_string(instruction.result.value);
+      output_ << "  " << value << " = "
+              << (signed_integer(instruction.type) ? "sext" : "zext")
+              << " i" << instruction.bit_width << ' ' << assembled << " to i"
+              << logical_bits << '\n';
+    }
+    assign_alias(operands, instruction, value);
+  }
+
+  // Stores only the bits owned by one field. Partial first/last bytes use an
+  // explicit read-modify-write; fully covered bytes need no load. This is an
+  // ordinary non-atomic language assignment, exactly like a scalar store.
+  void emit_bit_field_store_at(
+      const std::string &base,
+      MirValueId value_id,
+      std::uint32_t bit_offset,
+      std::uint32_t bit_width,
+      SourceRange range,
+      const MirProcedure &procedure,
+      std::vector<std::string> &operands) {
+    const TypeId value_type = procedure.value(value_id).type;
+    const std::uint32_t logical_bits = integer_bits(value_type);
+    std::string field = value_operand(operands, value_id, range);
+    if (logical_bits != bit_width) {
+      const std::string narrowed = auxiliary();
+      output_ << "  " << narrowed << " = trunc i" << logical_bits << ' '
+              << field << " to i" << bit_width << '\n';
+      field = narrowed;
+    }
+
+    const std::uint32_t covered_bits =
+        ((bit_offset + bit_width + 7U) / 8U) * 8U;
+    std::string packed = field;
+    if (bit_width != covered_bits) {
+      const std::string extended = auxiliary();
+      output_ << "  " << extended << " = zext i" << bit_width
+              << ' ' << packed << " to i" << covered_bits << '\n';
+      packed = extended;
+    }
+    if (bit_offset != 0) {
+      const std::string shifted = auxiliary();
+      output_ << "  " << shifted << " = shl i" << covered_bits << ' '
+              << packed << ", " << bit_offset << '\n';
+      packed = shifted;
+    }
+
+    const std::uint32_t byte_count = covered_bits / 8U;
+    const std::uint32_t first_bit = bit_offset;
+    const std::uint32_t final_bit = first_bit + bit_width;
+    for (std::uint32_t byte = 0; byte < byte_count; ++byte) {
+      std::string address = base;
+      if (byte != 0) {
+        address = auxiliary();
+        output_ << "  " << address << " = getelementptr i8, ptr " << base
+                << ", i64 " << byte << '\n';
+      }
+
+      std::string replacement = packed;
+      if (byte != 0) {
+        const std::string shifted = auxiliary();
+        output_ << "  " << shifted << " = lshr i" << covered_bits << ' '
+                << packed << ", " << byte * 8U << '\n';
+        replacement = shifted;
+      }
+      if (covered_bits != 8) {
+        const std::string narrowed = auxiliary();
+        output_ << "  " << narrowed << " = trunc i" << covered_bits << ' '
+                << replacement << " to i8\n";
+        replacement = narrowed;
+      }
+
+      const std::uint32_t byte_begin = byte * 8U;
+      const std::uint32_t owned_begin = std::max(first_bit, byte_begin);
+      const std::uint32_t owned_end = std::min(final_bit, byte_begin + 8U);
+      std::uint32_t mask = 0;
+      for (std::uint32_t bit = owned_begin; bit < owned_end; ++bit) {
+        mask |= 1U << (bit - byte_begin);
+      }
+      if (mask != 0xffU) {
+        const std::string old = auxiliary();
+        const std::string stable = auxiliary();
+        const std::string retained = auxiliary();
+        const std::string selected = auxiliary();
+        const std::string combined = auxiliary();
+        output_ << "  " << old << " = load i8, ptr " << address
+                << ", align 1\n"
+                // A partial store is valid even when the containing byte came
+                // from `---` storage. Freeze converts LLVM poison/undef into
+                // arbitrary concrete neighbor bits before masking; the bits
+                // owned by this assignment are then fully defined.
+                << "  " << stable << " = freeze i8 " << old << '\n'
+                << "  " << retained << " = and i8 " << stable << ", "
+                << (0xffU & ~mask) << '\n'
+                << "  " << selected << " = and i8 " << replacement << ", "
+                << mask << '\n'
+                << "  " << combined << " = or i8 " << retained << ", "
+                << selected << '\n';
+        replacement = combined;
+      }
+      output_ << "  store i8 " << replacement << ", ptr " << address
+              << ", align 1\n";
+    }
+  }
+
+  void emit_bit_field_store(
+      const MirProcedure &procedure,
+      const MirInstruction &instruction,
+      std::vector<std::string> &operands) {
+    emit_bit_field_store_at(
+        value_operand(
+            operands, instruction.operands.front(), instruction.range),
+        instruction.operands[1],
+        instruction.bit_offset,
+        instruction.bit_width,
+        instruction.range,
+        procedure,
+        operands);
   }
 
   void emit_aggregate(
@@ -3211,11 +3548,13 @@ private:
       std::vector<std::string> &operands) {
     const TypeId storage_type = runtime_scalar_id(instruction.type);
     if (type(storage_type).kind == TypeKind::Variant ||
-        type(storage_type).kind == TypeKind::Union) {
-      // Variants and unions use their exact byte-sized storage because no LLVM
-      // aggregate type expresses either Draft layout directly. Build the value
-      // in temporary memory: zeroing first gives deterministic padding and the
-      // Draft zero value, then typed stores write the discriminator/member.
+        type(storage_type).kind == TypeKind::Union ||
+        struct_has_bit_fields(storage_type)) {
+      // Variants, unions, and bit-field structs use their exact byte-sized
+      // storage because no LLVM aggregate type expresses their Draft layout
+      // directly. Build the value in temporary memory: zeroing first gives
+      // deterministic padding and the Draft zero value, then typed/bit stores
+      // write the selected members.
       const Type &aggregate_type = type(storage_type);
       const std::string storage = aggregate_scratch(instruction_index);
       output_ << "  store " << llvm_type(instruction.type)
@@ -3230,10 +3569,32 @@ private:
         const std::string address = auxiliary();
         output_ << "  " << address << " = getelementptr i8, ptr "
                 << storage << ", i64 " << offset << '\n';
+        const std::uint32_t bit_width =
+            index < instruction.aggregate_bit_widths.size()
+            ? instruction.aggregate_bit_widths[index]
+            : 0;
+        if (bit_width != 0) {
+          const std::uint64_t absolute_bit =
+              index < instruction.aggregate_bit_offsets.size()
+              ? instruction.aggregate_bit_offsets[index]
+              : offset * 8U;
+          emit_bit_field_store_at(
+              address,
+              operand,
+              static_cast<std::uint32_t>(absolute_bit % 8U),
+              bit_width,
+              instruction.range,
+              procedure,
+              operands);
+          continue;
+        }
         output_ << "  store "
                 << typed_operand(procedure, operands, operand, instruction.range)
                 << ", ptr " << address << ", align "
-                << type(operand_type).layout.alignment << '\n';
+                << (struct_has_bit_fields(storage_type)
+                        ? 1U
+                        : type(operand_type).layout.alignment)
+                << '\n';
       }
       const std::string result = "%v" + std::to_string(instruction.result.value);
       output_ << "  " << result << " = load " << llvm_type(instruction.type)
@@ -3437,6 +3798,9 @@ private:
               << ", align " << instruction.alignment << '\n';
       assign_alias(operands, instruction, result);
       break;
+    case MirInstructionKind::LoadBitField:
+      emit_bit_field_load(procedure, instruction, operands);
+      break;
     case MirInstructionKind::Store: {
       const MirValueId value_id = instruction.operands[1];
       output_ << "  store "
@@ -3446,6 +3810,9 @@ private:
               << ", align " << instruction.alignment << '\n';
       break;
     }
+    case MirInstructionKind::StoreBitField:
+      emit_bit_field_store(procedure, instruction, operands);
+      break;
     case MirInstructionKind::AtomicLoad:
       output_ << "  " << result << " = load atomic "
               << llvm_type(instruction.type) << ", ptr "
@@ -4096,9 +4463,9 @@ private:
           }
         }
         emit_c_abi_scratch_allocas(procedure);
-        // Variant/union packing and extraction use one fixed scratch slot per
-        // MIR instruction. Declaring these in the entry block avoids dynamic
-        // stack growth when the source operation repeats inside a loop.
+        // Variant/union/bit-field packing and extraction use one fixed scratch
+        // slot per MIR instruction. Declaring these in the entry block avoids
+        // dynamic stack growth when the source operation repeats inside a loop.
         for (std::size_t instruction_index = 0;
              instruction_index < procedure.instructions.size();
              ++instruction_index) {

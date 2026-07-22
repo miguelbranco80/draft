@@ -68,6 +68,7 @@ struct MemberData {
   std::vector<SymbolId> symbols;
   std::vector<TypeId> types;
   std::vector<std::uint64_t> offsets;
+  std::vector<std::uint64_t> bit_offsets;
   std::vector<FieldLayout> field_layouts;
   std::vector<BigInteger> enum_values;
   TypeId enum_value_expected_type;
@@ -108,6 +109,17 @@ struct AggregateModifiers {
   std::uint32_t requested_alignment = 0;
 };
 
+// FieldModifierSyntax is the parser-owned portion of one struct field's
+// placement rule. A bit width remains syntax here because its compile-time
+// value belongs to the MemberTypes product, not the earlier member-name
+// publication. name_begin is the first token which may name a field.
+struct FieldModifierSyntax {
+  FieldLayoutKind kind = FieldLayoutKind::Natural;
+  std::optional<NodeId> bit_width;
+  SourceRange range;
+  std::uint32_t name_begin = 0;
+};
+
 struct BuiltIntegerExpressionNode {
   bool valid = false;
   std::uint32_t node = std::numeric_limits<std::uint32_t>::max();
@@ -121,7 +133,8 @@ struct BuiltIntegerExpressionNode {
   return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
          kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
          kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
-         kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
+         kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
+         kind == TokenKind::KeywordBits;
 }
 
 // Identifies syntax nodes that are unambiguously types before name resolution.
@@ -2770,6 +2783,7 @@ private:
       data.symbols.push_back(member_id);
       data.types.push_back(semantic_.symbols.symbol(member_id).type);
       data.offsets.push_back(0);
+      data.bit_offsets.push_back(0);
       if (pattern_type.kind == TypeKind::Struct) {
         data.field_layouts.push_back(
             template_index < pattern_type.member_layouts.size()
@@ -2823,14 +2837,11 @@ private:
         concrete, data.types, data.field_layouts);
     if (layout.known) {
       semantic_.types.publish_nominal_natural_layout(
-          concrete, layout, data.offsets);
+          concrete, layout, data.offsets, data.bit_offsets);
     }
     for (std::size_t index = 0; index < data.symbols.size(); ++index) {
-      const FieldLayout field_layout = index < data.field_layouts.size()
-          ? data.field_layouts[index]
-          : FieldLayout{};
       semantic_.aggregate_members.push_back(
-          {owner_id, data.symbols[index], data.offsets[index], field_layout});
+          {owner_id, data.symbols[index], data.offsets[index]});
     }
     return concrete;
   }
@@ -3121,7 +3132,10 @@ private:
          semantic_.aggregate_members_for_read()) {
       if (member.owner == source) template_members.push_back(member);
     }
-    for (const AggregateMember &member : template_members) {
+    for (std::size_t template_index = 0;
+         template_index < template_members.size();
+         ++template_index) {
+      const AggregateMember &member = template_members[template_index];
       Symbol concrete_member = semantic_.symbols.symbol(member.member);
       const SymbolId template_member = member.member;
       concrete_member.scope = member_scope;
@@ -3143,8 +3157,12 @@ private:
       data.symbols.push_back(member_id);
       data.types.push_back(semantic_.symbols.symbol(member_id).type);
       data.offsets.push_back(0);
+      data.bit_offsets.push_back(0);
       if (template_type.kind == TypeKind::Struct) {
-        data.field_layouts.push_back(member.field_layout);
+        data.field_layouts.push_back(
+            template_index < template_type.member_layouts.size()
+                ? template_type.member_layouts[template_index]
+                : FieldLayout{});
       }
       if (template_type.kind == TypeKind::Enum) {
         std::optional<BigInteger> concrete_value;
@@ -3219,14 +3237,11 @@ private:
         concrete, data.types, data.field_layouts);
     if (layout.known) {
       semantic_.types.publish_nominal_natural_layout(
-          concrete, layout, data.offsets);
+          concrete, layout, data.offsets, data.bit_offsets);
     }
     for (std::size_t index = 0; index < data.symbols.size(); ++index) {
-      const FieldLayout field_layout = index < data.field_layouts.size()
-          ? data.field_layouts[index]
-          : FieldLayout{};
       semantic_.aggregate_members.push_back(
-          {instance_id, data.symbols[index], data.offsets[index], field_layout});
+          {instance_id, data.symbols[index], data.offsets[index]});
     }
     semantic_.parametric_type_instances.push_back(
         {source, instance_id, std::move(arguments)});
@@ -3934,23 +3949,30 @@ private:
     return id;
   }
 
-  // Returns the source storage rule and first name token for one field node.
-  // Field modifiers are dedicated syntax children before the unchanged final
-  // type child. Keeping name extraction here prevents a reserved modifier from
-  // becoming a synthetic member name in either the Names or MemberTypes task.
-  [[nodiscard]] std::pair<FieldLayout, std::uint32_t> field_layout_and_name_begin(
+  // Returns the authored storage modifier and first name token for one field.
+  // Width evaluation is deliberately absent: the Names task may publish a
+  // stable namespace before a layout constant or field type is ready.
+  [[nodiscard]] FieldModifierSyntax field_modifier_syntax(
       const SyntaxTree &tree,
       const SyntaxNode &member) const {
-    FieldLayout layout;
-    std::uint32_t name_begin = member.token_begin;
+    FieldModifierSyntax result;
+    result.name_begin = member.token_begin;
     for (NodeId child : member.children) {
       const SyntaxNode &node = tree.node(child);
       if (node.kind == NodeKind::PackedFieldSpecifier) {
-        layout.kind = FieldLayoutKind::Packed;
-        name_begin = node.token_end;
+        result.kind = FieldLayoutKind::Packed;
+        result.range = node.range;
+        result.name_begin = node.token_end;
+      } else if (node.kind == NodeKind::BitFieldSpecifier) {
+        result.kind = FieldLayoutKind::BitField;
+        result.range = node.range;
+        result.name_begin = node.token_end;
+        if (node.children.size() == 1) {
+          result.bit_width = node.children.front();
+        }
       }
     }
-    return {layout, name_begin};
+    return result;
   }
 
   // Declares only the stable identities in one selected member region. This
@@ -3969,10 +3991,11 @@ private:
       return;
     }
     const SyntaxNode &type_node = tree.node(member.children.back());
-    const auto [field_layout, name_begin] =
-        field_layout_and_name_begin(tree, member);
+    const FieldModifierSyntax modifier = field_modifier_syntax(tree, member);
+    FieldLayout field_layout;
+    field_layout.kind = modifier.kind;
     const std::vector<SourceName> names = names_in_span(
-        tree, name_begin, type_node.token_begin);
+        tree, modifier.name_begin, type_node.token_begin);
     for (const SourceName &name : names) {
       if (name.text == "_") {
         diagnostics_.error(
@@ -3991,6 +4014,7 @@ private:
       data.symbols.push_back(*symbol);
       data.types.push_back(semantic_.types.builtins().invalid);
       data.offsets.push_back(0);
+      data.bit_offsets.push_back(0);
       data.field_layouts.push_back(field_layout);
     }
   }
@@ -4023,6 +4047,7 @@ private:
     data.symbols.push_back(*symbol);
     data.types.push_back(semantic_.types.builtins().invalid);
     data.offsets.push_back(0);
+    data.bit_offsets.push_back(0);
   }
 
   // Follows only the branch selected by an already published condition. A
@@ -4162,6 +4187,124 @@ private:
     }
   }
 
+  [[nodiscard]] static bool integer_fits_bit_width(
+      const BigInteger &value,
+      std::uint32_t width,
+      bool signed_value) {
+    if (width == 0) return false;
+    if (!signed_value) {
+      return !value.is_negative() && value.bit_count() <= width;
+    }
+    const BigInteger magnitude = BigInteger::from_u64(1).shifted_left(
+        static_cast<std::size_t>(width - 1U));
+    return value.compare(magnitude.negated()) >= 0 &&
+        value.compare(magnitude.subtracted(BigInteger::from_u64(1))) <= 0;
+  }
+
+  // Checks the value type independently of its storage occurrence. Bit fields
+  // deliberately admit only bool, concrete signed/unsigned integers, and enums
+  // (including distinct wrappers around those types). Endian scalars, floats,
+  // pointers, and aggregate values have no coherent sub-byte representation.
+  [[nodiscard]] bool bit_field_type_accepts_width(
+      TypeId type_id,
+      std::uint32_t width) const {
+    while (semantic_.types.type(type_id).kind == TypeKind::Distinct) {
+      type_id = semantic_.types.type(type_id).element;
+    }
+    const Type &type = semantic_.types.type(type_id);
+    if (type.kind == TypeKind::Bool) return width == 1;
+    if (type.kind == TypeKind::SignedInteger ||
+        type.kind == TypeKind::UnsignedInteger) {
+      return width <= type.bit_width;
+    }
+    if (type.kind != TypeKind::Enum || !type.element.is_valid()) return false;
+
+    const Type &backing = semantic_.types.type(type.element);
+    if ((backing.kind != TypeKind::SignedInteger &&
+         backing.kind != TypeKind::UnsignedInteger) ||
+        width > backing.bit_width) {
+      return false;
+    }
+    const bool signed_value = backing.kind == TypeKind::SignedInteger;
+    bool found_value = false;
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
+      if (!member.owner.is_valid()) continue;
+      if (semantic_.symbols.symbol(member.owner).type != type_id) continue;
+      for (const EnumMemberValue &value :
+           semantic_.enum_member_values_for_read()) {
+        if (value.member != member.member) continue;
+        found_value = true;
+        if (!integer_fits_bit_width(value.value, width, signed_value)) {
+          return false;
+        }
+      }
+    }
+    return found_value;
+  }
+
+  // Resolves a source modifier after the logical field type is known. Widths
+  // use the same exact usize compile-time vocabulary as align(N); no host
+  // integer truncation occurs before positivity and range checks.
+  [[nodiscard]] FieldLayout resolve_field_layout(
+      const SyntaxTree &tree,
+      const SyntaxNode &member,
+      ScopeId scope,
+      TypeId field_type) {
+    const FieldModifierSyntax modifier = field_modifier_syntax(tree, member);
+    FieldLayout result;
+    result.kind = modifier.kind;
+    if (modifier.kind != FieldLayoutKind::BitField) return result;
+    if (!modifier.bit_width.has_value()) {
+      diagnostics_.error(
+          modifier.range, "bits(N) requires one compile-time usize width");
+      result.bit_width = 1;
+      return result;
+    }
+
+    const NodeId width_expression = *modifier.bit_width;
+    const std::optional<BigInteger> exact = integer_constant_expression(
+        tree,
+        width_expression,
+        scope,
+        semantic_.types.builtins().usize_type);
+    if (!exact.has_value()) {
+      require_integer_expression(
+          tree,
+          width_expression,
+          scope,
+          semantic_.types.builtins().usize_type);
+    }
+    const std::optional<std::uint64_t> width =
+        exact.has_value() ? exact->to_u64() : std::nullopt;
+    if (width.has_value() &&
+        !integer_constant_matches(
+            tree,
+            width_expression,
+            scope,
+            semantic_.types.builtins().usize_type,
+            "bits width")) {
+      result.bit_width = 1;
+      return result;
+    }
+    if (!width.has_value() || *width == 0 ||
+        *width > std::numeric_limits<std::uint32_t>::max()) {
+      diagnostics_.error(
+          tree.node(width_expression).range,
+          "bits width must be a positive compile-time usize");
+      result.bit_width = 1;
+      return result;
+    }
+    result.bit_width = static_cast<std::uint32_t>(*width);
+    if (!bit_field_type_accepts_width(field_type, result.bit_width)) {
+      diagnostics_.error(
+          tree.node(member.children.back()).range,
+          "bit-field type must be bool, a concrete integer, or an enum "
+          "whose values fit the declared width");
+    }
+    return result;
+  }
+
   // Resolves a possibly grouped struct/union field declaration. Every name
   // shares the one parsed type and receives an independent member identity.
   void collect_field_member(
@@ -4176,10 +4319,11 @@ private:
     }
     const SyntaxNode &type_node = tree.node(member.children.back());
     const TypeId type = resolve_type(tree, member.children.back(), scope);
-    const auto [field_layout, name_begin] =
-        field_layout_and_name_begin(tree, member);
+    const FieldModifierSyntax modifier = field_modifier_syntax(tree, member);
+    const FieldLayout field_layout =
+        resolve_field_layout(tree, member, scope, type);
     const std::vector<SourceName> names = names_in_span(
-        tree, name_begin, type_node.token_begin);
+        tree, modifier.name_begin, type_node.token_begin);
     for (const SourceName &name : names) {
       if (name.text == "_") {
         diagnostics_.error(name.range, "aggregate member cannot use the discard name '_'");
@@ -4191,6 +4335,7 @@ private:
         data.symbols.push_back(*symbol);
         data.types.push_back(type);
         data.offsets.push_back(0);
+        data.bit_offsets.push_back(0);
         data.field_layouts.push_back(field_layout);
       }
     }
@@ -4662,6 +4807,7 @@ private:
       data.symbols.push_back(*symbol);
       data.types.push_back(semantic_.types.builtins().invalid);
       data.offsets.push_back(0);
+      data.bit_offsets.push_back(0);
       data.enum_values.push_back(value);
       semantic_.enum_member_values.push_back({*symbol, std::move(value)});
     }
@@ -4696,6 +4842,7 @@ private:
       data.symbols.push_back(*symbol);
       data.types.push_back(type);
       data.offsets.push_back(0);
+      data.bit_offsets.push_back(0);
     }
   }
 
@@ -4805,6 +4952,7 @@ private:
       MemberData &data, NaturalAggregateLayout result) const {
     if (result.status != NaturalLayoutStatus::Complete) return {};
     data.offsets = std::move(result.member_offsets);
+    data.bit_offsets = std::move(result.member_bit_offsets);
     return result.layout;
   }
 
@@ -4978,11 +5126,8 @@ private:
       // only from the retained task package; canonical package state never sees
       // an incomplete member namespace.
       for (std::size_t index = 0; index < data.symbols.size(); ++index) {
-        const FieldLayout field_layout = index < data.field_layouts.size()
-            ? data.field_layouts[index]
-            : FieldLayout{};
         semantic_.aggregate_members.push_back(
-            {owner, data.symbols[index], 0, field_layout});
+            {owner, data.symbols[index], 0});
       }
       return;
     }
@@ -5027,11 +5172,11 @@ private:
             data.field_layouts.begin(),
             data.field_layouts.end(),
             [](const FieldLayout &layout) {
-              return layout.kind == FieldLayoutKind::Packed;
+              return layout.kind != FieldLayoutKind::Natural;
             })) {
       diagnostics_.error(
           aggregate.range,
-          "packed fields are not allowed in a c struct");
+          "packed and bits(N) fields are not allowed in a c struct");
     }
 
     if (!data.incomplete) {
@@ -5106,32 +5251,21 @@ private:
     }
     if (!members_were_complete) {
       for (std::size_t index = 0; index < data.symbols.size(); ++index) {
-        const FieldLayout field_layout = index < data.field_layouts.size()
-            ? data.field_layouts[index]
-            : FieldLayout{};
         semantic_.aggregate_members.push_back(
-            {owner, data.symbols[index], 0, field_layout});
+            {owner, data.symbols[index], 0});
       }
     } else {
       std::vector<SymbolId> published_members;
-      std::vector<FieldLayout> published_field_layouts;
       for (const AggregateMember &member :
            semantic_.aggregate_members_for_read()) {
         if (member.owner == owner) {
           published_members.push_back(member.member);
-          published_field_layouts.push_back(member.field_layout);
         }
       }
       if (published_members != data.symbols) {
         diagnostics_.error(
             aggregate.range,
             "published type member order does not match selected syntax");
-      }
-      if (kind == TypeKind::Struct &&
-          published_field_layouts != data.field_layouts) {
-        diagnostics_.error(
-            aggregate.range,
-            "published struct field layout does not match selected syntax");
       }
     }
 
@@ -5155,6 +5289,7 @@ private:
           // suffix. Publish the same task packet directly while preserving the
           // exact offsets in both parallel representations.
           assert(layout.member_offsets.size() == data.symbols.size());
+          assert(layout.member_bit_offsets.size() == data.symbols.size());
           const std::size_t first_member =
               semantic_.aggregate_members_for_read().size() -
               data.symbols.size();
@@ -5165,7 +5300,8 @@ private:
           semantic_.types.publish_nominal_natural_layout(
               nominal,
               layout.layout,
-              std::move(layout.member_offsets));
+              std::move(layout.member_offsets),
+              std::move(layout.member_bit_offsets));
         }
       }
     }

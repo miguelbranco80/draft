@@ -118,6 +118,57 @@ void test_append_only_constant_overlay(TestState &state) {
   EXPECT(state, canonical.find(draft::SymbolId{7}) != nullptr);
 }
 
+// Compile-time aggregate values represent the logical result of reading their
+// storage, not merely the pre-storage initializer expressions. This must match
+// native bit-field truncation for literals, direct assignment, and compound
+// assignment, including negative values more than one modulus below zero.
+void test_compile_time_bit_field_storage(TestState &state) {
+  AnalyzedSource source(R"draft(
+package conditions
+
+Bit_Record :: struct {
+    bits(3) kind: u8,
+    bits(6) delta: i16,
+}
+
+Stored :: Bit_Record{kind = 15, delta = -67}
+Stored_Kind :: Stored.kind
+Stored_Delta :: Stored.delta
+
+mutate :: proc() -> i16 {
+    value := Stored
+    value.delta = -129
+    value.delta += 64
+    return value.delta
+}
+
+Mutated_Delta :: mutate()
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.analysis.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  const auto expect_integer = [&](std::string_view name,
+                                  std::string_view expected) {
+    const std::optional<draft::SymbolId> symbol =
+        find_symbol(source.analysis.package, name);
+    EXPECT(state, symbol.has_value());
+    if (!symbol.has_value()) return;
+    const draft::ConstantValue *value =
+        source.analysis.constants.find(*symbol);
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::Integer);
+      EXPECT(state, value->integer.to_decimal() == expected);
+    }
+  };
+  expect_integer("Stored_Kind", "7");
+  expect_integer("Stored_Delta", "-3");
+  expect_integer("Mutated_Delta", "-1");
+}
+
 void test_single_constant_product_dependencies(TestState &state) {
   AnalyzedSource source(R"draft(
 package conditions
@@ -2707,6 +2758,7 @@ Result :: left()
 int main() {
   TestState state;
   test_append_only_constant_overlay(state);
+  test_compile_time_bit_field_storage(state);
   test_single_constant_product_dependencies(state);
   test_single_conditional_product_dependencies(state);
   test_constants_and_conditional_rounds(state);

@@ -206,6 +206,11 @@ pub Packed_Point :: struct {
     packed value: u32,
 }
 
+pub Bit_Header :: struct {
+    bits(3) kind: u8,
+    bits(6) delta: i16,
+}
+
 pub C_Point :: c align(16) struct {
     x: i64,
     y: i64,
@@ -297,6 +302,10 @@ main :: proc() {
     packed_point := math.Packed_Point{prefix = 0, value = 41}
     packed_point.value += 1
     assert(packed_point.value == 42)
+    bit_header := math.Bit_Header{kind = 5, delta = -3}
+    bit_header.kind += 1
+    assert(bit_header.kind == 6)
+    assert(bit_header.delta == -3)
 }
 )draft");
   const std::optional<draft::SyntaxReference> import = first_import(consumer);
@@ -328,12 +337,12 @@ main :: proc() {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, dependency_semantics.ok);
-  EXPECT(state, dependency_interface.declarations.size() == 8);
+  EXPECT(state, dependency_interface.declarations.size() == 9);
   EXPECT(state, consumer_semantics.ok);
   EXPECT(state, bodies.ok);
   EXPECT(state, bodies.checked_procedures == 3);
-  EXPECT(state, bodies.package.imported_symbols.size() == 8);
-  EXPECT(state, bodies.package.imported_types.size() == 3);
+  EXPECT(state, bodies.package.imported_symbols.size() == 9);
+  EXPECT(state, bodies.package.imported_types.size() == 4);
   EXPECT(state, consumer_interface.declarations.size() == 1);
   EXPECT(state, !diagnostics.has_errors());
 
@@ -430,6 +439,26 @@ main :: proc() {
     }
   }
   EXPECT(state, saw_packed_point);
+
+  bool saw_bit_header = false;
+  for (const draft::ImportedSymbol &imported :
+       bodies.package.imported_symbols) {
+    if (imported.public_name != "Bit_Header") continue;
+    saw_bit_header = true;
+    const draft::TypeId imported_type =
+        bodies.package.symbols.symbol(imported.proxy).type;
+    const draft::Type &type = bodies.package.types.type(imported_type);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 2, 1}));
+    EXPECT(
+        state,
+        type.member_bit_offsets == std::vector<std::uint64_t>({0, 3}));
+    EXPECT(state, type.member_layouts.size() == 2);
+    if (type.member_layouts.size() == 2) {
+      EXPECT(state, type.member_layouts[0].bit_width == 3);
+      EXPECT(state, type.member_layouts[1].bit_width == 6);
+    }
+  }
+  EXPECT(state, saw_bit_header);
 
   if (consumer_interface.declarations.empty()) {
     return;

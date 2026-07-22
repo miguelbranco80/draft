@@ -322,7 +322,7 @@ void test_natural_layout_product(TestState &state) {
     const draft::SymbolId member_id =
         package.symbols.declare(std::move(member), diagnostics);
     EXPECT(state, member_id.is_valid());
-    package.aggregate_members.push_back({owner, member_id, 0, {}});
+    package.aggregate_members.push_back({owner, member_id, 0});
   }
 
   draft::NaturalLayoutProductAttempt complete =

@@ -227,6 +227,48 @@ valid on tuples, unions, variants, enums, or `c struct`; C-compatible packed
 layout requires an explicit foreign representation rather than a Draft layout
 rule being presented as the platform C ABI.
 
+A default-layout struct may allocate selected integer-like fields from a
+continuous source-order bit stream with `bits(N)`:
+
+```draft
+Header :: struct {
+    bits(3) kind: u8,
+    bits(6) delta: i16,
+    bits(1) active: bool,
+    payload_size: u16,
+}
+```
+
+`N` is a positive compile-time `usize` expression which must be complete when
+the field declaration is checked. A bit field's logical type must be `bool`, a
+concrete signed or unsigned integer, an enum, or a `distinct` wrapper around
+one of those. `bool` requires width one. An integer width cannot exceed its
+selected-target logical width. Every declared enum value must fit the selected
+width using the enum backing type's signedness. Endian scalars, boolean-storage
+integers, `rune`, floats, pointers, and aggregate types are not bit-field types.
+
+Consecutive bit fields consume consecutive bits without implicit padding. Bit
+zero is the least-significant bit of the first byte, independently of target
+scalar byte order, and fields may cross byte boundaries. `type_member_offset`
+for a bit field is the byte containing its first bit. An ordinary field closes
+the active bit stream at the next byte and then applies its own natural or
+`packed` alignment. Bit fields contribute alignment one; final struct size is
+still rounded to the largest effective field alignment. The example has bit
+offsets 0, 3, and 9; `payload_size` begins at byte two; size is four and
+alignment is two.
+
+Reading an unsigned, boolean, or unsigned-backed enum bit field zero-extends
+its stored bits. Reading a signed integer or signed-backed enum sign-extends
+from `N`. Assignment retains the low `N` bits of the logical value, so a later
+read may differ when the assigned value is outside the field's representable
+range. Assigning one field preserves every neighboring bit. A grouped
+declaration such as `bits(3) red, green: u8` allocates two consecutive
+three-bit fields.
+
+Bit fields are readable and assignable but never addressable: `&value.field`
+is a compile-time error because no byte-addressed `^T` can name that storage.
+`bits(N)` is not valid on tuples, unions, variants, enums, or `c struct`.
+
 `variant { ... }` is a tagged sum; `union { ... }` overlays every named field
 at offset zero. A union uses the maximum member alignment and the maximum
 member size rounded to that alignment.
@@ -321,6 +363,7 @@ The remaining structural queries are compile-time intrinsics:
 - `type_element(T) -> type` applies to pointers, multi-pointers, slices,
   arrays, and SIMD vectors; `type_element_count(T) -> usize` applies to
   concrete arrays and SIMD vectors.
+- Member indices are zero-based and follow source order.
 - `type_member_count(T) -> usize`, `type_member_name(T, index) -> string`, and
   `type_member_type(T, index) -> type` inspect tuples, structs, enums, variants,
   and unions in source order. Tuple member names are their decimal
@@ -331,6 +374,11 @@ The remaining structural queries are compile-time intrinsics:
 - `type_member_is_packed(T, index) -> bool` applies to structs and reports the
   authored field placement rule. It does not infer packing from a coincidental
   byte offset.
+- `type_member_bit_width(T, index) -> usize` applies to structs and returns `N`
+  for a `bits(N)` field or zero for an ordinary/`packed` field.
+  `type_member_bit_offset(T, index) -> usize` returns the absolute
+  struct-relative bit position of a struct field; ordinary and `packed` fields
+  therefore return `type_member_offset(T, index) * 8`.
 - `type_member_value(T, index)` returns an enum alternative's backing-typed
   integer value.
 - `type_underlying(T) -> type` applies to distinct types, enums, and endian

@@ -370,7 +370,8 @@ struct CollectionContext {
   return kind == TokenKind::Identifier || kind == TokenKind::KeywordC ||
          kind == TokenKind::KeywordType || kind == TokenKind::KeywordInteger ||
          kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
-         kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory;
+         kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
+         kind == TokenKind::KeywordBits;
 }
 
 [[nodiscard]] bool node_is_type_syntax(NodeKind kind) {

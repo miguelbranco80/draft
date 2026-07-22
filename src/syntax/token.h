@@ -45,6 +45,7 @@ enum class TokenKind {
   KeywordDistinct,
   KeywordSimd,
   KeywordPacked,
+  KeywordBits,
   KeywordThreadLocal,
   KeywordForeign,
   KeywordExport,

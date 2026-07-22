@@ -218,7 +218,10 @@ receive ordinary semicolon behavior. The distributed C scalar package is named
 `core/c_abi` and does not rely on that contextual-name freedom. `align` is the reserved
 aggregate-layout modifier defined by section 5; Draft has no general annotation
 prefix or user-defined declaration modifier. `packed` is the reserved
-per-field struct-layout modifier defined by section 5.
+per-field struct-layout modifier defined by section 5. `bits` is recognized as
+the `bits(N)` field modifier only at the start of a struct field and only when
+immediately followed by `(`; elsewhere it remains an ordinary contextual name
+with ordinary semicolon behavior.
 
 `^` is exclusively pointer syntax: it begins pointer types and follows an
 expression to dereference it. Bitwise XOR is binary `~`; unary `~` remains

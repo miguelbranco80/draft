@@ -80,6 +80,7 @@ enum class NodeKind {
   ResultClause,
   MemberList,
   PackedFieldSpecifier,
+  BitFieldSpecifier,
   FieldMember,
   EnumMember,
   VariantAlternative,

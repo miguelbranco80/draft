@@ -33,8 +33,9 @@ enum class NaturalLayoutStatus {
 };
 
 // NaturalAggregateLayout is task-owned until deterministic publication copies
-// layout and member_offsets into the canonical Type row. member_offsets is
-// populated only for Complete and has exactly the input member count.
+// layout and both offset vectors into the canonical Type row. Each vector is
+// populated only for Complete and has exactly the input member count. Ordinary
+// fields have bit_offset == byte_offset * 8.
 // dependencies is populated only for Waiting and contains each distinct input
 // TypeId whose NaturalLayout facet is not complete, in first-use order. The
 // semantic coordinator maps those IDs to TypeNaturalLayout products; keeping
@@ -44,6 +45,7 @@ struct NaturalAggregateLayout {
   NaturalLayoutStatus status = NaturalLayoutStatus::Waiting;
   TypeLayout layout;
   std::vector<std::uint64_t> member_offsets;
+  std::vector<std::uint64_t> member_bit_offsets;
   std::vector<TypeId> dependencies;
 };
 

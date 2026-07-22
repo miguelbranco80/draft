@@ -72,22 +72,52 @@ NaturalAggregateLayout compute_struct_natural_layout(
   result.status = NaturalLayoutStatus::Complete;
   result.layout = {true, 0, 1};
   result.member_offsets.reserve(members.size());
+  result.member_bit_offsets.reserve(members.size());
+  std::uint64_t next_bit = 0;
   for (std::size_t index = 0; index < members.size(); ++index) {
     const TypeId member_id = members[index];
     const TypeLayout member = types.type(member_id).layout;
     assert(member.known);
-    const bool packed = !field_layouts.empty() &&
-        field_layouts[index].kind == FieldLayoutKind::Packed;
+    const FieldLayout field = field_layouts.empty()
+        ? FieldLayout{}
+        : field_layouts[index];
+    if (field.kind == FieldLayoutKind::BitField) {
+      if (field.bit_width == 0 ||
+          next_bit > std::numeric_limits<std::uint64_t>::max() -
+              field.bit_width) {
+        return overflow_layout();
+      }
+      result.member_offsets.push_back(next_bit / 8U);
+      result.member_bit_offsets.push_back(next_bit);
+      next_bit += field.bit_width;
+      result.layout.size = next_bit / 8U + (next_bit % 8U != 0 ? 1U : 0U);
+      continue;
+    }
+
+    // An ordinary field cannot begin in the unused high bits of the previous
+    // byte. Close a preceding bit-field run first, then apply this field's own
+    // natural or packed byte-alignment rule.
+    const std::uint64_t next_byte =
+        next_bit / 8U + (next_bit % 8U != 0 ? 1U : 0U);
+    const bool packed = field.kind == FieldLayoutKind::Packed;
     const std::uint32_t effective_alignment =
         packed ? 1U : member.alignment;
     const std::optional<std::uint64_t> offset =
-        round_up(result.layout.size, effective_alignment);
+        round_up(next_byte, effective_alignment);
     if (!offset.has_value() ||
         member.size > std::numeric_limits<std::uint64_t>::max() - *offset) {
       return overflow_layout();
     }
     result.member_offsets.push_back(*offset);
+    if (*offset > std::numeric_limits<std::uint64_t>::max() / 8U) {
+      return overflow_layout();
+    }
+    result.member_bit_offsets.push_back(*offset * 8U);
     result.layout.size = *offset + member.size;
+    if (result.layout.size > std::numeric_limits<std::uint64_t>::max() / 8U) {
+      return overflow_layout();
+    }
+    next_bit = result.layout.size * 8U;
     result.layout.alignment =
         std::max(result.layout.alignment, effective_alignment);
   }
@@ -108,6 +138,7 @@ NaturalAggregateLayout compute_union_natural_layout(
   result.status = NaturalLayoutStatus::Complete;
   result.layout = {true, 0, 1};
   result.member_offsets.assign(members.size(), 0);
+  result.member_bit_offsets.assign(members.size(), 0);
   for (TypeId member_id : members) {
     const TypeLayout member = types.type(member_id).layout;
     assert(member.known);
@@ -172,6 +203,11 @@ NaturalAggregateLayout compute_variant_natural_layout(
   result.status = NaturalLayoutStatus::Complete;
   result.layout = {true, *size, alignment};
   result.member_offsets.assign(alternatives.size(), *payload_offset);
+  if (*payload_offset > std::numeric_limits<std::uint64_t>::max() / 8U) {
+    return overflow_layout();
+  }
+  result.member_bit_offsets.assign(
+      alternatives.size(), *payload_offset * 8U);
   return result;
 }
 

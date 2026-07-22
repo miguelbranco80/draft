@@ -465,6 +465,23 @@ Fully_Packed :: struct {
     packed tag: u8,
 }
 
+Bit_Record :: struct {
+    bits(Member_Count) small: u8,
+    bits(6) signed_value: i16,
+    ordinary: u16,
+    bits(1) flag: bool,
+    packed tail: u16,
+}
+
+Tiny_Mode :: enum {
+    Zero,
+    Seven = 7,
+}
+
+Bit_Enum_Record :: struct {
+    bits(3) mode: Tiny_Mode,
+}
+
 Overlay :: union {
     byte: u8,
     word: u64,
@@ -653,8 +670,14 @@ take[T: type] :: proc(value: ^T) -> ^T {
       find_symbol(source.semantic, "Selective_Packed");
   const draft::Symbol *fully_packed =
       find_symbol(source.semantic, "Fully_Packed");
+  const draft::Symbol *bit_record =
+      find_symbol(source.semantic, "Bit_Record");
+  const draft::Symbol *bit_enum_record =
+      find_symbol(source.semantic, "Bit_Enum_Record");
   EXPECT(state, selective_packed != nullptr);
   EXPECT(state, fully_packed != nullptr);
+  EXPECT(state, bit_record != nullptr);
+  EXPECT(state, bit_enum_record != nullptr);
   if (selective_packed != nullptr) {
     const draft::Type &type =
         source.semantic.types.type(selective_packed->type);
@@ -679,6 +702,36 @@ take[T: type] :: proc(value: ^T) -> ^T {
     EXPECT(
         state,
         type.member_offsets == std::vector<std::uint64_t>({0, 4}));
+  }
+  if (bit_record != nullptr) {
+    const draft::Type &type = source.semantic.types.type(bit_record->type);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 8, 2}));
+    EXPECT(
+        state,
+        type.member_offsets ==
+            std::vector<std::uint64_t>({0, 0, 2, 4, 5}));
+    EXPECT(
+        state,
+        type.member_bit_offsets ==
+            std::vector<std::uint64_t>({0, 3, 16, 32, 40}));
+    EXPECT(state, type.member_layouts.size() == 5);
+    if (type.member_layouts.size() == 5) {
+      EXPECT(state, type.member_layouts[0] ==
+                        draft::FieldLayout({draft::FieldLayoutKind::BitField, 3}));
+      EXPECT(state, type.member_layouts[1] ==
+                        draft::FieldLayout({draft::FieldLayoutKind::BitField, 6}));
+      EXPECT(state, type.member_layouts[2] == draft::FieldLayout{});
+      EXPECT(state, type.member_layouts[3] ==
+                        draft::FieldLayout({draft::FieldLayoutKind::BitField, 1}));
+      EXPECT(state, type.member_layouts[4] ==
+                        draft::FieldLayout({draft::FieldLayoutKind::Packed, 0}));
+    }
+  }
+  if (bit_enum_record != nullptr) {
+    const draft::Type &type =
+        source.semantic.types.type(bit_enum_record->type);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 1, 1}));
+    EXPECT(state, type.member_bit_offsets == std::vector<std::uint64_t>({0}));
   }
 
   const draft::Type &overlay_type = source.semantic.types.type(overlay->type);
@@ -1177,6 +1230,10 @@ Aligned_Enum :: align(8) enum { Value, }
 C_Variant :: c variant { none, }
 Attributed_Scalar :: align(8) u64
 C_Packed :: c struct { packed value: u32, }
+C_Bits :: c struct { bits(3) value: u32, }
+Zero_Bits :: struct { bits(0) value: u32, }
+Wide_Bool :: struct { bits(2) value: bool, }
+Float_Bits :: struct { bits(3) value: f32, }
 )draft");
 
   EXPECT(state, source.diagnostics.has_errors());
@@ -1188,7 +1245,11 @@ C_Packed :: c struct { packed value: u32, }
                     std::string::npos);
   EXPECT(state, rendered.find("valid only on structs, unions, and enums") !=
                     std::string::npos);
-  EXPECT(state, rendered.find("packed fields are not allowed in a c struct") !=
+  EXPECT(state, rendered.find("packed and bits(N) fields are not allowed in a c struct") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("bits width must be a positive") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("bit-field type must be bool") !=
                     std::string::npos);
 }
 
