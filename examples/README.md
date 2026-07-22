@@ -36,8 +36,9 @@ its dependency but is not an executable target because it has no `main`.
 [`qualification.tsv`](qualification.tsv) classifies every tracked directory
 containing Draft or assembly source. It is exhaustive data, not a naming
 convention: ordinary executables are built and launched, dependency packages
-are frontend-checked, the C library and foreign-provider packages have their
-own native link gates, resolved agent programs consume committed pins, and
+are frontend-checked, the C library, foreign-provider, and vendored-raylib
+packages have their own native link gates, resolved agent programs consume
+committed pins, and
 intentionally unresolved programs must fail for the declared reason. The same
 rows identify every example-owned Draft test and benchmark.
 
@@ -65,6 +66,7 @@ hosts omit native tests instead of reporting false skips.
 | [`file-io`](file-io/) | Owned C path storage, explicit file handles, a zero-copy immutable-text write, byte reads, `defer` cleanup, and a complete create/read/remove round trip. |
 | [`simple-editor`](simple-editor/) | A useful but deliberately disposable ed-like application: line storage, byte input, numbered navigation, insertion, deletion, dirty-buffer protection, file load/save, command parsing, and focused Draft tests. |
 | [`tetris`](tetris/) | A full-screen terminal game with raw timed input, fragmented arrow-key decoding, terminal-size tracking, `core/tui` cell painting and differential output, seven-bag pieces, collision and wall kicks, scoring, levels, clean restoration, and deterministic tests. |
+| [`raylib-asteroids`](raylib-asteroids/) | A complete graphical Asteroids game: deterministic fixed-step simulation, inline object pools, toroidal collision and rendering, focused raylib 6.0 C records/imports, explicit shared-provider linking, keyboard input, frame timing, stack-formatted UI, and a headless software-render integration gate. |
 | [`denials`](denials/) | A runnable positive `deny` example whose transitive call graph is compiler-checked to avoid console access, assertions, assembly, unchecked access, and context access. Negative denial cases live in `tests/denial_test.cpp`. |
 | [`hello`](hello/) | The smallest provider-free compiler and native-backend smoke program: a fixed array, slice, loop, procedure call, and assertion. |
 
@@ -124,9 +126,9 @@ policy rather than missing backend features.
 | Declarations, expressions, literals, arrays, slices, control flow, tuples, pointers, aggregates, enums, variants, unions, and distinct types | `language-tour`, `runtime-checks` |
 | Compile-time evaluation, target facts, layout, `when`, named/default arguments, parametrics, structural type inspection, and static heterogeneous argument packs | `language-tour`, `console`, `packages`, `packages-generic`, `nested-procedures` |
 | Globals, TLS, context, allocation, collections, atomics, and threads | `core-runtime`, `core-memory`, `core-array`, `core-map`, `core-atomic`, `core-thread`, `runtime-checks` |
-| Console, formatting, files, arguments, environment, raw timed terminal input, differential TUI cells, and complete interactive applications | `console`, `file-io`, `core-os`, `simple-editor`, `tetris` |
+| Console, formatting, files, arguments, environment, raw timed terminal input, differential TUI cells, native window/input/drawing, and complete interactive applications | `console`, `file-io`, `core-os`, `simple-editor`, `tetris`, `raylib-asteroids` |
 | Explicit UTF-8 validation, scalar traversal, and encoding over byte strings | `core-utf8` |
-| Parsed and external assembly, SIMD, C imports, C exports, and foreign providers | `assembly`, `external-assembly`, `c-interop`, `c-library`, `foreign-provider` |
+| Parsed and external assembly, SIMD, C imports, C exports, and foreign providers | `assembly`, `external-assembly`, `c-interop`, `c-library`, `foreign-provider`, `raylib-asteroids` |
 | `docs`, `judge`, synthesis, deterministic resolution, and provider-free builds | `language-tour`, `judgment-tour`, `agent-judgment-mix`, `agent-acceptance`, `agent-pending` |
 | Denials, assertions, traps, tests, and benchmarks | `denials`, `runtime-traps`, `validation` |
 

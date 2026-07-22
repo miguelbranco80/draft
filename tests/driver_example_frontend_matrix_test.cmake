@@ -48,7 +48,7 @@ foreach(line IN LISTS matrix_lines)
     message(FATAL_ERROR "unknown frontend classification: ${frontend}")
   endif()
   if(NOT native MATCHES
-      "^(run|dependency|c-library|foreign-provider|resolved|none)$")
+      "^(run|dependency|c-library|foreign-provider|raylib|resolved|none)$")
     message(FATAL_ERROR "unknown native classification: ${native}")
   endif()
   if(NOT validation MATCHES "^(none|test|test-bench)$")

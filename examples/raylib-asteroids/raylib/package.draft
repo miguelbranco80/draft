@@ -1,0 +1,123 @@
+// This package is the deliberately narrow raylib 6.0 binding required by the
+// Asteroids example. It names two by-value C records, the window/input/frame
+// procedures used by the shell, and the small shape/text drawing surface used
+// by its renderer. The logical `raylib` foreign provider is supplied explicitly
+// to draftc; no ambient library search or package-manager state participates in
+// semantic compilation.
+//
+// Vector2 and Color match vendor/raylib/src/raylib.h exactly. raylib's public
+// `bool` is C `_Bool`, represented here as b8 at the ABI boundary and converted
+// to Draft bool by the query wrappers below. The provider borrows every cstring
+// only for the duration of its call. This package owns no window or allocation;
+// the application that successfully calls init_window must call close_window.
+// Draft specification: native interoperation section 12 and selected target
+// profiles; upstream ABI: raylib 6.0 raylib.h.
+package raylib
+
+import core/c_abi
+
+// Vector2 is raylib's two-float by-value coordinate record. Every supported
+// Draft target classifies this c struct through its selected C ABI rather than
+// relying on one host compiler's aggregate convention.
+pub Vector2 :: c struct {
+    x: f32,
+    y: f32,
+}
+
+// Color is raylib's four-byte RGBA record. Components are straight unsigned
+// bytes; alpha 255 is fully opaque and alpha 0 is fully transparent.
+pub Color :: c struct {
+    r: c_abi.unsigned_char,
+    g: c_abi.unsigned_char,
+    b: c_abi.unsigned_char,
+    a: c_abi.unsigned_char,
+}
+
+// Keyboard values are the stable raylib KeyboardKey constants consumed by the
+// example. Keeping the subset here makes the binding auditable without copying
+// the whole upstream enumeration.
+pub key_space :: cast[c_abi.int](32)
+pub key_a :: cast[c_abi.int](65)
+pub key_d :: cast[c_abi.int](68)
+pub key_r :: cast[c_abi.int](82)
+pub key_w :: cast[c_abi.int](87)
+pub key_right :: cast[c_abi.int](262)
+pub key_left :: cast[c_abi.int](263)
+pub key_up :: cast[c_abi.int](265)
+
+// The foreign declarations preserve upstream symbol spellings explicitly.
+// Every aggregate is passed by value exactly as in raylib.h; none of these
+// procedures retains a pointer supplied by the Draft application.
+foreign raylib {
+    pub init_window as "InitWindow" :: c proc(
+        width, height: c_abi.int,
+        title: cstring,
+    )
+    pub close_window as "CloseWindow" :: c proc()
+    window_should_close_raw as "WindowShouldClose" :: c proc() -> b8
+    window_ready_raw as "IsWindowReady" :: c proc() -> b8
+    pub set_target_fps as "SetTargetFPS" :: c proc(fps: c_abi.int)
+    pub frame_time as "GetFrameTime" :: c proc() -> f32
+
+    key_down_raw as "IsKeyDown" :: c proc(key: c_abi.int) -> b8
+    key_pressed_raw as "IsKeyPressed" :: c proc(key: c_abi.int) -> b8
+
+    pub begin_drawing as "BeginDrawing" :: c proc()
+    pub end_drawing as "EndDrawing" :: c proc()
+    pub clear_background as "ClearBackground" :: c proc(color: Color)
+    pub draw_line as "DrawLineEx" :: c proc(
+        start, finish: Vector2,
+        thickness: f32,
+        color: Color,
+    )
+    pub draw_circle as "DrawCircleV" :: c proc(
+        center: Vector2,
+        radius: f32,
+        color: Color,
+    )
+    pub draw_polygon_lines as "DrawPolyLinesEx" :: c proc(
+        center: Vector2,
+        sides: c_abi.int,
+        radius, rotation, thickness: f32,
+        color: Color,
+    )
+    pub draw_triangle_lines as "DrawTriangleLines" :: c proc(
+        first, second, third: Vector2,
+        color: Color,
+    )
+    pub draw_text as "DrawText" :: c proc(
+        text: cstring,
+        x, y, font_size: c_abi.int,
+        color: Color,
+    )
+}
+
+// bool wrappers end the C storage representation at this package boundary.
+// Application code therefore uses ordinary Draft bool and cannot accidentally
+// preserve a noncanonical byte as a logical value.
+pub window_should_close :: proc() -> bool {
+    return cast[bool](window_should_close_raw())
+}
+
+pub window_ready :: proc() -> bool {
+    return cast[bool](window_ready_raw())
+}
+
+pub key_down :: proc(key: c_abi.int) -> bool {
+    return cast[bool](key_down_raw(key))
+}
+
+pub key_pressed :: proc(key: c_abi.int) -> bool {
+    return cast[bool](key_pressed_raw(key))
+}
+
+// rgba and vector are small source-level constructors. They do not call the
+// provider; they merely keep repetitive C record initialization out of the
+// application renderer.
+pub rgba :: proc(r, g, b, a: u8) -> Color {
+    return Color{r = r, g = g, b = b, a = a}
+}
+
+pub vector :: proc(x, y: f32) -> Vector2 {
+    return Vector2{x = x, y = y}
+}

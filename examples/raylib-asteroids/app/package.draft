@@ -1,0 +1,217 @@
+// This file is the executable shell around the deterministic Asteroids game.
+// It owns process arguments, zero-terminated UI text, the raylib window, input
+// polling, frame-time accumulation, fixed-step scheduling, and orderly cleanup.
+// game owns all gameplay state; render.draft owns drawing. The shell contains
+// no callback framework and raylib retains only the window title for the life
+// of the window, so ownership remains visible in main.
+//
+// Normal execution opens a 960-by-720 desktop window. `--smoke` performs a
+// short deterministic simulation and one complete render, then exits; native
+// integration builds raylib's memory platform and uses that path without a
+// display server. Draft specification: sections 4-7 and native interoperation
+// section 12.
+package app
+
+import core/memory
+import core/os
+import game
+import raylib
+
+Target_Frames_Per_Second :: 60
+Maximum_Frame_Seconds :: 0.25
+Maximum_Steps_Per_Frame :: 30
+
+// Text_Resources owns every zero-terminated string borrowed by raylib. Keeping
+// them together makes initialization, conversion to Labels, and destruction
+// one explicit lifetime. The value must remain at a stable address from
+// resources_init until resources_destroy.
+Text_Resources :: struct {
+    title: memory.Owned_String,
+    score: memory.Owned_String,
+    lives: memory.Owned_String,
+    wave: memory.Owned_String,
+    controls: memory.Owned_String,
+    game_over: memory.Owned_String,
+    restart: memory.Owned_String,
+}
+
+// resources_init allocates and terminates seven short immutable labels. A
+// caller invokes it only on a zero Text_Resources and destroys the complete set
+// exactly once; allocation failure follows core/memory's assertion policy.
+resources_init :: proc(resources: ^Text_Resources) {
+    memory.owned_string_copy(&resources^.title, "Draft Asteroids")
+    memory.owned_string_copy(&resources^.score, "SCORE")
+    memory.owned_string_copy(&resources^.lives, "LIVES")
+    memory.owned_string_copy(&resources^.wave, "WAVE")
+    memory.owned_string_copy(
+        &resources^.controls,
+        "A/D or arrows turn   W/up thrust   Space fire   Esc quit",
+    )
+    memory.owned_string_copy(&resources^.game_over, "GAME OVER")
+    memory.owned_string_copy(&resources^.restart, "Press R to restart")
+}
+
+// resources_destroy ends every cstring borrow after the window has closed.
+// Destruction order is immaterial because the allocations are independent;
+// the explicit reverse order mirrors construction and remains easy to audit.
+resources_destroy :: proc(resources: ^Text_Resources) {
+    memory.owned_string_destroy(&resources^.restart)
+    memory.owned_string_destroy(&resources^.game_over)
+    memory.owned_string_destroy(&resources^.controls)
+    memory.owned_string_destroy(&resources^.wave)
+    memory.owned_string_destroy(&resources^.lives)
+    memory.owned_string_destroy(&resources^.score)
+    memory.owned_string_destroy(&resources^.title)
+}
+
+// resource_labels creates a non-owning record for the renderer. Every pointer
+// remains valid until resources_destroy and raylib reads it synchronously.
+resource_labels :: proc(resources: ^Text_Resources) -> Labels {
+    return Labels{
+        title = memory.owned_string_cstring(&resources^.title),
+        score = memory.owned_string_cstring(&resources^.score),
+        lives = memory.owned_string_cstring(&resources^.lives),
+        wave = memory.owned_string_cstring(&resources^.wave),
+        controls = memory.owned_string_cstring(&resources^.controls),
+        game_over = memory.owned_string_cstring(&resources^.game_over),
+        restart = memory.owned_string_cstring(&resources^.restart),
+    }
+}
+
+// text_equal compares exact process-argument bytes and retains neither view.
+text_equal :: proc(left, right: string) -> bool {
+    if len(left) != len(right) {
+        return false
+    }
+    for index: usize = 0; index < len(left); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
+}
+
+// has_smoke_argument recognizes the integration selector anywhere in argv so
+// wrappers may prepend their own executable spelling without affecting it.
+has_smoke_argument :: proc() -> bool {
+    for argument in os.args() {
+        if text_equal(argument, "--smoke") {
+            return true
+        }
+    }
+    return false
+}
+
+// read_input converts two equivalent key layouts into one complete held-input
+// value. Each raylib query is synchronous and the returned Input owns no key
+// state. Opposite controls remain visible and cancel inside game.game_tick.
+read_input :: proc() -> game.Input {
+    return game.Input{
+        turn_left = raylib.key_down(raylib.key_a) ||
+            raylib.key_down(raylib.key_left),
+        turn_right = raylib.key_down(raylib.key_d) ||
+            raylib.key_down(raylib.key_right),
+        thrust = raylib.key_down(raylib.key_w) ||
+            raylib.key_down(raylib.key_up),
+        fire = raylib.key_down(raylib.key_space),
+    }
+}
+
+// run_smoke exercises scheduling-independent gameplay plus the complete
+// renderer through raylib's memory platform. It does not inspect framebuffer
+// bytes—simulation tests own game truth—but a successful frame proves that the
+// provider ABI, C records, text pointers, and every drawing call agree.
+run_smoke :: proc(labels: Labels) -> int {
+    state: game.Game
+    game.game_init(&state, 0x4452414654)
+    input := game.Input{turn_left = true, thrust = true, fire = true}
+    for tick: usize = 0; tick < 240; tick += 1 {
+        game.game_tick(&state, input)
+        if tick == 24 {
+            input.turn_left = false
+        }
+        if tick == 80 {
+            input.thrust = false
+        }
+    }
+    if state.game_over || game.active_asteroid_count(&state) == 0 {
+        return 1
+    }
+    render(&state, input.thrust, labels)
+    return 0
+}
+
+// run_interactive owns the display-to-simulation scheduler. Frame time is
+// clamped after stalls, then consumed in fixed 1/120-second steps with a second
+// explicit step bound. The fixed-step game never sees wall-clock duration;
+// rendering occurs once after the final state for the display frame. R restarts
+// only a completed game and derives a new local seed without external I/O.
+run_interactive :: proc(labels: Labels, initial_seed: u64) -> int {
+    state: game.Game
+    game.game_init(&state, initial_seed)
+    accumulator: f32
+    restart_seed := initial_seed
+
+    for !raylib.window_should_close() {
+        elapsed := raylib.frame_time()
+        if elapsed < 0.0 {
+            elapsed = 0.0
+        }
+        if elapsed > Maximum_Frame_Seconds {
+            elapsed = Maximum_Frame_Seconds
+        }
+        accumulator += elapsed
+
+        input := read_input()
+        if state.game_over && raylib.key_pressed(raylib.key_r) {
+            restart_seed ~= state.score + cast[u64](state.wave)
+            restart_seed = restart_seed * 6364136223846793005 + 1
+            game.game_init(&state, restart_seed)
+            accumulator = 0.0
+        }
+
+        steps: usize
+        for accumulator >= cast[f32](game.Fixed_Step_Seconds) &&
+            steps < Maximum_Steps_Per_Frame {
+            game.game_tick(&state, input)
+            accumulator -= cast[f32](game.Fixed_Step_Seconds)
+            steps += 1
+        }
+        if steps == Maximum_Steps_Per_Frame {
+            // Dropping an extreme remainder keeps recovery bounded after a
+            // suspended debugger or sleeping machine. Ordinary clamped frames
+            // need at most 30 fixed steps and never enter this branch.
+            accumulator = 0.0
+        }
+        render(&state, input.thrust, labels)
+    }
+    return 0
+}
+
+// main owns cleanup in strict reverse order. The title allocation outlives the
+// raylib window because close_window's defer was registered after resource
+// destruction's defer. A failed platform initialization owns no successfully
+// opened window and returns without calling raylib's ready-window teardown.
+main :: proc() -> int {
+    resources: Text_Resources
+    resources_init(&resources)
+    defer resources_destroy(&resources)
+    labels := resource_labels(&resources)
+
+    raylib.init_window(
+        game.World_Width,
+        game.World_Height,
+        labels.title,
+    )
+    if !raylib.window_ready() {
+        return 1
+    }
+    defer raylib.close_window()
+    raylib.set_target_fps(Target_Frames_Per_Second)
+
+    if has_smoke_argument() {
+        return run_smoke(labels)
+    }
+    seed := os.process_id() ~ 0x44524146542d4153
+    return run_interactive(labels, seed)
+}

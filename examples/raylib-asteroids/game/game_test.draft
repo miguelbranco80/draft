@@ -1,0 +1,170 @@
+// These tests exercise the Asteroids simulation without raylib, a display, or
+// ambient time. They inspect deterministic state transitions rather than
+// screenshots: initialization, fixed-step movement, toroidal collision,
+// splitting, life loss, and terminal-state stability. Native example CI can
+// therefore distinguish game regressions from foreign-link/render failures.
+package game
+
+import core/testing
+
+// clear_asteroids releases every inline slot for focused state construction.
+// No cleanup is required because an Asteroid owns no indirect resource.
+clear_asteroids :: proc(game: ^Game) {
+    for index: usize = 0; index < len(game^.asteroids); index += 1 {
+        empty: Asteroid
+        game^.asteroids[index] = empty
+    }
+}
+
+test_initial_state_is_deterministic :: proc(test: ^testing.Test) {
+    first: Game
+    second: Game
+    game_init(&first, 42)
+    game_init(&second, 42)
+
+    testing.expect_message(test, first.lives == Initial_Lives,
+        "a new game must begin with all lives")
+    testing.expect_message(test, first.wave == 1,
+        "a new game must begin at wave one")
+    testing.expect_message(
+        test,
+        active_asteroid_count(&first) == Initial_Asteroids,
+        "wave one must publish the initial asteroid count",
+    )
+    for index: usize = 0; index < len(first.asteroids); index += 1 {
+        testing.expect_message(
+            test,
+            first.asteroids[index].active == second.asteroids[index].active &&
+                first.asteroids[index].position.x ==
+                    second.asteroids[index].position.x &&
+                first.asteroids[index].position.y ==
+                    second.asteroids[index].position.y,
+            "equal seeds must produce equal asteroid placement",
+        )
+    }
+}
+
+// test_input_changes_ship uses held controls for one fixed tick. Turning left
+// from the upward direction must produce a negative x component; thrust then
+// publishes velocity and movement in that direction.
+test_input_changes_ship :: proc(test: ^testing.Test) {
+    state: Game
+    game_init(&state, 7)
+    before := state.ship.position
+    input := Input{turn_left = true, thrust = true}
+    game_tick(&state, input)
+
+    testing.expect_message(test, state.ship.direction.x < 0.0,
+        "left input must rotate an upward-facing ship toward screen left")
+    testing.expect_message(test, state.ship.velocity.x < 0.0,
+        "thrust must accelerate along the rotated direction")
+    testing.expect_message(
+        test,
+        state.ship.position.x != before.x || state.ship.position.y != before.y,
+        "one fixed tick with thrust must move the ship",
+    )
+}
+
+// test_wrapped_collision crosses the horizontal world boundary. The points are
+// 958 logical pixels apart numerically but only two pixels apart toroidally.
+test_wrapped_collision :: proc(test: ^testing.Test) {
+    testing.expect_message(
+        test,
+        positions_overlap(
+            Vector{x = 1.0, y = 100.0},
+            2.0,
+            Vector{x = 959.0, y = 100.0},
+            2.0,
+        ),
+        "collision distance must use the shortest wrapped axis",
+    )
+}
+
+// test_bullet_hit_splits_large_asteroid constructs one stationary target and
+// one stationary bullet at the same point. One tick must consume the bullet,
+// replace the large object with two medium children, and award its exact score.
+test_bullet_hit_splits_large_asteroid :: proc(test: ^testing.Test) {
+    state: Game
+    game_init(&state, 11)
+    clear_asteroids(&state)
+    activated := activate_asteroid(
+        &state,
+        .large,
+        Vector{x = 100.0, y = 100.0},
+        Vector{x = 0.0, y = 0.0},
+        0.0,
+        0.0,
+    )
+    testing.expect(test, activated)
+    state.bullets[0] = Bullet{
+        active = true,
+        position = Vector{x = 100.0, y = 100.0},
+        velocity = Vector{x = 0.0, y = 0.0},
+        remaining_ticks = 2,
+    }
+
+    game_tick(&state, Input{})
+    medium_count: usize
+    for asteroid in state.asteroids {
+        if asteroid.active && asteroid.size == .medium {
+            medium_count += 1
+        }
+    }
+    testing.expect_message(test, !state.bullets[0].active,
+        "a colliding bullet must be consumed")
+    testing.expect_message(test, medium_count == 2,
+        "a destroyed large asteroid must publish two medium children")
+    testing.expect_message(test, state.score == asteroid_score(.large),
+        "destroying a large asteroid must award its exact score")
+}
+
+// test_unprotected_collision_consumes_life removes respawn protection and
+// overlaps one target with the ship. The surviving ship must return to center
+// with a fresh finite protection window while the wave remains live.
+test_unprotected_collision_consumes_life :: proc(test: ^testing.Test) {
+    state: Game
+    game_init(&state, 17)
+    clear_asteroids(&state)
+    state.ship.invulnerability_ticks = 0
+    activated := activate_asteroid(
+        &state,
+        .small,
+        state.ship.position,
+        Vector{x = 0.0, y = 0.0},
+        0.0,
+        0.0,
+    )
+    testing.expect(test, activated)
+
+    game_tick(&state, Input{})
+    testing.expect_message(test, state.lives == Initial_Lives - 1,
+        "one unprotected collision must consume exactly one life")
+    testing.expect_message(test, !state.game_over,
+        "a surviving life must keep the game active")
+    testing.expect_message(test, state.ship.invulnerability_ticks != 0,
+        "a respawned ship must regain collision protection")
+}
+
+// test_terminal_game_is_inert proves game_tick cannot mutate a completed game
+// even if every input bit is held. Explicit game_init remains the only restart.
+test_terminal_game_is_inert :: proc(test: ^testing.Test) {
+    state: Game
+    game_init(&state, 23)
+    state.game_over = true
+    state.lives = 0
+    before := state.ship
+    game_tick(&state, Input{
+        turn_left = true,
+        turn_right = true,
+        thrust = true,
+        fire = true,
+    })
+    testing.expect_message(
+        test,
+        state.ship.position.x == before.position.x &&
+            state.ship.position.y == before.position.y &&
+            state.ship.velocity.x == before.velocity.x &&
+            state.ship.velocity.y == before.velocity.y,
+        "a terminal game must not advance",
+    )
+}

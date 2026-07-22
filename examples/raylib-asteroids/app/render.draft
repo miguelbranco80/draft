@@ -1,0 +1,301 @@
+// This file translates one immutable Asteroids state into immediate raylib
+// drawing calls. It owns no retained graphics object, texture, allocation, or
+// provider lifetime. The caller must bracket render with a live raylib window;
+// render itself performs the BeginDrawing/EndDrawing pair exactly once, and a
+// defer guarantees the pair closes on every ordinary return path.
+//
+// UI strings are borrowed zero-terminated pointers owned by package.draft.
+// Dynamic numbers use a bounded stack buffer and core/format. Game vectors are
+// converted field-by-field into the distinct raylib C record, keeping the game
+// package independent of foreign ABI representation.
+package app
+
+import core/format
+import game
+import raylib
+
+// Labels is a non-owning set of process-lifetime UI text views. No field may be
+// nil while render is executing. raylib reads each pointer synchronously and
+// does not retain it after draw_text returns.
+Labels :: struct {
+    title: cstring,
+    score: cstring,
+    lives: cstring,
+    wave: cstring,
+    controls: cstring,
+    game_over: cstring,
+    restart: cstring,
+}
+
+background_color :: proc() -> raylib.Color {
+    return raylib.rgba(3, 6, 12, 255)
+}
+
+foreground_color :: proc() -> raylib.Color {
+    return raylib.rgba(224, 236, 244, 255)
+}
+
+dim_color :: proc() -> raylib.Color {
+    return raylib.rgba(91, 116, 132, 255)
+}
+
+accent_color :: proc() -> raylib.Color {
+    return raylib.rgba(79, 220, 213, 255)
+}
+
+danger_color :: proc() -> raylib.Color {
+    return raylib.rgba(255, 103, 116, 255)
+}
+
+// native_vector performs the only conversion between ordinary game geometry
+// and raylib's by-value C record.
+native_vector :: proc(value: game.Vector) -> raylib.Vector2 {
+    return raylib.vector(value.x, value.y)
+}
+
+// draw_unsigned formats the complete u64 domain into caller-owned stack bytes,
+// appends one C terminator, and lends the pointer only for draw_text. The
+// 21-byte buffer holds twenty decimal digits plus that terminator.
+draw_unsigned :: proc(value: u64, x, y: i32, color: raylib.Color) {
+    storage: [21]u8
+    (digits, formatted) := format.unsigned_decimal(storage[:20], value)
+    if !formatted {
+        return
+    }
+    storage[len(digits)] = 0
+    raylib.draw_text(
+        cast[cstring](&storage[0]),
+        x,
+        y,
+        22,
+        color,
+    )
+}
+
+// draw_starfield derives fixed point locations directly from the source index.
+// It has no mutable random state, so the background never flickers and does not
+// consume gameplay randomness. Two modular sequences avoid an obvious grid.
+draw_starfield :: proc() {
+    color := raylib.rgba(111, 136, 151, 180)
+    for index: i32 = 0; index < 72; index += 1 {
+        x := cast[f32]((index * 137 + 43) % game.World_Width)
+        y := cast[f32]((index * 83 + index * index * 7 + 29) %
+            game.World_Height)
+        radius: f32 = 1.0
+        if index % 9 == 0 {
+            radius = 1.7
+        }
+        raylib.draw_circle(raylib.vector(x, y), radius, color)
+    }
+}
+
+// draw_ship_at constructs the triangle from a center, forward vector, and its
+// perpendicular. The optional thrust flame is a separate two-segment chevron;
+// it does not alter simulation state.
+draw_ship_at :: proc(ship: game.Ship, offset: game.Vector, thrust: bool) {
+    center := game.Vector{
+        x = ship.position.x + offset.x,
+        y = ship.position.y + offset.y,
+    }
+    perpendicular := game.Vector{
+        x = -ship.direction.y,
+        y = ship.direction.x,
+    }
+    nose := game.Vector{
+        x = center.x + ship.direction.x * 17.0,
+        y = center.y + ship.direction.y * 17.0,
+    }
+    tail := game.Vector{
+        x = center.x - ship.direction.x * 12.0,
+        y = center.y - ship.direction.y * 12.0,
+    }
+    left := game.Vector{
+        x = tail.x + perpendicular.x * 9.0,
+        y = tail.y + perpendicular.y * 9.0,
+    }
+    right := game.Vector{
+        x = tail.x - perpendicular.x * 9.0,
+        y = tail.y - perpendicular.y * 9.0,
+    }
+    raylib.draw_triangle_lines(
+        native_vector(nose),
+        native_vector(right),
+        native_vector(left),
+        accent_color(),
+    )
+
+    if thrust {
+        flame := game.Vector{
+            x = center.x - ship.direction.x * 22.0,
+            y = center.y - ship.direction.y * 22.0,
+        }
+        color := danger_color()
+        raylib.draw_line(native_vector(left), native_vector(flame), 1.5, color)
+        raylib.draw_line(native_vector(flame), native_vector(right), 1.5, color)
+    }
+}
+
+// draw_ship publishes neighboring wrapped copies only while the triangle can
+// cross an edge. The corner copy is included when both axes overlap, so the
+// visual topology matches the simulation's toroidal collision space.
+draw_ship :: proc(ship: game.Ship, thrust: bool) {
+    if ship.invulnerability_ticks != 0 &&
+        (ship.invulnerability_ticks / 8) & 1 != 0 {
+        return
+    }
+    zero := game.Vector{}
+    draw_ship_at(ship, zero, thrust)
+    x_offset: f32
+    y_offset: f32
+    if ship.position.x < 24.0 {
+        x_offset = cast[f32](game.World_Width)
+    } else if ship.position.x > cast[f32](game.World_Width) - 24.0 {
+        x_offset = -cast[f32](game.World_Width)
+    }
+    if ship.position.y < 24.0 {
+        y_offset = cast[f32](game.World_Height)
+    } else if ship.position.y > cast[f32](game.World_Height) - 24.0 {
+        y_offset = -cast[f32](game.World_Height)
+    }
+    if x_offset != 0.0 {
+        draw_ship_at(ship, game.Vector{x = x_offset}, thrust)
+    }
+    if y_offset != 0.0 {
+        draw_ship_at(ship, game.Vector{y = y_offset}, thrust)
+    }
+    if x_offset != 0.0 && y_offset != 0.0 {
+        draw_ship_at(
+            ship,
+            game.Vector{x = x_offset, y = y_offset},
+            thrust,
+        )
+    }
+}
+
+// asteroid_sides gives each size a slightly different silhouette while
+// retaining raylib's cheap regular-polygon primitive.
+asteroid_sides :: proc(size: game.Asteroid_Size) -> i32 {
+    switch size {
+    case .large:
+        return 9
+    case .medium:
+        return 8
+    case .small:
+        return 7
+    }
+    return 7
+}
+
+draw_asteroid_at :: proc(
+    asteroid: game.Asteroid,
+    offset: game.Vector,
+) {
+    center := raylib.vector(
+        asteroid.position.x + offset.x,
+        asteroid.position.y + offset.y,
+    )
+    raylib.draw_polygon_lines(
+        center,
+        asteroid_sides(asteroid.size),
+        asteroid.radius,
+        asteroid.rotation,
+        2.0,
+        foreground_color(),
+    )
+    raylib.draw_circle(center, 1.7, dim_color())
+}
+
+// draw_asteroid mirrors the ship's edge-copy policy using the object's exact
+// retained collision radius. Every active value is drawn once plus only the
+// neighboring copies that can be visible.
+draw_asteroid :: proc(asteroid: game.Asteroid) {
+    draw_asteroid_at(asteroid, game.Vector{})
+    x_offset: f32
+    y_offset: f32
+    if asteroid.position.x < asteroid.radius {
+        x_offset = cast[f32](game.World_Width)
+    } else if asteroid.position.x >
+        cast[f32](game.World_Width) - asteroid.radius {
+        x_offset = -cast[f32](game.World_Width)
+    }
+    if asteroid.position.y < asteroid.radius {
+        y_offset = cast[f32](game.World_Height)
+    } else if asteroid.position.y >
+        cast[f32](game.World_Height) - asteroid.radius {
+        y_offset = -cast[f32](game.World_Height)
+    }
+    if x_offset != 0.0 {
+        draw_asteroid_at(asteroid, game.Vector{x = x_offset})
+    }
+    if y_offset != 0.0 {
+        draw_asteroid_at(asteroid, game.Vector{y = y_offset})
+    }
+    if x_offset != 0.0 && y_offset != 0.0 {
+        draw_asteroid_at(
+            asteroid,
+            game.Vector{x = x_offset, y = y_offset},
+        )
+    }
+}
+
+// draw_status keeps the label and numeric columns explicit. Each dynamic
+// number is formatted and consumed before its stack buffer is reused.
+draw_status :: proc(state: ^game.Game, labels: Labels) {
+    label_color := dim_color()
+    value_color := foreground_color()
+    raylib.draw_text(labels.title, 24, 18, 28, accent_color())
+    raylib.draw_text(labels.score, 625, 22, 18, label_color)
+    draw_unsigned(state^.score, 690, 19, value_color)
+    raylib.draw_text(labels.lives, 760, 22, 18, label_color)
+    draw_unsigned(cast[u64](state^.lives), 815, 19, value_color)
+    raylib.draw_text(labels.wave, 865, 22, 18, label_color)
+    draw_unsigned(cast[u64](state^.wave), 918, 19, value_color)
+    raylib.draw_text(labels.controls, 24, 690, 16, dim_color())
+}
+
+// draw_game_over uses an outlined panel so the terminal state is readable
+// without hiding the final world. Text positions are fixed for the known
+// logical resolution and use no layout or widget dependency.
+draw_game_over :: proc(labels: Labels) {
+    raylib.draw_polygon_lines(
+        raylib.vector(480.0, 350.0),
+        4,
+        140.0,
+        45.0,
+        3.0,
+        danger_color(),
+    )
+    raylib.draw_text(labels.game_over, 374, 324, 36, danger_color())
+    raylib.draw_text(labels.restart, 391, 374, 20, foreground_color())
+}
+
+// render publishes one complete frame. EndDrawing is deferred immediately
+// after BeginDrawing so a future early return cannot leave raylib between frame
+// boundaries. Array traversal follows stable slot order and ignores inactive
+// contents exactly like the simulation's public count query.
+render :: proc(state: ^game.Game, thrust: bool, labels: Labels) {
+    raylib.begin_drawing()
+    defer raylib.end_drawing()
+    raylib.clear_background(background_color())
+    draw_starfield()
+
+    for asteroid in state^.asteroids {
+        if asteroid.active {
+            draw_asteroid(asteroid)
+        }
+    }
+    for bullet in state^.bullets {
+        if bullet.active {
+            raylib.draw_circle(
+                native_vector(bullet.position),
+                2.2,
+                accent_color(),
+            )
+        }
+    }
+    draw_ship(state^.ship, thrust && !state^.game_over)
+    draw_status(state, labels)
+    if state^.game_over {
+        draw_game_over(labels)
+    }
+}

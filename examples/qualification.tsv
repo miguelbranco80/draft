@@ -4,8 +4,9 @@
 #   workspace  root  frontend  native  validation
 # Paths are repository-relative. `frontend` is `pass` or the exact expected
 # unresolved state. `native` assigns every package to one host gate rather than
-# silently omitting libraries or special link inputs. `validation` declares
-# every package whose Draft tests or benchmarks must run in native CI.
+# silently omitting libraries or special link inputs. The `raylib` class has a
+# dedicated headless shared-provider build/link/render gate. The `validation`
+# field declares every package whose Draft tests or benchmarks run in native CI.
 examples/agent-acceptance	app	pass	resolved	test-bench
 examples/agent-acceptance	lib	pass	dependency	none
 examples/agent-judgment-mix	app	unresolved	none	none
@@ -38,6 +39,9 @@ examples/packages-generic	lib/left	pass	dependency	none
 examples/packages-generic	lib/right	pass	dependency	none
 examples/packages	app	pass	run	none
 examples/packages	lib/math	pass	dependency	none
+examples/raylib-asteroids	app	pass	raylib	none
+examples/raylib-asteroids	game	pass	dependency	test
+examples/raylib-asteroids	raylib	pass	dependency	none
 examples	runtime-checks	pass	run	none
 examples	runtime-traps	pass	run	none
 examples	simple-editor	pass	run	test
