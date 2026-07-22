@@ -53,7 +53,9 @@ The Clang-compatible `__int128` extension is asymmetric on Microsoft x64:
 Draft passes `i128`, `u128`, endian storage equivalents, and fixed-backing C
 enums by address, while results use LLVM's `<2 x i64>` carrier. This rule is
 part of C interoperation only; ordinary Draft procedures keep Draft's direct
-128-bit value representation.
+128-bit value representation. An unnamed C variadic `i128`/`u128` argument uses
+the same caller-owned address carrier; other aggregate variadic tails remain
+outside Draft 1.
 
 The implementation applies one classification product to imports, exports,
 definitions, and call sites. Unit tests compare the exact public LLVM types

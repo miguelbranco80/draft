@@ -96,6 +96,12 @@ the result is LLVM `<2 x i64>`. The adapter uses bounded scratch storage to
 translate both directions without changing ordinary Draft `i128`/`u128`
 procedure representation.
 
+The same address carrier applies when a 128-bit C integer appears in an
+unnamed variadic tail. MIR retains the promoted logical scalar; the emitter
+reserves one entry-block 16-byte slot, stores the value, and passes that slot's
+address in the variadic call. Other aggregate variadic arguments remain a
+semantic error.
+
 Classifier tests cover record and wide-integer decisions, emitted-IR tests
 compile the exact public signatures through LLVM's X86 backend, and native
 Windows CI closes the boundary with the independently compiled generated-header

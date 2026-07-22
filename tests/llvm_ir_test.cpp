@@ -705,6 +705,7 @@ foreign windows {
         value: Sixteen,
     ) -> Sixteen
     take_wide as "draft_take_wide" :: c proc(value: i128) -> i128
+    consume_wide as "draft_consume_wide" :: c proc(tag: i32, ..)
 }
 
 call_eight :: proc(value: Eight) -> Eight {
@@ -717,6 +718,10 @@ call_sixteen :: proc(value: Sixteen) -> Sixteen {
 
 call_wide :: proc(value: i128) -> i128 {
     return take_wide(value)
+}
+
+call_wide_variadic :: proc(value: u128) {
+    consume_wide(1, value)
 }
 )draft",
                                                          target);
@@ -741,6 +746,9 @@ call_wide :: proc(value: i128) -> i128 {
       "declare <2 x i64> @\"draft_take_wide\"(ptr)") != std::string::npos);
   EXPECT(state, emitted.text.find(
       "call <2 x i64> @\"draft_take_wide\"(ptr ") != std::string::npos);
+  EXPECT(state, emitted.text.find(
+      "call void (i32, ...) @\"draft_consume_wide\"(i32 1, ptr ") !=
+      std::string::npos);
   EXPECT(state, emitted.text.find("!\"CodeView\", i32 1") !=
       std::string::npos);
   EXPECT(state, emitted.text.find("!\"Dwarf Version\"") ==

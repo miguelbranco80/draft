@@ -4380,16 +4380,27 @@ private:
     }
 
     // Body checking has already applied the C default argument promotions to
-    // every unnamed operand. The tail is intentionally restricted to direct
-    // ABI scalars and pointers, so LLVM can see each promoted physical type and
-    // perform the target's Darwin, GNU AArch64, or SysV variadic register/stack
-    // assignment. Aggregate tails remain a source error until their separate
-    // unnamed-argument classification is implemented.
+    // every unnamed operand. LLVM can see each promoted direct scalar/pointer
+    // and perform the target's variadic register/stack assignment. Microsoft
+    // x64's __int128 extension is the one accepted non-direct scalar: Clang
+    // passes it through caller-owned storage just as it does in a fixed slot.
+    // Aggregate tails remain a source error until their separate unnamed-
+    // argument classification is implemented.
     for (std::size_t index = parameter_count + 1;
          index < instruction.operands.size(); ++index) {
       const MirValueId value = instruction.operands[index];
       const TypeId logical_type = procedure.value(value).type;
       const CAbiType abi = c_abi_type(logical_type);
+      if (abi.classification == CAbiClass::Win64WideInteger) {
+        const std::string scratch = abi_call_argument_scratch(
+            instruction_index, index - 1);
+        output_ << "  store "
+                << typed_operand(
+                       procedure, operands, value, instruction.range)
+                << ", ptr " << scratch << ", align " << abi.alignment << '\n';
+        arguments.push_back("ptr " + scratch);
+        continue;
+      }
       if (abi.classification != CAbiClass::Direct) {
         error(instruction.range,
               "non-scalar C variadic argument reached LLVM emission");
@@ -5083,6 +5094,21 @@ private:
         }
         emit_abi_scratch(abi_call_argument_scratch(instruction_index, argument),
                          abi_argument_storage_size(abi), abi.alignment);
+      }
+      // The fixed plan has no rows for unnamed C arguments. Win64 wide
+      // integers nevertheless need one stable caller-owned address, so reserve
+      // their slots here beside every other entry-block ABI conversion slot.
+      for (std::size_t operand = parameter_count + 1;
+           operand < instruction.operands.size(); ++operand) {
+        const TypeId logical_type = procedure.value(
+            instruction.operands[operand]).type;
+        const CAbiType abi = c_abi_type(logical_type);
+        if (abi.classification == CAbiClass::Win64WideInteger) {
+          emit_abi_scratch(
+              abi_call_argument_scratch(instruction_index, operand - 1),
+              abi_argument_storage_size(abi),
+              abi.alignment);
+        }
       }
       const CAbiType result_abi = function_result_abi(signature_id);
       if (result_abi.classification == CAbiClass::Win64WideInteger ||
