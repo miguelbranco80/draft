@@ -560,7 +560,7 @@ private:
         FixedToken{"%=", TokenKind::PercentEqual},
         FixedToken{"&=", TokenKind::AmpersandEqual},
         FixedToken{"|=", TokenKind::PipeEqual},
-        FixedToken{"^=", TokenKind::CaretEqual},
+        FixedToken{"~=", TokenKind::TildeEqual},
         FixedToken{"==", TokenKind::EqualEqual},
         FixedToken{"!=", TokenKind::BangEqual},
         FixedToken{"<=", TokenKind::LessEqual},

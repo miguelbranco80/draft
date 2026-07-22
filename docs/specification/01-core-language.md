@@ -194,16 +194,13 @@ identifier uses receive ordinary semicolon behavior. `align` is the reserved
 aggregate-layout modifier defined by section 5; Draft has no general annotation
 prefix or user-defined declaration modifier.
 
-Draft 1 syntax remains provisional around a newline following `^`, because the
-same token is postfix dereference and binary XOR. The bootstrap rule treats
-`^` at a semicolon-eligible newline or end of file as postfix. Elsewhere it is
-binary when the following token directly begins a primary operand, synthesis,
-assembly, denial expression, or unary-only `!`/`~` operand; it is postfix
-before a delimiter, postfix continuation, or another binary operator. Thus
-`pointer^ + 1` dereferences before addition, while an XOR against a prefix
-minus is written `left ^ (-right)`. This paragraph is an explicitly
-provisional lexical decision recorded with its rationale in
-[the language decision log](../decisions/language-questions.md).
+`^` is exclusively pointer syntax: it begins pointer types and follows an
+expression to dereference it. Bitwise XOR is binary `~`; unary `~` remains
+bitwise complement. Prefix and binary position distinguish the two `~`
+operators in the same way that they distinguish unary and binary `-`, so line
+breaks require no operator-specific lookahead rule. There is no `^=` compound
+operator: `pointer^= value` is the whitespace-insensitive spelling of
+`pointer^ = value`, an assignment through the pointer.
 
 Integer literals are decimal or use `0b`, `0o`, or `0x`; underscores may
 separate digits. A decimal floating literal is digits, `.`, digits, and an
@@ -232,24 +229,24 @@ Operators bind from highest to lowest as follows:
 | Postfix | call, index or slice, member `.`, dereference `^` | left |
 | Prefix | `+ - ! ~ &` | right |
 | Multiplicative | `* / % << >> &` | left |
-| Additive | `+ - | ^` | left |
+| Additive | `+ - | ~` | left |
 | Comparison | `== != < <= > >=` | none |
 | Logical AND | `&&` | left |
 | Logical OR | `||` | left |
 | Conditional | `value if condition else value` | right |
 
 Assignment and compound assignment are statements, not expressions. The
-compound forms are `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, and
+compound forms are `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `~=`, `<<=`, and
 `>>=`; each evaluates its lvalue once, applies the corresponding binary
 operator, and stores the result.
 
-Unary `+` and `-` require a numeric value, `~` requires an integer, `!` requires
-`bool`, `&` takes the address of addressable storage, and postfix `^`
-dereferences a data pointer. Binary `+`, `-`, `*`, and `/` require one common
-concrete numeric type after contextual conversion of untyped constants; `%`
-and the bitwise operators require one common integer type. A shift accepts an
-integer count and returns the left operand's integer type. `&&` and `||` accept
-and return `bool`.
+Unary `+` and `-` require a numeric value, unary `~` requires an integer and
+computes its bitwise complement, `!` requires `bool`, `&` takes the address of
+addressable storage, and postfix `^` dereferences a data pointer. Binary `+`,
+`-`, `*`, and `/` require one common concrete numeric type after contextual
+conversion of untyped constants; `%`, binary `~` (XOR), and the other bitwise
+operators require one common integer type. A shift accepts an integer count and
+returns the left operand's integer type. `&&` and `||` accept and return `bool`.
 
 When every numeric operand is untyped, integer-only arithmetic, remainder,
 bitwise, and shift operations use arbitrary-precision integers and produce an

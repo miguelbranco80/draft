@@ -99,7 +99,7 @@ std::string_view token_kind_name(TokenKind kind) {
   case TokenKind::PercentEqual: return "%=";
   case TokenKind::AmpersandEqual: return "&=";
   case TokenKind::PipeEqual: return "|=";
-  case TokenKind::CaretEqual: return "^=";
+  case TokenKind::TildeEqual: return "~=";
   case TokenKind::ShiftLeftEqual: return "<<=";
   case TokenKind::ShiftRightEqual: return ">>=";
   case TokenKind::EqualEqual: return "==";

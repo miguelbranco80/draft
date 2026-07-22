@@ -113,7 +113,7 @@ enum class TokenKind {
   PercentEqual,
   AmpersandEqual,
   PipeEqual,
-  CaretEqual,
+  TildeEqual,
   ShiftLeftEqual,
   ShiftRightEqual,
   EqualEqual,

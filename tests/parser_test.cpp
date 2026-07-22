@@ -387,14 +387,19 @@ void test_binary_xor_and_postfix_dereference(TestState &state) {
 package operators
 
 combine :: proc(left, right: u32, pointer: ^u32) -> u32 {
-    bits := (left ^ right)
-    return bits + pointer^
+    bits := left ~
+        right
+    complement := ~bits
+    // This is postfix dereference followed by assignment, not one operator.
+    pointer^= complement
+    return complement + pointer^
 }
 )draft");
 
   expect_clean(state, source);
   EXPECT(state, source.tree.count(draft::NodeKind::BinaryExpression) == 2);
-  EXPECT(state, source.tree.count(draft::NodeKind::DereferenceExpression) == 1);
+  EXPECT(state, source.tree.count(draft::NodeKind::UnaryExpression) == 1);
+  EXPECT(state, source.tree.count(draft::NodeKind::DereferenceExpression) == 2);
 }
 
 void test_synthesis_and_assembly_surface(TestState &state) {

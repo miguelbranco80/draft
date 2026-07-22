@@ -889,7 +889,7 @@ private:
       case TokenKind::ShiftRight:
       case TokenKind::Ampersand:
       case TokenKind::Pipe:
-      case TokenKind::Caret:
+      case TokenKind::Tilde:
       case TokenKind::EqualEqual:
       case TokenKind::BangEqual:
       case TokenKind::Less:
@@ -1049,7 +1049,7 @@ private:
         operation == TokenKind::ShiftRight;
     const bool integer_only = operation == TokenKind::Percent ||
         operation == TokenKind::Ampersand || operation == TokenKind::Pipe ||
-        operation == TokenKind::Caret;
+        operation == TokenKind::Tilde;
     const bool arithmetic = operation == TokenKind::Plus ||
         operation == TokenKind::Minus || operation == TokenKind::Star ||
         operation == TokenKind::Slash;
@@ -1981,7 +1981,7 @@ private:
     if (operation == TokenKind::Pipe) {
       return bounded_integer(left.bitwise_or(right), range, required);
     }
-    if (operation == TokenKind::Caret) {
+    if (operation == TokenKind::Tilde) {
       return bounded_integer(left.bitwise_xor(right), range, required);
     }
     if (operation == TokenKind::ShiftLeft || operation == TokenKind::ShiftRight) {
@@ -3235,7 +3235,7 @@ private:
       case TokenKind::PercentEqual:
       case TokenKind::AmpersandEqual:
       case TokenKind::PipeEqual:
-      case TokenKind::CaretEqual:
+      case TokenKind::TildeEqual:
       case TokenKind::ShiftLeftEqual:
       case TokenKind::ShiftRightEqual:
         return index;
@@ -3255,7 +3255,7 @@ private:
     case TokenKind::PercentEqual: return TokenKind::Percent;
     case TokenKind::AmpersandEqual: return TokenKind::Ampersand;
     case TokenKind::PipeEqual: return TokenKind::Pipe;
-    case TokenKind::CaretEqual: return TokenKind::Caret;
+    case TokenKind::TildeEqual: return TokenKind::Tilde;
     case TokenKind::ShiftLeftEqual: return TokenKind::ShiftLeft;
     case TokenKind::ShiftRightEqual: return TokenKind::ShiftRight;
     default: return TokenKind::Invalid;

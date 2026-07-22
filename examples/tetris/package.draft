@@ -132,7 +132,7 @@ run_interactive :: proc(
     session: ^terminal.Session,
     screen: ^terminal.Screen,
 ) -> Run_Result {
-    seed := cast[u64](cast[i64](time.monotonic_now())) ^ os.process_id()
+    seed := cast[u64](cast[i64](time.monotonic_now())) ~ os.process_id()
     game: Game
     game_init(&game, seed)
 

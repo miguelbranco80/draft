@@ -1354,7 +1354,7 @@ private:
     case TokenKind::ShiftRight: return IntegerExpressionOperation::ShiftRight;
     case TokenKind::Ampersand: return IntegerExpressionOperation::BitwiseAnd;
     case TokenKind::Pipe: return IntegerExpressionOperation::BitwiseOr;
-    case TokenKind::Caret: return IntegerExpressionOperation::BitwiseXor;
+    case TokenKind::Tilde: return IntegerExpressionOperation::BitwiseXor;
     default: return std::nullopt;
     }
   }
@@ -4293,7 +4293,7 @@ private:
     case TokenKind::Star: return left->multiplied(*right);
     case TokenKind::Ampersand: return left->bitwise_and(*right);
     case TokenKind::Pipe: return left->bitwise_or(*right);
-    case TokenKind::Caret: return left->bitwise_xor(*right);
+    case TokenKind::Tilde: return left->bitwise_xor(*right);
     case TokenKind::Slash:
     case TokenKind::Percent: {
       BigInteger quotient;

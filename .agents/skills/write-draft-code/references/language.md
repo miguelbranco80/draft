@@ -143,10 +143,11 @@ operator or comma, not after a complete operand. An explicit `;` is required
 between clauses of a three-clause `for` and otherwise has the same statement-
 ending effect.
 
-The `^` token is both postfix dereference and binary XOR under the provisional
-newline-sensitive lexical rule. Prefer an unambiguous same-line spelling such
-as `pointer^ + 1`; parenthesize an unusual XOR operand such as
-`left ^ (-right)`.
+`^` is exclusively pointer syntax: it begins pointer types and follows an
+expression to dereference it. Write binary `left ~ right` for bitwise XOR and
+unary `~value` for bitwise complement. Prefix and binary position distinguish
+the two `~` operators without a newline-sensitive rule. `pointer^= value` is
+postfix dereference followed by ordinary assignment; XOR assignment is `~=`.
 
 Composite literals are:
 
@@ -275,8 +276,9 @@ unions, not magic. A zero `Result` selects its first `.err` alternative.
 ## Expressions and conversions
 
 Postfix call/index/member/dereference bind most tightly; then prefix; then
-multiplicative/shift/bitwise-AND; additive/bitwise-OR/XOR; comparison; `&&`;
-`||`; and the conditional expression. Comparisons do not chain.
+multiplicative/shift/bitwise-AND; additive/bitwise-OR/binary-`~` XOR;
+comparison; `&&`; `||`; and the conditional expression. Comparisons do not
+chain.
 
 Assignment is a statement. Compound assignment evaluates its lvalue once.
 `&&` and `||` short-circuit. The conditional expression evaluates only its

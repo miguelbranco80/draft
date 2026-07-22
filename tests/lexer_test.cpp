@@ -136,7 +136,7 @@ void test_comments_and_eof(TestState &state) {
 
 void test_longest_tokens(TestState &state) {
   const LexedSource source = lex(
-      ". .. ... :: := -> --- <<= >>= += -= *= /= %= &= |= ^= == != <= >= << >> && ||\n");
+      ". .. ... :: := -> --- <<= >>= += -= *= /= %= &= |= ~= == != <= >= << >> && ||\n");
   const std::vector expected{
       draft::TokenKind::Dot,
       draft::TokenKind::DotDot,
@@ -154,7 +154,7 @@ void test_longest_tokens(TestState &state) {
       draft::TokenKind::PercentEqual,
       draft::TokenKind::AmpersandEqual,
       draft::TokenKind::PipeEqual,
-      draft::TokenKind::CaretEqual,
+      draft::TokenKind::TildeEqual,
       draft::TokenKind::EqualEqual,
       draft::TokenKind::BangEqual,
       draft::TokenKind::LessEqual,

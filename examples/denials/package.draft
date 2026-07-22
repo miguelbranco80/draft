@@ -21,7 +21,7 @@ deny console, assert, asm, unchecked, context {
     checksum :: proc(input: []u8) -> u64 {
         hash: u64 = 0xcbf29ce484222325
         for byte in input {
-            hash ^= cast[u64](byte)
+            hash ~= cast[u64](byte)
             hash *= 0x100000001b3
         }
         return hash

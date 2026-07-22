@@ -236,7 +236,7 @@ integer_operator_matrix[T: integer] :: proc(
         left % right == 0 &&
         (left & right) == 2 &&
         (left | right) == 7 &&
-        left ^ right == 5 &&
+        left ~ right == 5 &&
         left << count == 12 &&
         left >> count == 3 &&
         +left == left &&
@@ -281,7 +281,7 @@ integer_compound_matrix[T: integer] :: proc(
     value %= 5
     value |= 6
     value &= 3
-    value ^= 1
+    value ~= 1
     value <<= count
     value >>= count
     return value == 2

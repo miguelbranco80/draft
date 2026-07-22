@@ -11,7 +11,7 @@
 - [ ] Extend `deny` coverage to more built-ins and effects.
 - [ ] Add remaining layout forms: bit sets, transparent wrappers, niche unions, and broader SIMD.
 - [ ] Broaden assembly support, including an explicit raw escape hatch.
-- [ ] Finalize postfix `^`/XOR newline syntax.
+- [x] Reserve `^` for pointers and use binary `~`/`~=` for XOR.
 - [ ] Add freestanding and embedded target support.
 - [ ] Complete cross-target sanitizer, race, and coverage profiles.
 - [ ] Add terminal resize/signal handling and Unicode display support.

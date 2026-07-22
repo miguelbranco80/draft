@@ -2143,7 +2143,7 @@ private:
     case TokenKind::Percent: return HirOperation::Remainder;
     case TokenKind::Ampersand: return HirOperation::BitwiseAnd;
     case TokenKind::Pipe: return HirOperation::BitwiseOr;
-    case TokenKind::Caret: return HirOperation::BitwiseXor;
+    case TokenKind::Tilde: return HirOperation::BitwiseXor;
     case TokenKind::ShiftLeft: return HirOperation::ShiftLeft;
     case TokenKind::ShiftRight: return HirOperation::ShiftRight;
     case TokenKind::LogicalAnd: return HirOperation::LogicalAnd;
@@ -2161,7 +2161,7 @@ private:
     case TokenKind::PercentEqual: return HirOperation::Remainder;
     case TokenKind::AmpersandEqual: return HirOperation::BitwiseAnd;
     case TokenKind::PipeEqual: return HirOperation::BitwiseOr;
-    case TokenKind::CaretEqual: return HirOperation::BitwiseXor;
+    case TokenKind::TildeEqual: return HirOperation::BitwiseXor;
     case TokenKind::ShiftLeftEqual: return HirOperation::ShiftLeft;
     case TokenKind::ShiftRightEqual: return HirOperation::ShiftRight;
     default: return HirOperation::None;
@@ -5626,7 +5626,7 @@ private:
       } else {
         result = common_numeric_type(left, right, node.range);
         if ((operation == TokenKind::Percent || operation == TokenKind::Ampersand ||
-             operation == TokenKind::Pipe || operation == TokenKind::Caret) &&
+             operation == TokenKind::Pipe || operation == TokenKind::Tilde) &&
             !is_integer(result)) {
           diagnostics_.error(node.range, "operator requires integer operands");
           result = semantic_.types.builtins().invalid;
@@ -6520,7 +6520,7 @@ private:
       case TokenKind::PercentEqual:
       case TokenKind::AmpersandEqual:
       case TokenKind::PipeEqual:
-      case TokenKind::CaretEqual:
+      case TokenKind::TildeEqual:
       case TokenKind::ShiftLeftEqual:
       case TokenKind::ShiftRightEqual:
         return index;

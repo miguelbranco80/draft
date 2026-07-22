@@ -217,9 +217,9 @@ piece_value :: proc(kind: Piece_Kind) -> u8 {
 // value. This is gameplay randomness, not cryptography or a core random API.
 random_next :: proc(state: ^u64) -> u64 {
     value := state^
-    value ^= value >> 12
-    value ^= value << 25
-    value ^= value >> 27
+    value ~= value >> 12
+    value ~= value << 25
+    value ~= value >> 27
     state^ = value
     return value * 2685821657736338717
 }

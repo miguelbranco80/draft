@@ -234,11 +234,11 @@ pub remove[K: type, V: type] :: proc(map: ^Map[K, V], key: K) -> bool {
 // policy when keys can be adversarial.
 hash_u64 :: proc(key: u64) -> u64 {
     value := key
-    value ^= value >> 30
+    value ~= value >> 30
     value *= 0xbf58476d1ce4e5b9
-    value ^= value >> 27
+    value ~= value >> 27
     value *= 0x94d049bb133111eb
-    value ^= value >> 31
+    value ~= value >> 31
     return value
 }
 
@@ -258,7 +258,7 @@ pub u64_key_ops :: proc() -> Key_Ops[u64] {
 hash_string :: proc(key: string) -> u64 {
     hash: u64 = 0xcbf29ce484222325
     for index: usize = 0; index < len(key); index += 1 {
-        hash ^= cast[u64](key[index])
+        hash ~= cast[u64](key[index])
         hash *= 0x100000001b3
     }
     return hash
