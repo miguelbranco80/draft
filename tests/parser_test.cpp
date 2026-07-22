@@ -120,7 +120,7 @@ Bits :: c union {
 }
 
 Duration :: distinct i64
-Lanes :: #simd[4]f32
+Lanes :: simd[4]f32
 Pair_Type :: (bool, u32)
 Grouped_Type :: (u64)
 Callback :: c proc(left, right: u32) -> u32
@@ -479,7 +479,7 @@ void test_invalid_production_recovery(TestState &state) {
       {"missing alignment close", "package bad\nRecord :: align(16 struct {}\n", "expected ')' after alignment expression"},
       {"missing multi-pointer close", "package bad\nPointer :: [^u32\n", "expected ']' in multi-pointer type"},
       {"missing array close", "package bad\nArray :: [4 u32\n", "expected ']' after array length"},
-      {"missing simd open", "package bad\nVector :: #simd 4]f32\n", "expected '[' before SIMD lane count"},
+      {"missing simd open", "package bad\nVector :: simd 4]f32\n", "expected '[' before SIMD lane count"},
       {"missing variant region", "package bad\nChoice :: variant u8\n", "expected '{' to begin type members"},
       {"missing qualified type name", "package bad\nvalue: core.\n", "expected type name after '.'"},
       {"missing type argument close", "package bad\nvalue: Box[u32\n", "expected ']' after type arguments"},

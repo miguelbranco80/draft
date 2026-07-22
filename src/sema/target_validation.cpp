@@ -58,7 +58,7 @@ bool validate_target_types(
         : element.name;
     diagnostics.error(
         type.declaration,
-        "SIMD shape '#simd[" + std::to_string(type.element_count) + "]" +
+        "SIMD shape 'simd[" + std::to_string(type.element_count) + "]" +
             element_name + "' is not supported by target '" +
             target.identity + "'");
   }

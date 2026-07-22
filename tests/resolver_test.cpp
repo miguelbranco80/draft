@@ -259,7 +259,7 @@ struct TemporaryWorkspace {
            << "Aligned :: align(... \"choose alignment\") struct {\n"
            << "    value: u8,\n"
            << "}\n\n"
-           << "Vector :: #simd[... \"choose SIMD lanes\"]u32\n\n"
+           << "Vector :: simd[... \"choose SIMD lanes\"]u32\n\n"
            << "Mode :: enum u8 {\n"
            << "    Zero = ... \"choose enum value\",\n"
            << "}\n\n"

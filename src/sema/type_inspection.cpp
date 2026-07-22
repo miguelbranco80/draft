@@ -211,7 +211,7 @@ constexpr std::array<std::string_view, 2> kTargetObjectFormatNames = {
     result = "[" + std::to_string(type.element_count) + "]" +
         canonical_type_name(package, type.element, active);
   } else if (type.kind == TypeKind::Simd) {
-    result = "#simd[" + std::to_string(type.element_count) + "]" +
+    result = "simd[" + std::to_string(type.element_count) + "]" +
         canonical_type_name(package, type.element, active);
   } else if (type.kind == TypeKind::Tuple) {
     result = "(";

@@ -553,7 +553,7 @@ void collect_constant_procedures(
       count = integer_expression_identity(type.element_count_expression);
     }
     const std::string prefix =
-        type.kind == TypeKind::Simd ? "#simd[" : "[";
+        type.kind == TypeKind::Simd ? "simd[" : "[";
     return prefix + count + "]" + type_text(package, type.element);
   }
   case TypeKind::Tuple: {

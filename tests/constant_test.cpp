@@ -601,7 +601,7 @@ Wrapped_Byte :: increment_byte(255)
 Measured_U32 :: measure[u32, 7](0)
 Table :: make_table()
 Table_Sum :: sum_table(Table)
-Vector_Type :: #simd[4]u32
+Vector_Type :: simd[4]u32
 Vector :: Vector_Type{1, 2, 3, 4}
 Vector_Value :: Vector[2]
 Increment_Procedure :: increment_value
@@ -1341,10 +1341,10 @@ Small[N: u8] :: struct {
     values: [cast[usize](N)]u8,
 }
 
-Computed_Vector :: #simd[choose_size(true)]u32
+Computed_Vector :: simd[choose_size(true)]u32
 
 Procedural_Vector[N: usize] :: struct {
-    values: #simd[plus_one(N)]u32,
+    values: simd[plus_one(N)]u32,
 }
 
 Procedural_Concrete :: struct {
@@ -1502,7 +1502,7 @@ Bad_Array :: struct {
     values: [wrong_count()]u8,
 }
 
-Bad_Vector :: #simd[wrong_count()]u32
+Bad_Vector :: simd[wrong_count()]u32
 
 Bad_Aligned :: align(wrong_count()) struct {
     value: u8,
@@ -2142,7 +2142,7 @@ Feature_Type :: type_of((target).has_feature("neon"))
 Target_OS_Type_Value :: type_of(target.os)
 Integer_Type_Value :: type_of(1)
 Callback :: proc(value: i32) -> i32
-Vector :: #simd[4]u32
+Vector :: simd[4]u32
 callback_identity :: proc(value: i32) -> i32 {
     return value
 }
@@ -2164,7 +2164,7 @@ when type_of(raw_data(runtime_text())) == [^]u8 && []u8 != [^]u8 {
 
 when type_of(callback_identity) == proc(value: i32) -> i32 &&
      Callback == proc(value: i32) -> i32 &&
-     Vector == #simd[4]u32 {
+     Vector == simd[4]u32 {
     Exact_Procedure_And_SIMD_Selected :: true
 }
 

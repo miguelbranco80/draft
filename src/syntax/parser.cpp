@@ -212,9 +212,10 @@ private:
   }
 
   // A contextual alternative normally uses the same identifier vocabulary as
-  // an ordinary name. Two stable members of the compiler-defined Type_Kind
-  // enum, however, are spelled with the reserved type-constructor keywords
-  // `struct` and `distinct`. Accept those tokens only after the leading `.`.
+  // an ordinary name. Several stable members of the compiler-defined Type_Kind
+  // enum, however, are spelled with reserved type-constructor keywords such as
+  // `struct`, `variant`, and `simd`. Accept those tokens only after the leading
+  // `.`.
   // Broadening is_contextual_name() would also admit the keywords as package,
   // field, and declaration names, changing unrelated grammar to solve this one
   // contextual spelling collision.
@@ -547,7 +548,6 @@ private:
     switch (current().kind) {
     case TokenKind::Caret:
     case TokenKind::LeftBracket:
-    case TokenKind::Hash:
     case TokenKind::KeywordAlign:
     case TokenKind::KeywordProc:
     case TokenKind::KeywordStruct:
@@ -555,6 +555,7 @@ private:
     case TokenKind::KeywordVariant:
     case TokenKind::KeywordUnion:
     case TokenKind::KeywordDistinct:
+    case TokenKind::KeywordSimd:
       return true;
     case TokenKind::KeywordC:
       return lookahead(1).kind == TokenKind::KeywordProc ||
@@ -761,8 +762,7 @@ private:
       children.push_back(parse_type());
       return tree_.add_node(NodeKind::ArrayType, start, position_, std::move(children));
     }
-    if (match(TokenKind::Hash)) {
-      (void)expect_name("expected 'simd' after '#'");
+    if (match(TokenKind::KeywordSimd)) {
       (void)expect(TokenKind::LeftBracket, "expected '[' before SIMD lane count");
       children.push_back(parse_expression());
       (void)expect(TokenKind::RightBracket, "expected ']' after SIMD lane count");

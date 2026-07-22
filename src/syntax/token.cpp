@@ -32,6 +32,7 @@ std::string_view token_kind_name(TokenKind kind) {
   case TokenKind::KeywordVariant: return "variant";
   case TokenKind::KeywordUnion: return "union";
   case TokenKind::KeywordDistinct: return "distinct";
+  case TokenKind::KeywordSimd: return "simd";
   case TokenKind::KeywordThreadLocal: return "thread_local";
   case TokenKind::KeywordForeign: return "foreign";
   case TokenKind::KeywordExport: return "export";
@@ -168,8 +169,8 @@ bool token_is_contextual_alternative_name(TokenKind kind) {
       kind == TokenKind::KeywordFloat || kind == TokenKind::KeywordNumber ||
       kind == TokenKind::KeywordFlags || kind == TokenKind::KeywordMemory ||
       kind == TokenKind::KeywordStruct || kind == TokenKind::KeywordVariant ||
-      kind == TokenKind::KeywordUnion ||
-      kind == TokenKind::KeywordDistinct;
+      kind == TokenKind::KeywordUnion || kind == TokenKind::KeywordDistinct ||
+      kind == TokenKind::KeywordSimd;
 }
 
 } // namespace draft

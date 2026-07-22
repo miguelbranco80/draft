@@ -854,7 +854,7 @@ Bad_Array :: struct {
     values: [cast[u64](4)]u8,
 }
 
-Bad_Vector :: #simd[cast[u64](4)]u32
+Bad_Vector :: simd[cast[u64](4)]u32
 
 Bad_Aligned :: align(cast[u64](4)) struct {
     value: u8,

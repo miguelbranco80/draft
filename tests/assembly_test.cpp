@@ -135,8 +135,8 @@ add_float :: proc(left, right: f64) -> f64 {
     }
 }
 
-load_vector :: proc(pointer: ^#simd[2]u64) -> #simd[2]u64 {
-    return asm aarch64 -> #simd[2]u64 {
+load_vector :: proc(pointer: ^simd[2]u64) -> simd[2]u64 {
+    return asm aarch64 -> simd[2]u64 {
         in x0 = pointer
         out q0
         ldr q0, [x0]
@@ -189,8 +189,8 @@ round_trip_integer :: proc(value: u64) -> u64 {
     }
 }
 
-double_vector :: proc(value: #simd[2]u64) -> #simd[2]u64 {
-    return asm aarch64 -> #simd[2]u64 {
+double_vector :: proc(value: simd[2]u64) -> simd[2]u64 {
+    return asm aarch64 -> simd[2]u64 {
         in q0 = value
         out q0
         add v0.2d, v0.2d, v0.2d
@@ -357,8 +357,8 @@ bad_flags :: proc(left, right: u64) -> u64 {
     }
 }
 
-bad_vector_shape :: proc(value: #simd[2]u64) -> #simd[2]u64 {
-    return asm aarch64 -> #simd[2]u64 {
+bad_vector_shape :: proc(value: simd[2]u64) -> simd[2]u64 {
+    return asm aarch64 -> simd[2]u64 {
         in q0 = value
         out q0
         mul v0.2d, v0.2d, v0.2d

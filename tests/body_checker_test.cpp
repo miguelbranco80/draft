@@ -3379,7 +3379,7 @@ Overlay :: c align(8) union {
 Callback :: proc(value: i32, flag: bool) -> u64
 C_Callback :: c proc(value: i32) -> u64
 Pair :: (u8, bool)
-Vector :: #simd[4]u32
+Vector :: simd[4]u32
 
 runtime_value :: proc() -> int {
     return context.user_index
@@ -3403,7 +3403,7 @@ inspect_types :: proc() {
     static_assert(type_of(payload) == string)
     static_assert([]u8 != [^]u8)
     static_assert(Callback == proc(value: i32, flag: bool) -> u64)
-    static_assert(Vector == #simd[4]u32)
+    static_assert(Vector == simd[4]u32)
 
     // Exercise every stable Type_Kind alternative. This is intentionally
     // exhaustive: the compiler-defined enum is source API, and reserved-word

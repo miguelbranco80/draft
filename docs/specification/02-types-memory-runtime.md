@@ -85,7 +85,7 @@ proc(...) -> T                   procedure pointer/signature
 []T                              slice: {data: [^]T, len: usize}
 string                           immutable byte slice
 cstring                          zero-terminated C byte pointer
-#simd[N]T                        fixed vector with native vector lowering
+simd[N]T                        fixed vector with native vector lowering
 ```
 
 A procedure type is identified by its ordered parameter types, result type, and

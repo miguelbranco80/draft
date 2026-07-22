@@ -1069,7 +1069,7 @@ void test_named_constants_are_semantic_products(TestState &state) {
          "Derived :: Base + 2\n"
          "Untyped_Tuple :: (1, 2.5)\n"
          "Compile_Record :: Record{value = 42}\n"
-         "Vector_Type :: #simd[4]u32\n"
+         "Vector_Type :: simd[4]u32\n"
          "Vector :: Vector_Type{1, 2, 3, 4}\n"
          "Vector_Value :: Vector[2]\n"
          "callback_identity :: proc(value: i32) -> i32 {\n"

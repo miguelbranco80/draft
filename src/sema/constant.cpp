@@ -5307,7 +5307,7 @@ private:
     // Structural type syntax is itself an exact compile-time `type` value.
     // Most source examples compare type_of against a named type, which enters
     // the NameExpression case below. Constructors such as `[^]u8`, `[4]u8`,
-    // `proc(value: i32) -> i32`, and `#simd[4]u32` retain their type-syntax
+    // `proc(value: i32) -> i32`, and `simd[4]u32` retain their type-syntax
     // nodes, however, and must not become pending runtime expressions merely
     // because they appear to the right of `==`. Keep this bridge deliberately
     // aligned with type_value's exact structural subset. In particular, do not

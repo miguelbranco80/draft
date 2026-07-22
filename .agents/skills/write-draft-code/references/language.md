@@ -212,7 +212,7 @@ cstring     zero-terminated C byte pointer
 []T         non-owning mutable slice {data, len}
 string      non-owning immutable byte slice
 [N]T        inline fixed array; N is part of the type
-#simd[N]T   target-approved fixed vector
+simd[N]T    target-approved fixed vector
 ```
 
 Use `&value` for an address and postfix `pointer^` for dereference. Use
@@ -395,7 +395,7 @@ context, foreign calls, or assembly.
 Exact type values have the compile-time-only type `type`; they can be constants,
 cross package interfaces, supply later annotations or parametric arguments, and
 compare with `==`/`!=`, but cannot reach runtime. A structural constructor such
-as `[^]u8`, `proc(value: i32) -> i32`, or `#simd[4]u32` is the exact type value
+as `[^]u8`, `proc(value: i32) -> i32`, or `simd[4]u32` is the exact type value
 when expression grammar places it in a compile-time comparison.
 `type_of(expression)` observes the checked static type without evaluating the
 expression. Structural inspection uses `type_kind`, `type_name`, scalar

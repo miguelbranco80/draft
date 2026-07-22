@@ -43,6 +43,7 @@ enum class TokenKind {
   KeywordVariant,
   KeywordUnion,
   KeywordDistinct,
+  KeywordSimd,
   KeywordThreadLocal,
   KeywordForeign,
   KeywordExport,

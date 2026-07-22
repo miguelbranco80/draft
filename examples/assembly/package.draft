@@ -61,8 +61,8 @@ round_trip_integer :: proc(value: u64) -> u64 {
 
 // Lane-qualified operands name the same physical register as the q0 boundary
 // declaration.  The v2 dialect accepts only whole-vector baseline forms.
-double_vector :: proc(value: #simd[2]u64) -> #simd[2]u64 {
-    return asm aarch64 -> #simd[2]u64 {
+double_vector :: proc(value: simd[2]u64) -> simd[2]u64 {
+    return asm aarch64 -> simd[2]u64 {
         in q0 = value
         out q0
 

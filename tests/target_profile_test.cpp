@@ -145,7 +145,7 @@ void test_simd_semantic_boundary(TestState &state) {
       !draft::validate_target_types(types, profile.facts, diagnostics));
   EXPECT(state, diagnostics.error_count() == 1);
   EXPECT(state,
-      diagnostics.diagnostics().front().message.find("#simd[3]u32") !=
+      diagnostics.diagnostics().front().message.find("simd[3]u32") !=
           std::string::npos);
 }
 
