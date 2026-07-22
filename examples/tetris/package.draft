@@ -1,22 +1,27 @@
 // This file is the executable shell around the deterministic Tetris game. It
 // acquires one raw terminal session, enters the terminal's alternate screen,
-// interleaves timed input with gravity, renders only changed states, and then
-// restores both screen and input mode on every ordinary exit path. Simulation,
-// byte decoding, and painting remain in separate files with no callbacks or
-// framework between them.
+// interleaves timed input with gravity, repaints one desired TUI cell surface,
+// and then restores both screen and input mode on every ordinary exit path.
+// core/tui owns differential ANSI publication; simulation, byte decoding, and
+// painting remain in separate files with no callbacks or framework between
+// them.
 //
 // The program intentionally uses only Draft core packages and ANSI/VT output:
-// there is no ncurses, event library, heap allocation, background thread, or
-// platform code in the example. Current target support follows core/terminal:
-// AArch64 macOS and AArch64 GNU/Linux.
+// there is no ncurses, event library, background thread, or platform code in
+// the example. The TUI owns bounded heap storage for current and previous cell
+// surfaces. Current target support follows core/terminal: AArch64 macOS and
+// AArch64 GNU/Linux.
 package tetris
 
 import core/io
 import core/os
 import core/terminal
 import core/time
+import core/tui
 
 Input_Buffer_Size :: 64
+Maximum_Render_Columns :: 240
+Maximum_Render_Rows :: 80
 
 // Run_Result keeps interactive failure policy out of the event loop. The main
 // owner restores terminal state first, then reports a readable diagnostic on
@@ -70,6 +75,28 @@ next_fall_deadline :: proc(game: ^Game, now: time.Duration) -> time.Duration {
         fall_interval_milliseconds(game) * cast[i64](time.millisecond),
     )
     return now + interval
+}
+
+// query_render_dimensions obtains the current output-terminal cell size and
+// bounds the retained TUI viewport. Real terminal dimensions are external
+// resource input: capping them prevents an implausible or corrupted winsize
+// from requesting billions of cells. The cap still covers substantially more
+// than the game's fixed 50-by-24 layout. Zero dimensions cannot describe a
+// paintable terminal and are reported as unavailable to the event loop.
+query_render_dimensions :: proc() -> (usize, usize, bool) {
+    (size, error) := terminal.query_size(os.standard_output)
+    if error != .none || size.columns == 0 || size.rows == 0 {
+        return (0, 0, false)
+    }
+    columns := size.columns
+    rows := size.rows
+    if columns > Maximum_Render_Columns {
+        columns = Maximum_Render_Columns
+    }
+    if rows > Maximum_Render_Rows {
+        rows = Maximum_Render_Rows
+    }
+    return (columns, rows, true)
 }
 
 // apply_action is the sole mapping from decoded user intent to simulation
@@ -136,6 +163,14 @@ run_interactive :: proc(
     game: Game
     game_init(&game, seed)
 
+    (columns, rows, size_available) := query_render_dimensions()
+    if !size_available {
+        return .output_failed
+    }
+    renderer: tui.Renderer
+    tui.renderer_init(&renderer, columns, rows)
+    defer tui.renderer_destroy(&renderer)
+
     decoder: Input_Decoder
     input: [Input_Buffer_Size]u8
     now := time.monotonic_now()
@@ -143,8 +178,20 @@ run_interactive :: proc(
     needs_render := true
 
     for {
+        (current_columns, current_rows, current_size_available) :=
+            query_render_dimensions()
+        if !current_size_available {
+            return .output_failed
+        }
+        desired := tui.surface(&renderer)
+        if current_columns != desired^.columns ||
+            current_rows != desired^.rows {
+            tui.renderer_resize(&renderer, current_columns, current_rows)
+            needs_render = true
+        }
+
         if needs_render {
-            if render_game(screen, &game) != .none {
+            if render_game(&renderer, screen, &game) != .none {
                 return .output_failed
             }
             needs_render = false
@@ -156,7 +203,10 @@ run_interactive :: proc(
             if now >= fall_deadline {
                 wait = 0 * time.nanosecond
             } else {
-                wait = fall_deadline - now
+                remaining := fall_deadline - now
+                if remaining < wait {
+                    wait = remaining
+                }
             }
         }
 
@@ -199,7 +249,7 @@ run_interactive :: proc(
     return .completed
 }
 
-// run_smoke exercises game state transitions and complete frame construction
+// run_smoke exercises game state transitions and complete TUI cell painting
 // without requiring a terminal. It is intentionally deterministic and emits a
 // short stable line for cross-target native conformance.
 run_smoke :: proc() -> int {
@@ -212,8 +262,12 @@ run_smoke :: proc() -> int {
         }
     }
 
-    frame: Frame_Buffer
-    if !build_frame(&frame, &game) || frame.length == 0 {
+    renderer: tui.Renderer
+    tui.renderer_init(&renderer, Layout_Columns, Layout_Rows)
+    defer tui.renderer_destroy(&renderer)
+    desired := tui.surface(&renderer)
+    if !paint_game(&renderer, &game) || desired^.columns == 0 ||
+        desired^.rows == 0 {
         return 1
     }
     if os.write_text_all(os.standard_output, "tetris smoke ok\n") != .none {

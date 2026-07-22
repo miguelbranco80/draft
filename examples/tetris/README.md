@@ -1,9 +1,10 @@
 # Tetris
 
 This is a complete, small full-screen terminal game written in Draft. It uses
-the Draft core library and ordinary ANSI/VT output directly—there is no
-ncurses, third-party dependency, heap allocation, or platform-specific code in
-the application.
+`core/terminal` for portable raw input and screen lifetime, and `core/tui` for
+owned cell surfaces and differential ANSI/VT output. There is no ncurses,
+third-party dependency, background thread, or platform-specific application
+code.
 
 Build and run it on AArch64 macOS:
 
@@ -13,7 +14,9 @@ build/draftc build examples/tetris --target aarch64-macos -O2 -o /tmp/draft-tetr
 ```
 
 On an AArch64 GNU/Linux host, select `--target aarch64-linux` instead. Use a
-terminal of roughly 50 columns by 24 rows or larger.
+terminal of 50 columns by 24 rows or larger. The game follows terminal resizes;
+a smaller terminal displays a bounded size notice instead of corrupting the
+screen.
 
 ## Controls
 
@@ -32,8 +35,7 @@ terminal of roughly 50 columns by 24 rows or larger.
 The program uses a shuffled seven-piece bag, a ghost piece, line clearing,
 score and level progression, timed gravity, color, and compact deterministic
 wall kicks. The kick rules are deliberately smaller than guideline SRS, and
-the first game has no hold slot, lock delay, high-score file, or terminal-size
-query.
+the first game has no hold slot, lock delay, or high-score file.
 
 ## Why the example is split
 
@@ -41,11 +43,11 @@ query.
   allocation, or clock access.
 - [`input.draft`](input.draft) maps `core/terminal`'s streaming keys—including
   fragmented ANSI arrows—to game actions one byte at a time.
-- [`render.draft`](render.draft) constructs a complete ANSI frame in a fixed
-  stack buffer, then publishes it with one write.
+- [`render.draft`](render.draft) paints a complete desired ASCII cell surface;
+  `core/tui` retains the prior surface and publishes only changed cell runs.
 - [`package.draft`](package.draft) owns raw-mode lifetime and the timed event
-  loop. Every ordinary exit path leaves the alternate screen and restores the
-  saved terminal mode.
+  loop, queries terminal size, and resizes the bounded TUI viewport. Every
+  ordinary exit path leaves the alternate screen and restores the saved mode.
 - [`tetris_test.draft`](tetris_test.draft) checks gameplay, input, and rendering
   without requiring an interactive terminal.
 

@@ -114,8 +114,8 @@ struct ConformanceCase {
     } else if (test.package == "examples/tetris") {
       // Full gameplay requires a terminal whose native mode can be changed.
       // The example's deterministic smoke path still executes simulation and
-      // complete fixed-buffer frame construction under the ordinary pipe used
-      // for every conformance child, without weakening interactive behavior.
+      // complete TUI cell painting under the ordinary pipe used for every
+      // conformance child, without weakening interactive behavior.
       test.argument = "--smoke";
     }
     cases.push_back(std::move(test));

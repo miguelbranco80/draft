@@ -1,116 +1,46 @@
-// This file paints one complete Tetris frame into a fixed stack buffer and
-// publishes it with one complete stdout write. Rendering a whole frame off
-// screen prevents dozens of tiny system calls and ensures a capacity failure
-// cannot leave half of a newly constructed frame on the terminal. ANSI/VT
-// cursor and color sequences are ordinary output bytes; no terminal library,
-// allocation, retained slice, or native ABI is involved.
+// This file paints one complete Tetris state into core/tui's desired Surface.
+// The game owns no ANSI construction, terminal writes, or retained frame
+// history: tui.Renderer compares this desired cell grid with the last complete
+// publication and emits only changed cell runs. Painting still starts from a
+// blank surface on every frame, which keeps the application operation direct
+// and makes disappearance of pieces or text explicit in the desired state.
 //
-// The renderer derives active and ghost cells from Game without mutating it.
-// It assumes the application has already entered an alternate screen and
-// hidden the cursor. The 24-line layout fits a conventional 80x24 terminal,
-// while end-of-line and end-of-screen erasure remove remnants after resizes.
+// The renderer reads Game without mutating it. Its fixed 50-by-24 game layout
+// is centered when space permits; smaller terminals receive a clipped bounded
+// message instead of an out-of-bounds write. All glyphs are printable ASCII
+// occupying exactly one cell, so no Unicode width policy is hidden here.
 package tetris
 
 import core/format
 import core/io
 import core/terminal
+import core/tui
 
-Frame_Capacity :: 8192
+Layout_Columns :: 50
+Layout_Rows :: 24
 
-Ghost_Style :: "\x1b[2m"
-
-// Frame_Buffer owns initialized bytes in bytes[:length]. failed is sticky: an
-// attempted append beyond capacity records failure and every later append is a
-// no-op. No slice escapes the render operation, so the stack owner remains
-// obvious and there is no allocation failure policy hidden inside painting.
-Frame_Buffer :: struct {
-    bytes: [Frame_Capacity]u8,
-    length: usize,
-    failed: bool,
-}
-
-// frame_append_byte adds one initialized byte unless capacity has already been
-// exhausted. The length invariant is always `length <= Frame_Capacity`.
-frame_append_byte :: proc(frame: ^Frame_Buffer, byte: u8) {
-    if frame^.failed {
-        return
-    }
-    if frame^.length == Frame_Capacity {
-        frame^.failed = true
-        return
-    }
-    frame^.bytes[frame^.length] = byte
-    frame^.length += 1
-}
-
-// frame_append_text copies immutable source bytes into frame-owned mutable
-// storage. Capacity is proved before the copy, so failure never installs a
-// partial logical token such as half of an ANSI escape sequence.
-frame_append_text :: proc(frame: ^Frame_Buffer, text: string) {
-    if frame^.failed {
-        return
-    }
-    if len(text) > Frame_Capacity - frame^.length {
-        frame^.failed = true
-        return
-    }
-    for index: usize = 0; index < len(text); index += 1 {
-        frame^.bytes[frame^.length] = text[index]
-        frame^.length += 1
-    }
-}
-
-// frame_append_bytes is the mutable-slice counterpart used by numeric
-// formatting. The source is borrowed only for the duration of the copy.
-frame_append_bytes :: proc(frame: ^Frame_Buffer, bytes: []u8) {
-    if frame^.failed {
-        return
-    }
-    if len(bytes) > Frame_Capacity - frame^.length {
-        frame^.failed = true
-        return
-    }
-    for byte in bytes {
-        frame^.bytes[frame^.length] = byte
-        frame^.length += 1
-    }
-}
-
-// frame_append_unsigned formats without allocation into a complete-width
-// scratch buffer, then copies the initialized digits into the frame. The
-// formatting failure is retained even though twenty bytes prove all u64 values
-// fit; checking it keeps this layer correct if that local proof later changes.
-frame_append_unsigned :: proc(frame: ^Frame_Buffer, value: u64) {
-    storage: [20]u8
-    (digits, formatted) := format.unsigned_decimal(storage[:], value)
-    if !formatted {
-        frame^.failed = true
-        return
-    }
-    frame_append_bytes(frame, digits)
-}
-
-// piece_color maps nonzero board identities to ANSI 256-color foregrounds.
-// The chosen colors remain distinguishable on light and dark backgrounds. An
-// invalid identity returns reset style rather than indexing another table.
-piece_color :: proc(value: u8) -> string {
+// piece_style maps nonzero board identities to ANSI 256-color foregrounds
+// through tui's target-independent cell style. The chosen palette entries are
+// distinguishable on light and dark backgrounds. An invalid identity gets the
+// default style rather than indexing unrelated state.
+piece_style :: proc(value: u8) -> tui.Style {
     switch value {
     case 1:
-        return "\x1b[38;5;51m"
+        return tui.Style{foreground = tui.indexed_color(51)}
     case 2:
-        return "\x1b[38;5;226m"
+        return tui.Style{foreground = tui.indexed_color(226)}
     case 3:
-        return "\x1b[38;5;201m"
+        return tui.Style{foreground = tui.indexed_color(201)}
     case 4:
-        return "\x1b[38;5;46m"
+        return tui.Style{foreground = tui.indexed_color(46)}
     case 5:
-        return "\x1b[38;5;196m"
+        return tui.Style{foreground = tui.indexed_color(196)}
     case 6:
-        return "\x1b[38;5;27m"
+        return tui.Style{foreground = tui.indexed_color(27)}
     case 7:
-        return "\x1b[38;5;208m"
+        return tui.Style{foreground = tui.indexed_color(208)}
     }
-    return terminal.reset_style
+    return tui.Style{}
 }
 
 // piece_contains_world translates a visible board coordinate into one piece's
@@ -125,153 +55,359 @@ piece_contains_world :: proc(piece: Piece, column: i32, row: i32) -> bool {
     )
 }
 
-// frame_append_board_cell paints exactly two terminal columns. Settled and
-// active cells share their kind color and use `[]`; ghost cells use dim dots;
-// empty cells are two spaces. Every styled cell resets immediately so borders
-// and the information panel never inherit a piece color.
-frame_append_board_cell :: proc(
-    frame: ^Frame_Buffer,
+// paint_unsigned formats one value into bounded stack storage and immediately
+// copies the initialized digits into cells. Twenty bytes cover every u64. The
+// formatter result is still checked so this remains correct if the local
+// scratch bound changes independently later.
+paint_unsigned :: proc(
+    surface: ^tui.Surface,
+    column, row: usize,
+    value: u64,
+) -> bool {
+    storage: [20]u8
+    (digits, formatted) := format.unsigned_decimal(storage[:], value)
+    if !formatted {
+        return false
+    }
+    return tui.write_ascii_bytes(
+        surface,
+        column,
+        row,
+        digits,
+        tui.Style{},
+    )
+}
+
+// paint_board_cell paints exactly two terminal columns. Settled and active
+// cells share their kind color and use `[]`; projected cells use dim dots; an
+// empty cell needs no write because paint_game has already cleared the surface.
+paint_board_cell :: proc(
+    surface: ^tui.Surface,
+    screen_column, screen_row: usize,
     game: ^Game,
-    column: i32,
-    row: i32,
-    projected_row: i32,
-) {
-    active := piece_contains_world(game^.current, column, row)
-    value := game^.board[board_index(column, row)]
+    board_column, board_row, projected_row: i32,
+) -> bool {
+    active := piece_contains_world(game^.current, board_column, board_row)
+    value := game^.board[board_index(board_column, board_row)]
     if active {
         value = piece_value(game^.current.kind)
     }
-
     if value != 0 {
-        frame_append_text(frame, piece_color(value))
-        frame_append_text(frame, "[]")
-        frame_append_text(frame, terminal.reset_style)
-        return
+        return tui.write_ascii(
+            surface,
+            screen_column,
+            screen_row,
+            "[]",
+            piece_style(value),
+        )
     }
 
     ghost := game^.current
     ghost.row = projected_row
-    if !game^.game_over && piece_contains_world(ghost, column, row) {
-        frame_append_text(frame, Ghost_Style)
-        frame_append_text(frame, "..")
-        frame_append_text(frame, terminal.reset_style)
-        return
+    if !game^.game_over &&
+        piece_contains_world(ghost, board_column, board_row) {
+        return tui.write_ascii(
+            surface,
+            screen_column,
+            screen_row,
+            "..",
+            tui.Style{dim = true},
+        )
     }
-    frame_append_text(frame, "  ")
+    return true
 }
 
-// frame_append_preview_row renders one of the next piece's four mask rows.
-// Preview cells have the same two-column geometry as the playfield, keeping
-// layout independent of Unicode width rules.
-frame_append_preview_row :: proc(
-    frame: ^Frame_Buffer,
+// paint_preview_row draws one of the next piece's four mask rows. Preview
+// cells use the board's two-column geometry and the same kind palette.
+paint_preview_row :: proc(
+    surface: ^tui.Surface,
+    column, row: usize,
     kind: Piece_Kind,
-    row: i32,
-) {
+    mask_row: i32,
+) -> bool {
     value := piece_value(kind)
-    for column: i32 = 0; column < Piece_Box_Size; column += 1 {
-        if piece_has_cell(kind, 0, column, row) {
-            frame_append_text(frame, piece_color(value))
-            frame_append_text(frame, "[]")
-            frame_append_text(frame, terminal.reset_style)
-        } else {
-            frame_append_text(frame, "  ")
+    for mask_column: i32 = 0;
+        mask_column < Piece_Box_Size;
+        mask_column += 1 {
+        if piece_has_cell(kind, 0, mask_column, mask_row) {
+            if !tui.write_ascii(
+                surface,
+                column + cast[usize](mask_column) * 2,
+                row,
+                "[]",
+                piece_style(value),
+            ) {
+                return false
+            }
         }
     }
+    return true
 }
 
-// frame_append_sidebar owns the fixed information-panel row mapping. It emits
-// content only; the caller prefixes spacing and clears the remaining terminal
-// line. Keeping this as an explicit switch makes the 20-row layout inspectable.
-frame_append_sidebar :: proc(frame: ^Frame_Buffer, game: ^Game, row: i32) {
-    switch row {
+// paint_sidebar owns the fixed information-panel row mapping. Empty rows are
+// deliberate. The explicit switch keeps the complete 20-row layout visible
+// rather than hiding it behind a widget or callback system.
+paint_sidebar :: proc(
+    surface: ^tui.Surface,
+    column, row: usize,
+    game: ^Game,
+    board_row: i32,
+) -> bool {
+    switch board_row {
     case 0:
-        frame_append_text(frame, "NEXT")
+        return tui.write_ascii(surface, column, row, "NEXT", tui.Style{})
     case 1, 2, 3, 4:
-        frame_append_preview_row(frame, game^.next, row - 1)
+        return paint_preview_row(
+            surface,
+            column,
+            row,
+            game^.next,
+            board_row - 1,
+        )
     case 6:
-        frame_append_text(frame, "SCORE  ")
-        frame_append_unsigned(frame, game^.score)
+        if !tui.write_ascii(surface, column, row, "SCORE  ", tui.Style{}) {
+            return false
+        }
+        return paint_unsigned(surface, column + 7, row, game^.score)
     case 7:
-        frame_append_text(frame, "LINES  ")
-        frame_append_unsigned(frame, game^.lines)
+        if !tui.write_ascii(surface, column, row, "LINES  ", tui.Style{}) {
+            return false
+        }
+        return paint_unsigned(surface, column + 7, row, game^.lines)
     case 8:
-        frame_append_text(frame, "LEVEL  ")
-        frame_append_unsigned(frame, cast[u64](game^.level))
+        if !tui.write_ascii(surface, column, row, "LEVEL  ", tui.Style{}) {
+            return false
+        }
+        return paint_unsigned(
+            surface,
+            column + 7,
+            row,
+            cast[u64](game^.level),
+        )
     case 10:
-        frame_append_text(frame, "A/D or arrows  move")
+        return tui.write_ascii(
+            surface,
+            column,
+            row,
+            "A/D or arrows  move",
+            tui.Style{},
+        )
     case 11:
-        frame_append_text(frame, "W/up           rotate")
+        return tui.write_ascii(
+            surface,
+            column,
+            row,
+            "W/up           rotate",
+            tui.Style{},
+        )
     case 12:
-        frame_append_text(frame, "Z              rotate back")
+        return tui.write_ascii(
+            surface,
+            column,
+            row,
+            "Z              rotate back",
+            tui.Style{},
+        )
     case 13:
-        frame_append_text(frame, "S/down         soft drop")
+        return tui.write_ascii(
+            surface,
+            column,
+            row,
+            "S/down         soft drop",
+            tui.Style{},
+        )
     case 14:
-        frame_append_text(frame, "Space          hard drop")
+        return tui.write_ascii(
+            surface,
+            column,
+            row,
+            "Space          hard drop",
+            tui.Style{},
+        )
     case 15:
-        frame_append_text(frame, "P pause   Q quit")
+        return tui.write_ascii(
+            surface,
+            column,
+            row,
+            "P pause   Q quit",
+            tui.Style{},
+        )
     case 17:
         if game^.game_over {
-            frame_append_text(frame, "GAME OVER")
-        } else if game^.paused {
-            frame_append_text(frame, "PAUSED")
-        } else {
-            frame_append_text(frame, "PLAYING")
+            return tui.write_ascii(
+                surface,
+                column,
+                row,
+                "GAME OVER",
+                tui.Style{},
+            )
         }
+        if game^.paused {
+            return tui.write_ascii(
+                surface,
+                column,
+                row,
+                "PAUSED",
+                tui.Style{},
+            )
+        }
+        return tui.write_ascii(
+            surface,
+            column,
+            row,
+            "PLAYING",
+            tui.Style{},
+        )
     case 18:
         if game^.game_over {
-            frame_append_text(frame, "Press R to restart")
+            return tui.write_ascii(
+                surface,
+                column,
+                row,
+                "Press R to restart",
+                tui.Style{},
+            )
         }
     }
+    return true
 }
 
-// build_frame replaces frame with one complete home-positioned image. Raw
-// terminal mode disables output post-processing on supported targets, so line
-// transitions explicitly use CRLF rather than relying on LF-to-CRLF mapping.
-// The result remains in caller-owned storage for tests or one immediate write.
-build_frame :: proc(frame: ^Frame_Buffer, game: ^Game) -> bool {
-    // Only the initialized prefix belongs to a frame. Resetting metadata rather
-    // than zeroing all 8 KiB avoids touching bytes that the renderer will never
-    // publish; every byte below the new length is still assigned before use.
-    frame^.length = 0
-    frame^.failed = false
+// paint_clipped_ascii is used only for the undersized-terminal notice. The
+// normal layout remains exact and rejects accidental overflow. This exceptional
+// path deliberately paints the visible prefix so even a very narrow terminal
+// receives useful information without inventing a general clipping policy for
+// core/tui.
+paint_clipped_ascii :: proc(
+    surface: ^tui.Surface,
+    column, row: usize,
+    text: string,
+) -> bool {
+    if row >= surface^.rows || column >= surface^.columns {
+        return true
+    }
+    count := len(text)
+    available := surface^.columns - column
+    if count > available {
+        count = available
+    }
+    for index: usize = 0; index < count; index += 1 {
+        if !tui.put(
+            surface,
+            column + index,
+            row,
+            text[index],
+            tui.Style{},
+        ) {
+            return false
+        }
+    }
+    return true
+}
 
-    frame_append_text(frame, terminal.cursor_home)
-    frame_append_text(frame, "DRAFT TETRIS")
-    frame_append_text(frame, terminal.erase_line_tail)
-    frame_append_text(frame, "\r\n")
-    frame_append_text(frame, "+--------------------+")
-    frame_append_text(frame, terminal.erase_line_tail)
-    frame_append_text(frame, "\r\n")
+// paint_game replaces the complete desired Surface. A normal game is centered
+// within the current terminal dimensions. A smaller surface gets a bounded
+// diagnostic frame and still counts as a successful renderable state.
+paint_game :: proc(renderer: ^tui.Renderer, game: ^Game) -> bool {
+    surface := tui.surface(renderer)
+    tui.clear(surface, tui.Style{})
+
+    if surface^.columns < Layout_Columns || surface^.rows < Layout_Rows {
+        if !paint_clipped_ascii(surface, 0, 0, "DRAFT TETRIS") {
+            return false
+        }
+        if !paint_clipped_ascii(surface, 0, 1, "Terminal too small") {
+            return false
+        }
+        return paint_clipped_ascii(surface, 0, 2, "Need 50 x 24 cells")
+    }
+
+    origin_column := (surface^.columns - Layout_Columns) / 2
+    origin_row := (surface^.rows - Layout_Rows) / 2
+    if !tui.write_ascii(
+        surface,
+        origin_column,
+        origin_row,
+        "DRAFT TETRIS",
+        tui.Style{},
+    ) || !tui.write_ascii(
+        surface,
+        origin_column,
+        origin_row + 1,
+        "+--------------------+",
+        tui.Style{},
+    ) {
+        return false
+    }
 
     projected_row := ghost_row(game)
-    for row: i32 = 0; row < Board_Height; row += 1 {
-        frame_append_byte(frame, cast[u8]('|'))
-        for column: i32 = 0; column < Board_Width; column += 1 {
-            frame_append_board_cell(frame, game, column, row, projected_row)
+    for board_row: i32 = 0; board_row < Board_Height; board_row += 1 {
+        screen_row := origin_row + 2 + cast[usize](board_row)
+        if !tui.put(
+            surface,
+            origin_column,
+            screen_row,
+            cast[u8]('|'),
+            tui.Style{},
+        ) {
+            return false
         }
-        frame_append_text(frame, "|")
-        frame_append_text(frame, "  ")
-        frame_append_sidebar(frame, game, row)
-        frame_append_text(frame, terminal.erase_line_tail)
-        frame_append_text(frame, "\r\n")
+        for board_column: i32 = 0;
+            board_column < Board_Width;
+            board_column += 1 {
+            if !paint_board_cell(
+                surface,
+                origin_column + 1 + cast[usize](board_column) * 2,
+                screen_row,
+                game,
+                board_column,
+                board_row,
+                projected_row,
+            ) {
+                return false
+            }
+        }
+        if !tui.put(
+            surface,
+            origin_column + 21,
+            screen_row,
+            cast[u8]('|'),
+            tui.Style{},
+        ) || !paint_sidebar(
+            surface,
+            origin_column + 24,
+            screen_row,
+            game,
+            board_row,
+        ) {
+            return false
+        }
     }
 
-    frame_append_text(frame, "+--------------------+")
-    frame_append_text(frame, terminal.erase_line_tail)
-    frame_append_text(frame, "\r\n")
-    frame_append_text(frame, "Seven-bag pieces. Compact wall kicks.")
-    frame_append_text(frame, terminal.erase_line_tail)
-    frame_append_text(frame, terminal.erase_screen_tail)
-    return !frame^.failed
+    return tui.write_ascii(
+        surface,
+        origin_column,
+        origin_row + 22,
+        "+--------------------+",
+        tui.Style{},
+    ) && tui.write_ascii(
+        surface,
+        origin_column,
+        origin_row + 23,
+        "Seven-bag pieces. Compact wall kicks.",
+        tui.Style{},
+    )
 }
 
-// render_game builds and publishes one frame. A capacity failure is reported as
-// unavailable and writes nothing; native output errors propagate unchanged.
-render_game :: proc(screen: ^terminal.Screen, game: ^Game) -> io.Error {
-    frame: Frame_Buffer
-    if !build_frame(&frame, game) {
+// render_game separates application painting from publication. A painting
+// invariant failure becomes an explicit application-level unavailable error;
+// terminal write failures propagate from tui.present unchanged.
+render_game :: proc(
+    renderer: ^tui.Renderer,
+    screen: ^terminal.Screen,
+    game: ^Game,
+) -> io.Error {
+    if !paint_game(renderer, game) {
         return .unavailable
     }
-    return terminal.write_screen(screen, frame.bytes[:frame.length])
+    return tui.present(renderer, screen)
 }

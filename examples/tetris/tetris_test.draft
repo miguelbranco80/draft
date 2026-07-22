@@ -1,11 +1,12 @@
 // These tests cover the Tetris example's deterministic seams: tetromino data,
 // bag permutation, board compaction, locking, game-over detection, fragmented
-// key decoding, and bounded frame construction. They require no terminal and
+// key decoding, and bounded TUI cell painting. They require no terminal and
 // perform no I/O, so `draftc test examples/tetris` is stable in CI and on both
 // selected targets.
 package tetris
 
 import core/testing
+import core/tui
 
 // count_mask_cells provides an intentionally independent bit-counting oracle
 // for the compact shape table. It does not call piece_has_cell, so an indexing
@@ -131,46 +132,70 @@ test_fragmented_input_sequences :: proc(test: ^testing.Test) {
     testing.expect(test, decode_input(&decoder, 3) == .quit)
 }
 
-// frame_contains_text is a byte-wise test helper. It searches only initialized
-// frame storage and treats an empty needle as found.
-frame_contains_text :: proc(frame: ^Frame_Buffer, needle: string) -> bool {
+// surface_contains_text searches each row independently through tui's public
+// cell-copy operation. It is an application-level semantic oracle: tests do not
+// depend on Renderer output-buffer layout or encoded ANSI control sequences.
+surface_contains_text :: proc(
+    surface: ^tui.Surface,
+    needle: string,
+) -> bool {
     if len(needle) == 0 {
         return true
     }
-    if len(needle) > frame^.length {
+    if len(needle) > surface^.columns {
         return false
     }
-    last := frame^.length - len(needle)
-    for start: usize = 0; start <= last; start += 1 {
-        matches := true
-        for index: usize = 0; index < len(needle); index += 1 {
-            if frame^.bytes[start + index] != needle[index] {
-                matches = false
-                break
+    last_column := surface^.columns - len(needle)
+    for row: usize = 0; row < surface^.rows; row += 1 {
+        for start: usize = 0; start <= last_column; start += 1 {
+            matches := true
+            for index: usize = 0; index < len(needle); index += 1 {
+                (cell, valid) := tui.cell_at(surface, start + index, row)
+                if !valid || cell.byte_value != needle[index] {
+                    matches = false
+                    break
+                }
             }
-        }
-        if matches {
-            return true
+            if matches {
+                return true
+            }
         }
     }
     return false
 }
 
-// test_frame_is_complete_and_bounded checks semantic landmarks rather than an
-// ANSI snapshot so deliberate color or spacing refinements remain local.
-test_frame_is_complete_and_bounded :: proc(test: ^testing.Test) {
+// test_tui_paint_is_complete_and_bounded checks semantic landmarks rather than
+// an ANSI snapshot. It also proves the undersized path clips text and succeeds
+// without changing core/tui's exact-write policy.
+test_tui_paint_is_complete_and_bounded :: proc(test: ^testing.Test) {
     game: Game
     game_init(&game, 11)
-    frame: Frame_Buffer
-    built := build_frame(&frame, &game)
+    renderer: tui.Renderer
+    tui.renderer_init(&renderer, Layout_Columns, Layout_Rows)
 
-    testing.expect_message(test, built, "a normal frame must fit its buffer")
-    testing.expect_message(test, frame.length < Frame_Capacity,
-        "the frame must leave capacity rather than truncate")
-    testing.expect_message(test, frame_contains_text(&frame, "DRAFT TETRIS"),
-        "the frame must include its title")
-    testing.expect_message(test, frame_contains_text(&frame, "SCORE"),
-        "the frame must include the score panel")
-    testing.expect_message(test, frame_contains_text(&frame, "\r\n"),
-        "raw-mode line transitions must use CRLF")
+    painted := paint_game(&renderer, &game)
+    surface := tui.surface(&renderer)
+    testing.expect_message(test, painted,
+        "the exact minimum layout must paint completely")
+    testing.expect_message(test,
+        surface_contains_text(surface, "DRAFT TETRIS"),
+        "the surface must include its title")
+    testing.expect_message(test, surface_contains_text(surface, "SCORE"),
+        "the surface must include the score panel")
+    testing.expect_message(test,
+        surface_contains_text(surface, "+--------------------+"),
+        "the surface must include the board boundary")
+    tui.renderer_destroy(&renderer)
+
+    small: tui.Renderer
+    tui.renderer_init(&small, 12, 2)
+    testing.expect_message(test, paint_game(&small, &game),
+        "an undersized surface must paint a bounded notice")
+    testing.expect_message(test,
+        surface_contains_text(tui.surface(&small), "DRAFT TETRIS"),
+        "the undersized notice must preserve its visible title")
+    testing.expect_message(test,
+        surface_contains_text(tui.surface(&small), "Terminal too"),
+        "the undersized notice must clip rather than overflow")
+    tui.renderer_destroy(&small)
 }
