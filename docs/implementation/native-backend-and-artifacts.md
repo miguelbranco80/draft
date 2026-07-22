@@ -238,6 +238,10 @@ install name; ELF dynamic output fixes a filename SONAME. ELF executables use
 the host system's startup objects, loader, glibc, and GCC runtime through the
 selected LLVM Clang driver and lld. Relocatable ELF output disables Clang's PIE
 default before `-r`; final links retain a deterministic SHA-1 GNU build ID.
+An ELF executable or dynamic library consuming an explicit shared foreign
+provider records `$ORIGIN` as a runtime search directory. This supports the
+repository's vendored sibling-library layout without encoding the provider's
+physical build path or requiring ambient `LD_LIBRARY_PATH`.
 Assembly output is a directory bundle with one compiler-produced source for
 each semantic package module plus exact copied external assembly inputs,
 avoiding local-label collisions that concatenation could create.

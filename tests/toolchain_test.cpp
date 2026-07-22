@@ -236,6 +236,35 @@ void test_explicit_foreign_provider_mapping(TestState &state) {
   EXPECT(state, !mapped_diagnostics.has_errors());
   EXPECT(state, read_file(log).find(provider.string()) != std::string::npos);
 
+  // ELF shared providers use a relocatable sibling-library convention. This
+  // argument-level test fixes the exact linker spelling without needing to run
+  // a Linux loader on the macOS test host.
+  draft::SourceManager linux_sources;
+  draft::DiagnosticSink linux_compile_diagnostics;
+  const draft::CompileWorkspaceResult linux_compiled = compile_fixture(
+      linux_sources, linux_compile_diagnostics, true, "foreign-provider",
+      draft::make_x86_64_linux_profile());
+  EXPECT(state, linux_compiled.ok);
+  const std::filesystem::path shared_provider = temporary / "provider.so";
+  std::ofstream(shared_provider, std::ios::binary) << "shared provider bytes\n";
+  std::ofstream(log, std::ios::binary | std::ios::trunc).close();
+  draft::NativeBuildOptions linux_options;
+  linux_options.clang_path = fake_clang.string();
+  linux_options.build_directory = (temporary / "linux-build").string();
+  linux_options.output_path = (temporary / "linux-program").string();
+  draft::ForeignProviderInput shared_mapping;
+  shared_mapping.provider = "custom_math";
+  shared_mapping.kind = draft::ForeignArtifactKind::SharedLibrary;
+  shared_mapping.path = shared_provider;
+  linux_options.foreign_providers.push_back(std::move(shared_mapping));
+  draft::DiagnosticSink linux_diagnostics;
+  const draft::NativeBuildResult linux_built = draft::build_native_artifact(
+      draft::make_x86_64_linux_profile(), linux_compiled, linux_options,
+      linux_diagnostics);
+  EXPECT(state, linux_built.ok);
+  EXPECT(state, !linux_diagnostics.has_errors());
+  EXPECT(state, read_file(log).find("-Wl,-rpath,$ORIGIN") != std::string::npos);
+
   std::filesystem::remove_all(temporary, error);
 }
 

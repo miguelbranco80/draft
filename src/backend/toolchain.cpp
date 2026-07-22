@@ -1435,6 +1435,20 @@ NativeBuildResult build_native_artifact(
       link_arguments.push_back("-nostdlib");
     }
   }
+  if ((options.artifact_kind == NativeArtifactKind::Executable ||
+       options.artifact_kind == NativeArtifactKind::DynamicLibrary) &&
+      target.facts.object_format == "elf" &&
+      std::any_of(foreign_providers.begin(), foreign_providers.end(),
+                  [](const VerifiedForeignProviderInput &provider) {
+                    return provider.kind == ForeignArtifactKind::SharedLibrary;
+                  })) {
+    // Draft's vendored-dependency model normally places a consumed shared
+    // provider beside the final program. A loader-relative search path makes
+    // that bundle relocatable and avoids requiring LD_LIBRARY_PATH merely to
+    // run an artifact linked from an exact provider path. `$ORIGIN` reaches the
+    // linker as one argv value, so no shell expands it here.
+    link_arguments.push_back("-Wl,-rpath,$ORIGIN");
+  }
   std::optional<std::filesystem::path> pdb_path;
   std::optional<std::filesystem::path> import_library_path;
   if (target.facts.object_format == "macho") {

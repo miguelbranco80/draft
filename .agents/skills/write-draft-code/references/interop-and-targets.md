@@ -269,7 +269,10 @@ raylib source builds as a dylib/so/DLL, and a headless memory-backend test prove
 the exact artifact can link and render on every supported host. Pass the
 resolved regular library file to `--provider`; provider inputs may not be
 symlinks. On Windows the `.lib` import library is an `archive` provider input
-and the matching DLL remains a runtime file beside the executable.
+and the matching DLL remains a runtime file beside the executable. ELF
+executables and dynamic libraries linked with a shared provider record
+`$ORIGIN`, so a copied `.so` can be discovered beside the final artifact.
+Mach-O follows the provider's install name and normal loader/rpath rules.
 
 `check` and `build` are provider-free in the agent sense: they never invoke
 Codex, rerun judgments, or change generated-source pins. “Provider” in native
