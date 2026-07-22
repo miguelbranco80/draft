@@ -2,6 +2,24 @@
 
 This document records bootstrap representations and algorithms for lexical classification, type inference, compile-time evaluation, effect summaries, and expression checking. Observable Draft behavior remains authoritative in the language specification.
 
+## Production tooling token stream
+
+Status: implemented for compiler-library clients.
+
+The production raw lexer can retain one optional tooling stream while it emits
+the parser stream. Tooling rows preserve exact authored byte ranges for normal
+syntax tokens, line comments, and block comments; whitespace, newlines, EOF,
+and parser-inserted semicolons are omitted. Unterminated comments and invalid
+syntax retain colorable ranges while producing the same diagnostics as an
+ordinary lex. Editors therefore share UTF-8 validation, literal recognition,
+keyword classification, recovery transitions, and token boundaries with the
+compiler instead of maintaining another Draft lexer.
+
+The stream deliberately contains lexical facts only. Turbo Draft derives its
+small declaration-name color from adjacent production tokens and derives all
+package/declaration/reference/effect/denial views from successful semantic
+products. Color themes and display policy remain outside `syntax`.
+
 ## Type completion facets
 
 Status: implemented for workspace compilation and rejecting direct clients,

@@ -313,6 +313,41 @@ void test_keyword_alternative_end_lines(TestState &state) {
   EXPECT(state, !constructors.diagnostics.has_errors());
 }
 
+// The tooling stream must come from the production raw scanner: exact comments
+// are retained, ordinary token kinds/ranges agree, whitespace is omitted, and
+// an unterminated block comment remains colorable alongside its diagnostic.
+void test_tooling_tokens(TestState &state) {
+  draft::SourceManager sources;
+  const std::string text =
+      "pub value := 42 // line\n/* block\ncomment */ \"text\"";
+  const draft::FileId file = sources.add_source("tooling.draft", text);
+  draft::DiagnosticSink diagnostics;
+  const std::vector<draft::ToolingToken> tokens =
+      draft::lex_source_for_tooling(sources, file, diagnostics);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, tokens.size() == 7);
+  EXPECT(state, tokens[0].kind == draft::TokenKind::KeywordPub);
+  EXPECT(state, tokens[3].kind == draft::TokenKind::IntegerLiteral);
+  EXPECT(state, tokens[4].token_class == draft::ToolingTokenClass::LineComment);
+  EXPECT(state, sources.text(tokens[4].range) == "// line");
+  EXPECT(state,
+         tokens[5].token_class == draft::ToolingTokenClass::BlockComment);
+  EXPECT(state, sources.text(tokens[5].range) == "/* block\ncomment */");
+  EXPECT(state, tokens[6].kind == draft::TokenKind::StringLiteral);
+
+  draft::SourceManager broken_sources;
+  const draft::FileId broken_file =
+      broken_sources.add_source("broken.draft", "/* unfinished");
+  draft::DiagnosticSink broken_diagnostics;
+  const std::vector<draft::ToolingToken> broken = draft::lex_source_for_tooling(
+      broken_sources, broken_file, broken_diagnostics);
+  EXPECT(state, broken_diagnostics.error_count() == 1);
+  EXPECT(state, broken.size() == 1);
+  EXPECT(state,
+         broken[0].token_class == draft::ToolingTokenClass::BlockComment);
+  EXPECT(state, broken_sources.text(broken[0].range) == "/* unfinished");
+}
+
 } // namespace
 
 int main() {
@@ -331,6 +366,7 @@ int main() {
   test_removed_annotation_prefix(state);
   test_caret_and_uninitialized_end_lines(state);
   test_keyword_alternative_end_lines(state);
+  test_tooling_tokens(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " lexer test expectation(s) failed\n";

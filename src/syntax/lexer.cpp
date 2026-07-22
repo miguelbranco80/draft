@@ -185,8 +185,10 @@ constexpr std::array kKeywords{
 class RawLexer {
 public:
   RawLexer(
-      const SourceManager &sources, FileId file, DiagnosticSink &diagnostics)
-      : file_(file), text_(sources.text(file)), diagnostics_(diagnostics) {}
+      const SourceManager &sources, FileId file, DiagnosticSink &diagnostics,
+      bool retain_tooling_tokens = false)
+      : file_(file), text_(sources.text(file)), diagnostics_(diagnostics),
+        retain_tooling_tokens_(retain_tooling_tokens) {}
 
   // scan performs UTF-8 validation first, then emits raw tokens in byte order.
   // It always appends one EOF token even after errors, giving the semicolon pass
@@ -198,6 +200,10 @@ public:
     }
     add(TokenKind::EndOfFile, offset_, offset_);
     return std::move(tokens_);
+  }
+
+  [[nodiscard]] std::vector<ToolingToken> take_tooling_tokens() {
+    return std::move(tooling_tokens_);
   }
 
 private:
@@ -229,6 +235,18 @@ private:
 
   void add(TokenKind kind, std::uint32_t begin, std::uint32_t end) {
     tokens_.push_back({kind, range(begin, end), false});
+    if (retain_tooling_tokens_ && kind != TokenKind::Newline &&
+        kind != TokenKind::EndOfFile) {
+      tooling_tokens_.push_back(
+          {ToolingTokenClass::Syntax, kind, range(begin, end)});
+    }
+  }
+
+  void add_comment(
+      ToolingTokenClass token_class, std::uint32_t begin, std::uint32_t end) {
+    if (!retain_tooling_tokens_) return;
+    tooling_tokens_.push_back(
+        {token_class, TokenKind::Invalid, range(begin, end)});
   }
 
   void error(std::uint32_t begin, std::uint32_t end, std::string message) {
@@ -307,10 +325,12 @@ private:
   }
 
   void scan_line_comment() {
+    const std::uint32_t begin = offset_;
     offset_ += 2;
     while (!at_end() && current() != '\n' && current() != '\r') {
       ++offset_;
     }
+    add_comment(ToolingTokenClass::LineComment, begin, offset_);
     // The newline remains for scan_newline so a trailing comment cannot hide a
     // statement boundary, as required by the semicolon insertion rule.
   }
@@ -321,6 +341,7 @@ private:
     while (!at_end()) {
       if (starts_with("*/")) {
         offset_ += 2;
+        add_comment(ToolingTokenClass::BlockComment, begin, offset_);
         return;
       }
       if (current() == '\n' || current() == '\r') {
@@ -330,6 +351,7 @@ private:
       }
     }
     error(begin, offset_, "unterminated block comment");
+    add_comment(ToolingTokenClass::BlockComment, begin, offset_);
   }
 
   void scan_identifier() {
@@ -635,8 +657,10 @@ private:
   FileId file_;
   std::string_view text_;
   DiagnosticSink &diagnostics_;
+  bool retain_tooling_tokens_ = false;
   std::uint32_t offset_ = 0;
   std::vector<Token> tokens_;
+  std::vector<ToolingToken> tooling_tokens_;
 };
 
 enum class AttachmentState {
@@ -782,6 +806,15 @@ std::vector<Token> lex_source(
     const SourceManager &sources, FileId file, DiagnosticSink &diagnostics) {
   RawLexer lexer(sources, file, diagnostics);
   return insert_semicolons(lexer.scan());
+}
+
+std::vector<ToolingToken> lex_source_for_tooling(
+    const SourceManager &sources, FileId file, DiagnosticSink &diagnostics) {
+  RawLexer lexer(sources, file, diagnostics, true);
+  // The parser token vector is intentionally discarded only after the shared
+  // scanner has completed every normal validation and recovery transition.
+  (void)lexer.scan();
+  return lexer.take_tooling_tokens();
 }
 
 } // namespace draft
