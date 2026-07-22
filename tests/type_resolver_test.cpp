@@ -454,6 +454,17 @@ Header :: struct {
     tail: [Member_Count]u16,
 }
 
+Selective_Packed :: struct {
+    head: u8,
+    packed payload: u32,
+    tail: u16,
+}
+
+Fully_Packed :: struct {
+    packed first: u32,
+    packed tag: u8,
+}
+
 Overlay :: union {
     byte: u8,
     word: u64,
@@ -636,6 +647,38 @@ take[T: type] :: proc(value: ^T) -> ^T {
     EXPECT(state, header_type.member_offsets[0] == 0);
     EXPECT(state, header_type.member_offsets[1] == 8);
     EXPECT(state, header_type.member_offsets[2] == 16);
+  }
+
+  const draft::Symbol *selective_packed =
+      find_symbol(source.semantic, "Selective_Packed");
+  const draft::Symbol *fully_packed =
+      find_symbol(source.semantic, "Fully_Packed");
+  EXPECT(state, selective_packed != nullptr);
+  EXPECT(state, fully_packed != nullptr);
+  if (selective_packed != nullptr) {
+    const draft::Type &type =
+        source.semantic.types.type(selective_packed->type);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 8, 2}));
+    EXPECT(
+        state,
+        type.member_offsets == std::vector<std::uint64_t>({0, 1, 6}));
+    EXPECT(state, type.member_layouts.size() == 3);
+    if (type.member_layouts.size() == 3) {
+      EXPECT(state, type.member_layouts[0].kind ==
+                        draft::FieldLayoutKind::Natural);
+      EXPECT(state, type.member_layouts[1].kind ==
+                        draft::FieldLayoutKind::Packed);
+      EXPECT(state, type.member_layouts[2].kind ==
+                        draft::FieldLayoutKind::Natural);
+    }
+  }
+  if (fully_packed != nullptr) {
+    const draft::Type &type =
+        source.semantic.types.type(fully_packed->type);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 5, 1}));
+    EXPECT(
+        state,
+        type.member_offsets == std::vector<std::uint64_t>({0, 4}));
   }
 
   const draft::Type &overlay_type = source.semantic.types.type(overlay->type);
@@ -1133,6 +1176,7 @@ Reduced_Alignment :: align(2) struct { value: u64, }
 Aligned_Enum :: align(8) enum { Value, }
 C_Variant :: c variant { none, }
 Attributed_Scalar :: align(8) u64
+C_Packed :: c struct { packed value: u32, }
 )draft");
 
   EXPECT(state, source.diagnostics.has_errors());
@@ -1143,6 +1187,8 @@ Attributed_Scalar :: align(8) u64
   EXPECT(state, rendered.find("valid only on structs and unions") !=
                     std::string::npos);
   EXPECT(state, rendered.find("valid only on structs, unions, and enums") !=
+                    std::string::npos);
+  EXPECT(state, rendered.find("packed fields are not allowed in a c struct") !=
                     std::string::npos);
 }
 
@@ -1217,7 +1263,7 @@ grouped :: proc(left, right: i64 = 0) {
 discarded :: proc(_: i64 = 0) {
 }
 
-packed :: proc(values: ..type = 0) {
+variadic :: proc(values: ..type = 0) {
 }
 )draft");
   EXPECT(state, source.diagnostics.has_errors());

@@ -33,6 +33,7 @@ std::string_view token_kind_name(TokenKind kind) {
   case TokenKind::KeywordUnion: return "union";
   case TokenKind::KeywordDistinct: return "distinct";
   case TokenKind::KeywordSimd: return "simd";
+  case TokenKind::KeywordPacked: return "packed";
   case TokenKind::KeywordThreadLocal: return "thread_local";
   case TokenKind::KeywordForeign: return "foreign";
   case TokenKind::KeywordExport: return "export";

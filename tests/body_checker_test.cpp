@@ -1990,6 +1990,36 @@ main :: proc() {
                     std::string::npos);
 }
 
+// Packed fields remain ordinary assignable values, but an under-aligned
+// occurrence cannot escape behind ^T because that pointer type promises T's
+// natural alignment to every later dereference and foreign call.
+void test_packed_field_address_diagnostic(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+Record :: struct {
+    head: u8,
+    packed value: u32,
+}
+
+read_and_write :: proc(record: ^Record) -> u32 {
+    record^.value += 1
+    return record^.value
+}
+
+invalid_address :: proc(record: ^Record) -> ^u32 {
+    return &record^.value
+}
+)draft");
+
+  EXPECT(state, source.diagnostics.has_errors());
+  const std::string rendered =
+      draft::render_diagnostics(source.sources, source.diagnostics);
+  EXPECT(state, rendered.find(
+      "address-of cannot form a naturally aligned pointer to this packed field") !=
+      std::string::npos);
+}
+
 void test_parameter_immutability(TestState &state) {
   // Parameters carry values into a procedure; they are not hidden mutable
   // locals. Explicit indirection is different: a pointer, multi-pointer, or
@@ -3359,6 +3389,11 @@ Record :: c align(16) struct {
     value: u64,
 }
 
+Packed_Record :: struct {
+    head: u8,
+    packed value: u32,
+}
+
 Mode :: enum u8 {
     Off,
     On,
@@ -3466,6 +3501,8 @@ inspect_types :: proc() {
     static_assert(type_member_offset(Record, 1) == 8)
     static_assert(type_member_offset(Choice, 1) > 0)
     static_assert(type_member_offset(Overlay, 1) == 0)
+    static_assert(type_member_is_packed(Packed_Record, 0) == false)
+    static_assert(type_member_is_packed(Packed_Record, 1))
     static_assert(type_member_value(Mode, 1) == 1)
     static_assert(type_underlying(Meters) == i64)
     static_assert(type_underlying(Mode) == u8)
@@ -3807,6 +3844,7 @@ int main() {
   test_switch_case_semantics(state);
   test_local_type_declarations(state);
   test_string_index_is_immutable(state);
+  test_packed_field_address_diagnostic(state);
   test_parameter_immutability(state);
   test_multi_pointer_slice_shape(state);
   test_constant_bounds_diagnostics(state);

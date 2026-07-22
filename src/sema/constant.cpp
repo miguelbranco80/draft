@@ -2913,6 +2913,7 @@ private:
 
     const bool indexed = *name == "type_member_name" ||
         *name == "type_member_type" || *name == "type_member_offset" ||
+        *name == "type_member_is_packed" ||
         *name == "type_member_value" || *name == "type_parameter_type";
     const std::size_t expected_children = indexed ? 3 : 2;
     if (call.children.size() != expected_children) {

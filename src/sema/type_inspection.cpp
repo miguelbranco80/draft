@@ -292,15 +292,15 @@ std::string_view type_facet_name(TypeFacet facet) {
 }
 
 bool is_type_inspection_query(std::string_view name) {
-  constexpr std::array<std::string_view, 18> names = {
+  constexpr std::array<std::string_view, 20> names = {
       "type_kind", "type_name", "type_bit_width", "type_byte_order",
       "type_element", "type_element_count", "type_member_count",
       "type_member_name", "type_member_type", "type_member_offset",
-      "type_member_value", "type_underlying", "type_discriminator",
+      "type_member_is_packed", "type_member_value", "type_underlying",
+      "type_discriminator",
       "type_parameter_count", "type_parameter_type", "type_result",
-      "type_calling_convention", "type_is_c_repr",
+      "type_calling_convention", "type_is_c_repr", "type_requested_alignment",
   };
-  if (name == "type_requested_alignment") return true;
   return std::find(names.begin(), names.end(), name) != names.end();
 }
 
@@ -476,6 +476,23 @@ TypeInspectionAttempt inspect_type(
     return member.has_value()
         ? integer_result(package, type.member_offsets[*member])
         : failure("type_member_offset index is out of bounds");
+  }
+  if (query == "type_member_is_packed") {
+    if (type.kind != TypeKind::Struct) {
+      return failure("type_member_is_packed requires a struct type");
+    }
+    if (const std::optional<TypeInspectionAttempt> unavailable =
+            require_facet(package, queried, TypeFacet::MemberTypes, query)) {
+      return *unavailable;
+    }
+    const std::optional<std::uint64_t> member = required_index(
+        index, static_cast<std::uint64_t>(type.member_layouts.size()));
+    return member.has_value()
+        ? success(
+              ConstantValue::make_bool(
+                  type.member_layouts[*member].kind == FieldLayoutKind::Packed),
+              builtins.bool_type)
+        : failure("type_member_is_packed index is out of bounds");
   }
   if (query == "type_member_value") {
     if (type.kind != TypeKind::Enum) {

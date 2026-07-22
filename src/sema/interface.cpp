@@ -105,6 +105,10 @@ void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
   for (InterfaceTypeId member : type.members) hash_type_id(hash, member);
   hash_u64(hash, static_cast<std::uint64_t>(type.member_offsets.size()));
   for (std::uint64_t offset : type.member_offsets) hash_u64(hash, offset);
+  hash_u64(hash, static_cast<std::uint64_t>(type.member_layouts.size()));
+  for (const FieldLayout &layout : type.member_layouts) {
+    hash_u64(hash, static_cast<std::uint64_t>(layout.kind));
+  }
   hash_u64(hash, type.c_calling_convention ? 1 : 0);
   hash_u64(hash, type.c_representation ? 1 : 0);
   hash_u64(hash, type.requested_alignment);
@@ -122,6 +126,7 @@ void hash_interface_type(Sha256 &hash, const InterfaceType &type) {
       hash_u64(hash, static_cast<std::uint64_t>(member.kind));
       hash_type_id(hash, member.type);
       hash_u64(hash, member.offset);
+      hash_u64(hash, static_cast<std::uint64_t>(member.field_layout.kind));
       hash_u64(hash, member.has_enum_value ? 1 : 0);
       hash_field(hash, member.enum_value.to_decimal());
     }
@@ -604,6 +609,20 @@ private:
     return 0;
   }
 
+  // Field layout is a property of the member's storage occurrence, not its
+  // logical TypeId. Preserve it beside the byte offset when a nominal type
+  // crosses a package interface; otherwise an imported packed field would be
+  // silently reconstructed as naturally aligned.
+  [[nodiscard]] FieldLayout member_field_layout(SymbolId member) const {
+    for (const AggregateMember &aggregate :
+         package_.aggregate_members_for_read()) {
+      if (aggregate.member == member) {
+        return aggregate.field_layout;
+      }
+    }
+    return {};
+  }
+
   [[nodiscard]] const EnumMemberValue *enum_member_value(
       SymbolId member) const {
     for (const EnumMemberValue &value :
@@ -756,6 +775,7 @@ private:
     translated.owner_evaluated_type_application =
         source_type.owner_evaluated_type_application;
     translated.member_offsets = source_type.member_offsets;
+    translated.member_layouts = source_type.member_layouts;
     translated.c_calling_convention = source_type.c_calling_convention;
     translated.c_representation = source_type.c_representation;
     translated.requested_alignment = source_type.requested_alignment;
@@ -818,6 +838,7 @@ private:
             member.kind,
             translate_type(member.type),
             member_offset(member_id),
+            member_field_layout(member_id),
             false,
             {},
         };
@@ -1410,7 +1431,7 @@ private:
       }
       consumer_.types.type_mut(result).element = element;
       consumer_.types.publish_nominal_member_types(
-          result, std::move(members));
+          result, std::move(members), source.member_layouts);
       if (source.layout.known) {
         consumer_.types.publish_nominal_natural_layout(
             result, source.layout, source.member_offsets);
@@ -1527,7 +1548,8 @@ private:
       symbol.name_range = consumer_.symbols.symbol(owner).name_range;
       const SymbolId member_id = consumer_.symbols.declare(std::move(symbol), diagnostics_);
       if (member_id.is_valid()) {
-        consumer_.aggregate_members.push_back({owner, member_id, member.offset});
+        consumer_.aggregate_members.push_back(
+            {owner, member_id, member.offset, member.field_layout});
         if (member.has_enum_value) {
           consumer_.enum_member_values.push_back(
               {member_id, member.enum_value});

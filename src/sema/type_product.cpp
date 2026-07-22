@@ -87,7 +87,8 @@ NaturalLayoutProductAttempt evaluate_natural_layout_product(
 
   NaturalAggregateLayout natural;
   if (type.kind == TypeKind::Struct) {
-    natural = compute_struct_natural_layout(types, type.members);
+    natural = compute_struct_natural_layout(
+        types, type.members, type.member_layouts);
   } else if (type.kind == TypeKind::Union) {
     natural = compute_union_natural_layout(types, type.members);
   } else if (type.kind == TypeKind::Variant) {

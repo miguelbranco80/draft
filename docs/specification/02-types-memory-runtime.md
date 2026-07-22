@@ -199,6 +199,34 @@ tuple result uses the same value layout, although the target ABI may decompose
 it at a call boundary. Draft 1 rejects zero-length arrays and aggregates with no
 members or alternatives.
 
+A default-layout struct may lower the placement alignment of selected fields to
+one byte with the field prefix `packed`:
+
+```draft
+Packet :: struct {
+    kind: u8,
+    packed sequence: u32be,
+    checksum: u16,
+}
+```
+
+`packed name: T` places that field at the current byte offset without inserting
+alignment padding and contributes alignment one, while preserving the logical
+type, size, value operations, and source name of `T`. A grouped declaration such
+as `packed low, high: u32` applies the rule to both fields. The next natural
+field still rounds its own offset normally, and final size is rounded to the
+largest effective field alignment. In the example the offsets are 0, 1, and 6,
+the struct alignment is 2, and its size is 8.
+
+Packed fields are ordinary readable and assignable fields. Their loads and
+stores use the alignment guaranteed by the containing occurrence rather than
+pretending that the field begins at `align_of(T)`. `&value.field` is valid only
+when that exact occurrence nevertheless guarantees `align_of(T)`; otherwise it
+is a compile-time error because `^T` promises natural alignment. `packed` is not
+valid on tuples, unions, variants, enums, or `c struct`; C-compatible packed
+layout requires an explicit foreign representation rather than a Draft layout
+rule being presented as the platform C ABI.
+
 `variant { ... }` is a tagged sum; `union { ... }` overlays every named field
 at offset zero. A union uses the maximum member alignment and the maximum
 member size rounded to that alignment.
@@ -300,6 +328,9 @@ The remaining structural queries are compile-time intrinsics:
 - `type_member_offset(T, index) -> usize` returns the natural-layout byte
   offset of a tuple, struct, variant alternative, or union member.
   Enum alternatives have no member offset.
+- `type_member_is_packed(T, index) -> bool` applies to structs and reports the
+  authored field placement rule. It does not infer packing from a coincidental
+  byte offset.
 - `type_member_value(T, index)` returns an enum alternative's backing-typed
   integer value.
 - `type_underlying(T) -> type` applies to distinct types, enums, and endian
@@ -636,10 +667,13 @@ Assignment copies a value according to its declared layout. Pointers, slices,
 and strings copy their view rather than the referenced storage. Resource
 ownership is expressed by library types and explicit procedures.
 
-A storage-backed variable, field, or array element is addressable with `&`; an
-unmaterialized temporary is not. Taking an address materializes automatic
-storage for its existing lexical lifetime; it does not extend that lifetime.
-Address formation and dereference preserve the declared type alignment.
+A storage-backed variable, naturally aligned field, or array element is
+addressable with `&`; an unmaterialized temporary is not. A packed field remains
+an assignment target but permits `&` only when its exact containing occurrence
+still guarantees the field type's natural alignment. Taking an address
+materializes automatic storage for its existing lexical lifetime; it does not
+extend that lifetime. Address formation and dereference preserve the declared
+type alignment.
 
 #### Thread-local storage
 

@@ -114,6 +114,11 @@ Choice :: variant u8 {
     some: u32,
 }
 
+Packed_Record :: struct {
+    prefix: u8,
+    packed value: u32,
+}
+
 Bits :: c union {
     integer: u64,
     pointer: rawptr,
@@ -486,6 +491,7 @@ void test_invalid_production_recovery(TestState &state) {
       {"missing member region", "package bad\nRecord :: struct\n", "expected '{' to begin type members"},
       {"missing field colon", "package bad\nRecord :: struct { field u32 }\n", "expected ':' after field name"},
       {"missing member terminator", "package bad\nRecord :: struct { first: u32 second: u32 }\n", "expected ',' or semicolon after field"},
+      {"packed union field", "package bad\nValue :: union { packed word: u32 }\n", "packed is valid only on struct fields"},
       {"missing conditional else", "package bad\nvalue := 1 if true\n", "conditional expression requires 'else'"},
       {"comparison chain", "package bad\nvalue := 1 < 2 < 3\n", "comparison operators do not associate"},
       {"missing call close", "package bad\nvalue := function(1\n", "expected ')' after call arguments"},

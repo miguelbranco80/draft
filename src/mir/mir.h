@@ -112,8 +112,12 @@ enum class MirInstructionKind {
 // value; Call uses callee, optional hidden context, then arguments; BoundsCheck
 // uses index then length; Slice uses base, low, then high after omitted bounds
 // have been materialized by lowering. offset is a byte offset for member access
-// and element_size for indexed access and pointer arithmetic. A result-less
-// instruction has an invalid result and normally the canonical void TypeId.
+// and element_size for indexed access and pointer arithmetic. alignment is the
+// minimum byte alignment guaranteed by an address-producing instruction, or
+// the exact promise made by a Load/Store memory operation. It is zero on every
+// other instruction. This occurrence fact can be smaller than the addressed
+// type's natural alignment for a packed field. A result-less instruction has
+// an invalid result and normally the canonical void TypeId.
 struct MirInstruction {
   MirInstructionKind kind = MirInstructionKind::Invalid;
   SourceRange range;
@@ -139,6 +143,7 @@ struct MirInstruction {
   SymbolId symbol;
   ConstantValue constant;
   std::uint64_t offset = 0;
+  std::uint32_t alignment = 0;
   // Aggregate construction may place each source operand at a different byte
   // offset. Other instructions leave this vector empty and use offset alone.
   std::vector<std::uint64_t> offsets;

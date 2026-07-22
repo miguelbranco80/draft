@@ -85,13 +85,16 @@ struct OwnedSemanticScope {
 };
 
 // AggregateMember connects nominal type identity to the member symbol and its
-// byte offset. An invalid/unknown layout uses offset zero until instantiation or
-// compile-time selection completes it; callers must consult the owning Type's
-// layout.known bit before treating the offset as physical.
+// byte offset and source storage rule. An invalid/unknown layout uses offset
+// zero until instantiation or compile-time selection completes it; callers must
+// consult the owning Type's layout.known bit before treating the offset as
+// physical. field_layout is preserved before layout completion because a later
+// TypeNaturalLayout task needs the authored rule without re-reading syntax.
 struct AggregateMember {
   SymbolId owner;
   SymbolId member;
   std::uint64_t offset = 0;
+  FieldLayout field_layout;
 };
 
 // Enum values are mathematical integers until backing selection has completed.

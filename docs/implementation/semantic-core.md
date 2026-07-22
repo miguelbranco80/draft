@@ -46,6 +46,14 @@ canonical concrete applications, not the template pattern, own runtime layout.
 Imported interface nominals are already-complete upstream inputs and never
 become local declaration work.
 
+One `FieldLayout` row accompanies every struct member type. The row records the
+authored natural/packed placement choice independently from the member's
+logical `TypeId`; natural-layout production substitutes alignment one only for
+that occurrence. Aggregate-member side tables and package interfaces carry the
+same row so generic instantiation and imported nominal reconstruction never
+re-read source or silently naturalize a packed field. Interface hashing includes
+the row because changing it changes public layout and address semantics.
+
 Array counts, SIMD widths, enum values, `align(N)` expressions, and parametric value
 arguments remain fields of their owning declaration product; the graph does not
 create a node per expression. The resolver handles the small literal/arithmetic

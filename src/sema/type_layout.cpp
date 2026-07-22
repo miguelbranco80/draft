@@ -60,7 +60,10 @@ namespace {
 } // namespace
 
 NaturalAggregateLayout compute_struct_natural_layout(
-    const TypeStore &types, std::span<const TypeId> members) {
+    const TypeStore &types,
+    std::span<const TypeId> members,
+    std::span<const FieldLayout> field_layouts) {
+  assert(field_layouts.empty() || field_layouts.size() == members.size());
   std::vector<TypeId> dependencies =
       missing_layout_dependencies(types, members);
   if (!dependencies.empty()) return waiting_layout(std::move(dependencies));
@@ -69,11 +72,16 @@ NaturalAggregateLayout compute_struct_natural_layout(
   result.status = NaturalLayoutStatus::Complete;
   result.layout = {true, 0, 1};
   result.member_offsets.reserve(members.size());
-  for (TypeId member_id : members) {
+  for (std::size_t index = 0; index < members.size(); ++index) {
+    const TypeId member_id = members[index];
     const TypeLayout member = types.type(member_id).layout;
     assert(member.known);
+    const bool packed = !field_layouts.empty() &&
+        field_layouts[index].kind == FieldLayoutKind::Packed;
+    const std::uint32_t effective_alignment =
+        packed ? 1U : member.alignment;
     const std::optional<std::uint64_t> offset =
-        round_up(result.layout.size, member.alignment);
+        round_up(result.layout.size, effective_alignment);
     if (!offset.has_value() ||
         member.size > std::numeric_limits<std::uint64_t>::max() - *offset) {
       return overflow_layout();
@@ -81,7 +89,7 @@ NaturalAggregateLayout compute_struct_natural_layout(
     result.member_offsets.push_back(*offset);
     result.layout.size = *offset + member.size;
     result.layout.alignment =
-        std::max(result.layout.alignment, member.alignment);
+        std::max(result.layout.alignment, effective_alignment);
   }
   const std::optional<std::uint64_t> size =
       round_up(result.layout.size, result.layout.alignment);

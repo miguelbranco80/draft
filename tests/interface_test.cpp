@@ -201,6 +201,11 @@ pub Point :: struct {
     y: i64,
 }
 
+pub Packed_Point :: struct {
+    prefix: u8,
+    packed value: u32,
+}
+
 pub C_Point :: c align(16) struct {
     x: i64,
     y: i64,
@@ -289,6 +294,9 @@ main :: proc() {
     assert(float_count() == 7.0)
     static_assert(cast[math.OS_Type](cast[u8](1)) == .linux)
     static_assert(Linux == .linux)
+    packed_point := math.Packed_Point{prefix = 0, value = 41}
+    packed_point.value += 1
+    assert(packed_point.value == 42)
 }
 )draft");
   const std::optional<draft::SyntaxReference> import = first_import(consumer);
@@ -320,12 +328,12 @@ main :: proc() {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
   EXPECT(state, dependency_semantics.ok);
-  EXPECT(state, dependency_interface.declarations.size() == 7);
+  EXPECT(state, dependency_interface.declarations.size() == 8);
   EXPECT(state, consumer_semantics.ok);
   EXPECT(state, bodies.ok);
   EXPECT(state, bodies.checked_procedures == 3);
-  EXPECT(state, bodies.package.imported_symbols.size() == 7);
-  EXPECT(state, bodies.package.imported_types.size() == 2);
+  EXPECT(state, bodies.package.imported_symbols.size() == 8);
+  EXPECT(state, bodies.package.imported_types.size() == 3);
   EXPECT(state, consumer_interface.declarations.size() == 1);
   EXPECT(state, !diagnostics.has_errors());
 
@@ -402,6 +410,26 @@ main :: proc() {
                draft::TypeFacetState::Complete);
   }
   EXPECT(state, saw_c_point);
+
+  bool saw_packed_point = false;
+  for (const draft::ImportedSymbol &imported :
+       bodies.package.imported_symbols) {
+    if (imported.public_name != "Packed_Point") continue;
+    saw_packed_point = true;
+    const draft::TypeId imported_type =
+        bodies.package.symbols.symbol(imported.proxy).type;
+    const draft::Type &type = bodies.package.types.type(imported_type);
+    EXPECT(state, type.layout == draft::TypeLayout({true, 5, 1}));
+    EXPECT(
+        state,
+        type.member_offsets == std::vector<std::uint64_t>({0, 1}));
+    EXPECT(state, type.member_layouts.size() == 2);
+    if (type.member_layouts.size() == 2) {
+      EXPECT(state, type.member_layouts[1].kind ==
+                        draft::FieldLayoutKind::Packed);
+    }
+  }
+  EXPECT(state, saw_packed_point);
 
   if (consumer_interface.declarations.empty()) {
     return;

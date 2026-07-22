@@ -104,6 +104,14 @@ Computed_Aligned :: align(computed_layout_choice(false)) struct {
     value: u8,
 }
 
+// Selective packing changes this one storage occurrence without changing the
+// u32 value type. The following u16 resumes ordinary natural placement.
+Packed_Header :: struct {
+    tag: u8,
+    packed value: u32,
+    checksum: u16,
+}
+
 Computed_Code :: enum i16 {
     Zero,
     Seven = computed_enum_value(),
@@ -945,6 +953,16 @@ main :: proc() {
     assert(computed_layout.values[2] == 42)
     static_assert(size_of(Computed_Layout_Buffer) == 24)
     static_assert(align_of(Computed_Aligned) == 8)
+    packed_header: Packed_Header
+    packed_header.value = 42
+    packed_header.checksum = 7
+    assert(packed_header.value == 42)
+    assert(packed_header.checksum == 7)
+    static_assert(size_of(Packed_Header) == 8)
+    static_assert(align_of(Packed_Header) == 2)
+    static_assert(type_member_offset(Packed_Header, 1) == 1)
+    static_assert(type_member_offset(Packed_Header, 2) == 6)
+    static_assert(type_member_is_packed(Packed_Header, 1))
     computed_code: Computed_Code = .Seven
     assert(computed_code == .Seven)
     (left, _): (i64, i64) = (20, 0)

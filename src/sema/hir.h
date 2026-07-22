@@ -116,8 +116,12 @@ enum class AtomicMemoryOrder {
 
 // HirExpression operands are in source evaluation order. symbol is meaningful
 // for Symbol and Member nodes; constant is meaningful for Constant. addressable
-// records the language property checked by `&` and assignment, not whether MIR
-// later chooses a stack slot.
+// records the language property checked by assignment, not whether MIR later
+// chooses a stack slot. storage_alignment is the minimum byte alignment that a
+// stable address of this exact storage occurrence can promise; zero means the
+// expression has no source-visible storage. Keeping the occurrence guarantee
+// separate from TypeLayout is essential for `packed field: T`: the loaded value
+// still has type T, while its containing byte position may be under-aligned.
 struct HirExpression {
   HirExpressionKind kind = HirExpressionKind::Invalid;
   HirOperation operation = HirOperation::None;
@@ -154,6 +158,7 @@ struct HirExpression {
   // means either dynamic bounds or an unchecked source region decides later.
   bool bounds_proven = false;
   bool addressable = false;
+  std::uint32_t storage_alignment = 0;
 };
 
 enum class HirStatementKind {

@@ -270,6 +270,12 @@ C_Value :: c union {
 Cache_Line :: align(64) struct {
     bytes: [64]u8,
 }
+
+Wire_Header :: struct {
+    tag: u8,
+    packed sequence: u32be,
+    checksum: u16,
+}
 ```
 
 Tuples and structs are products; variants are sums with one active alternative;
@@ -286,6 +292,15 @@ Use `c struct`, `c union`, or `c enum` for selected-target C layout.
 `c align(N) struct` or `c align(N) union`. These are direct modifiers, not
 annotations. Do not guess C layout: read the target profile and add ABI tests
 against Clang.
+
+`packed field: T` is a per-field rule for an ordinary Draft struct. It removes
+alignment padding before that occurrence and gives it effective alignment one;
+following natural fields align normally. The value still has type `T` and may
+be read or assigned. Taking `&record.field` is rejected when the occurrence is
+under-aligned because `^T` promises natural alignment. Do not use `packed` in a
+`c struct`, union, tuple, enum, or variant. Inspect the authored rule with
+`type_member_is_packed(T, index)` and the resulting byte position with
+`type_member_offset(T, index)`.
 
 `core/option.Option[T]` and `core/result.Result[T, E]` are ordinary variants,
 not magic. A zero `Result` selects its first `.err` alternative.

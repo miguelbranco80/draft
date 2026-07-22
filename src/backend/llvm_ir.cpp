@@ -3434,7 +3434,7 @@ private:
       output_ << "  " << result << " = load " << llvm_type(instruction.type)
               << ", ptr "
               << value_operand(operands, instruction.operands[0], instruction.range)
-              << ", align " << type(instruction.type).layout.alignment << '\n';
+              << ", align " << instruction.alignment << '\n';
       assign_alias(operands, instruction, result);
       break;
     case MirInstructionKind::Store: {
@@ -3443,8 +3443,7 @@ private:
               << typed_operand(procedure, operands, value_id, instruction.range)
               << ", ptr "
               << value_operand(operands, instruction.operands[0], instruction.range)
-              << ", align "
-              << type(procedure.value(value_id).type).layout.alignment << '\n';
+              << ", align " << instruction.alignment << '\n';
       break;
     }
     case MirInstructionKind::AtomicLoad:

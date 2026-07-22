@@ -48,7 +48,9 @@ struct NaturalAggregateLayout {
 };
 
 [[nodiscard]] NaturalAggregateLayout compute_struct_natural_layout(
-    const TypeStore &types, std::span<const TypeId> members);
+    const TypeStore &types,
+    std::span<const TypeId> members,
+    std::span<const FieldLayout> field_layouts = {});
 
 [[nodiscard]] NaturalAggregateLayout compute_union_natural_layout(
     const TypeStore &types, std::span<const TypeId> members);

@@ -92,11 +92,12 @@ void test_basic_semicolon_insertion(TestState &state) {
 // boundary. `raw` remains an ordinary identifier: low-level concepts such as
 // raw pointers and raw strings do not reserve a general-purpose source modifier.
 void test_type_constructor_keywords(TestState &state) {
-  const LexedSource source = lex("variant union simd raw\n");
+  const LexedSource source = lex("variant union simd packed raw\n");
   const std::vector expected{
       draft::TokenKind::KeywordVariant,
       draft::TokenKind::KeywordUnion,
       draft::TokenKind::KeywordSimd,
+      draft::TokenKind::KeywordPacked,
       draft::TokenKind::Identifier,
       draft::TokenKind::Semicolon,
       draft::TokenKind::EndOfFile,

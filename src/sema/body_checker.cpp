@@ -1820,6 +1820,39 @@ private:
     return semantic_.types.type(underlying_type_id(type_id));
   }
 
+  // Returns the alignment that a typed value requires when it owns ordinary
+  // storage. Body checking runs only after natural layout publication, but the
+  // defensive fallback keeps recovery from turning an incomplete user type
+  // into a compiler assertion after an earlier diagnostic.
+  [[nodiscard]] std::uint32_t natural_alignment(TypeId type_id) const {
+    if (!type_id.is_valid()) return 1;
+    const Type &type = semantic_.types.type(type_id);
+    return type.layout.known ? type.layout.alignment : 1;
+  }
+
+  // Offsetting an address can only preserve the powers of two shared by the
+  // base guarantee and the byte offset. For example, an 8-byte-aligned base at
+  // offset 6 guarantees alignment 2; offset zero preserves all base alignment.
+  // Alignments are powers of two, so the least-significant set offset bit is
+  // the complete answer without target-specific reasoning.
+  [[nodiscard]] static std::uint32_t offset_alignment(
+      std::uint32_t base_alignment, std::uint64_t offset) {
+    if (base_alignment == 0 || offset == 0) return base_alignment;
+    const std::uint64_t offset_power =
+        std::uint64_t{1} << std::countr_zero(offset);
+    return static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(base_alignment, offset_power));
+  }
+
+  [[nodiscard]] std::optional<AggregateMember> aggregate_member(
+      SymbolId member_id) const {
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
+      if (member.member == member_id) return member;
+    }
+    return std::nullopt;
+  }
+
   [[nodiscard]] bool numeric_value_type(TypeId type_id) const {
     if (is_invalid_type(type_id)) return false;
     const Type type = runtime_scalar_type(type_id);
@@ -3073,7 +3106,7 @@ private:
     if (query == "type_name" || query == "type_member_name") {
       return semantic_.types.builtins().string_type;
     }
-    if (query == "type_is_c_repr") {
+    if (query == "type_is_c_repr" || query == "type_member_is_packed") {
       return semantic_.types.builtins().bool_type;
     }
     return semantic_.types.builtins().usize_type;
@@ -4785,6 +4818,7 @@ private:
       const bool indexed = *intrinsic == "type_member_name" ||
           *intrinsic == "type_member_type" ||
           *intrinsic == "type_member_offset" ||
+          *intrinsic == "type_member_is_packed" ||
           *intrinsic == "type_member_value" ||
           *intrinsic == "type_parameter_type";
       const std::size_t required_arguments = indexed ? 2 : 1;
@@ -5423,6 +5457,7 @@ private:
         expression.type = apply_expected_type(
             semantic_.runtime_context_type, expected, node.range);
         expression.addressable = true;
+        expression.storage_alignment = natural_alignment(expression.type);
         return hir_.add_expression(std::move(expression));
       }
       if (active_static_argument_pack(tree, expression_id, scope) != nullptr) {
@@ -5483,6 +5518,9 @@ private:
       // or fixed-array elements inside its copied value are not addressable.
       expression.addressable = symbol.kind == SymbolKind::Variable ||
           symbol.kind == SymbolKind::Local;
+      if (expression.addressable) {
+        expression.storage_alignment = natural_alignment(expression.type);
+      }
       if (const ConstantValue *constant = constants_.find(*found)) {
         expression.kind = HirExpressionKind::Constant;
         expression.constant = *constant;
@@ -5638,6 +5676,15 @@ private:
       if (operation == TokenKind::Ampersand) {
         if (!operand.addressable) {
           diagnostics_.error(node.range, "address-of requires addressable storage");
+          result = semantic_.types.builtins().invalid;
+        } else if (operand.storage_alignment < natural_alignment(operand.type)) {
+          // A typed pointer promises the pointee type's natural alignment.
+          // Direct packed-field reads and writes remain valid because MIR can
+          // issue an under-aligned memory operation, but manufacturing ^T here
+          // would let that weaker occurrence escape behind a stronger type.
+          diagnostics_.error(
+              node.range,
+              "address-of cannot form a naturally aligned pointer to this packed field");
           result = semantic_.types.builtins().invalid;
         } else {
           result = semantic_.types.pointer(operand.type);
@@ -6196,6 +6243,9 @@ private:
         expression.type = apply_expected_type(
             imported_type, expected, node.range);
         expression.addressable = symbol.kind == SymbolKind::Variable;
+        if (expression.addressable) {
+          expression.storage_alignment = natural_alignment(expression.type);
+        }
         if (const ConstantValue *constant = imported_constant(*imported)) {
           expression.kind = HirExpressionKind::Constant;
           expression.constant = *constant;
@@ -6250,6 +6300,10 @@ private:
         expression.operands.push_back(base_id);
         expression.constant = ConstantValue::make_integer(*index);
         expression.addressable = base.addressable;
+        if (expression.addressable && member_index < tuple.member_offsets.size()) {
+          expression.storage_alignment = offset_alignment(
+              base.storage_alignment, tuple.member_offsets[member_index]);
+        }
         return hir_.add_expression(std::move(expression));
       }
       const std::vector<SourceName> names =
@@ -6269,6 +6323,14 @@ private:
           substitute_active(member_symbol.type, node.range), expected, node.range);
       expression.operands.push_back(base_id);
       expression.addressable = base.addressable && member_symbol.kind == SymbolKind::Field;
+      if (expression.addressable) {
+        const std::optional<AggregateMember> storage =
+            aggregate_member(*member);
+        if (storage.has_value()) {
+          expression.storage_alignment = offset_alignment(
+              base.storage_alignment, storage->offset);
+        }
+      }
       return hir_.add_expression(std::move(expression));
     }
 
@@ -6286,6 +6348,7 @@ private:
       expression.type = apply_expected_type(pointer.element, expected, node.range);
       expression.operands.push_back(pointer_id);
       expression.addressable = true;
+      expression.storage_alignment = natural_alignment(expression.type);
       return hir_.add_expression(std::move(expression));
     }
 
@@ -6386,6 +6449,14 @@ private:
       expression.addressable =
           base.kind == TypeKind::Slice || base.kind == TypeKind::MultiPointer ||
           (base.kind == TypeKind::Array && base_expression.addressable);
+      if (expression.addressable) {
+        expression.storage_alignment =
+            base.kind == TypeKind::Array
+            ? std::min(
+                  base_expression.storage_alignment,
+                  natural_alignment(expression.type))
+            : natural_alignment(expression.type);
+      }
       return hir_.add_expression(std::move(expression));
     }
 
@@ -6664,6 +6735,8 @@ private:
         expression.type = hir_.expression(value).type;
         expression.operands.push_back(value);
         expression.addressable = hir_.expression(value).addressable;
+        expression.storage_alignment =
+            hir_.expression(value).storage_alignment;
         return hir_.add_expression(std::move(expression));
       }
       return invalid_expression(node.range);

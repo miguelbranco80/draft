@@ -96,6 +96,23 @@ struct TypeLayout {
   bool operator==(const TypeLayout &) const = default;
 };
 
+// FieldLayout records how one source struct field participates in its owner's
+// physical layout. Natural fields retain the declared type alignment. Packed
+// fields lower only this storage occurrence to byte alignment; the value's
+// logical TypeId is unchanged when it is loaded or copied elsewhere. The
+// parallel Type::member_layouts vector is meaningful only for structs and has
+// exactly one row per member once the MemberTypes facet is complete.
+enum class FieldLayoutKind {
+  Natural,
+  Packed,
+};
+
+struct FieldLayout {
+  FieldLayoutKind kind = FieldLayoutKind::Natural;
+
+  bool operator==(const FieldLayout &) const = default;
+};
+
 // TypeFacetState describes whether one facet has meaning and, when it does,
 // whether its immutable value has been published. NotApplicable is a completed
 // semantic answer rather than a scheduling wait: scalar types have no member
@@ -192,6 +209,7 @@ struct Type {
       std::numeric_limits<std::uint32_t>::max();
   std::vector<TypeId> members;
   std::vector<std::uint64_t> member_offsets;
+  std::vector<FieldLayout> member_layouts;
   bool c_calling_convention = false;
   bool c_representation = false;
   std::uint32_t requested_alignment = 0;
@@ -340,7 +358,9 @@ public:
   // one-way Waiting -> Complete transition; callers must not republish a facet.
   void publish_nominal_members(TypeId id);
   void publish_nominal_member_types(
-      TypeId id, std::vector<TypeId> members);
+      TypeId id,
+      std::vector<TypeId> members,
+      std::vector<FieldLayout> member_layouts = {});
   void publish_nominal_natural_layout(
       TypeId id,
       TypeLayout layout,

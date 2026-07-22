@@ -124,6 +124,7 @@ std::string_view node_kind_name(NodeKind kind) {
   case NodeKind::StaticPackType: return "StaticPackType";
   case NodeKind::ResultClause: return "ResultClause";
   case NodeKind::MemberList: return "MemberList";
+  case NodeKind::PackedFieldSpecifier: return "PackedFieldSpecifier";
   case NodeKind::FieldMember: return "FieldMember";
   case NodeKind::EnumMember: return "EnumMember";
   case NodeKind::VariantAlternative: return "VariantAlternative";

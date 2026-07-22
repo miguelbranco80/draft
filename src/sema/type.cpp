@@ -812,12 +812,23 @@ void TypeStore::publish_nominal_members(TypeId id) {
 }
 
 void TypeStore::publish_nominal_member_types(
-    TypeId id, std::vector<TypeId> members) {
+    TypeId id,
+    std::vector<TypeId> members,
+    std::vector<FieldLayout> member_layouts) {
   Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::Variant || nominal.kind == TypeKind::Union);
   TypeCompletion &facets = completion_mut(id);
   assert(facets.member_types == TypeFacetState::Waiting);
+  if (nominal.kind == TypeKind::Struct) {
+    if (member_layouts.empty()) {
+      member_layouts.resize(members.size());
+    }
+    assert(member_layouts.size() == members.size());
+    nominal.member_layouts = std::move(member_layouts);
+  } else {
+    assert(member_layouts.empty());
+  }
   nominal.members = std::move(members);
   facets.member_types = TypeFacetState::Complete;
 }

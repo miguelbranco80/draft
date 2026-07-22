@@ -79,6 +79,7 @@ enum class NodeKind {
   StaticPackType,
   ResultClause,
   MemberList,
+  PackedFieldSpecifier,
   FieldMember,
   EnumMember,
   VariantAlternative,

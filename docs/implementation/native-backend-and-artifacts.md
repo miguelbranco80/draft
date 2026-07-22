@@ -122,6 +122,13 @@ incidental encoding differences.
 
 Status: bootstrap backend representation; language layout is unchanged.
 
+Named Draft structs use packed LLVM bodies plus explicit byte padding so LLVM's
+field indices reproduce the already-computed Draft offsets exactly. This LLVM
+representation does not imply Draft `packed` semantics: semantic HIR/MIR carry
+the actual occurrence alignment, and every emitted load/store uses that value.
+An under-aligned logical `u32`, for example, is still represented as `i32` but
+is accessed with `align 1` when its containing field guarantees only one byte.
+
 Strings and concrete procedure identities contain linker relocations and cannot
 be flattened into the byte-array storage used for variants and unions. An
 array, tuple, struct, variant, or union constant may contain those values at any

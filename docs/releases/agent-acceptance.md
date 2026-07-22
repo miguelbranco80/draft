@@ -128,6 +128,16 @@ for AArch64 macOS and
 `92ccb29aa3f8718aad0763cf433636c2ef9c92ed22603d97715cd98d8e6f7091`
 for AArch64 GNU/Linux; the four generated source objects did not change.
 
+Selective packed struct fields were requalified on 2026-07-22 with compiler
+content identity `draft-bootstrap-cpp-v141`. Provider-free
+`resolve --revalidate` reused and rechecked all four saved expansions for each
+target with zero synthesis calls. The resulting committed program digests are
+`a1a044e1429b205e4004932756d1541efcb16b0fa0cbbbe9757ac3eb5f6574de`
+for AArch64 macOS and
+`c7b77a0196c348dd0e2be9133f8dda20a7c33d6b79164c02e95b4a9f27f0f9fa`
+for AArch64 GNU/Linux; the generated source objects did not change. The full
+CTest matrix passed 74 of 74 tests on the qualified tree.
+
 The repository example matrix classified all 36 tracked Draft/assembly package
 directories. Both-target frontend qualification passed for every declared
 positive or intentionally unresolved row. On the native macOS host, all 25

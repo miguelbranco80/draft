@@ -11,6 +11,7 @@
 #include "mir/verify.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -208,6 +209,24 @@ private:
     return procedure_.add_local(std::move(local));
   }
 
+  [[nodiscard]] std::uint32_t natural_alignment(TypeId type_id) const {
+    if (!type_id.is_valid()) return 1;
+    const Type &type = semantic_.types.type(type_id);
+    return type.layout.known ? type.layout.alignment : 1;
+  }
+
+  // See the equivalent HIR-side operation in body_checker.cpp. Repeating this
+  // three-line arithmetic at the phase boundary is intentional: MIR must be
+  // independently inspectable and cannot assume an address was source-visible.
+  [[nodiscard]] static std::uint32_t offset_alignment(
+      std::uint32_t base_alignment, std::uint64_t offset) {
+    if (base_alignment == 0 || offset == 0) return base_alignment;
+    const std::uint64_t offset_power =
+        std::uint64_t{1} << std::countr_zero(offset);
+    return static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(base_alignment, offset_power));
+  }
+
   // Constructs an address without extending the semantic type universe. When
   // source syntax itself has a pointer result, source_type is that already
   // canonical Pointer TypeId. Internal materialization passes no source type
@@ -222,6 +241,7 @@ private:
         ? source_type
         : semantic_.types.builtins().rawptr_type;
     instruction.addressed_type = procedure_.local(local_id).type;
+    instruction.alignment = natural_alignment(instruction.addressed_type);
     return emit_value(std::move(instruction));
   }
 
@@ -235,7 +255,23 @@ private:
         ? source_type
         : semantic_.types.builtins().rawptr_type;
     instruction.addressed_type = semantic_.symbols.symbol(symbol_id).type;
+    instruction.alignment = natural_alignment(instruction.addressed_type);
     return emit_value(std::move(instruction));
+  }
+
+  // A typed pointer value normally promises the natural alignment of its
+  // pointee. Compiler-created member/index addresses may carry a smaller,
+  // explicit guarantee. Clamp that guarantee to the access type so the LLVM
+  // annotation states exactly what this load/store is allowed to assume.
+  [[nodiscard]] std::uint32_t memory_alignment(
+      MirValueId address, TypeId access_type) const {
+    const std::uint32_t natural = natural_alignment(access_type);
+    if (!address.is_valid()) return natural;
+    const MirValue &value = procedure_.value(address);
+    if (!value.definition.is_valid()) return natural;
+    const std::uint32_t guarantee =
+        procedure_.instruction(value.definition).alignment;
+    return guarantee == 0 ? natural : std::min(natural, guarantee);
   }
 
   [[nodiscard]] MirValueId load(
@@ -245,6 +281,7 @@ private:
     instruction.range = range;
     instruction.type = type;
     instruction.operands.push_back(address);
+    instruction.alignment = memory_alignment(address, type);
     return emit_value(std::move(instruction));
   }
 
@@ -254,6 +291,8 @@ private:
     instruction.range = range;
     instruction.type = semantic_.types.builtins().void_type;
     instruction.operands = {address, value};
+    instruction.alignment = memory_alignment(
+        address, procedure_.value(value).type);
     emit_void(std::move(instruction));
   }
 
@@ -759,6 +798,11 @@ private:
       instruction.addressed_type = expression.type;
       instruction.symbol = expression.symbol;
       instruction.offset = member_offset(expression);
+      const std::uint32_t base_alignment = base.addressable
+          ? base.storage_alignment
+          : natural_alignment(base.type);
+      instruction.alignment = offset_alignment(
+          base_alignment, instruction.offset);
       instruction.operands.push_back(base_address);
       return emit_value(std::move(instruction));
     }
@@ -845,6 +889,13 @@ private:
     instruction.addressed_type = expression.type;
     instruction.operands = {base, index};
     instruction.offset = semantic_.types.type(expression.type).layout.size;
+    instruction.alignment = base_type.kind == TypeKind::Array
+        ? (base_expression.addressable
+              ? std::min(
+                    base_expression.storage_alignment,
+                    natural_alignment(expression.type))
+              : natural_alignment(expression.type))
+        : natural_alignment(expression.type);
     return emit_value(std::move(instruction));
   }
 
@@ -1757,6 +1808,11 @@ private:
     address.addressed_type = type.element;
     address.operands = {base, index};
     address.offset = semantic_.types.type(type.element).layout.size;
+    // Iteration captures either an inline array in a naturally aligned local
+    // or an already typed slice view. Both contracts preserve element
+    // alignment; unlike general member/index lowering, no packed enclosing
+    // occurrence survives this value capture.
+    address.alignment = natural_alignment(type.element);
     return load(emit_value(std::move(address)), type.element, range);
   }
 

@@ -52,6 +52,7 @@ struct InterfaceMember {
   SymbolKind kind = SymbolKind::Field;
   InterfaceTypeId type;
   std::uint64_t offset = 0;
+  FieldLayout field_layout;
   bool has_enum_value = false;
   BigInteger enum_value;
 };
@@ -101,6 +102,7 @@ struct InterfaceType {
   bool owner_evaluated_type_application = false;
   std::vector<InterfaceTypeId> members;
   std::vector<std::uint64_t> member_offsets;
+  std::vector<FieldLayout> member_layouts;
   bool c_calling_convention = false;
   bool c_representation = false;
   std::uint32_t requested_alignment = 0;

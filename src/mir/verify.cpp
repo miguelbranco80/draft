@@ -3,11 +3,16 @@
 #include "mir/verify.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace draft {
 namespace {
+
+[[nodiscard]] bool is_power_of_two(std::uint32_t value) {
+  return value != 0 && (value & (value - 1)) == 0;
+}
 
 class Verifier {
 public:
@@ -208,6 +213,9 @@ private:
         instruction.kind == MirInstructionKind::GlobalAddress ||
         instruction.kind == MirInstructionKind::MemberAddress ||
         instruction.kind == MirInstructionKind::IndexAddress;
+    const bool memory_instruction =
+        instruction.kind == MirInstructionKind::Load ||
+        instruction.kind == MirInstructionKind::Store;
     if (address_instruction) {
       if (!valid_type(instruction.addressed_type)) {
         error(instruction.range, "address instruction has no addressed type");
@@ -222,9 +230,31 @@ private:
               "address instruction result disagrees with its addressed type");
         }
       }
+      if (!is_power_of_two(instruction.alignment)) {
+        error(instruction.range, "address instruction has invalid alignment");
+      }
     } else if (instruction.addressed_type.is_valid()) {
       error(instruction.range,
             "non-address instruction carries an addressed type");
+    }
+    if (memory_instruction) {
+      TypeId access_type = instruction.type;
+      if (instruction.kind == MirInstructionKind::Store && arity == 2 &&
+          valid_value(procedure, instruction.operands[1])) {
+        access_type = procedure.value(instruction.operands[1]).type;
+      }
+      if (!is_power_of_two(instruction.alignment)) {
+        error(instruction.range, "memory instruction has invalid alignment");
+      } else if (valid_type(access_type) &&
+                 types_.type(access_type).layout.known &&
+                 instruction.alignment >
+                     types_.type(access_type).layout.alignment) {
+        error(
+            instruction.range,
+            "memory alignment exceeds the accessed type's natural alignment");
+      }
+    } else if (!address_instruction && instruction.alignment != 0) {
+      error(instruction.range, "non-memory instruction carries alignment");
     }
     switch (instruction.kind) {
     case MirInstructionKind::Invalid:

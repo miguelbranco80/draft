@@ -310,6 +310,13 @@ emitter as compiler orchestration.
   package module borrows that completed ordered set only at LLVM emission time.
   LLVM is an emission/optimization back end rather than Draft's semantic model.
 
+HIR storage expressions retain the minimum alignment guaranteed by their exact
+occurrence, separately from logical type alignment. Member and index address
+formation propagates that power-of-two guarantee through byte offsets. MIR
+address instructions preserve it, MIR loads/stores record the clamped access
+alignment, and LLVM emits that exact fact. This is what permits direct packed
+field access without weakening the alignment promised by ordinary `^T` values.
+
 LLVM types stay behind numeric, target, ABI, and code-generation adapters. The
 front end must not depend on LLVM IR details.
 

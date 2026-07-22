@@ -217,7 +217,8 @@ project may still choose it as a local binding or import alias; those uses
 receive ordinary semicolon behavior. The distributed C scalar package is named
 `core/c_abi` and does not rely on that contextual-name freedom. `align` is the reserved
 aggregate-layout modifier defined by section 5; Draft has no general annotation
-prefix or user-defined declaration modifier.
+prefix or user-defined declaration modifier. `packed` is the reserved
+per-field struct-layout modifier defined by section 5.
 
 `^` is exclusively pointer syntax: it begins pointer types and follows an
 expression to dereference it. Bitwise XOR is binary `~`; unary `~` remains

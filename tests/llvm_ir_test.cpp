@@ -187,6 +187,45 @@ generated :: proc() -> i64 {
   }
 }
 
+// The semantic type of Record.value is still u32, but its occurrence begins at
+// byte offset one. LLVM must receive align 1 on both directions of access;
+// advertising u32's natural alignment here would make ordinary source code UB
+// in the backend despite the front end accepting the packed layout.
+void test_packed_field_access_uses_occurrence_alignment(TestState &state) {
+  const EmittedFixture emitted = emit_fixture(R"draft(
+package packed_access
+
+Record :: struct {
+    head: u8,
+    packed value: u32,
+}
+
+increment :: proc(record: ^Record) -> u32 {
+    record^.value += 1
+    return record^.value
+}
+)draft");
+  if (!emitted.ok) std::cerr << emitted.diagnostics;
+  EXPECT(state, emitted.ok);
+
+  // Check complete instruction lines rather than merely observing an unrelated
+  // byte load elsewhere in the module's runtime support.
+  const std::size_t load = emitted.text.find("load i32, ptr %v");
+  EXPECT(state, load != std::string::npos);
+  if (load != std::string::npos) {
+    const std::size_t line_end = emitted.text.find('\n', load);
+    EXPECT(state, emitted.text.substr(load, line_end - load).find("align 1") !=
+                      std::string::npos);
+  }
+  const std::size_t store = emitted.text.find("store i32 %v");
+  EXPECT(state, store != std::string::npos);
+  if (store != std::string::npos) {
+    const std::size_t line_end = emitted.text.find('\n', store);
+    EXPECT(state, emitted.text.substr(store, line_end - store).find("align 1") !=
+                      std::string::npos);
+  }
+}
+
 // A semantic package lowers to one independently valid LLVM module containing
 // its package storage and every concrete procedure definition. Compiling that
 // complete unit through LLVM catches missing or conflicting definitions which
@@ -1036,6 +1075,7 @@ int main() {
   TestState state;
   test_agent_constructs_have_no_runtime_footprint(state);
   test_generated_debug_locations_are_hermetic(state);
+  test_packed_field_access_uses_occurrence_alignment(state);
   test_package_module_is_independently_compilable(state);
   test_raw_string_data_is_direct_pointer_extraction(state);
   test_multistep_call_lowering_keeps_debug_locations(state);

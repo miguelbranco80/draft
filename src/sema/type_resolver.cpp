@@ -68,6 +68,7 @@ struct MemberData {
   std::vector<SymbolId> symbols;
   std::vector<TypeId> types;
   std::vector<std::uint64_t> offsets;
+  std::vector<FieldLayout> field_layouts;
   std::vector<BigInteger> enum_values;
   TypeId enum_value_expected_type;
   bool incomplete = false;
@@ -2752,7 +2753,10 @@ private:
     }
 
     MemberData data;
-    for (SymbolId template_member : template_members) {
+    for (std::size_t template_index = 0;
+         template_index < template_members.size();
+         ++template_index) {
+      const SymbolId template_member = template_members[template_index];
       Symbol concrete_member = semantic_.symbols.symbol(template_member);
       concrete_member.scope = member_scope;
       concrete_member.type = substitute_type(
@@ -2766,6 +2770,12 @@ private:
       data.symbols.push_back(member_id);
       data.types.push_back(semantic_.symbols.symbol(member_id).type);
       data.offsets.push_back(0);
+      if (pattern_type.kind == TypeKind::Struct) {
+        data.field_layouts.push_back(
+            template_index < pattern_type.member_layouts.size()
+                ? pattern_type.member_layouts[template_index]
+                : FieldLayout{});
+      }
       if (pattern_type.kind == TypeKind::Enum) {
         std::optional<BigInteger> enum_value;
         for (const EnumMemberValue &value :
@@ -2792,7 +2802,8 @@ private:
     if (pattern_type.kind == TypeKind::Struct) {
       layout = retain_natural_layout(
           data,
-          compute_struct_natural_layout(semantic_.types, data.types));
+          compute_struct_natural_layout(
+              semantic_.types, data.types, data.field_layouts));
     } else if (pattern_type.kind == TypeKind::Union) {
       layout = retain_natural_layout(
           data,
@@ -2808,14 +2819,18 @@ private:
     layout = apply_requested_alignment(
         layout, pattern_type.requested_alignment, use_range);
     semantic_.types.publish_nominal_members(concrete);
-    semantic_.types.publish_nominal_member_types(concrete, data.types);
+    semantic_.types.publish_nominal_member_types(
+        concrete, data.types, data.field_layouts);
     if (layout.known) {
       semantic_.types.publish_nominal_natural_layout(
           concrete, layout, data.offsets);
     }
     for (std::size_t index = 0; index < data.symbols.size(); ++index) {
+      const FieldLayout field_layout = index < data.field_layouts.size()
+          ? data.field_layouts[index]
+          : FieldLayout{};
       semantic_.aggregate_members.push_back(
-          {owner_id, data.symbols[index], data.offsets[index]});
+          {owner_id, data.symbols[index], data.offsets[index], field_layout});
     }
     return concrete;
   }
@@ -3128,6 +3143,9 @@ private:
       data.symbols.push_back(member_id);
       data.types.push_back(semantic_.symbols.symbol(member_id).type);
       data.offsets.push_back(0);
+      if (template_type.kind == TypeKind::Struct) {
+        data.field_layouts.push_back(member.field_layout);
+      }
       if (template_type.kind == TypeKind::Enum) {
         std::optional<BigInteger> concrete_value;
         for (const EnumMemberValue &value :
@@ -3162,7 +3180,8 @@ private:
       layout = {};
     } else if (template_type.kind == TypeKind::Struct) {
       natural_layout =
-          compute_struct_natural_layout(semantic_.types, data.types);
+          compute_struct_natural_layout(
+              semantic_.types, data.types, data.field_layouts);
       layout = retain_natural_layout(data, natural_layout);
     } else if (template_type.kind == TypeKind::Union) {
       natural_layout =
@@ -3196,14 +3215,18 @@ private:
     layout = apply_requested_alignment(
         layout, template_type.requested_alignment, use_range);
     semantic_.types.publish_nominal_members(concrete);
-    semantic_.types.publish_nominal_member_types(concrete, data.types);
+    semantic_.types.publish_nominal_member_types(
+        concrete, data.types, data.field_layouts);
     if (layout.known) {
       semantic_.types.publish_nominal_natural_layout(
           concrete, layout, data.offsets);
     }
     for (std::size_t index = 0; index < data.symbols.size(); ++index) {
+      const FieldLayout field_layout = index < data.field_layouts.size()
+          ? data.field_layouts[index]
+          : FieldLayout{};
       semantic_.aggregate_members.push_back(
-          {instance_id, data.symbols[index], data.offsets[index]});
+          {instance_id, data.symbols[index], data.offsets[index], field_layout});
     }
     semantic_.parametric_type_instances.push_back(
         {source, instance_id, std::move(arguments)});
@@ -3911,6 +3934,25 @@ private:
     return id;
   }
 
+  // Returns the source storage rule and first name token for one field node.
+  // Field modifiers are dedicated syntax children before the unchanged final
+  // type child. Keeping name extraction here prevents a reserved modifier from
+  // becoming a synthetic member name in either the Names or MemberTypes task.
+  [[nodiscard]] std::pair<FieldLayout, std::uint32_t> field_layout_and_name_begin(
+      const SyntaxTree &tree,
+      const SyntaxNode &member) const {
+    FieldLayout layout;
+    std::uint32_t name_begin = member.token_begin;
+    for (NodeId child : member.children) {
+      const SyntaxNode &node = tree.node(child);
+      if (node.kind == NodeKind::PackedFieldSpecifier) {
+        layout.kind = FieldLayoutKind::Packed;
+        name_begin = node.token_end;
+      }
+    }
+    return {layout, name_begin};
+  }
+
   // Declares only the stable identities in one selected member region. This
   // traversal deliberately does not call resolve_type or evaluate enum values:
   // those operations belong to the later TypeMemberTypes product. The parallel
@@ -3927,8 +3969,10 @@ private:
       return;
     }
     const SyntaxNode &type_node = tree.node(member.children.back());
+    const auto [field_layout, name_begin] =
+        field_layout_and_name_begin(tree, member);
     const std::vector<SourceName> names = names_in_span(
-        tree, member.token_begin, type_node.token_begin);
+        tree, name_begin, type_node.token_begin);
     for (const SourceName &name : names) {
       if (name.text == "_") {
         diagnostics_.error(
@@ -3947,6 +3991,7 @@ private:
       data.symbols.push_back(*symbol);
       data.types.push_back(semantic_.types.builtins().invalid);
       data.offsets.push_back(0);
+      data.field_layouts.push_back(field_layout);
     }
   }
 
@@ -4131,8 +4176,10 @@ private:
     }
     const SyntaxNode &type_node = tree.node(member.children.back());
     const TypeId type = resolve_type(tree, member.children.back(), scope);
+    const auto [field_layout, name_begin] =
+        field_layout_and_name_begin(tree, member);
     const std::vector<SourceName> names = names_in_span(
-        tree, member.token_begin, type_node.token_begin);
+        tree, name_begin, type_node.token_begin);
     for (const SourceName &name : names) {
       if (name.text == "_") {
         diagnostics_.error(name.range, "aggregate member cannot use the discard name '_'");
@@ -4144,6 +4191,7 @@ private:
         data.symbols.push_back(*symbol);
         data.types.push_back(type);
         data.offsets.push_back(0);
+        data.field_layouts.push_back(field_layout);
       }
     }
   }
@@ -4929,8 +4977,12 @@ private:
       // it publishes no nominal facet. Obligation construction reads these rows
       // only from the retained task package; canonical package state never sees
       // an incomplete member namespace.
-      for (SymbolId member : data.symbols) {
-        semantic_.aggregate_members.push_back({owner, member, 0});
+      for (std::size_t index = 0; index < data.symbols.size(); ++index) {
+        const FieldLayout field_layout = index < data.field_layouts.size()
+            ? data.field_layouts[index]
+            : FieldLayout{};
+        semantic_.aggregate_members.push_back(
+            {owner, data.symbols[index], 0, field_layout});
       }
       return;
     }
@@ -4969,6 +5021,17 @@ private:
     reuse_published_members_ = previous_reuse;
     if (data.symbols.empty() && !data.incomplete) {
       diagnostics_.error(aggregate.range, "aggregate type requires at least one member");
+    }
+    if (kind == TypeKind::Struct && modifiers.c_representation &&
+        std::any_of(
+            data.field_layouts.begin(),
+            data.field_layouts.end(),
+            [](const FieldLayout &layout) {
+              return layout.kind == FieldLayoutKind::Packed;
+            })) {
+      diagnostics_.error(
+          aggregate.range,
+          "packed fields are not allowed in a c struct");
     }
 
     if (!data.incomplete) {
@@ -5035,25 +5098,40 @@ private:
       if (!members_were_complete) {
         semantic_.types.publish_nominal_members(nominal);
       }
-      semantic_.types.publish_nominal_member_types(nominal, data.types);
+      semantic_.types.publish_nominal_member_types(
+          nominal,
+          data.types,
+          kind == TypeKind::Struct ? data.field_layouts
+                                   : std::vector<FieldLayout>{});
     }
     if (!members_were_complete) {
       for (std::size_t index = 0; index < data.symbols.size(); ++index) {
+        const FieldLayout field_layout = index < data.field_layouts.size()
+            ? data.field_layouts[index]
+            : FieldLayout{};
         semantic_.aggregate_members.push_back(
-            {owner, data.symbols[index], 0});
+            {owner, data.symbols[index], 0, field_layout});
       }
     } else {
       std::vector<SymbolId> published_members;
+      std::vector<FieldLayout> published_field_layouts;
       for (const AggregateMember &member :
            semantic_.aggregate_members_for_read()) {
         if (member.owner == owner) {
           published_members.push_back(member.member);
+          published_field_layouts.push_back(member.field_layout);
         }
       }
       if (published_members != data.symbols) {
         diagnostics_.error(
             aggregate.range,
             "published type member order does not match selected syntax");
+      }
+      if (kind == TypeKind::Struct &&
+          published_field_layouts != data.field_layouts) {
+        diagnostics_.error(
+            aggregate.range,
+            "published struct field layout does not match selected syntax");
       }
     }
 

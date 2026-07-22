@@ -38,6 +38,7 @@ namespace {
 
 enum class MemberMode {
   Struct,
+  Union,
   Enum,
   Variant,
 };
@@ -809,7 +810,7 @@ private:
       }
     } else if (match(TokenKind::KeywordUnion)) {
       aggregate_kind = NodeKind::UnionType;
-      member_mode = MemberMode::Struct;
+      member_mode = MemberMode::Union;
     }
     if (aggregate_kind != NodeKind::Error) {
       children.push_back(parse_member_list(member_mode));
@@ -902,13 +903,28 @@ private:
   [[nodiscard]] NodeId parse_member(MemberMode mode) {
     const std::uint32_t start = position_;
     std::vector<NodeId> children;
+
+    // Packing is a property of one struct field's storage, not a qualified
+    // value type. Retaining it as a dedicated child keeps the final type child
+    // unchanged for every semantic consumer and lets grouped names share the
+    // one explicit placement rule.
+    if ((mode == MemberMode::Struct || mode == MemberMode::Union) &&
+        match(TokenKind::KeywordPacked)) {
+      children.push_back(tree_.add_node(
+          NodeKind::PackedFieldSpecifier, start, position_));
+      if (mode == MemberMode::Union) {
+        diagnostics_.error(
+            tree_.node(children.back()).range,
+            "packed is valid only on struct fields");
+      }
+    }
     if (!expect_name("expected type member name")) {
       NodeId error = error_node(start, "invalid type member");
       finish_item("expected semicolon after invalid member");
       return error;
     }
 
-    if (mode == MemberMode::Struct) {
+    if (mode == MemberMode::Struct || mode == MemberMode::Union) {
       while (match(TokenKind::Comma)) {
         (void)expect_name("expected field name after ','");
       }
