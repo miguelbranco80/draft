@@ -1,11 +1,12 @@
 // These tests exercise the platform-independent contracts of core/terminal
 // without borrowing or modifying the test runner's real terminal. They verify
-// timeout conversion, inactive raw/screen resources, size-query validation,
-// and streaming key decoding across read boundaries. The native validation
-// driver copies this package to a private workspace, selects the matching host
-// target, and links the real libc symbols. Actual mode and alternate-screen
-// changes require an application or pseudo-terminal integration test and are
-// deliberately not attempted against CTest's stdin/stdout.
+// timeout conversion, inactive raw/screen/resize resources, size-query
+// validation, and streaming key decoding across read boundaries. The native
+// validation driver copies this package to a private workspace, selects the
+// matching host target, and links the real libc symbols. Actual mode and
+// alternate-screen changes require an application or pseudo-terminal
+// integration test and are deliberately not attempted against CTest's
+// stdin/stdout.
 package terminal
 
 import core/c_abi
@@ -65,6 +66,20 @@ test_inactive_session :: proc(test: ^testing.Test) {
     testing.expect(test, size_error == .invalid)
     testing.expect(test, terminal_size.columns == 0)
     testing.expect(test, terminal_size.rows == 0)
+
+    watcher: Resize_Watcher
+    testing.expect(test, watcher.state == .inactive)
+    (inactive_size, changed, poll_error) := poll_resize(&watcher)
+    testing.expect(test, poll_error == .invalid)
+    testing.expect(test, !changed)
+    testing.expect(test, inactive_size.columns == 0)
+    testing.expect(test, inactive_size.rows == 0)
+    (watch_size, watch_error) := begin_resize_watch(&watcher, invalid_input)
+    testing.expect(test, watch_error == .invalid)
+    testing.expect(test, watch_size.columns == 0)
+    testing.expect(test, watch_size.rows == 0)
+    testing.expect(test, watcher.state == .inactive)
+    testing.expect(test, end_resize_watch(&watcher))
 }
 
 // test_key_decoder covers ordinary/single-byte keys, fragmented CSI and SS3

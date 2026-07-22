@@ -79,6 +79,9 @@ condition variables. `core/terminal` translates CRT descriptors to console
 handles, saves/restores exact input and output modes, enables VT processing,
 waits for input, and reports the visible console window in cells. All Windows
 handles, flags, and physical records remain private to target-qualified source.
+The portable resize watcher compares that visible-window query on each poll;
+Windows does not fabricate a POSIX-style process signal or mix console window
+records into the byte-oriented raw input stream.
 
 The runtime exposes Draft byte strings on Windows without an ANSI-code-page
 dependency. Its `wmain` adapter converts UTF-16 arguments and environment rows

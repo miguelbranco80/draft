@@ -73,6 +73,11 @@ is eight bytes with four-byte alignment, and glibc `nfds_t` is `unsigned long`.
 its raw-session lifetime and timeout policy with macOS. Its size query uses the
 common eight-byte `winsize` layout and Linux `TIOCGWINSZ = 0x5413` through
 glibc's real variadic `ioctl` ABI.
+Resize observation uses signal 28 (`SIGWINCH`) and glibc's 152-byte,
+eight-aligned public `sigaction` record. Its `sigset_t` is sixteen
+`unsigned long` words; flags follow the 128-byte mask and the restorer pointer
+ends the record. The core watcher installs only over `SIG_DFL` with an empty
+mask and zero flags, then restores the saved record exactly.
 
 The initial cross-target qualification used LLVM/LLD 22.1.8 and an Ubuntu
 24.04 arm64 sysroot containing glibc 2.39, Linux 6.8 UAPI headers, and the GCC

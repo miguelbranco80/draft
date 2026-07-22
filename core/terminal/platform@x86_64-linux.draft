@@ -1,5 +1,6 @@
 // This target-selected half of core/terminal defines glibc 2.39's x86-64
-// termios record, poll count ABI, and TIOCGWINSZ request. Native_Mode contains
+// termios record, poll count ABI, TIOCGWINSZ request, and sigaction layout.
+// Native_Mode contains
 // four 32-bit flag words, one line byte, thirty-two control bytes, padding, and
 // two 32-bit speeds: 60 bytes total with alignment four. Every pointer is
 // borrowed for one libc call; ownership and terminal error policy remain in
@@ -63,6 +64,23 @@ Native_Mode :: c struct {
 
 Native_Apply_Now :: cast[c_abi.int](0)
 Native_Size_Request :: cast[c_abi.unsigned_long](0x5413)
+Native_Resize_Uses_Notifications :: true
+Native_Resize_Signal :: cast[c_abi.int](28)
+
+// glibc's 64-bit sigset_t contains sixteen unsigned-long words. The selected
+// public sigaction layout is handler, 128-byte mask, flags, padding, restorer:
+// 152 bytes with pointer alignment. The complete prior action is retained for
+// exact restoration rather than reconstructed from selected fields.
+Native_Signal_Set :: c struct {
+    words: [16]c_abi.unsigned_long,
+}
+
+Native_Signal_Action :: c struct {
+    handler: c proc(signal_number: c_abi.int),
+    mask: Native_Signal_Set,
+    flags: c_abi.int,
+    restorer: rawptr,
+}
 
 foreign linux {
     native_get_mode as "tcgetattr" :: c proc(
@@ -85,6 +103,14 @@ foreign linux {
         request: c_abi.unsigned_long,
         ..,
     ) -> c_abi.int
+    native_sigaction as "sigaction" :: c proc(
+        signal_number: c_abi.int,
+        action: ^Native_Signal_Action,
+        previous: ^Native_Signal_Action,
+    ) -> c_abi.int
+    native_sigemptyset as "sigemptyset" :: c proc(
+        set: ^Native_Signal_Set,
+    ) -> c_abi.int
 }
 
 // glibc defines nfds_t as unsigned long. Common code waits on exactly one
@@ -105,4 +131,32 @@ native_query_size :: proc(
     size: ^Native_Window_Size,
 ) -> c_abi.int {
     return native_ioctl(descriptor, Native_Size_Request, size)
+}
+
+// native_begin_resize_watch installs the package's atomic-only SIGWINCH
+// callback only when the process retains SIG_DFL. Flags remain zero so
+// poll returns EINTR rather than restarting invisibly after a resize.
+native_begin_resize_watch :: proc(previous: ^Native_Signal_Action) -> bool {
+    static_assert(size_of(Native_Signal_Set) == 128)
+    static_assert(align_of(Native_Signal_Set) == 8)
+    static_assert(size_of(Native_Signal_Action) == 152)
+    static_assert(align_of(Native_Signal_Action) == 8)
+
+    if native_sigaction(Native_Resize_Signal, nil, previous) != 0 {
+        return false
+    }
+    if previous^.handler != nil {
+        return false
+    }
+
+    action: Native_Signal_Action
+    action.handler = resize_signal_handler
+    if native_sigemptyset(&action.mask) != 0 {
+        return false
+    }
+    return native_sigaction(Native_Resize_Signal, &action, nil) == 0
+}
+
+native_end_resize_watch :: proc(previous: ^Native_Signal_Action) -> bool {
+    return native_sigaction(Native_Resize_Signal, previous, nil) == 0
 }

@@ -1,7 +1,8 @@
 // This file is the executable shell around the deterministic Tetris game. It
 // acquires one raw terminal session, enters the terminal's alternate screen,
-// interleaves timed input with gravity, repaints one desired TUI cell surface,
-// and then restores both screen and input mode on every ordinary exit path.
+// watches terminal resizes, interleaves timed input with gravity, repaints one
+// desired TUI cell surface, and then restores the resize watcher, screen, and
+// input mode on every ordinary exit path.
 // core/tui owns differential ANSI publication; simulation, byte decoding, and
 // painting remain in separate files with no callbacks or framework between
 // them.
@@ -77,15 +78,14 @@ next_fall_deadline :: proc(game: ^Game, now: time.Duration) -> time.Duration {
     return now + interval
 }
 
-// query_render_dimensions obtains the current output-terminal cell size and
-// bounds the retained TUI viewport. Real terminal dimensions are external
+// render_dimensions bounds one observed output-terminal cell size to the
+// retained TUI viewport. Real terminal dimensions are external
 // resource input: capping them prevents an implausible or corrupted winsize
 // from requesting billions of cells. The cap still covers substantially more
 // than the game's fixed 50-by-24 layout. Zero dimensions cannot describe a
 // paintable terminal and are reported as unavailable to the event loop.
-query_render_dimensions :: proc() -> (usize, usize, bool) {
-    (size, error) := terminal.query_size(os.standard_output)
-    if error != .none || size.columns == 0 || size.rows == 0 {
+render_dimensions :: proc(size: terminal.Size) -> (usize, usize, bool) {
+    if size.columns == 0 || size.rows == 0 {
         return (0, 0, false)
     }
     columns := size.columns
@@ -158,12 +158,14 @@ apply_action :: proc(game: ^Game, action: Action) -> Action_Outcome {
 run_interactive :: proc(
     session: ^terminal.Session,
     screen: ^terminal.Screen,
+    resize_watcher: ^terminal.Resize_Watcher,
+    initial_size: terminal.Size,
 ) -> Run_Result {
     seed := cast[u64](cast[i64](time.monotonic_now())) ~ os.process_id()
     game: Game
     game_init(&game, seed)
 
-    (columns, rows, size_available) := query_render_dimensions()
+    (columns, rows, size_available) := render_dimensions(initial_size)
     if !size_available {
         return .output_failed
     }
@@ -178,16 +180,23 @@ run_interactive :: proc(
     needs_render := true
 
     for {
-        (current_columns, current_rows, current_size_available) :=
-            query_render_dimensions()
-        if !current_size_available {
+        (current_size, size_changed, size_error) :=
+            terminal.poll_resize(resize_watcher)
+        if size_error != .none {
             return .output_failed
         }
-        desired := tui.surface(&renderer)
-        if current_columns != desired^.columns ||
-            current_rows != desired^.rows {
-            tui.renderer_resize(&renderer, current_columns, current_rows)
-            needs_render = true
+        if size_changed {
+            (current_columns, current_rows, current_size_available) :=
+                render_dimensions(current_size)
+            if !current_size_available {
+                return .output_failed
+            }
+            desired := tui.surface(&renderer)
+            if current_columns != desired^.columns ||
+                current_rows != desired^.rows {
+                tui.renderer_resize(&renderer, current_columns, current_rows)
+                needs_render = true
+            }
         }
 
         if needs_render {
@@ -304,17 +313,31 @@ main :: proc() -> int {
         return 1
     }
 
+    resize_watcher: terminal.Resize_Watcher
+    (initial_size, resize_error) := terminal.begin_resize_watch(
+        &resize_watcher,
+        os.standard_output,
+    )
+
     screen: terminal.Screen
-    screen_error := terminal.begin_screen(&screen, os.standard_output)
     result: Run_Result = .output_failed
-    if screen_error == .none {
-        result = run_interactive(&session, &screen)
+    if resize_error == .none {
+        screen_error := terminal.begin_screen(&screen, os.standard_output)
+        if screen_error == .none {
+            result = run_interactive(
+                &session,
+                &screen,
+                &resize_watcher,
+                initial_size,
+            )
+        }
     }
 
     left_screen := terminal.restore_screen(&screen)
+    ended_resize_watch := terminal.end_resize_watch(&resize_watcher)
     restored := terminal.restore(&session)
 
-    if !left_screen || !restored {
+    if !left_screen || !ended_resize_watch || !restored {
         report_error("tetris: terminal cleanup failed\n")
         return 1
     }

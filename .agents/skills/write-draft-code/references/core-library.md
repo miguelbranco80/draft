@@ -489,6 +489,13 @@ terminal.restore_screen(&screen) -> bool
 terminal.Size{columns, rows}
 terminal.query_size(terminal_file: os.File) -> (terminal.Size, io.Error)
 
+terminal.Resize_Watcher
+terminal.Resize_Watcher_State // inactive, active
+terminal.begin_resize_watch(&watcher, terminal_file)
+    -> (terminal.Size, io.Error)
+terminal.poll_resize(&watcher) -> (terminal.Size, bool, io.Error)
+terminal.end_resize_watch(&watcher) -> bool
+
 terminal.Decoder
 terminal.Key
 terminal.Key{kind, byte_value, shift, alt, control}
@@ -532,6 +539,15 @@ Invalid descriptors return
 `.invalid`, native failures return `.unavailable`, and successful zero
 dimensions are preserved for application fallback policy.
 
+`Resize_Watcher` borrows the queried descriptor and is a non-copyable cleanup
+owner. Only one may be active in a process. On POSIX, begin installs an
+atomic-only SIGWINCH handler only when the prior disposition is `SIG_DFL`;
+explicit ignore/custom dispositions produce `.unavailable` and remain
+untouched. A resize interrupts `terminal.read` as a successful zero-byte turn,
+then `poll_resize` consumes the coalesced notification and queries the size.
+End restores the complete saved action and retains active state if restoration
+fails. Windows compares a native size query on every poll behind the same API.
+
 Decoder preserves ordinary input as `.byte` keys and recognizes Enter, Tab,
 Backspace, cursor, home/end, insert/delete, page, and F1-F12 forms across
 fragmented reads. Escape alone is emitted only by `flush_key`, after the
@@ -541,15 +557,16 @@ UTF-8: each source byte remains available to the application or `core/utf8`.
 Physical combinations that a byte protocol cannot distinguish—such as Enter
 and Ctrl-M—are not guessed.
 
-The package deliberately has no frame/layout builder, automatic resize/signal
-handling, mouse protocol, event loop, terminfo, or ncurses dependency.
+The package deliberately has no frame/layout builder, general signal/job-
+control layer, mouse protocol, event loop, terminfo, or ncurses dependency.
 The current native-mode implementation exists for AArch64 macOS, AArch64/
 x86-64 GNU/Linux, and x86-64 Windows. POSIX owns exact termios, poll, and ioctl
 contracts; Windows owns console modes, handle waits, and visible-window size.
 The ANSI/VT screen and key policy is target-independent.
 
 The built-in target denial summaries do not yet audit the terminal-specific
-`tcgetattr`, `tcsetattr`, `cfmakeraw`, `poll`, or `ioctl` calls. A reachable
+`tcgetattr`, `tcsetattr`, `cfmakeraw`, `poll`, `ioctl`, `sigaction`, or
+`sigemptyset` calls. A reachable
 native terminal operation beneath an active `deny` therefore fails closed as
 an unknown foreign call until that explicit target coverage is added.
 
@@ -699,7 +716,7 @@ The current core does not yet supply several facilities a larger application
 may need:
 
 - path manipulation, directories, metadata, random-access files, or rename;
-- mouse input, resize notifications, or signal-safe terminal recovery;
+- mouse input or general signal-safe terminal recovery;
 - sockets, subprocesses, signals, dynamic libraries, or event loops;
 - Unicode normalization, properties, case mapping, and grapheme algorithms;
 - general formatting/parsing and string builders;

@@ -200,21 +200,39 @@ The public result widens rows and columns to `usize`, preserves a successful
 zero dimension, and deliberately omits pixel dimensions because cell layout is
 the portable text-application contract.
 
+`terminal.Resize_Watcher` turns those snapshots into one explicit change
+stream. One move-by-convention watcher owns the process observation slot and a
+borrowed output descriptor. On Darwin and Linux, begin reads the existing
+SIGWINCH disposition and installs a context-free handler only when that
+disposition is `SIG_DFL`; an explicit ignore or application handler is never
+replaced. The handler performs one relaxed store to a 32-bit `core/atomic`
+value. Its action deliberately omits `SA_RESTART`, so an interrupted
+`terminal.read` returns a successful empty turn when that flag is pending and
+the event loop can call `poll_resize`. Notifications coalesce, and the first
+poll always re-queries to close the setup race. End restores the complete saved
+action before releasing the process slot; failed restoration retains ownership
+for retry. Windows has no corresponding process signal, so the same public
+poll compares one synchronous visible-window query each turn. This preserves
+one portable API without translating unrelated console input records into the
+byte-oriented Session stream.
+
 The allocation-free `Decoder` preserves ordinary input—including control and
 UTF-8 bytes—as byte keys and recognizes Enter, Tab, Backspace, cursor,
 home/end, insert/delete, page, and F1-F12 forms across arbitrary read
 boundaries. A lone Escape remains pending until the application calls
 `flush_key` after its own timeout. Escape-prefixed bytes and xterm numeric
 parameters preserve explicit Alt/Shift/Control state, while combinations the
-byte protocol cannot distinguish are not guessed. Styling, automatic resize
-and signal handling, mouse input, Unicode text interpretation, and event-loop
-composition remain application or future-library concerns.
+byte protocol cannot distinguish are not guessed. Mouse input, Unicode text
+interpretation, general signal/job-control policy, and event-loop composition
+remain application or future-library concerns.
 
 Darwin stores a 72-byte, eight-aligned termios record and uses 32-bit `nfds_t`;
 the selected glibc contract stores a 60-byte, four-aligned record and uses
 64-bit `nfds_t`. Both use the common eight-byte `pollfd` and `winsize` layouts.
-Windows stores the saved input/output mode as 32-bit console flags and uses
-one-pointer SRW/condition records. Target source contains compile-time
+Darwin's public signal action is 16 bytes; the selected 64-bit glibc action is
+152 bytes because its signal mask occupies 128 bytes. Windows stores the saved
+input/output mode as 32-bit console flags and uses one-pointer SRW/condition
+records. Target source contains compile-time
 size/alignment assertions, while native qualification links the selected libc
 or Kernel32 boundary.
 

@@ -266,10 +266,18 @@ the active owner for reporting or retry. A suspended Screen remains an owner
 even though the primary screen is currently visible; failed resume deliberately
 marks it active because a control-sequence prefix may require cleanup.
 
-When an application owns both resources, acquire Session then Screen, suspend
-Screen then Session, resume Session then Screen, and finally restore Screen then
-Session. Always attempt both final restorations even when the first fails. This
-ordering exposes the primary screen and saved input mode to external work, and
+`terminal.Resize_Watcher` borrows one terminal descriptor and owns the process
+resize-observation slot. On POSIX that includes the exact prior SIGWINCH action;
+on Windows it remains an explicit comparison lifetime. Keep an active watcher
+at one address, do not copy it, and call `end_resize_watch`. Failed POSIX
+restoration retains active state and the process slot for retry.
+
+When an application owns all three terminal resources, acquire Session,
+Resize_Watcher, then Screen; finally restore Screen, end Resize_Watcher, and
+restore Session. Suspend Screen then Session and resume Session then Screen;
+the resize watcher remains active through that temporary job-control boundary.
+Always attempt every final restoration even when an earlier one fails. This
+ordering exposes the primary screen and saved input mode to external work and
 avoids re-entering the alternate screen when raw input could not be reacquired.
 
 `tui.Surface` owns one fixed cell buffer. `tui.Renderer` owns two nested

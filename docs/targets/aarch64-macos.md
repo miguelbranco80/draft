@@ -62,6 +62,10 @@ unsigned integer. `core/terminal` keeps these layouts target-selected and uses
 the fixed `tcgetattr`, `tcsetattr`, `cfmakeraw`, and `poll` libc signatures.
 Its size query uses the eight-byte `winsize` layout and Darwin
 `TIOCGWINSZ = 0x40087468` through the real variadic `ioctl` ABI.
+Resize observation uses signal 28 (`SIGWINCH`) and Darwin's public 16-byte,
+eight-aligned `sigaction` record: one handler pointer, 32-bit signal mask, and
+32-bit flags. The core watcher installs only over `SIG_DFL`, uses an empty mask
+and zero flags, and restores the complete prior record.
 
 ## C enum ABI
 

@@ -1,5 +1,6 @@
 // This target-selected half of core/terminal defines Darwin's native termios
-// record, poll count ABI, and TIOCGWINSZ request. Native_Mode matches the macOS
+// record, poll count ABI, TIOCGWINSZ request, and SIGWINCH action layout.
+// Native_Mode matches the macOS
 // 14 arm64 SDK exactly: four unsigned-long flag words, twenty control bytes,
 // padding to eight-byte speed fields, and 72 bytes total. Every pointer is
 // borrowed for one libc call; resource ownership and portable error policy
@@ -62,6 +63,17 @@ Native_Mode :: c struct {
 
 Native_Apply_Now :: cast[c_abi.int](0)
 Native_Size_Request :: cast[c_abi.unsigned_long](0x40087468)
+Native_Resize_Uses_Notifications :: true
+Native_Resize_Signal :: cast[c_abi.int](28)
+
+// Darwin sigset_t is one unsigned 32-bit word. Its public sigaction omits the
+// private kernel trampoline and is therefore 16 bytes on arm64: handler, mask,
+// then flags. The saved value is retained verbatim for exact restoration.
+Native_Signal_Action :: c struct {
+    handler: c proc(signal_number: c_abi.int),
+    mask: c_abi.unsigned_int,
+    flags: c_abi.int,
+}
 
 foreign darwin {
     native_get_mode as "tcgetattr" :: c proc(
@@ -83,6 +95,14 @@ foreign darwin {
         descriptor: c_abi.int,
         request: c_abi.unsigned_long,
         ..,
+    ) -> c_abi.int
+    native_sigaction as "sigaction" :: c proc(
+        signal_number: c_abi.int,
+        action: ^Native_Signal_Action,
+        previous: ^Native_Signal_Action,
+    ) -> c_abi.int
+    native_sigemptyset as "sigemptyset" :: c proc(
+        set: ^c_abi.unsigned_int,
     ) -> c_abi.int
 }
 
@@ -106,4 +126,35 @@ native_query_size :: proc(
     size: ^Native_Window_Size,
 ) -> c_abi.int {
     return native_ioctl(descriptor, Native_Size_Request, size)
+}
+
+// native_begin_resize_watch first reads the existing process disposition. It
+// accepts only SIG_DFL (the nil procedure pointer) and refuses even an explicit
+// SIG_IGN or real handler, because Draft cannot safely fabricate or chain those
+// reserved/native procedure-pointer values.
+// The installed action has an empty mask and no SA_RESTART, allowing poll to
+// return EINTR and wake terminal.read as soon as SIGWINCH is delivered.
+native_begin_resize_watch :: proc(previous: ^Native_Signal_Action) -> bool {
+    static_assert(size_of(Native_Signal_Action) == 16)
+    static_assert(align_of(Native_Signal_Action) == 8)
+
+    if native_sigaction(Native_Resize_Signal, nil, previous) != 0 {
+        return false
+    }
+    if previous^.handler != nil {
+        return false
+    }
+
+    action: Native_Signal_Action
+    action.handler = resize_signal_handler
+    if native_sigemptyset(&action.mask) != 0 {
+        return false
+    }
+    return native_sigaction(Native_Resize_Signal, &action, nil) == 0
+}
+
+// native_end_resize_watch reinstalls every byte of the disposition captured by
+// begin. Common code retains ownership when this native operation fails.
+native_end_resize_watch :: proc(previous: ^Native_Signal_Action) -> bool {
+    return native_sigaction(Native_Resize_Signal, previous, nil) == 0
 }

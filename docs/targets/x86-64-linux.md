@@ -82,6 +82,8 @@ Target-selected core files fix the following x86-64 glibc 2.39 facts:
 - `pollfd` is eight bytes with alignment four and `nfds_t` is
   `unsigned long`;
 - `winsize` is eight bytes and `TIOCGWINSZ` is `0x5413`;
+- `SIGWINCH` is signal 28 and public `sigaction` is 152 bytes aligned to
+  eight, including a 128-byte `sigset_t` before flags and the restorer;
 - `timespec` is two signed 64-bit words; and
 - Linux anonymous private mapping uses `MAP_PRIVATE | MAP_ANONYMOUS = 0x22`.
 

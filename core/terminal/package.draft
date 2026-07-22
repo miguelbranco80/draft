@@ -1,22 +1,26 @@
 // The terminal package is the small interactive-console boundary shared by
 // full-screen applications. It turns one existing input descriptor into an
-// immediate byte stream, waits for input with a bounded timeout, queries the
-// terminal cell dimensions, and restores the exact native mode saved at entry.
+// immediate byte stream, waits for input with a bounded timeout, queries and
+// watches the terminal cell dimensions, and restores the exact native mode
+// saved at entry.
 // Companion files own a small ANSI alternate-screen lifetime and a streaming
 // key decoder. The package owns no descriptor: callers retain descriptor
-// lifetime, frame construction, styling, text interpretation, signal delivery,
-// and application event-loop policy.
+// lifetime, frame construction, styling, text interpretation, and application
+// event-loop policy. A Resize_Watcher temporarily owns the process SIGWINCH
+// disposition on POSIX only when no application handler is already installed;
+// Windows implements the same observation contract by comparing size queries.
 //
 // Session is an explicit move-by-convention resource. A successful begin_raw
 // must be paired with restore while the input descriptor remains open. Suspend
 // temporarily returns the descriptor to its saved mode; resume reapplies raw
 // mode. The selected target file owns the native mode, readiness, and size-
-// query ABI; this common file owns target-independent lifetime, timeout, and
-// error policy.
-// It depends only on core/c_abi, core/io, core/os, and core/time. Draft
-// specification: sections 5-7 and 12, plus the selected target profile.
+// query/notification ABI; this common file owns target-independent lifetime,
+// timeout, and error policy.
+// It depends only on core/atomic, core/c_abi, core/io, core/os, and core/time.
+// Draft specification: sections 5-7 and 12, plus the selected target profile.
 package terminal
 
+import core/atomic
 import core/c_abi
 import core/io
 import core/os
@@ -57,6 +61,45 @@ Native_Window_Size :: c struct {
 pub Size :: struct {
     columns: usize,
     rows: usize,
+}
+
+// Resize_Watcher_State exposes the cleanup obligation without making the
+// native signal record public policy. inactive owns nothing. active retains a
+// borrowed terminal descriptor and, on POSIX, the exact SIGWINCH disposition
+// that end_resize_watch must restore. Only one active watcher may exist in a
+// process because a POSIX signal disposition is itself process-global.
+pub Resize_Watcher_State :: enum u8 {
+    inactive,
+    active,
+}
+
+// Resize_Watcher remembers the last successfully observed cell extent. It is
+// a move-by-convention resource: keep an active value at one stable address,
+// do not copy it, and call end_resize_watch before its storage or borrowed
+// descriptor expires. Windows retains the same explicit lifetime even though
+// its selected implementation needs no signal record.
+pub Resize_Watcher :: struct {
+    terminal_file: os.File,
+    size: Size,
+    previous_action: Native_Signal_Action,
+    state: Resize_Watcher_State,
+}
+
+// These two atomics are the complete process-global coordination required by
+// POSIX SIGWINCH delivery. resize_watch_claimed rejects overlapping owners.
+// resize_notification_pending is written by the context-free signal callback
+// and exchanged by ordinary event-loop code. Windows uses the ownership bit
+// for one uniform API but does not read the pending bit.
+resize_watch_claimed: atomic.Value[u32]
+resize_notification_pending: atomic.Value[u32]
+
+// resize_signal_handler is deliberately a C procedure with no Draft Context.
+// A signal may arrive at any ordinary instruction, so the handler performs one
+// lock-free relaxed atomic store and nothing else: no allocation, I/O, query,
+// logging, or call into application code. The event loop performs every
+// fallible operation later in poll_resize.
+resize_signal_handler :: c proc(signal_number: c_abi.int) {
+    atomic.store(&resize_notification_pending, 1, .relaxed)
 }
 
 // Session_State makes the restoration obligation and job-control transition
@@ -243,6 +286,116 @@ pub query_size :: proc(terminal_file: os.File) -> (Size, io.Error) {
     )
 }
 
+// begin_resize_watch establishes one explicit size-change observation owner
+// and returns its initial size. watcher must be inactive and terminal_file must
+// be a valid terminal descriptor. On POSIX, native_begin_resize_watch refuses
+// to replace any non-default SIGWINCH disposition; on every target a second
+// active watcher returns unavailable rather than sharing one notification bit.
+//
+// The initial query happens before the process-wide claim. Once native setup
+// succeeds, pending is set so the first poll repeats the query and closes the
+// small race in which the terminal changes between that query and handler
+// installation. Failure publishes no watcher state or cleanup obligation.
+pub begin_resize_watch :: proc(
+    watcher: ^Resize_Watcher,
+    terminal_file: os.File,
+) -> (Size, io.Error) {
+    empty: Size
+    if watcher^.state != .inactive || terminal_file.descriptor < 0 {
+        return (empty, .invalid)
+    }
+
+    (initial, query_error) := query_size(terminal_file)
+    if query_error != .none {
+        return (empty, query_error)
+    }
+
+    expected: u32
+    if !atomic.compare_exchange(
+        &resize_watch_claimed,
+        &expected,
+        1,
+        .acquire_release,
+        .acquire,
+    ) {
+        return (empty, .unavailable)
+    }
+
+    previous: Native_Signal_Action
+    if !native_begin_resize_watch(&previous) {
+        atomic.store(&resize_watch_claimed, 0, .release)
+        return (empty, .unavailable)
+    }
+
+    watcher^.terminal_file = terminal_file
+    watcher^.size = initial
+    watcher^.previous_action = previous
+    watcher^.state = .active
+    atomic.store(&resize_notification_pending, 1, .relaxed)
+    return (initial, .none)
+}
+
+// poll_resize consumes at most one coalesced size notification. POSIX avoids a
+// native size query when no SIGWINCH arrived. Windows has no matching signal,
+// so its selected constant makes each poll compare one synchronous query. A
+// successful unchanged observation returns the remembered Size and false.
+//
+// Query failure preserves the old size. POSIX republishes pending so a later
+// call retries without waiting for another signal. No result borrows watcher
+// storage, and successful change observations follow native delivery order
+// only up to normal signal coalescing.
+pub poll_resize :: proc(
+    watcher: ^Resize_Watcher,
+) -> (Size, bool, io.Error) {
+    if watcher^.state != .active {
+        empty: Size
+        return (empty, false, .invalid)
+    }
+
+    when Native_Resize_Uses_Notifications {
+        pending := atomic.exchange(
+            &resize_notification_pending,
+            0,
+            .relaxed,
+        )
+        if pending == 0 {
+            return (watcher^.size, false, .none)
+        }
+    }
+
+    (observed, error) := query_size(watcher^.terminal_file)
+    if error != .none {
+        when Native_Resize_Uses_Notifications {
+            atomic.store(&resize_notification_pending, 1, .relaxed)
+        }
+        return (watcher^.size, false, error)
+    }
+
+    changed := observed.columns != watcher^.size.columns ||
+        observed.rows != watcher^.size.rows
+    watcher^.size = observed
+    return (observed, changed, .none)
+}
+
+// end_resize_watch restores the exact native notification disposition captured
+// by begin and releases the process-wide claim. It is idempotent while
+// inactive. A native restoration failure leaves watcher active and claimed so
+// the same owner can report or retry instead of admitting a second owner while
+// the first handler may still be installed.
+pub end_resize_watch :: proc(watcher: ^Resize_Watcher) -> bool {
+    if watcher^.state == .inactive {
+        return true
+    }
+    if !native_end_resize_watch(&watcher^.previous_action) {
+        return false
+    }
+
+    watcher^.state = .inactive
+    atomic.store(&resize_notification_pending, 0, .relaxed)
+    atomic.store(&resize_watch_claimed, 0, .release)
+    return true
+}
+
 // read waits for input using timeout rounded upward to native millisecond
 // resolution, then performs one ordinary os.read into caller-owned storage. A
 // zero timeout polls immediately; any positive sub-millisecond duration waits
@@ -268,6 +421,15 @@ pub read :: proc(
     }
     ready := native_poll_one(&descriptor, timeout_milliseconds(timeout))
     if ready < 0 {
+        // POSIX poll returns EINTR when SIGWINCH arrives because the installed
+        // action deliberately omits SA_RESTART. Treat only our pending resize
+        // as an ordinary empty turn; every unrelated interruption/native error
+        // remains unavailable. poll_resize consumes the flag on the next turn.
+        when Native_Resize_Uses_Notifications {
+            if atomic.load(&resize_notification_pending, .relaxed) != 0 {
+                return (0, .none)
+            }
+        }
         return (0, .unavailable)
     }
     if ready == 0 {
