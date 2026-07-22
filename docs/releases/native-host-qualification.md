@@ -78,12 +78,15 @@ proves that concurrent completion cannot change the selected diagnostic or
 publish a partial canonical artifact. Together with scheduler unit tests, this
 qualifies actual concurrent work rather than only the shape of a task graph.
 
-The x86-64 Linux gate qualifies the bootstrap compiler on a second host
+At the dated commits recorded above, the x86-64 Linux gate qualified only the
+bootstrap compiler on a second host
 architecture. AddressSanitizer checks invalid memory accesses and lifetime
 errors in exercised C++ code. UndefinedBehaviorSanitizer checks operations such
 as invalid shifts, misaligned accesses, and signed arithmetic overflow. This
-does not claim that Draft emits x86-64 programs; the native backend remains
-AArch64-only.
+did not claim that Draft emitted x86-64 programs. The current implementation
+has since added `draft-x86_64-linux-gnu-v1`; its first native pass belongs in a
+new dated qualification row after the updated workflow completes, rather than
+being retroactively attributed to these earlier counts.
 
 The generated-program AddressSanitizer test is distinct from sanitizing the C++
 bootstrap. Draft asks embedded LLVM to apply its AddressSanitizer pass, then uses

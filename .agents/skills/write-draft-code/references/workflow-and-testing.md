@@ -68,6 +68,7 @@ Recognized direct children are:
 *.asm
 name@aarch64-macos.<extension>
 name@aarch64-linux.<extension>
+name@x86_64-linux.<extension>
 ```
 
 Nested directories are separate packages or non-source content; they do not
@@ -146,6 +147,7 @@ build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
 build/draftc check path/to/workspace --root package --target aarch64-macos
 build/draftc check path/to/workspace --root package --target aarch64-linux
+build/draftc check path/to/workspace --root package --target x86_64-linux
 build/draftc expand path/to/workspace --root package --out /tmp/expanded-source \
   --target aarch64-macos
 build/draftc resolve path/to/workspace --root package --build -o /tmp/program \
@@ -168,6 +170,7 @@ Other useful inspections:
 ```sh
 build/draftc target --target aarch64-macos
 build/draftc target --target aarch64-linux
+build/draftc target --target x86_64-linux
 build/draftc emit-llvm path/to/workspace --root package --target aarch64-macos
 build/draftc emit-c-header path/to/workspace --root package -o /tmp/package.h \
   --target aarch64-macos
@@ -202,7 +205,7 @@ selected root.
 
 ## Native validation
 
-On a matching AArch64 host:
+On a matching native host:
 
 ```sh
 build/draftc build path/to/workspace --root package \
@@ -212,9 +215,9 @@ build/draftc build path/to/workspace --root package \
 /tmp/draft-program
 ```
 
-Use `--target aarch64-linux` on matching Linux. Cross-checking can prove the
-front end and lowering contract, but current native execution requires the
-matching AArch64 host toolchain and runtime.
+Use `--target aarch64-linux` or `--target x86_64-linux` on the matching Linux
+architecture. Cross-checking can prove the front end and lowering contract,
+but native execution requires the matching host toolchain and runtime.
 
 Native `build`, `resolve --build`, `test`, and `bench` default to `-O0`; pass
 `-O2` when the task requires optimized code. O2 runs within each complete
@@ -380,7 +383,7 @@ ctest --test-dir build -L examples --output-on-failure
 ```
 
 `examples/qualification.tsv` must classify every tracked Draft/assembly package
-directory. Its rows drive both-target frontend checks, every ordinary native
+directory. Its rows drive all-three-target frontend checks, every ordinary native
 example execution, special C-library and foreign-provider link gates, and all
 example-owned Draft tests and benchmarks. Do not add an example source package
 without adding its explicit final-state classification.
@@ -403,15 +406,16 @@ cmake --build build --target \
   draft_compiler_tests \
   draft_native_interop_tests \
   draft_aarch64_abi_tests \
+  draft_x86_64_abi_tests \
   draft_c_header_tests \
   draft_toolchain_tests \
   --parallel
 
 ctest --test-dir build --output-on-failure \
-  -R '^(draft_mir_tests|draft_native_interop_tests|draft_aarch64_abi_tests|draft_c_header_tests|draft_toolchain_tests|draft_target_profile_tests|draft_assembly_tests|draft_llvm_ir_tests|draft_llvm_object_emitter_tests|draft_native_object_tasks_tests|draft_compiler_tests)$'
+  -R '^(draft_mir_tests|draft_native_interop_tests|draft_aarch64_abi_tests|draft_x86_64_abi_tests|draft_c_header_tests|draft_toolchain_tests|draft_target_profile_tests|draft_assembly_tests|draft_llvm_ir_tests|draft_llvm_object_emitter_tests|draft_native_object_tasks_tests|draft_compiler_tests)$'
 ```
 
-On a native AArch64 macOS/Linux host, artifact closure also includes
+On any supported native host, artifact closure also includes
 `draft_native_determinism_tests`, `draft_native_backend_parity_tests`,
 `draft_native_conformance_tests`, `draft_c_client_integration_tests`, the
 foreign-provider link/run gate, and the example test/benchmark matrix. The first

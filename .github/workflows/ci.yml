@@ -86,13 +86,13 @@ jobs:
       # CMake includes the exhaustive classified example matrix, Draft example
       # tests/benchmarks, foreign-provider and C-client linking, executable
       # conformance, artifact determinism, and embedded-LLVM/Clang parity only
-      # on a supported native AArch64 host. A green row therefore proves native
+      # on a supported native host. A green row therefore proves native
       # execution for that OS rather than cross-lowering alone.
       - name: Test
         run: ctest --test-dir build --output-on-failure --parallel ${{ matrix.parallel }}
 
   sanitizers-x86-64:
-    name: Sanitizers / Linux x86-64
+    name: Native + sanitizers / Linux x86-64
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -119,7 +119,7 @@ jobs:
           sudo /tmp/llvm.sh 22
           sudo apt-get install --yes llvm-22-dev
 
-      # This job is intentionally a different architecture from the native
+      # This native job is intentionally a different architecture from the ARM
       # matrix. Assert the hosted-runner contract instead of accidentally
       # turning it into a duplicate ARM build after a label change.
       - name: Record tool versions
@@ -141,9 +141,9 @@ jobs:
       - name: Build
         run: cmake --build build --parallel 4
 
-      # x86-64 cannot execute Draft's AArch64 artifacts. CMake omits native-host
-      # integration tests, while the exhaustive both-target example frontend
-      # matrix and all semantic, lowering, driver, validation, and backend
-      # contract tests still run instrumented.
+      # x86-64 is a full native Draft target. This sanitizer row therefore runs
+      # the same executable, C-client, example, terminal/TUI, determinism, and
+      # backend-parity integration gates as the AArch64 rows while ASan/UBSan
+      # instrument the bootstrap compiler and test harnesses.
       - name: Test
         run: ctest --test-dir build --output-on-failure --parallel 4

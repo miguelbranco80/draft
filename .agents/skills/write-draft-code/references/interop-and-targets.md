@@ -25,23 +25,24 @@ editing.
 
 ## Current target boundary
 
-The compiler currently emits native code for exactly two target profiles:
+The compiler currently emits native code for exactly three target profiles:
 
 | CLI target | Profile identity | ABI and object format | Page size | File tag |
 | --- | --- | --- | --- | --- |
 | `aarch64-macos` | `draft-aarch64-macos-v5` | Darwin arm64, Mach-O | 16 KiB | `aarch64-macos` |
 | `aarch64-linux` | `draft-aarch64-linux-gnu-v1` | GNU AAPCS64, ELF/glibc 2.39 | 4 KiB | `aarch64-linux` |
+| `x86_64-linux` | `draft-x86_64-linux-gnu-v1` | SysV AMD64, ELF/glibc 2.39 | 4 KiB | `x86_64-linux` |
 
-Both are 64-bit little-endian AArch64 with baseline NEON, but they are not one
-generic platform. C aggregate rules, narrow scalar extension, enum ABI,
+All are 64-bit little-endian native profiles, but they are not one generic
+platform. C aggregate rules, narrow scalar extension, enum ABI,
 pthread and termios layouts, poll count types, open flags, object/linker
 behavior, page size, and assembly profile identity differ.
 
 macOS is the CLI compatibility default. Portable code should be checked
-explicitly against both profiles. x86-64 hosts can build and sanitize the C++
-bootstrap, but the current backend does not emit x86-64 Draft artifacts.
-Windows, x86 native output, other libcs, and other operating systems are not
-implemented Draft targets.
+explicitly against all three profiles. Windows, other libcs, and other
+operating systems are not implemented Draft targets. Parsed inline assembly is
+available only on AArch64; x86-64 still supports ordinary native code and exact
+target-qualified package assembly.
 
 Do not turn a current target absence into a language restriction. Put machine
 facts in versioned target profiles, platform implementations in exact tagged
@@ -56,8 +57,10 @@ implementation differs:
 ```text
 platform@aarch64-macos.draft
 platform@aarch64-linux.draft
+platform@x86_64-linux.draft
 native@aarch64-macos.s
 native@aarch64-linux.s
+native@x86_64-linux.s
 ```
 
 Only the matching file is selected. Unqualified files participate on every
@@ -163,7 +166,7 @@ These are rejected by value:
 Represent a string as `cstring` or explicit pointer plus length. Represent a
 slice as pointer plus length. Define a purpose-built `c struct` for a stable
 external layout. Never add C layout solely to silence a diagnostic
-without auditing every member and both target ABIs.
+without auditing every member and all selected target ABIs.
 
 Inside the compiler, C legality and lowering consume one published
 target-specific ABI table. The semantic validator, generated C header, and LLVM
@@ -171,12 +174,40 @@ emitter are not independent authorities and must not rerun or duplicate ABI
 classification. A new target or ABI rule therefore needs classifier oracle
 tests, semantic-product dependency tests, and consumer tests on the same rows.
 
+SysV AMD64 small aggregates use one or two INTEGER/SSE eightbytes. Their final
+placement depends on the complete ordered signature: if every component cannot
+fit the remaining six-GPR/eight-XMM budget, the whole argument is passed in
+memory. Do not derive x86 aggregate lowering from size alone or omit the hidden
+result pointer's GPR consumption.
+
 For a native input that reads but does not retain bytes, pass
 `raw_data(text), len(text)`. This is zero-copy and not zero-termination. Draft's
 `[^]u8` has no const qualifier, so the declaration, documentation, and foreign
 implementation must agree not to mutate. If the native API retains the pointer,
 the string's backing storage must outlive that retention; `raw_data` does not
 extend it.
+
+## Generated C headers
+
+Generate a header for the selected library root and exact artifact target:
+
+```sh
+build/draftc emit-c-header project --root library \
+  --target x86_64-linux -o /tmp/library.h
+```
+
+Without `-o`, the header is written below the workspace's derived
+`.draft/build/<target>/` tree. The header contains explicit root exports and the
+C records, unions, enums, fixed arrays, and callback types reachable from their
+signatures. It emits layout assertions; opaque pointer pointees that cannot be
+rendered as C are exposed as `void *`. Types such as `_Float16`, `__int128`, or
+explicitly aligned records may require the target's Clang-compatible C
+extensions.
+
+Always generate the header and native library with the same `--target`. Compile
+the header with the intended C compiler, then link and run a real C client.
+Header assertions check layout, but only the executable boundary checks symbol
+spelling and target register classification.
 
 ## Foreign imports and providers
 
@@ -312,11 +343,15 @@ input, target selection rule, and test.
 
 ## Parsed inline assembly
 
-The current parsed assembly architecture is AArch64. The selected target owns
+The current parsed assembly architecture is AArch64. An AArch64 target owns
 one versioned grammar; inspect
 [`aarch64-macos-assembly.md`](../../../../docs/targets/aarch64-macos-assembly.md)
 for the closed instruction, operand, register, and feature vocabulary. The
-Linux profile has a distinct identity even where its initial grammar matches.
+AArch64 Linux profile has a distinct identity even where its initial grammar
+matches.
+The x86-64 profile has no parsed dialect and rejects every selected `asm`
+construct. Use compile-time `when target.arch == .aarch64` only when a complete
+program deliberately provides a non-assembly x86 alternative.
 
 Expression form declares a result and ordered outputs:
 
@@ -359,8 +394,8 @@ or wrappers outside parsed inline assembly. Its boundary to Draft remains an
 explicit `foreign`/`export` C ABI symbol. Assembly cannot name private Draft
 symbols or bypass package/provider accounting.
 
-Keep target-specific assembly in exact `@aarch64-macos` and
-`@aarch64-linux` files. Symbol prefixes, visibility, section directives,
+Keep target-specific assembly in exact `@aarch64-macos`, `@aarch64-linux`, and
+`@x86_64-linux` files. Symbol prefixes, visibility, section directives,
 unwind metadata, and object conventions differ between Mach-O and ELF even
 when instructions look identical.
 
@@ -418,7 +453,8 @@ nondeterministic archive metadata, or filesystem enumeration order.
 
 ## Portability checklist
 
-- Check both `--target aarch64-macos` and `--target aarch64-linux`.
+- Check `--target aarch64-macos`, `--target aarch64-linux`, and
+  `--target x86_64-linux`.
 - Use exact target-tagged files for whole platform implementations.
 - Use `target` facts, never host environment guesses, for compile-time choice.
 - Audit every C-visible type recursively and generate/compile the C header.

@@ -145,9 +145,10 @@ consumer commands never contact a provider and correctly reject a missing pin.
 into native emission, so it is the shortest first-run path when an artifact is
 also wanted.
 
-Pass `--target aarch64-linux` when checking or building the Linux profile;
-macOS is the compatibility default. Run both target checks for portable code.
-Only native AArch64 hosts can execute current Draft artifacts. See
+Pass `--target aarch64-linux` or `--target x86_64-linux` when checking or
+building the corresponding Linux profile; macOS is the compatibility default.
+Run all three target checks for portable code. Matching Apple Silicon, AArch64
+Linux, and x86-64 Linux hosts can execute current Draft artifacts. See
 [workflow-and-testing.md](references/workflow-and-testing.md) for negative
 compiler tests, CMake/CTest, sanitizer, example, and documentation routing.
 

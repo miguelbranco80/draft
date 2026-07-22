@@ -474,6 +474,9 @@ enums `Target_Architecture`, `Target_Operating_System`, `Target_ABI`,
 do not cross those type boundaries. Each field or `has_feature` result is an
 ordinary compile-time scalar and may be assigned to a runtime binding; the
 whole `target` object has no runtime representation.
+The current architecture alternatives are `.aarch64` and `.x86_64`; current
+ABI alternatives are `.darwin_arm64`, `.aapcs64_gnu`, and `.sysv_amd64` in
+that stable source order.
 
 Inside a parametric procedure, a statement `when` may depend on the concrete
 type/value arguments. The template is checked symbolically in both branches,

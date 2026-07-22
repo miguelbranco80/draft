@@ -138,7 +138,8 @@ Import directly as:
 import core/c_abi
 ```
 
-It provides LP64 aliases for the current AArch64 Darwin and GNU targets:
+It provides LP64 aliases for the current AArch64 Darwin, AArch64 GNU/Linux,
+and x86-64 GNU/Linux targets:
 `char`, `signed_char`, `unsigned_char`, `short`, `unsigned_short`, `int`,
 `unsigned_int`, `long`, `unsigned_long`, `long_long`,
 `unsigned_long_long`, `size_t`, `ssize_t`, `intptr_t`, and `uintptr_t`.
@@ -538,9 +539,9 @@ and Ctrl-M—are not guessed.
 
 The package deliberately has no frame/layout builder, automatic resize/signal
 handling, mouse protocol, event loop, terminfo, or ncurses dependency.
-The current native-mode implementation exists for AArch64 macOS and AArch64
-GNU/Linux through exact target-qualified termios, poll, and ioctl contracts;
-its ANSI screen and key policy is target-independent.
+The current native-mode implementation exists for AArch64 macOS, AArch64
+GNU/Linux, and x86-64 GNU/Linux through exact target-qualified termios, poll,
+and ioctl contracts; its ANSI screen and key policy is target-independent.
 
 The built-in target denial summaries do not yet audit the terminal-specific
 `tcgetattr`, `tcsetattr`, `cfmakeraw`, `poll`, or `ioctl` calls. A reachable
