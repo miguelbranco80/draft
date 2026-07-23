@@ -965,7 +965,7 @@ void test_independent_dependencies_share_closure_ready_wave(
                     std::string::npos);
   EXPECT(state, report.find("direct effect ready waves: 2") !=
                     std::string::npos);
-  EXPECT(state, report.find("effect closure package ready waves: 2") !=
+  EXPECT(state, report.find("effect/reference ready waves: 2") !=
                     std::string::npos);
   EXPECT(state, report.find("package finalization ready waves: 2") !=
                     std::string::npos);
@@ -2142,6 +2142,13 @@ void test_body_source_update_reuses_closed_generic_dependency(
       compiled.semantic_products.packages[app_index].denial_results;
   const std::vector<draft::SemanticProductId> initial_formatting_denial_products =
       compiled.semantic_products.packages[*formatting_index].denial_results;
+  const std::vector<draft::SemanticProductId> initial_app_reference_products =
+      compiled.semantic_products.packages[app_index]
+          .native_reference_summaries;
+  const std::vector<draft::SemanticProductId>
+      initial_formatting_reference_products =
+          compiled.semantic_products.packages[*formatting_index]
+              .native_reference_summaries;
   EXPECT(state, !initial_app_body_products.empty());
   EXPECT(state, !initial_formatting_body_products.empty());
   EXPECT(state, !initial_app_abi_products.empty());
@@ -2152,6 +2159,8 @@ void test_body_source_update_reuses_closed_generic_dependency(
   EXPECT(state, !initial_formatting_effect_scc_products.empty());
   EXPECT(state, !initial_app_denial_products.empty());
   EXPECT(state, !initial_formatting_denial_products.empty());
+  EXPECT(state, !initial_app_reference_products.empty());
+  EXPECT(state, !initial_formatting_reference_products.empty());
   for (draft::SemanticProductId product : initial_app_direct_effect_products) {
     const std::vector<draft::SemanticProductId> &dependencies =
         compiled.semantic_graph.products[product.value].dependencies;
@@ -2232,6 +2241,14 @@ void test_body_source_update_reuses_closed_generic_dependency(
   EXPECT(state,
          compiled.semantic_products.packages[*formatting_index]
                  .denial_results == initial_formatting_denial_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[app_index]
+                 .native_reference_summaries !=
+             initial_app_reference_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .native_reference_summaries ==
+             initial_formatting_reference_products);
   EXPECT(state, updated_app.c_abi.complete_for(
                     updated_app.bodies.package.types, options.target.facts));
   EXPECT(state, updated_formatting.c_abi.complete_for(
@@ -2277,6 +2294,10 @@ void test_body_source_update_reuses_closed_generic_dependency(
   expect_product_state(initial_formatting_effect_scc_products,
                        draft::SemanticProductState::Complete);
   expect_product_state(initial_formatting_denial_products,
+                       draft::SemanticProductState::Complete);
+  expect_product_state(initial_app_reference_products,
+                       draft::SemanticProductState::Superseded);
+  expect_product_state(initial_formatting_reference_products,
                        draft::SemanticProductState::Complete);
 
   // Two packages start body state for the surface graph. The body replacement

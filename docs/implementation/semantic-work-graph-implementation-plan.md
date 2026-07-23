@@ -288,6 +288,13 @@ gate.
    products. Public compiler tests prove payload identity, exact dependency
    edges, denial error states, invalidation, and one-/four-worker determinism.
 
+   Complete semantic closure also publishes one direct native-reference row for
+   every concrete runtime body, including non-artifact checks. Those procedure
+   tasks share the package effect-flow executor after direct effects publish;
+   package flow tasks are scheduled first and reference extraction fills the
+   remaining ready worker capacity. Source transitions supersede only affected
+   rows and retain unchanged dependency rows.
+
 8. **Per-procedure MIR — complete.** Lower each checked concrete procedure into a private
    MIR result without mutating semantic type tables. Publish parsed package
    assembly separately. Delete package-wide MIR lowering and semantic type
@@ -306,13 +313,14 @@ gate.
    product operation. Compiler orchestration publishes one `PackageAssembly`
    product over captured standalone assembly plus parsed inline regions. It then
    appends one `MirProcedure` row per selected concrete runtime body, depending
-   on that exact body, its denial result, and package assembly. One bounded
-   workspace wave lowers and verifies private MIR
-   tasks; the coordinator publishes each immutable payload only into the
+   on that exact body, its denial result, and package assembly. The closed native
+   dependency executor lowers and verifies private MIR tasks while allowing a
+   package module to start after only its own tasks finish; the coordinator
+   publishes each immutable payload only into the
    side-table row addressed by its product. Workspace package rows retain no
    aggregate `MirProgram`. Tests prove exact dependency/payload identity,
-   unchanged semantic type tables, identical one-/four-worker graphs and LLVM,
-   and a single ready wave spanning independent packages.
+   unchanged semantic type tables and identical one-/four-worker graphs and
+   LLVM.
 
 9. **Parallel semantic waves — complete.** Run each frozen ready wave with bounded workers.
    Workers write only task slots; the coordinator sorts by stable product ID,

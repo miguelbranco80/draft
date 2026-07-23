@@ -25,8 +25,9 @@
 // cross-package generic body depends on the exact completed consumer body which
 // requested it. Final interfaces close through dependency-ready package fronts;
 // direct effects and denials from every package in one front run as shared
-// procedure-owned waves, while legal flow/effect SCCs publish with their exact
-// component edges. Package static data and assembly are explicit barriers.
+// procedure-owned waves. Package flow closure shares its executor with compact
+// native-reference extraction, while legal flow/effect SCCs publish with their
+// exact component edges. Package static data and assembly are explicit barriers.
 // After artifact reachability selects runtime work, one closed dependency
 // executor lowers procedure-owned MIR, constructs each package LLVM module as
 // soon as its own MIR completes, and constructs its artifact layout. The
@@ -1007,6 +1008,8 @@ void bind_handwritten_program_identity(
           products.direct_effect_summaries.size() ||
       products.effect_body_work_indices.size() !=
           products.denial_results.size() ||
+      products.checked_runtime_body_work_indices.size() !=
+          products.native_reference_summaries.size() ||
       package.direct_effects.procedures.size() !=
           products.direct_effect_summaries.size() ||
       package.effects.components.size() !=
@@ -1019,6 +1022,14 @@ void bind_handwritten_program_identity(
         result.semantic_graph.products[product.value].state ==
             SemanticProductState::Complete;
   };
+  const auto complete_native_reference = [&](SemanticProductId product) {
+    return complete(product) &&
+        product.value <
+            result.semantic_products.native_reference_by_product.size() &&
+        result.semantic_products
+            .native_reference_by_product[product.value]
+            .has_value();
+  };
   return std::all_of(
              products.direct_effect_summaries.begin(),
              products.direct_effect_summaries.end(), complete) &&
@@ -1027,7 +1038,11 @@ void bind_handwritten_program_identity(
           products.closed_effect_sccs.end(), complete) &&
       std::all_of(
           products.denial_results.begin(),
-          products.denial_results.end(), complete);
+          products.denial_results.end(), complete) &&
+      std::all_of(
+          products.native_reference_summaries.begin(),
+          products.native_reference_summaries.end(),
+          complete_native_reference);
 }
 
 // Invalidates effect/obligation closure for one changed package and every
@@ -5866,6 +5881,83 @@ struct PackageClosurePreparationExecution {
   return true;
 }
 
+// Freezes the exact selected concrete runtime body order once direct-effect
+// products exist. Symbolic templates and compile-time-only procedures remain
+// checked semantic products but publish no native-reference row. The selected
+// body-product order is stable across worker counts and source-independent of
+// later artifact reachability.
+[[nodiscard]] bool select_checked_runtime_procedure_work(
+    const CompiledPackage &package,
+    std::vector<std::size_t> &selected,
+    DiagnosticSink &diagnostics) {
+  selected.clear();
+  for (std::size_t work_index : package.selected_procedure_work) {
+    if (work_index >= package.bodies.procedures.size()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "selected runtime body is outside the HIR product table");
+      return false;
+    }
+    const std::vector<HirProcedure> &procedures =
+        package.bodies.procedures[work_index].program.procedures();
+    if (procedures.empty()) continue;
+    if (procedures.size() != 1) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "one procedure body product owns multiple runtime candidates");
+      return false;
+    }
+    if (procedures.front().parametric_template ||
+        procedures.front().compile_time_only) {
+      continue;
+    }
+    selected.push_back(work_index);
+  }
+  return true;
+}
+
+struct ClosureNativeReferenceTaskSlot {
+  const PackageIdentity *identity = nullptr;
+  const SemanticPackage *semantic = nullptr;
+  const ProcedureBodyHirResult *body = nullptr;
+  const DirectProcedureEffectSummary *direct = nullptr;
+  std::size_t body_index = 0;
+  SemanticProductId product;
+  NativeProcedureReferenceSummary result;
+};
+
+[[nodiscard]] bool execute_closure_native_reference_task(
+    ClosureNativeReferenceTaskSlot &slot,
+    SemanticProductOutcome &outcome,
+    std::string &failure) {
+  (void)failure;
+  if (slot.identity == nullptr || slot.semantic == nullptr ||
+      slot.body == nullptr || slot.direct == nullptr ||
+      slot.body->program.procedures().size() != 1 ||
+      slot.body->program.procedures().front().symbol !=
+          slot.direct->procedure) {
+    outcome.kind = SemanticProductOutcomeKind::Error;
+    outcome.failure =
+        "native-reference worker received mismatched body facts";
+    return true;
+  }
+  slot.result = collect_native_procedure_references(
+      *slot.identity,
+      *slot.semantic,
+      *slot.body,
+      slot.body_index,
+      *slot.direct);
+  if (slot.result.procedure.name.empty() ||
+      slot.result.local_symbol != slot.direct->procedure) {
+    outcome.kind = SemanticProductOutcomeKind::Error;
+    outcome.failure =
+        "native-reference worker could not identify its concrete procedure";
+    return true;
+  }
+  outcome.kind = SemanticProductOutcomeKind::Complete;
+  return true;
+}
+
 struct PackageEffectClosureSlot {
   const ProcedureEffectAnalysis *analysis = nullptr;
   const DirectEffectSummaryResult *direct = nullptr;
@@ -5877,6 +5969,28 @@ struct PackageEffectClosureSlot {
 struct PackageEffectClosureExecution {
   std::vector<PackageEffectClosureSlot> *slots = nullptr;
   bool measure = false;
+};
+
+enum class EffectReferenceTaskKind {
+  EffectClosure,
+  NativeReference,
+};
+
+struct EffectReferenceTask {
+  EffectReferenceTaskKind kind = EffectReferenceTaskKind::EffectClosure;
+  std::size_t slot = 0;
+};
+
+// One joined executor owns package-local flow closure and procedure-local
+// native-reference extraction. Both consume only the already-published direct
+// summaries and immutable HIR. The effect tasks are appended first so the
+// smallest-ID ready policy prioritizes the semantic critical path while spare
+// workers drain independent reference tasks.
+struct EffectReferenceExecution {
+  const std::vector<EffectReferenceTask> *tasks = nullptr;
+  PackageEffectClosureExecution effects;
+  std::vector<ClosureNativeReferenceTaskSlot> *references = nullptr;
+  std::vector<SemanticProductOutcome> *reference_outcomes = nullptr;
 };
 
 [[nodiscard]] bool execute_package_effect_closure(
@@ -5913,48 +6027,210 @@ struct PackageEffectClosureExecution {
   return true;
 }
 
+[[nodiscard]] bool execute_effect_reference_task(
+    void *opaque_context,
+    WorkTaskId scheduled_task,
+    std::string &failure) {
+  auto &execution = *static_cast<EffectReferenceExecution *>(opaque_context);
+  if (execution.tasks == nullptr ||
+      static_cast<std::size_t>(scheduled_task) >= execution.tasks->size()) {
+    failure = "effect/reference worker received an invalid task";
+    return false;
+  }
+  const EffectReferenceTask &task =
+      (*execution.tasks)[static_cast<std::size_t>(scheduled_task)];
+  if (task.kind == EffectReferenceTaskKind::EffectClosure) {
+    return execute_package_effect_closure(
+        &execution.effects,
+        static_cast<WorkTaskId>(task.slot),
+        failure);
+  }
+  if (execution.references == nullptr ||
+      execution.reference_outcomes == nullptr ||
+      task.slot >= execution.references->size() ||
+      task.slot >= execution.reference_outcomes->size()) {
+    failure = "effect/reference worker received an invalid reference slot";
+    return false;
+  }
+  return execute_closure_native_reference_task(
+      (*execution.references)[task.slot],
+      (*execution.reference_outcomes)[task.slot],
+      failure);
+}
+
 // Effect flow is package-local once direct rows and imported contracts are
-// immutable. Running one task per dependency-ready package exposes that
-// independence without changing the deterministic SCC/result order inside a
-// package. Detailed timings are measured in workers and replayed here.
+// immutable. One task per dependency-ready package shares its executor with
+// every procedure's direct native-reference product. The two operations have
+// no edge between them, so spare workers extract native facts while the package
+// SCC closure is still running. Detailed effect timings are measured in workers
+// and replayed by the coordinator.
 [[nodiscard]] bool close_ready_package_effects(
     std::span<PackageClosureWork> ready_packages,
     const CompileWorkspaceOptions &options,
     CompileWorkspaceResult &result,
     DiagnosticSink &diagnostics) {
-  std::vector<PackageEffectClosureSlot> slots(ready_packages.size());
+  std::vector<PackageEffectClosureSlot> effect_slots(ready_packages.size());
+  std::vector<ClosureNativeReferenceTaskSlot> reference_slots;
+  std::vector<SemanticProductOutcome> reference_outcomes;
+  std::vector<SemanticProductId> reference_products;
+  std::vector<EffectReferenceTask> tasks;
+  tasks.reserve(ready_packages.size());
   for (std::size_t index = 0; index < ready_packages.size(); ++index) {
     PackageClosureWork &work = ready_packages[index];
-    slots[index].analysis = &work.effect_analysis;
-    slots[index].direct =
+    effect_slots[index].analysis = &work.effect_analysis;
+    effect_slots[index].direct =
         &result.packages[work.package_index]->direct_effects;
+    tasks.push_back({EffectReferenceTaskKind::EffectClosure, index});
+  }
+
+  for (PackageClosureWork &work : ready_packages) {
+    const std::size_t package_index = work.package_index;
+    CompiledPackage &package = *result.packages[package_index];
+    PackageSemanticProducts &products =
+        result.semantic_products.packages[package_index];
+    if (!products.checked_runtime_body_work_indices.empty() ||
+        !products.native_reference_summaries.empty()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "native-reference product slice is not empty before closure");
+      return false;
+    }
+    if (!select_checked_runtime_procedure_work(
+            package,
+            products.checked_runtime_body_work_indices,
+            diagnostics)) {
+      return false;
+    }
+    const PackageId owner{static_cast<std::uint32_t>(package_index)};
+    for (std::size_t work_index :
+         products.checked_runtime_body_work_indices) {
+      const auto position = std::find(
+          products.effect_body_work_indices.begin(),
+          products.effect_body_work_indices.end(),
+          work_index);
+      if (position == products.effect_body_work_indices.end()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "checked runtime body has no direct-effect product");
+        return false;
+      }
+      const std::size_t effect_position = static_cast<std::size_t>(
+          position - products.effect_body_work_indices.begin());
+      if (effect_position >= products.direct_effect_summaries.size() ||
+          effect_position >= package.direct_effects.procedures.size()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "checked runtime body lost its direct-effect payload");
+        return false;
+      }
+      const std::array dependencies{
+          products.procedure_bodies[work_index],
+          products.direct_effect_summaries[effect_position]};
+      const SemanticProductId product = append_workspace_semantic_product(
+          result,
+          SemanticProductKind::NativeReferenceSummary,
+          dependencies,
+          owner,
+          false,
+          diagnostics);
+      if (!product.is_valid()) return false;
+      result.semantic_products.procedure_by_product[product.value] =
+          package.direct_effects.procedures[effect_position].procedure;
+      products.native_reference_summaries.push_back(product);
+      reference_products.push_back(product);
+      const std::size_t slot_index = reference_slots.size();
+      reference_slots.push_back({
+          &result.graph.packages[package_index].identity,
+          &package.bodies.package,
+          &package.bodies.procedures[work_index],
+          &package.direct_effects.procedures[effect_position],
+          work_index,
+          product,
+          {}});
+      tasks.push_back({EffectReferenceTaskKind::NativeReference, slot_index});
+    }
+  }
+  reference_outcomes.resize(reference_slots.size());
+
+  SemanticReadyWave reference_wave;
+  if (!reference_products.empty()) {
+    reference_wave = freeze_semantic_ready_wave(result.semantic_graph);
+    if (reference_wave.status != SemanticReadyWaveStatus::Ready ||
+        reference_wave.products != reference_products) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "native-reference products did not form their closure ready wave" +
+              (reference_wave.failure.empty()
+                   ? std::string{}
+                   : ": " + reference_wave.failure));
+      return false;
+    }
   }
   WorkGraph execution_graph;
-  execution_graph.tasks.resize(slots.size());
-  PackageEffectClosureExecution execution{
-      &slots,
+  execution_graph.tasks.resize(tasks.size());
+  EffectReferenceExecution execution;
+  execution.tasks = &tasks;
+  execution.effects = {
+      &effect_slots,
       options.timings != nullptr &&
           options.timings->output() == TimingOutput::All};
+  execution.references = &reference_slots;
+  execution.reference_outcomes = &reference_outcomes;
   const WorkGraphRunResult scheduled = run_work_graph(
       execution_graph,
       WorkGraphRunOptions{options.semantic_worker_count},
-      execute_package_effect_closure,
+      execute_effect_reference_task,
       &execution);
   if (options.timings != nullptr) {
-    options.timings->add_counter("effect closure package ready waves", 1);
+    options.timings->add_counter("effect/reference ready waves", 1);
+    options.timings->add_counter("effect/reference tasks", tasks.size());
     options.timings->add_counter(
-        "effect closure package tasks", slots.size());
+        "effect/reference worker slots", scheduled.workers_used);
     options.timings->add_counter(
-        "effect closure package worker slots", scheduled.workers_used);
+        "effect closure package tasks", effect_slots.size());
+    options.timings->add_counter(
+        "native reference tasks", reference_slots.size());
   }
   if (!scheduled.ok) {
     diagnostics.error(
         SourceRange::invalid(),
-        "package effect-closure scheduling failed");
+        "effect/reference closure scheduling failed");
     return false;
   }
-  for (std::size_t index = 0; index < slots.size(); ++index) {
-    PackageEffectClosureSlot &slot = slots[index];
+  bool references_ok = true;
+  if (!reference_products.empty()) {
+    for (const SemanticProductOutcome &outcome : reference_outcomes) {
+      references_ok = references_ok &&
+          outcome.kind == SemanticProductOutcomeKind::Complete;
+    }
+    std::string publication_error;
+    if (!publish_semantic_ready_wave(
+            result.semantic_graph,
+            reference_wave,
+            reference_outcomes,
+            diagnostics,
+            publication_error)) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot publish native-reference closure wave: " +
+              publication_error);
+      return false;
+    }
+    for (std::size_t index = 0;
+         index < reference_slots.size(); ++index) {
+      if (result.semantic_graph
+              .products[reference_slots[index].product.value]
+              .state != SemanticProductState::Complete) {
+        continue;
+      }
+      result.semantic_products
+          .native_reference_by_product[
+              reference_slots[index].product.value] =
+          std::move(reference_slots[index].result);
+    }
+  }
+  for (std::size_t index = 0; index < effect_slots.size(); ++index) {
+    PackageEffectClosureSlot &slot = effect_slots[index];
     CompiledPackage &package =
         *result.packages[ready_packages[index].package_index];
     package.effects = std::move(slot.result);
@@ -5984,7 +6260,7 @@ struct PackageEffectClosureExecution {
           children);
     }
   }
-  return true;
+  return references_ok;
 }
 
 struct PackageClosureFinalizationSlot {
@@ -6105,41 +6381,6 @@ struct PackageClosureFinalizationExecution {
             static_cast<std::size_t>(edge.imported_package.value))) {
       return false;
     }
-  }
-  return true;
-}
-
-// Freezes the exact selected concrete runtime body order once, before either
-// package assembly analysis or MIR scheduling uses it. Symbolic templates and
-// compile-time-only procedures remain checked semantic products but have no
-// runtime artifact. The output order is the selected body-product order and is
-// therefore independent of worker completion.
-[[nodiscard]] bool select_checked_runtime_procedure_work(
-    const CompiledPackage &package,
-    std::vector<std::size_t> &selected,
-    DiagnosticSink &diagnostics) {
-  selected.clear();
-  for (std::size_t work_index : package.selected_procedure_work) {
-    if (work_index >= package.bodies.procedures.size()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "selected runtime body is outside the HIR product table");
-      return false;
-    }
-    const std::vector<HirProcedure> &procedures =
-        package.bodies.procedures[work_index].program.procedures();
-    if (procedures.empty()) continue;
-    if (procedures.size() != 1) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "one procedure body product owns multiple runtime candidates");
-      return false;
-    }
-    if (procedures.front().parametric_template ||
-        procedures.front().compile_time_only) {
-      continue;
-    }
-    selected.push_back(work_index);
   }
   return true;
 }
@@ -6344,248 +6585,6 @@ struct PackageAssemblyWaveExecution {
     package.assembly = std::move(slots[index].assembly);
   }
   return assembly_ok;
-}
-
-// Finds the direct-effect product/table row belonging to one selected body.
-// effect_body_work_indices is the canonical bridge from retained body work to
-// direct semantic facts; native-reference extraction must not search by a
-// potentially repeated source spelling or reconstruct effect discovery.
-[[nodiscard]] std::optional<std::size_t> direct_effect_position_for_body(
-    const PackageSemanticProducts &products,
-    std::size_t work_index) {
-  for (std::size_t position = 0;
-       position < products.effect_body_work_indices.size(); ++position) {
-    if (products.effect_body_work_indices[position] == work_index &&
-        position < products.direct_effect_summaries.size()) {
-      return position;
-    }
-  }
-  return std::nullopt;
-}
-
-struct NativeReferenceTaskSlot {
-  const PackageIdentity *identity = nullptr;
-  const SemanticPackage *semantic = nullptr;
-  const ProcedureBodyHirResult *body = nullptr;
-  const DirectProcedureEffectSummary *direct = nullptr;
-  std::size_t body_index = 0;
-  NativeProcedureReferenceSummary result;
-};
-
-struct NativeReferenceWaveExecution {
-  std::vector<NativeReferenceTaskSlot> *slots = nullptr;
-  std::vector<SemanticProductOutcome> *outcomes = nullptr;
-};
-
-[[nodiscard]] bool execute_native_reference_task(
-    void *opaque_context,
-    WorkTaskId task,
-    std::string &failure) {
-  auto &context =
-      *static_cast<NativeReferenceWaveExecution *>(opaque_context);
-  const std::size_t index = static_cast<std::size_t>(task);
-  if (context.slots == nullptr || context.outcomes == nullptr ||
-      index >= context.slots->size() || index >= context.outcomes->size()) {
-    failure = "native-reference worker received an invalid task slot";
-    return false;
-  }
-  NativeReferenceTaskSlot &slot = (*context.slots)[index];
-  SemanticProductOutcome &outcome = (*context.outcomes)[index];
-  if (slot.identity == nullptr || slot.semantic == nullptr ||
-      slot.body == nullptr || slot.direct == nullptr ||
-      slot.body->program.procedures().size() != 1 ||
-      slot.body->program.procedures().front().symbol !=
-          slot.direct->procedure) {
-    outcome.kind = SemanticProductOutcomeKind::Error;
-    outcome.failure = "native-reference worker received mismatched body facts";
-    return true;
-  }
-  slot.result = collect_native_procedure_references(
-      *slot.identity,
-      *slot.semantic,
-      *slot.body,
-      slot.body_index,
-      *slot.direct);
-  if (slot.result.procedure.name.empty() ||
-      slot.result.local_symbol != slot.direct->procedure) {
-    outcome.kind = SemanticProductOutcomeKind::Error;
-    outcome.failure =
-        "native-reference worker could not identify its concrete procedure";
-    return true;
-  }
-  outcome.kind = SemanticProductOutcomeKind::Complete;
-  return true;
-}
-
-// Publishes one compact direct-reference product for every checked concrete
-// runtime body. Full semantic body/effect products remain selected regardless
-// of artifact liveness. The workspace-wide frozen wave lets independent
-// packages and procedures extract immutable facts in parallel; ordered graph
-// publication installs each result into its exact product side-table row.
-[[nodiscard]] bool run_workspace_native_reference_products(
-    std::size_t worker_count,
-    TimingRecorder *timings,
-    CompileWorkspaceResult &result,
-    DiagnosticSink &diagnostics) {
-  std::vector<SemanticProductId> expected_wave;
-  for (std::size_t package_index = 0;
-       package_index < result.packages.size(); ++package_index) {
-    if (!result.packages[package_index].has_value()) continue;
-    CompiledPackage &package = *result.packages[package_index];
-    PackageSemanticProducts &products =
-        result.semantic_products.packages[package_index];
-    if (!products.checked_runtime_body_work_indices.empty() ||
-        !products.native_reference_summaries.empty() ||
-        !package.native_global_references.empty()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "native-reference product slice is not empty before scheduling");
-      return false;
-    }
-    if (!select_checked_runtime_procedure_work(
-            package,
-            products.checked_runtime_body_work_indices,
-            diagnostics)) {
-      return false;
-    }
-    const PackageId owner{static_cast<std::uint32_t>(package_index)};
-    for (std::size_t work_index :
-         products.checked_runtime_body_work_indices) {
-      const std::optional<std::size_t> effect_position =
-          direct_effect_position_for_body(products, work_index);
-      if (!effect_position.has_value() ||
-          *effect_position >= package.direct_effects.procedures.size()) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "checked runtime body has no direct-effect product");
-        return false;
-      }
-      const std::array dependencies{
-          products.procedure_bodies[work_index],
-          products.direct_effect_summaries[*effect_position]};
-      const SemanticProductId product = append_workspace_semantic_product(
-          result,
-          SemanticProductKind::NativeReferenceSummary,
-          dependencies,
-          owner,
-          false,
-          diagnostics);
-      if (!product.is_valid()) return false;
-      result.semantic_products.procedure_by_product[product.value] =
-          package.direct_effects.procedures[*effect_position].procedure;
-      products.native_reference_summaries.push_back(product);
-      expected_wave.push_back(product);
-    }
-  }
-  if (expected_wave.empty()) return true;
-
-  const SemanticReadyWave wave =
-      freeze_semantic_ready_wave(result.semantic_graph);
-  if (wave.status != SemanticReadyWaveStatus::Ready ||
-      wave.products != expected_wave) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "native-reference products did not form their exact workspace ready wave" +
-            (wave.failure.empty() ? std::string{} : ": " + wave.failure));
-    return false;
-  }
-  std::vector<NativeReferenceTaskSlot> slots(wave.products.size());
-  std::vector<SemanticProductOutcome> outcomes(wave.products.size());
-  for (std::size_t index = 0; index < wave.products.size(); ++index) {
-    const SemanticProductId product = wave.products[index];
-    const PackageId owner =
-        result.semantic_products.package_by_product[product.value];
-    if (!owner.is_valid() || owner.value >= result.packages.size() ||
-        !result.packages[owner.value].has_value()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "native-reference product has no retained package owner");
-      return false;
-    }
-    CompiledPackage &package = *result.packages[owner.value];
-    const PackageSemanticProducts &products =
-        result.semantic_products.packages[owner.value];
-    const auto position = std::find(
-        products.native_reference_summaries.begin(),
-        products.native_reference_summaries.end(),
-        product);
-    if (position == products.native_reference_summaries.end()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "native-reference product is absent from its package index");
-      return false;
-    }
-    const std::size_t local_index = static_cast<std::size_t>(
-        position - products.native_reference_summaries.begin());
-    const std::size_t work_index =
-        products.checked_runtime_body_work_indices[local_index];
-    const std::optional<std::size_t> effect_position =
-        direct_effect_position_for_body(products, work_index);
-    if (!effect_position.has_value() ||
-        *effect_position >= package.direct_effects.procedures.size()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "native-reference task lost its direct-effect row");
-      return false;
-    }
-    NativeReferenceTaskSlot &slot = slots[index];
-    slot.identity = &result.graph.packages[owner.value].identity;
-    slot.semantic = &package.bodies.package;
-    slot.body = &package.bodies.procedures[work_index];
-    slot.direct = &package.direct_effects.procedures[*effect_position];
-    slot.body_index = work_index;
-  }
-
-  WorkGraph execution_graph;
-  execution_graph.tasks.resize(slots.size());
-  NativeReferenceWaveExecution execution{&slots, &outcomes};
-  const WorkGraphRunResult scheduled = run_work_graph(
-      execution_graph,
-      WorkGraphRunOptions{worker_count},
-      execute_native_reference_task,
-      &execution);
-  if (timings != nullptr) {
-    timings->add_counter("native reference ready waves", 1);
-    timings->add_counter("native reference tasks", slots.size());
-    timings->add_counter(
-        "native reference worker slots", scheduled.workers_used);
-  }
-  if (!scheduled.ok) {
-    std::string failure = "native-reference worker scheduling failed";
-    for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
-      if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
-      failure += " at task " + std::to_string(index) + ": " +
-          scheduled.tasks[index].failure;
-      break;
-    }
-    diagnostics.error(SourceRange::invalid(), std::move(failure));
-    return false;
-  }
-  bool summaries_ok = true;
-  for (const SemanticProductOutcome &outcome : outcomes) {
-    summaries_ok = summaries_ok &&
-        outcome.kind == SemanticProductOutcomeKind::Complete;
-  }
-  std::string publication_error;
-  if (!publish_semantic_ready_wave(
-          result.semantic_graph,
-          wave,
-          outcomes,
-          diagnostics,
-          publication_error)) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "cannot publish native-reference wave: " + publication_error);
-    return false;
-  }
-  for (std::size_t index = 0; index < wave.products.size(); ++index) {
-    if (outcomes[index].kind == SemanticProductOutcomeKind::Complete) {
-      result.semantic_products
-          .native_reference_by_product[wave.products[index].value] =
-          std::move(slots[index].result);
-    }
-  }
-  return summaries_ok;
 }
 
 [[nodiscard]] NativeSymbolIdentity local_native_identity(
@@ -8362,14 +8361,14 @@ bool continue_compiled_workspace_semantics(
     }
     ready_wave_timing.finish();
   }
-  closure_timing.finish();
-
   bool every_package_closed = true;
   for (std::size_t package_index = 0;
        package_index < result.packages.size(); ++package_index) {
     every_package_closed = every_package_closed &&
         package_semantic_closure_is_current(result, package_index);
   }
+  closure_timing.finish();
+
   result.ok = every_package_closed &&
       diagnostics.error_count() == initial_errors;
   if (result.ok) {
@@ -8455,20 +8454,17 @@ bool continue_compiled_workspace(
   }
 
   // Native-bound package facts and executable procedures now continue the
-  // same semantic graph. Parsed assembly validates every checked body. Compact
-  // direct-reference products then close from the artifact roots and publish
-  // the exact procedure/global projection. MIR is one immutable task per live
-  // concrete runtime body rather than per checked body. No package HIR
-  // projection or semantic-table mutation participates in lowering.
+  // same semantic graph. Semantic closure has already published one compact
+  // direct-reference product for every checked runtime body. Parsed assembly
+  // validates every checked body, then artifact reachability consumes those
+  // retained rows and publishes the exact procedure/global projection. MIR is
+  // one immutable task per live concrete runtime body rather than per checked
+  // body. No package HIR projection or semantic-table mutation participates in
+  // lowering.
   if (options.lower_mir || options.emit_llvm) {
     if (!run_workspace_package_assembly_products(
             sources,
             options.target,
-            options.semantic_worker_count,
-            options.timings,
-            compiled,
-            diagnostics) ||
-        !run_workspace_native_reference_products(
             options.semantic_worker_count,
             options.timings,
             compiled,

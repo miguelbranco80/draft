@@ -279,6 +279,9 @@ lowering counters expose its exact MIR-to-package-module-to-layout task graph,
 including dependency edges, the initial ready set, worker slots, and modules
 which can start without a MIR prerequisite. Native and validation commands also
 distinguish child-process CPU from wall time.
+Complete semantic closure reports a joined effect/reference executor: package
+flow closure occupies the first task rows while procedure-native-reference work
+uses the same ready worker pool.
 Compare phase structure and counters before comparing small durations, which
 vary with the host and warm filesystem caches. Timing is diagnostic only and
 never changes program identity or output.
@@ -288,14 +291,14 @@ counts both `synthesis provider ready waves` and actual provider calls. Calls in
 one wave may overlap, so compare the enclosing wall time with the call count;
 do not add per-worker timing writes to the single-threaded recorder.
 
-Native lowering reports package-assembly, direct native-reference, artifact-
-reachability, live MIR, package-LLVM, and artifact-layout semantic work
-separately. Each live `MirProcedure` payload lives in its workspace product
-side-table row rather than a package MIR program. After the reachability
-projection and every selected package's live MIR are ready, one workspace-wide
-wave runs one package-LLVM task per package; each task borrows its package's
-procedures and globals in canonical order and emits the complete live module. A
-later native ready set contains one module-object task per package plus any
+Every complete semantic check publishes direct native-reference rows, even when
+no artifact is requested. Native lowering additionally reports package
+assembly, artifact reachability, live MIR, package LLVM, and artifact-layout
+work. Each live `MirProcedure` payload lives in its workspace product side table
+rather than a package MIR program. After reachability, one exact closed executor
+lets a package-module task start when that package's MIR tasks finish and lets
+its layout follow without waiting for unrelated package MIR. A later native
+ready set contains one module-object task per published package layout plus any
 selected package-assembly tasks. Worker counts are internal/test options, not
 CLI flags. Repository determinism tests compare those counters across worker
 counts; do not invent `--workers` or `-j`.

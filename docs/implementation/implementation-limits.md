@@ -124,8 +124,9 @@ finalization no longer needs a temporary HIR projection.
 
 LLVM and native lowering now follow artifact-live semantic products. Every
 authored body is checked, but each concrete runtime procedure first publishes a
-direct native-reference summary. One workspace reachability product closes
-from entry/export/validation roots through calls, procedure values, and globals.
+direct native-reference summary during complete semantic closure, including a
+non-artifact check. One workspace reachability product later closes from
+entry/export/validation roots through calls, procedure values, and globals.
 Only its live rows receive independently owned MIR products. Once the complete
 projection is ready, one `PackageLlvmModule` per package borrows its MIR task
 payloads in canonical order and emits only live package globals and concrete

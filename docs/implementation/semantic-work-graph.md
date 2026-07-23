@@ -138,10 +138,13 @@ dependencies have already published final effect-bearing interfaces. One
 package preparation task computes imported contracts, agent obligations, and
 the immutable effect context. Direct-effect and denial products from every
 package in that ready set then share workspace-wide procedure waves; package-
-local flow closure and final native/interface validation share bounded package
-waves. Diagnostics remain task-local and are replayed in PackageId and phase
-order. A failed package cannot unlock a consumer, while unrelated ready
-packages still complete.
+local flow closure shares one bounded executor with direct native-reference
+extraction. Package effect tasks enter first as the semantic critical path;
+procedure reference tasks use the remaining workers because both consume only
+the already-published direct rows and immutable HIR. Final native/interface
+validation uses another bounded package wave. Diagnostics remain task-local and
+are replayed in PackageId and phase order. A failed package cannot unlock a
+consumer, while unrelated ready packages still complete.
 
 One immutable `ProcedureEffectAnalysis` is prepared per package before its
 direct ready wave. It owns the selected HIR-row projection, terminal
@@ -171,13 +174,16 @@ stay in task-owned slots and are replayed by the coordinator in product order.
 
 ## Emission reachability
 
-Status: implemented for provider-free native lowering.
+Status: direct rows implemented for every complete semantic check; artifact
+closure implemented for provider-free native lowering.
 
 Semantic checking and machine emission are separate questions. Every selected
 authored body and symbolic parametric template is checked first. Each checked
-concrete runtime body then publishes one compact direct native-reference row.
-Only after those rows and package assembly are complete does one workspace
-product compute the artifact projection rooted by:
+concrete runtime body then publishes one compact direct native-reference row as
+part of semantic closure, even when the command requests only `check`. A source
+transition supersedes rows only for affected packages and retains unchanged
+dependency rows. Only an artifact command continues those rows through package
+assembly and one workspace projection rooted by:
 
 - the configured entry point and C exports;
 - validation entries selected by the command;

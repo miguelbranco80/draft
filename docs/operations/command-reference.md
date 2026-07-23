@@ -70,6 +70,9 @@ package-module, and artifact-layout task counts are separate. A package module
 with no live MIR prerequisites appears in `package LLVM modules initially
 ready`; it can execute alongside another package's MIR rather than waiting at a
 workspace-wide phase barrier.
+Semantic closure reports `effect/reference ready waves`, task counts, and
+worker slots because package effect-flow tasks and procedure native-reference
+tasks share one executor after direct effects publish.
 Selection changes which reuse already completed products perform no body work
 and need no special “reuse” counter. All rows remain command-local; none is
 evidence of a persistent compiler cache.
