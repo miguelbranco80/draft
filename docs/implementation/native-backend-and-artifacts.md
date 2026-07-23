@@ -16,6 +16,18 @@ task-owned target machine into an in-memory object or assembly buffer. A
 disagreement between LLVM's computed layout and the versioned Draft profile is
 a compiler/toolchain error; LLVM never supplies missing language or ABI facts.
 
+The direct-construction replacement now has its final ownership boundary: one
+task-local builder creates nominal types and ordinary scalar MIR procedures in
+an LLVM context, may print the already-built module for inspection, and passes
+that same mutable module to verification/optimization/native emission. A
+checked-source-to-object regression proves this path has no input-preparation or
+IR-parsing phase. Production package tasks still use the complete textual
+emitter until runtime support, global/relocatable constants, the full C ABI,
+debug metadata, and every remaining MIR operation reach parity; there is no
+partial production fallback. The external textual entry remains useful as the
+explicit Clang/LLVM qualification oracle rather than as the intended package
+construction architecture.
+
 The adapter exposes no LLVM reference outside its module. Its process-global
 AArch64 and X86 registries are initialized once, while contexts, modules, target machines,
 pass options, messages, and output buffers have one explicit call lifetime. The

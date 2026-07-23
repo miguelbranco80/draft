@@ -143,6 +143,16 @@ its assembly. The artifact planner consumes only that layout; no package-wide
 MIR container or alternative per-function LLVM representation remains in
 compiler state.
 
+Package LLVM construction still has one temporary bootstrap limitation. The
+complete production emitter serializes its task-local package module as LLVM
+text before the LLVM adapter parses it into the context used for verification
+and code generation. A separate direct builder now proves the final handle-free
+package API, nominal-type construction, ordinary scalar MIR lowering, retained
+inspection text, and native emission with zero parser work. It is not selected
+by production until it implements the complete runtime, constant, ABI, debug,
+and MIR surface; unsupported direct operations fail rather than silently
+falling back to the textual path.
+
 ## Native host and instrumentation limits
 
 Status: four hosted target profiles; three complete native test harnesses plus

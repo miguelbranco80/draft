@@ -7,6 +7,8 @@
 
 #include "backend/llvm_object_emitter.h"
 
+#include "backend/llvm_module_emission.h"
+
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/Error.h>
@@ -36,7 +38,8 @@ struct ContextOwner {
   LLVMContextRef value = nullptr;
   ContextOwner() = default;
   ~ContextOwner() {
-    if (value != nullptr) LLVMContextDispose(value);
+    if (value != nullptr)
+      LLVMContextDispose(value);
   }
   ContextOwner(const ContextOwner &) = delete;
   ContextOwner &operator=(const ContextOwner &) = delete;
@@ -46,7 +49,8 @@ struct MemoryBufferOwner {
   LLVMMemoryBufferRef value = nullptr;
   MemoryBufferOwner() = default;
   ~MemoryBufferOwner() {
-    if (value != nullptr) LLVMDisposeMemoryBuffer(value);
+    if (value != nullptr)
+      LLVMDisposeMemoryBuffer(value);
   }
   MemoryBufferOwner(const MemoryBufferOwner &) = delete;
   MemoryBufferOwner &operator=(const MemoryBufferOwner &) = delete;
@@ -56,7 +60,8 @@ struct ModuleOwner {
   LLVMModuleRef value = nullptr;
   ModuleOwner() = default;
   ~ModuleOwner() {
-    if (value != nullptr) LLVMDisposeModule(value);
+    if (value != nullptr)
+      LLVMDisposeModule(value);
   }
   ModuleOwner(const ModuleOwner &) = delete;
   ModuleOwner &operator=(const ModuleOwner &) = delete;
@@ -66,7 +71,8 @@ struct TargetMachineOwner {
   LLVMTargetMachineRef value = nullptr;
   TargetMachineOwner() = default;
   ~TargetMachineOwner() {
-    if (value != nullptr) LLVMDisposeTargetMachine(value);
+    if (value != nullptr)
+      LLVMDisposeTargetMachine(value);
   }
   TargetMachineOwner(const TargetMachineOwner &) = delete;
   TargetMachineOwner &operator=(const TargetMachineOwner &) = delete;
@@ -76,7 +82,8 @@ struct TargetDataOwner {
   LLVMTargetDataRef value = nullptr;
   TargetDataOwner() = default;
   ~TargetDataOwner() {
-    if (value != nullptr) LLVMDisposeTargetData(value);
+    if (value != nullptr)
+      LLVMDisposeTargetData(value);
   }
   TargetDataOwner(const TargetDataOwner &) = delete;
   TargetDataOwner &operator=(const TargetDataOwner &) = delete;
@@ -87,10 +94,9 @@ struct TargetDataOwner {
 // so the production adapter does not rewrite or rescan textual IR. The frame
 // pointer string attribute is part of Draft's selected diagnostic profile and
 // remains attached even at O2.
-[[nodiscard]] bool add_address_sanitizer_attributes(
-    LLVMContextRef context,
-    LLVMModuleRef module,
-    std::string &failure) {
+[[nodiscard]] bool add_address_sanitizer_attributes(LLVMContextRef context,
+                                                    LLVMModuleRef module,
+                                                    std::string &failure) {
   static constexpr std::string_view sanitize_name = "sanitize_address";
   const unsigned sanitize_kind = LLVMGetEnumAttributeKindForName(
       sanitize_name.data(), sanitize_name.size());
@@ -103,20 +109,18 @@ struct TargetDataOwner {
   static constexpr std::string_view frame_pointer = "frame-pointer";
   static constexpr std::string_view frame_pointer_value = "all";
   LLVMAttributeRef retain_frame_pointer = LLVMCreateStringAttribute(
-      context,
-      frame_pointer.data(),
-      static_cast<unsigned>(frame_pointer.size()),
-      frame_pointer_value.data(),
+      context, frame_pointer.data(),
+      static_cast<unsigned>(frame_pointer.size()), frame_pointer_value.data(),
       static_cast<unsigned>(frame_pointer_value.size()));
   const LLVMAttributeIndex function_attributes =
       static_cast<LLVMAttributeIndex>(LLVMAttributeFunctionIndex);
   for (LLVMValueRef function = LLVMGetFirstFunction(module);
-       function != nullptr;
-       function = LLVMGetNextFunction(function)) {
-    if (LLVMCountBasicBlocks(function) == 0) continue;
+       function != nullptr; function = LLVMGetNextFunction(function)) {
+    if (LLVMCountBasicBlocks(function) == 0)
+      continue;
     LLVMAddAttributeAtIndex(function, function_attributes, sanitize);
-    LLVMAddAttributeAtIndex(
-        function, function_attributes, retain_frame_pointer);
+    LLVMAddAttributeAtIndex(function, function_attributes,
+                            retain_frame_pointer);
   }
   failure.clear();
   return true;
@@ -126,7 +130,8 @@ struct PassOptionsOwner {
   LLVMPassBuilderOptionsRef value = nullptr;
   PassOptionsOwner() = default;
   ~PassOptionsOwner() {
-    if (value != nullptr) LLVMDisposePassBuilderOptions(value);
+    if (value != nullptr)
+      LLVMDisposePassBuilderOptions(value);
   }
   PassOptionsOwner(const PassOptionsOwner &) = delete;
   PassOptionsOwner &operator=(const PassOptionsOwner &) = delete;
@@ -140,7 +145,8 @@ class PhaseTimer {
 public:
   PhaseTimer(bool enabled, std::uint64_t &destination)
       : destination_(enabled ? &destination : nullptr) {
-    if (destination_ != nullptr) started_ = Clock::now();
+    if (destination_ != nullptr)
+      started_ = Clock::now();
   }
 
   PhaseTimer(const PhaseTimer &) = delete;
@@ -149,11 +155,11 @@ public:
   ~PhaseTimer() { finish(); }
 
   void finish() {
-    if (destination_ == nullptr) return;
-    const auto elapsed =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            Clock::now() - started_)
-            .count();
+    if (destination_ == nullptr)
+      return;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             Clock::now() - started_)
+                             .count();
     assert(elapsed >= 0 && "LLVM phase duration must be nonnegative");
     *destination_ = static_cast<std::uint64_t>(elapsed);
     destination_ = nullptr;
@@ -170,16 +176,19 @@ private:
 // immediately at its API boundary so no raw allocated message survives a
 // return path or is accidentally freed by the wrong function.
 [[nodiscard]] std::string take_llvm_message(char *message) {
-  if (message == nullptr) return {};
+  if (message == nullptr)
+    return {};
   std::string result(message);
   LLVMDisposeMessage(message);
   return result;
 }
 
 [[nodiscard]] std::string take_llvm_error(LLVMErrorRef error) {
-  if (error == LLVMErrorSuccess) return {};
+  if (error == LLVMErrorSuccess)
+    return {};
   char *message = LLVMGetErrorMessage(error);
-  if (message == nullptr) return "unknown LLVM pass error";
+  if (message == nullptr)
+    return "unknown LLVM pass error";
   std::string result(message);
   LLVMDisposeErrorMessage(message);
   return result;
@@ -187,7 +196,8 @@ private:
 
 // Target registration mutates LLVM process-global registries and must finish
 // before any worker performs lookup. std::call_once gives every later worker a
-// happens-before edge; after this function the registered metadata is read-only.
+// happens-before edge; after this function the registered metadata is
+// read-only.
 void initialize_native_llvm() {
   static std::once_flag initialized;
   std::call_once(initialized, []() {
@@ -204,10 +214,9 @@ void initialize_native_llvm() {
   });
 }
 
-[[nodiscard]] bool select_relocation_model(
-    TargetRelocationModel model,
-    LLVMRelocMode &llvm_model,
-    std::string &failure) {
+[[nodiscard]] bool select_relocation_model(TargetRelocationModel model,
+                                           LLVMRelocMode &llvm_model,
+                                           std::string &failure) {
   switch (model) {
   case TargetRelocationModel::PositionIndependent:
     llvm_model = LLVMRelocPIC;
@@ -217,10 +226,9 @@ void initialize_native_llvm() {
   return false;
 }
 
-[[nodiscard]] bool select_code_model(
-    TargetCodeModel model,
-    LLVMCodeModel &llvm_model,
-    std::string &failure) {
+[[nodiscard]] bool select_code_model(TargetCodeModel model,
+                                     LLVMCodeModel &llvm_model,
+                                     std::string &failure) {
   switch (model) {
   case TargetCodeModel::Small:
     llvm_model = LLVMCodeModelSmall;
@@ -235,55 +243,55 @@ void initialize_native_llvm() {
 // running O2 IR passes while asking the instruction selector for O0 behavior,
 // or vice versa. The pass spelling is selected below only for O2; O0 performs
 // no middle-end transformation at all.
-[[nodiscard]] LLVMCodeGenOptLevel select_code_generation_level(
-    NativeOptimizationLevel optimization) {
+[[nodiscard]] LLVMCodeGenOptLevel
+select_code_generation_level(NativeOptimizationLevel optimization) {
   switch (optimization) {
-  case NativeOptimizationLevel::O0: return LLVMCodeGenLevelNone;
-  case NativeOptimizationLevel::O2: return LLVMCodeGenLevelDefault;
+  case NativeOptimizationLevel::O0:
+    return LLVMCodeGenLevelNone;
+  case NativeOptimizationLevel::O2:
+    return LLVMCodeGenLevelDefault;
   }
   return LLVMCodeGenLevelNone;
 }
 
 // Prefixes an LLVM-owned reason with the logical module label while keeping
 // physical build paths out of diagnostics and deterministic test output.
-[[nodiscard]] LlvmObjectEmissionResult emission_failure(
-    std::string_view module_name,
-    std::string_view operation,
-    std::string reason) {
+[[nodiscard]] LlvmObjectEmissionResult
+emission_failure(std::string_view module_name, std::string_view operation,
+                 std::string reason) {
   LlvmObjectEmissionResult result;
   result.failure = "in-process LLVM " + std::string(operation) + " for '" +
-      std::string(module_name) + "' failed";
-  if (!reason.empty()) result.failure += ": " + reason;
+                   std::string(module_name) + "' failed";
+  if (!reason.empty())
+    result.failure += ": " + reason;
   return result;
 }
 
 } // namespace
 
-std::string_view native_optimization_level_name(
-    NativeOptimizationLevel level) {
+std::string_view native_optimization_level_name(NativeOptimizationLevel level) {
   switch (level) {
-  case NativeOptimizationLevel::O0: return "O0";
-  case NativeOptimizationLevel::O2: return "O2";
+  case NativeOptimizationLevel::O0:
+    return "O0";
+  case NativeOptimizationLevel::O2:
+    return "O2";
   }
   return "unknown";
 }
 
-std::string_view linked_llvm_version() {
-  return DRAFT_LLVM_VERSION;
-}
+std::string_view linked_llvm_version() { return DRAFT_LLVM_VERSION; }
 
 std::string linked_llvm_tool_path(std::string_view tool) {
   std::string path = DRAFT_LLVM_TOOLS_DIRECTORY;
-  if (!path.empty() && path.back() != '/') path.push_back('/');
+  if (!path.empty() && path.back() != '/')
+    path.push_back('/');
   path.append(tool);
   return path;
 }
 
 LlvmObjectEmissionResult emit_llvm_object_in_process(
-    const TargetProfile &target,
-    std::string_view module_name,
-    std::string_view llvm_ir,
-    LlvmObjectEmissionOptions options) {
+    const TargetProfile &target, std::string_view module_name,
+    std::string_view llvm_ir, LlvmObjectEmissionOptions options) {
   LlvmObjectEmissionResult result;
   const auto fail = [&](std::string_view operation, std::string reason) {
     LlvmObjectEmissionResult failed =
@@ -292,29 +300,8 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
     return failed;
   };
 
-  PhaseTimer initialization_timing(
-      options.collect_phase_timings,
-      result.phase_timings.target_initialization_nanoseconds);
-  initialize_native_llvm();
-  initialization_timing.finish();
-  if (LLVMIsMultithreaded() == 0) {
-    return fail(
-        "initialization", "linked LLVM was built without thread support");
-  }
-
-  PhaseTimer input_timing(
-      options.collect_phase_timings,
-      result.phase_timings.input_preparation_nanoseconds);
-  LLVMRelocMode relocation_model = LLVMRelocDefault;
-  LLVMCodeModel code_model = LLVMCodeModelDefault;
-  std::string model_failure;
-  if (!select_relocation_model(
-          target.relocation_model, relocation_model, model_failure) ||
-      !select_code_model(target.code_model, code_model, model_failure)) {
-    input_timing.finish();
-    return fail("target selection", model_failure);
-  }
-
+  PhaseTimer input_timing(options.collect_phase_timings,
+                          result.phase_timings.input_preparation_nanoseconds);
   ContextOwner context;
   context.value = LLVMContextCreate();
   if (context.value == nullptr) {
@@ -323,9 +310,7 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
   }
   MemoryBufferOwner input;
   input.value = LLVMCreateMemoryBufferWithMemoryRangeCopy(
-      llvm_ir.data(),
-      llvm_ir.size(),
-      std::string(module_name).c_str());
+      llvm_ir.data(), llvm_ir.size(), std::string(module_name).c_str());
   input_timing.finish();
   if (input.value == nullptr) {
     return fail("IR buffer creation", {});
@@ -333,11 +318,10 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
 
   ModuleOwner module;
   char *parse_message = nullptr;
-  PhaseTimer parsing_timing(
-      options.collect_phase_timings,
-      result.phase_timings.ir_parsing_nanoseconds);
-  const int parse_status = LLVMParseIRInContext2(
-      context.value, input.value, &module.value, &parse_message);
+  PhaseTimer parsing_timing(options.collect_phase_timings,
+                            result.phase_timings.ir_parsing_nanoseconds);
+  const int parse_status = LLVMParseIRInContext2(context.value, input.value,
+                                                 &module.value, &parse_message);
   parsing_timing.finish();
   if (parse_status != 0) {
     return fail("IR parsing", take_llvm_message(parse_message));
@@ -348,11 +332,57 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
   LLVMDisposeMemoryBuffer(input.value);
   input.value = nullptr;
 
-  if (options.instrumentation ==
-      LlvmNativeInstrumentation::AddressSanitizer) {
+  LlvmObjectEmissionResult emitted = emit_constructed_llvm_module_in_process(
+      target, module_name, module.value, options);
+  // Text preparation and parsing are properties of this compatibility/oracle
+  // entry point. The common constructed-module operation records every phase
+  // after construction, so merge the two disjoint timing prefixes without
+  // weakening its direct-path measurements.
+  emitted.phase_timings.input_preparation_nanoseconds =
+      result.phase_timings.input_preparation_nanoseconds;
+  emitted.phase_timings.ir_parsing_nanoseconds =
+      result.phase_timings.ir_parsing_nanoseconds;
+  return emitted;
+}
+
+LlvmObjectEmissionResult emit_constructed_llvm_module_in_process(
+    const TargetProfile &target, std::string_view module_name,
+    LLVMModuleRef module, LlvmObjectEmissionOptions options) {
+  LlvmObjectEmissionResult result;
+  const auto fail = [&](std::string_view operation, std::string reason) {
+    LlvmObjectEmissionResult failed =
+        emission_failure(module_name, operation, std::move(reason));
+    failed.phase_timings = result.phase_timings;
+    return failed;
+  };
+
+  if (module == nullptr) {
+    return fail("module construction", "caller supplied a null module");
+  }
+
+  PhaseTimer initialization_timing(
+      options.collect_phase_timings,
+      result.phase_timings.target_initialization_nanoseconds);
+  initialize_native_llvm();
+  initialization_timing.finish();
+  if (LLVMIsMultithreaded() == 0) {
+    return fail("initialization",
+                "linked LLVM was built without thread support");
+  }
+
+  LLVMRelocMode relocation_model = LLVMRelocDefault;
+  LLVMCodeModel code_model = LLVMCodeModelDefault;
+  std::string model_failure;
+  if (!select_relocation_model(target.relocation_model, relocation_model,
+                               model_failure) ||
+      !select_code_model(target.code_model, code_model, model_failure)) {
+    return fail("target selection", model_failure);
+  }
+
+  if (options.instrumentation == LlvmNativeInstrumentation::AddressSanitizer) {
     std::string attribute_failure;
-    if (!add_address_sanitizer_attributes(
-            context.value, module.value, attribute_failure)) {
+    if (!add_address_sanitizer_attributes(LLVMGetModuleContext(module), module,
+                                          attribute_failure)) {
       return fail("AddressSanitizer attribute setup", attribute_failure);
     }
   }
@@ -360,55 +390,52 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
   PhaseTimer target_validation_timing(
       options.collect_phase_timings,
       result.phase_timings.target_validation_nanoseconds);
-  const std::string module_triple = LLVMGetTarget(module.value);
-  const std::string module_layout = LLVMGetDataLayoutStr(module.value);
+  const std::string module_triple = LLVMGetTarget(module);
+  const std::string module_layout = LLVMGetDataLayoutStr(module);
   target_validation_timing.finish();
   if (module_triple != target.llvm_triple) {
-    return fail(
-        "target validation",
-        "module triple '" + module_triple + "' does not match profile '" +
-            target.llvm_triple + "'");
+    return fail("target validation", "module triple '" + module_triple +
+                                         "' does not match profile '" +
+                                         target.llvm_triple + "'");
   }
   if (module_layout != target.llvm_data_layout) {
-    return fail(
-        "target validation",
-        "module data layout does not match profile '" +
-            target.facts.identity + "'");
+    return fail("target validation",
+                "module data layout does not match profile '" +
+                    target.facts.identity + "'");
   }
 
   char *verify_message = nullptr;
   PhaseTimer verification_timing(
       options.collect_phase_timings,
       result.phase_timings.ir_verification_nanoseconds);
-  const int verification_status = LLVMVerifyModule(
-      module.value, LLVMReturnStatusAction, &verify_message);
+  const int verification_status =
+      LLVMVerifyModule(module, LLVMReturnStatusAction, &verify_message);
   verification_timing.finish();
   if (verification_status != 0) {
     return fail("IR verification", take_llvm_message(verify_message));
   }
-  if (verify_message != nullptr) LLVMDisposeMessage(verify_message);
+  if (verify_message != nullptr)
+    LLVMDisposeMessage(verify_message);
 
   PhaseTimer target_machine_timing(
       options.collect_phase_timings,
       result.phase_timings.target_machine_nanoseconds);
   LLVMTargetRef llvm_target = nullptr;
   char *target_message = nullptr;
-  if (LLVMGetTargetFromTriple(
-          target.llvm_triple.c_str(), &llvm_target, &target_message) != 0 ||
+  if (LLVMGetTargetFromTriple(target.llvm_triple.c_str(), &llvm_target,
+                              &target_message) != 0 ||
       llvm_target == nullptr) {
     target_machine_timing.finish();
     return fail("target lookup", take_llvm_message(target_message));
   }
-  if (target_message != nullptr) LLVMDisposeMessage(target_message);
+  if (target_message != nullptr)
+    LLVMDisposeMessage(target_message);
 
   TargetMachineOwner machine;
   machine.value = LLVMCreateTargetMachine(
-      llvm_target,
-      target.llvm_triple.c_str(),
-      target.llvm_cpu.c_str(),
+      llvm_target, target.llvm_triple.c_str(), target.llvm_cpu.c_str(),
       target.llvm_feature_string.c_str(),
-      select_code_generation_level(options.optimization),
-      relocation_model,
+      select_code_generation_level(options.optimization), relocation_model,
       code_model);
   if (machine.value == nullptr) {
     target_machine_timing.finish();
@@ -430,11 +457,10 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
   const std::string target_layout = take_llvm_message(target_layout_message);
   target_machine_timing.finish();
   if (target_layout != target.llvm_data_layout) {
-    return fail(
-        "target validation",
-        "LLVM " + std::string(linked_llvm_version()) +
-            " computes data layout '" + target_layout +
-            "' but profile requires '" + target.llvm_data_layout + "'");
+    return fail("target validation",
+                "LLVM " + std::string(linked_llvm_version()) +
+                    " computes data layout '" + target_layout +
+                    "' but profile requires '" + target.llvm_data_layout + "'");
   }
 
   // O2 is one stable compiler-owned pipeline over the complete semantic-package
@@ -457,10 +483,7 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
           options.collect_phase_timings,
           result.phase_timings.o2_optimization_nanoseconds);
       const std::string optimization_failure = take_llvm_error(LLVMRunPasses(
-          module.value,
-          "default<O2>",
-          machine.value,
-          pass_options.value));
+          module, "default<O2>", machine.value, pass_options.value));
       optimization_timing.finish();
       if (!optimization_failure.empty()) {
         return fail("O2 optimization", optimization_failure);
@@ -472,11 +495,8 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
       PhaseTimer instrumentation_timing(
           options.collect_phase_timings,
           result.phase_timings.asan_instrumentation_nanoseconds);
-      const std::string instrumentation_failure = take_llvm_error(LLVMRunPasses(
-          module.value,
-          "asan",
-          machine.value,
-          pass_options.value));
+      const std::string instrumentation_failure = take_llvm_error(
+          LLVMRunPasses(module, "asan", machine.value, pass_options.value));
       instrumentation_timing.finish();
       if (!instrumentation_failure.empty()) {
         return fail("ASan instrumentation", instrumentation_failure);
@@ -487,34 +507,28 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
   MemoryBufferOwner output;
   char *emission_message = nullptr;
   const LLVMCodeGenFileType output_kind =
-      options.output_kind == LlvmNativeOutputKind::Assembly
-      ? LLVMAssemblyFile
-      : LLVMObjectFile;
+      options.output_kind == LlvmNativeOutputKind::Assembly ? LLVMAssemblyFile
+                                                            : LLVMObjectFile;
   PhaseTimer emission_timing(
       options.collect_phase_timings,
       result.phase_timings.machine_code_emission_nanoseconds);
   const int emission_status = LLVMTargetMachineEmitToMemoryBuffer(
-      machine.value,
-      module.value,
-      output_kind,
-      &emission_message,
-      &output.value);
+      machine.value, module, output_kind, &emission_message, &output.value);
   emission_timing.finish();
   if (emission_status != 0 || output.value == nullptr) {
-    return fail(
-        options.output_kind == LlvmNativeOutputKind::Assembly
-            ? "assembly emission"
-            : "object emission",
-        take_llvm_message(emission_message));
+    return fail(options.output_kind == LlvmNativeOutputKind::Assembly
+                    ? "assembly emission"
+                    : "object emission",
+                take_llvm_message(emission_message));
   }
-  if (emission_message != nullptr) LLVMDisposeMessage(emission_message);
+  if (emission_message != nullptr)
+    LLVMDisposeMessage(emission_message);
 
-  PhaseTimer output_copy_timing(
-      options.collect_phase_timings,
-      result.phase_timings.output_copy_nanoseconds);
+  PhaseTimer output_copy_timing(options.collect_phase_timings,
+                                result.phase_timings.output_copy_nanoseconds);
   result.ok = true;
-  result.bytes.assign(
-      LLVMGetBufferStart(output.value), LLVMGetBufferSize(output.value));
+  result.bytes.assign(LLVMGetBufferStart(output.value),
+                      LLVMGetBufferSize(output.value));
   output_copy_timing.finish();
   return result;
 }

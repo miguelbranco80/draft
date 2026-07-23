@@ -87,12 +87,15 @@ endif()
 # linking the sanitizer runtime.
 add_library(draft_build_options INTERFACE)
 
-# Keep LLVM headers, definitions, and link components behind one adapter target.
-# The compiler proper includes only llvm_object_emitter.h and therefore cannot
-# accidentally make an LLVM C++ representation part of semantic or MIR code.
+# Keep LLVM headers and definitions behind one object-library boundary. Its
+# objects become part of draft_compiler so the direct package builder may read
+# semantic/MIR products without creating a circular pair of static archives.
+# LLVM handles remain private to backend implementation files; the final static
+# compiler target alone carries the LLVM link dependency to its consumers.
 add_library(
-  draft_llvm_backend
+  draft_llvm_backend OBJECT
   src/backend/llvm_object_emitter.cpp
+  src/backend/llvm_package_emitter.cpp
 )
 target_include_directories(
   draft_llvm_backend
@@ -109,7 +112,6 @@ target_compile_definitions(
 target_link_libraries(
   draft_llvm_backend
   PUBLIC draft_build_options
-  PRIVATE ${DRAFT_LLVM_LIBRARY_TARGET}
 )
 
 add_library(
@@ -197,13 +199,14 @@ add_library(
   src/workspace/package.cpp
   src/workspace/selection.cpp
   src/workspace/workspace.cpp
+  $<TARGET_OBJECTS:draft_llvm_backend>
 )
 
 target_include_directories(draft_compiler PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(
   draft_compiler
   PUBLIC draft_build_options Threads::Threads
-  PRIVATE draft_llvm_backend
+  PRIVATE ${DRAFT_LLVM_LIBRARY_TARGET}
 )
 # The bootstrap compiler is also consumed behind the draft_compiler_service
 # shared-library boundary. Position-independent objects keep that embedding
@@ -636,6 +639,16 @@ if(BUILD_TESTING)
   )
 
   add_executable(
+    draft_llvm_package_emitter_tests
+    tests/llvm_package_emitter_test.cpp
+  )
+  target_link_libraries(draft_llvm_package_emitter_tests PRIVATE draft_compiler)
+  add_test(
+    NAME draft_llvm_package_emitter_tests
+    COMMAND draft_llvm_package_emitter_tests
+  )
+
+  add_executable(
     draft_native_object_tasks_tests
     tests/native_object_tasks_test.cpp
   )
@@ -745,8 +758,7 @@ if(BUILD_TESTING)
       tests/c_client_integration_test.cpp
     )
     target_link_libraries(
-      draft_c_client_integration_tests
-      PRIVATE draft_compiler draft_llvm_backend
+      draft_c_client_integration_tests PRIVATE draft_compiler
     )
     target_compile_definitions(
       draft_c_client_integration_tests
