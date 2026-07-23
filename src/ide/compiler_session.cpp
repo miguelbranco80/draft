@@ -104,6 +104,11 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
   WorkspaceLoadOptions workspace_options = compile_options().workspace;
   workspace_options.package_options.file_tag =
       configuration_.target.facts.file_tag;
+  // Root discovery and source inventory are part of this long-lived project
+  // session. Reuse the same workers later used by checks and native builds;
+  // otherwise opening a project would create short-lived pools before the
+  // compiler session proper had begun.
+  workspace_options.package_options.work_executor = work_executor_.get();
   const ExecutableRootDiscoveryResult discovered = discover_executable_roots(
       discovery_sources, workspace_options, diagnostics);
   if (!discovered.ok || diagnostics.has_errors())
@@ -136,8 +141,7 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
   options.reserve(selections.size());
   std::size_t selected = 0;
   for (const WorkspacePackageSelection &selection : selections) {
-    PackageLoadOptions package_options;
-    package_options.file_tag = configuration_.target.facts.file_tag;
+    PackageLoadOptions package_options = workspace_options.package_options;
     const PackageLoadResult loaded =
         load_package(discovery_sources, selection.physical_directory.string(),
                      package_options, diagnostics);

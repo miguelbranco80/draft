@@ -792,6 +792,12 @@ int build_workspace(
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
     const std::vector<draft::RuntimeAssetInput> &runtime_assets,
     draft::TimingRecorder *timings) {
+  // Root discovery, every selected compilation, and final native emission are
+  // all phases of this one user command. Create its executor before discovery
+  // so candidate-package parsing cannot silently start a temporary pool which
+  // is then discarded before semantic compilation begins.
+  const std::shared_ptr<draft::WorkExecutor> work_executor =
+      std::make_shared<draft::WorkExecutor>();
   std::filesystem::path workspace_directory;
   std::string path_error;
   if (!canonical_workspace_directory(
@@ -808,6 +814,7 @@ int build_workspace(
     discovery_options.workspace_directory = workspace_directory.string();
     configure_core_distribution(discovery_options);
     discovery_options.package_options.file_tag = target.facts.file_tag;
+    discovery_options.package_options.work_executor = work_executor.get();
     const draft::ExecutableRootDiscoveryResult discovered =
         draft::discover_executable_roots(
             discovery_sources, discovery_options, discovery_diagnostics);
@@ -858,12 +865,9 @@ int build_workspace(
     return 2;
   }
 
-  // All selected roots belong to one user-visible build command. Reusing the
-  // executor here keeps worker lifetime at that command boundary even though
-  // each root deliberately owns an independent SourceManager and compiler
-  // product graph. The executor retains no products between those builds.
-  const std::shared_ptr<draft::WorkExecutor> work_executor =
-      std::make_shared<draft::WorkExecutor>();
+  // All selected roots deliberately own independent SourceManagers and
+  // compiler product graphs. Only the sleeping worker set crosses those roots;
+  // the executor retains no source, syntax, semantic, or artifact products.
   for (const draft::WorkspacePackageSelection &root : roots) {
     const int result = build_selected_package(
         workspace_directory,

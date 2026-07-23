@@ -42,22 +42,6 @@ namespace {
 // budget on supported hosts instead of accepting platform thread defaults.
 constexpr std::size_t kWorkerStackBytes = 8U * 1024U * 1024U;
 
-// Builds reverse rows in ascending consumer order. Iterating tasks by stable ID
-// means push_back already produces canonical rows; no hash table or post-sort
-// is needed. Validation has proved every dependency is in range.
-[[nodiscard]] std::vector<std::vector<WorkTaskId>>
-build_consumers(const WorkGraph &graph) {
-  std::vector<std::vector<WorkTaskId>> consumers(graph.tasks.size());
-  for (std::size_t task_index = 0; task_index < graph.tasks.size();
-       ++task_index) {
-    const WorkTaskId task = static_cast<WorkTaskId>(task_index);
-    for (const WorkTaskId dependency : graph.tasks[task_index].dependencies) {
-      consumers[dependency].push_back(task);
-    }
-  }
-  return consumers;
-}
-
 // Work IDs are uint32_t so compiler-owned tables can use compact stable slots.
 // Rejecting a larger vector before any narrowing conversion prevents an
 // unrepresentable last ID from aliasing an earlier task.
@@ -66,47 +50,70 @@ build_consumers(const WorkGraph &graph) {
          static_cast<std::size_t>(std::numeric_limits<WorkTaskId>::max()) + 1U;
 }
 
-} // namespace
-
-bool validate_work_graph(const WorkGraph &graph, std::string &reason) {
+// Validates one graph while constructing the exact reverse adjacency consumed
+// by execution. Keeping these operations together matters because a compiler
+// command submits many small semantic ready waves: building every reverse row
+// once for cycle validation and again for execution was pure orchestration
+// overhead. Iterating tasks by stable ID makes each consumer row canonical by
+// construction; no hash table or post-sort participates.
+[[nodiscard]] bool prepare_work_graph(
+    const WorkGraph &graph,
+    std::vector<std::vector<WorkTaskId>> &consumers,
+    std::string &reason) {
   reason.clear();
+  consumers.clear();
   if (!task_count_fits_id_domain(graph.tasks.size())) {
     reason = "work graph has more tasks than the WorkTaskId domain";
     return false;
   }
+  consumers.resize(graph.tasks.size());
+  bool has_dependency = false;
 
-  // Check each authored row before constructing reverse edges. The row contract
-  // gives one canonical representation to equivalent graphs and makes duplicate
-  // prerequisites an explicit construction error rather than an indegree bug.
+  // Validate each dependency before using it as a reverse-row index. Rows
+  // authored before a later error are discarded with consumers, so a malformed
+  // graph never escapes with a partially usable execution plan.
   for (std::size_t task_index = 0; task_index < graph.tasks.size();
        ++task_index) {
     const WorkTask &task = graph.tasks[task_index];
+    const WorkTaskId consumer = static_cast<WorkTaskId>(task_index);
     for (std::size_t dependency_index = 0;
          dependency_index < task.dependencies.size(); ++dependency_index) {
       const WorkTaskId dependency = task.dependencies[dependency_index];
       if (static_cast<std::size_t>(dependency) >= graph.tasks.size()) {
         reason = "work task " + std::to_string(task_index) +
-                 " depends on out-of-range task " + std::to_string(dependency);
+                 " depends on out-of-range task " +
+                 std::to_string(dependency);
+        consumers.clear();
         return false;
       }
       if (static_cast<std::size_t>(dependency) == task_index) {
         reason =
             "work task " + std::to_string(task_index) + " depends on itself";
+        consumers.clear();
         return false;
       }
       if (dependency_index != 0 &&
           task.dependencies[dependency_index - 1] >= dependency) {
         reason = "work task " + std::to_string(task_index) +
                  " dependencies are not strictly increasing";
+        consumers.clear();
         return false;
       }
+      consumers[dependency].push_back(consumer);
+      has_dependency = true;
     }
   }
+
+  // An edgeless ready set is acyclic by construction. Compiler phases use this
+  // shape for source files, declarations, procedures, LLVM units, and object
+  // inputs; pushing every ID through a heap merely to rediscover that fact made
+  // graph validation O(tasks log tasks) before any worker could start.
+  if (!has_dependency)
+    return true;
 
   // A sequential smallest-ID Kahn traversal is the validation oracle. The
   // concurrent runner may start ready work in timing-dependent order, but it
   // never needs timing or a timeout to discover a malformed cycle.
-  const std::vector<std::vector<WorkTaskId>> consumers = build_consumers(graph);
   std::vector<std::size_t> remaining_dependencies(graph.tasks.size(), 0);
   std::priority_queue<WorkTaskId, std::vector<WorkTaskId>,
                       std::greater<WorkTaskId>>
@@ -133,9 +140,17 @@ bool validate_work_graph(const WorkGraph &graph, std::string &reason) {
   }
   if (visited != graph.tasks.size()) {
     reason = "work graph contains a dependency cycle";
+    consumers.clear();
     return false;
   }
   return true;
+}
+
+} // namespace
+
+bool validate_work_graph(const WorkGraph &graph, std::string &reason) {
+  std::vector<std::vector<WorkTaskId>> consumers;
+  return prepare_work_graph(graph, consumers, reason);
 }
 
 struct WorkExecutor::Implementation {
@@ -412,7 +427,8 @@ WorkGraphRunResult WorkExecutor::run(const WorkGraph &graph,
   WorkGraphRunResult early_result;
   early_result.tasks.resize(graph.tasks.size());
   std::string validation_failure;
-  if (!validate_work_graph(graph, validation_failure)) {
+  std::vector<std::vector<WorkTaskId>> consumers;
+  if (!prepare_work_graph(graph, consumers, validation_failure)) {
     if (!early_result.tasks.empty()) {
       early_result.tasks.front().state = WorkTaskState::Failed;
       early_result.tasks.front().failure = std::move(validation_failure);
@@ -429,6 +445,28 @@ WorkGraphRunResult WorkExecutor::run(const WorkGraph &graph,
     return early_result;
   }
 
+  // A one-row graph has no legal dependency after validation. Invoke it on the
+  // caller without installing shared scheduler state or touching a condition
+  // variable. This is the common fast path for one-file packages and singleton
+  // dependency fronts; it preserves the same task slot and failure contract
+  // while leaving the persistent pool asleep.
+  if (graph.tasks.size() == 1) {
+    WorkGraphRunResult result;
+    result.workers_used = 1;
+    result.tasks.resize(1);
+    std::string failure;
+    if (operation(context, 0, failure)) {
+      result.tasks[0].state = WorkTaskState::Succeeded;
+      result.ok = true;
+    } else {
+      result.tasks[0].state = WorkTaskState::Failed;
+      result.tasks[0].failure = failure.empty()
+          ? "work task 0 failed"
+          : std::move(failure);
+    }
+    return result;
+  }
+
   std::size_t worker_count = options.worker_count;
   if (worker_count == 0)
     worker_count = implementation_->maximum_workers;
@@ -441,7 +479,7 @@ WorkGraphRunResult WorkExecutor::run(const WorkGraph &graph,
   run.context = context;
   run.result.tasks.resize(graph.tasks.size());
   run.result.workers_used = worker_count;
-  run.consumers = build_consumers(graph);
+  run.consumers = std::move(consumers);
   run.completed_dependencies.resize(graph.tasks.size(), 0);
   run.lowest_failed_dependency.assign(graph.tasks.size(),
                                       std::numeric_limits<WorkTaskId>::max());

@@ -241,6 +241,10 @@ artifact graphs until the command ends. The executor retains no syntax or
 compiler product between runs, so this is thread reuse rather than semantic
 memoization or a cross-command cache.
 
+Automatic executable-root discovery and IDE source inventory borrow that same
+executor; neither operation creates a preliminary package-loader pool before
+the command or project session reaches compilation.
+
 Body selection is an explicit projection over immutable procedure products.
 Authored roots are always selected; a current external demand selects its exact
 retained owner product; and discovered nested or concrete roots follow their

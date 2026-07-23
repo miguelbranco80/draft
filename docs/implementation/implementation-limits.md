@@ -84,6 +84,14 @@ bounded pool with an explicit eight-MiB worker stack so authored syntax
 recursion has the same practical budget in sequential and parallel execution.
 Later compiler and backend graphs reuse those workers; the executor retains no
 semantic table, task result, or artifact between runs.
+
+Automatic build-root discovery and the IDE's source inventory also borrow this
+executor, so a command/session has no preliminary package-loader pool. The
+scheduler validates and constructs each run's reverse dependency rows in one
+pass rather than rebuilding that orchestration data before execution. Edgeless
+graphs skip cycle traversal, and a singleton ready front runs directly without
+installing shared scheduler state or waking the pool.
+
 Workspace packages retain the live body publication state after finalization,
 so a newly demanded external specialization appends to the existing work and
 product prefix rather than reconstructing an extension scheduler. Authored,

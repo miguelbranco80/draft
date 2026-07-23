@@ -170,6 +170,40 @@ bool no_op_task(void *, draft::WorkTaskId, std::string &) {
   return true;
 }
 
+struct SingleTaskContext {
+  std::thread::id caller;
+  std::thread::id invoked;
+};
+
+bool record_single_task_thread(
+    void *opaque,
+    draft::WorkTaskId task,
+    std::string &failure) {
+  auto &context = *static_cast<SingleTaskContext *>(opaque);
+  if (task != 0) {
+    failure = "single-task graph received a nonzero task ID";
+    return false;
+  }
+  context.invoked = std::this_thread::get_id();
+  return true;
+}
+
+// Singleton fronts are frequent in dependency-shaped package graphs. They must
+// preserve normal task identity and failure semantics without waking or
+// installing state in the background pool.
+void test_single_task_stays_on_calling_thread(TestState &state) {
+  draft::WorkGraph graph;
+  graph.tasks.resize(1);
+  draft::WorkExecutor executor(4);
+  SingleTaskContext context{std::this_thread::get_id(), {}};
+  const draft::WorkGraphRunResult run = executor.run(
+      graph, {}, record_single_task_thread, &context);
+  EXPECT(state, run.ok);
+  EXPECT(state, run.workers_used == 1);
+  EXPECT(state, run.tasks[0].state == draft::WorkTaskState::Succeeded);
+  EXPECT(state, context.invoked == context.caller);
+}
+
 void test_graph_validation(TestState &state) {
   std::string reason;
   draft::WorkGraph unsorted;
@@ -250,6 +284,7 @@ int main() {
   test_dependency_execution(state);
   test_independent_tasks_run_concurrently(state);
   test_failure_blocks_only_consumers(state);
+  test_single_task_stays_on_calling_thread(state);
   test_graph_validation(state);
   test_executor_reuses_workers(state);
   if (state.failures != 0) {

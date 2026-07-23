@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -392,13 +393,19 @@ PackageLoadResult load_package(
       &file_tasks,
       options.timings != nullptr &&
           options.timings->output() == TimingOutput::All};
-  WorkExecutor local_executor;
-  WorkExecutor &executor = options.work_executor != nullptr
-      ? *options.work_executor
-      : local_executor;
+  // Compiler commands always provide their command-owned executor. A direct
+  // package-loader client still receives parallel complete-file work, but its
+  // fallback executor is allocated only when it is actually needed; merely
+  // borrowing the command pool must not construct a second dormant executor.
   WorkGraphRunResult scheduled;
   if (!file_graph.tasks.empty()) {
-    scheduled = executor.run(
+    std::unique_ptr<WorkExecutor> local_executor;
+    WorkExecutor *executor = options.work_executor;
+    if (executor == nullptr) {
+      local_executor = std::make_unique<WorkExecutor>();
+      executor = local_executor.get();
+    }
+    scheduled = executor->run(
         file_graph,
         WorkGraphRunOptions{options.file_worker_count},
         execute_package_file_task,
