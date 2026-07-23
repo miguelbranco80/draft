@@ -1,4 +1,4 @@
-// Exact content pinning for logical foreign link providers.
+// Operational path validation and semantic summaries for foreign providers.
 
 #include "backend/foreign_inputs.h"
 #include "backend/foreign_summaries.h"
@@ -30,7 +30,7 @@ struct TestState {
 
 #define EXPECT(state, expression) (state).expect((expression), #expression, __LINE__)
 
-void test_pin_verify_and_relocation(TestState &state) {
+void test_paths_and_summaries_are_not_content_pins(TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
       "draft-foreign-input-test"};
   const std::filesystem::path &temporary = temporary_directory.path();
@@ -51,29 +51,27 @@ void test_pin_verify_and_relocation(TestState &state) {
   input.provider = "custom_math";
   input.kind = draft::ForeignArtifactKind::Object;
   input.path = first;
-  std::vector<draft::ExternalInputPin> pins;
-  draft::DiagnosticSink pin_diagnostics;
-  EXPECT(state, draft::pin_foreign_provider_inputs(
+  std::vector<draft::VerifiedForeignProviderInput> verified;
+  draft::DiagnosticSink inspect_diagnostics;
+  EXPECT(state, draft::inspect_foreign_provider_inputs(
       std::span<const draft::ForeignProviderInput>(&input, 1),
-      pins,
-      pin_diagnostics));
-  EXPECT(state, !pin_diagnostics.has_errors());
-  EXPECT(state, pins.size() == 1);
-  if (pins.size() == 1) {
-    EXPECT(state, pins[0].kind == draft::ExternalInputKind::Object);
-    EXPECT(state, pins[0].name == "custom_math");
-    EXPECT(state, pins[0].entry_point.empty());
+      verified,
+      inspect_diagnostics));
+  EXPECT(state, !inspect_diagnostics.has_errors());
+  EXPECT(state, verified.size() == 1);
+  if (verified.size() == 1) {
+    EXPECT(state, verified[0].provider == "custom_math");
+    EXPECT(state, verified[0].kind == draft::ForeignArtifactKind::Object);
+    EXPECT(state, verified[0].path == std::filesystem::canonical(first));
   }
-  if (pins.empty()) return;
 
   const std::filesystem::path first_summary =
       temporary / "first" / "provider.summary";
   const std::filesystem::path relocated_summary =
       temporary / "relocated" / "renamed.summary";
   const std::string summary_bytes =
-      "draft-provider-denial-summary-v1\n"
+      "draft-provider-denial-summary-v2\n"
       "provider\tcustom_math\n"
-      "artifact\t" + pins.front().content_digest.hex() + "\n"
       "symbol\tdraft_custom_math\n"
       "callback\t0\tstate\tprocedure\n"
       "effect\tassembly\n"
@@ -83,23 +81,15 @@ void test_pin_verify_and_relocation(TestState &state) {
   draft::ForeignProviderSummaryInput summary_input;
   summary_input.provider = "custom_math";
   summary_input.path = first_summary;
-  std::vector<draft::ExternalInputPin> summary_pins;
   std::vector<draft::ForeignProviderAudit> audits;
   draft::DiagnosticSink summary_diagnostics;
-  EXPECT(state, draft::pin_foreign_provider_summary_inputs(
+  EXPECT(state, draft::load_foreign_provider_summaries(
       std::span<const draft::ForeignProviderSummaryInput>(&summary_input, 1),
       std::span<const draft::ForeignProviderInput>(&input, 1),
-      summary_pins,
       audits,
       summary_diagnostics));
   EXPECT(state, !summary_diagnostics.has_errors());
-  EXPECT(state, summary_pins.size() == 1);
   EXPECT(state, audits.size() == 1);
-  if (summary_pins.size() == 1) {
-    EXPECT(state,
-        summary_pins[0].kind == draft::ExternalInputKind::ProviderSummary);
-    EXPECT(state, summary_pins[0].name == "custom_math");
-  }
   if (audits.size() == 1) {
     EXPECT(state, audits[0].provider == "custom_math");
     EXPECT(state, audits[0].symbols.size() == 1);
@@ -120,51 +110,31 @@ void test_pin_verify_and_relocation(TestState &state) {
 
   summary_input.path = relocated_summary;
   draft::DiagnosticSink relocated_summary_diagnostics;
-  EXPECT(state, draft::verify_foreign_provider_summary_inputs(
+  EXPECT(state, draft::load_foreign_provider_summaries(
       std::span<const draft::ForeignProviderSummaryInput>(&summary_input, 1),
       std::span<const draft::ForeignProviderInput>(&input, 1),
-      summary_pins,
       audits,
       relocated_summary_diagnostics));
   EXPECT(state, !relocated_summary_diagnostics.has_errors());
 
-  // A manifest claim cannot survive after the caller omits the physical
-  // summary and its artifact. This is the fail-closed path used by ordinary
-  // builds and by resolution runs that would otherwise preserve old pins.
-  draft::DiagnosticSink missing_summary_diagnostics;
-  EXPECT(state, !draft::verify_foreign_provider_summary_inputs(
-      {}, {}, summary_pins, audits, missing_summary_diagnostics));
-  EXPECT(state, missing_summary_diagnostics.has_errors());
-
-  // Summary semantics are inseparable from the artifact digest written into
-  // the summary itself, even if both files are supplied under matching names.
-  const std::filesystem::path mismatched_summary =
-      temporary / "first" / "mismatched.summary";
-  const std::string mismatched_bytes =
-      "draft-provider-denial-summary-v1\n"
-      "provider\tcustom_math\n"
-      "artifact\t" + std::string(64, '0') + "\n"
-      "symbol\tdraft_custom_math\n"
-      "end\n";
-  std::ofstream(mismatched_summary, std::ios::binary) << mismatched_bytes;
-  summary_input.path = mismatched_summary;
-  std::vector<draft::ExternalInputPin> rejected_pins;
-  draft::DiagnosticSink mismatch_diagnostics;
-  EXPECT(state, !draft::pin_foreign_provider_summary_inputs(
+  // A summary remains an explicit semantic input and therefore requires a
+  // provider mapping by the same logical name. It does not pretend to
+  // authenticate the implementation bytes behind that mapping.
+  draft::DiagnosticSink missing_provider_diagnostics;
+  EXPECT(state, !draft::load_foreign_provider_summaries(
       std::span<const draft::ForeignProviderSummaryInput>(&summary_input, 1),
-      std::span<const draft::ForeignProviderInput>(&input, 1),
-      rejected_pins,
+      {},
       audits,
-      mismatch_diagnostics));
-  EXPECT(state, mismatch_diagnostics.has_errors());
-  EXPECT(state, rejected_pins.empty());
+      missing_provider_diagnostics));
+  EXPECT(state, missing_provider_diagnostics.has_errors());
 
+  // Relocation and byte replacement are linker-environment changes, not
+  // Draft source identity. Path shape is checked again, but no digest is
+  // compared with a resolution manifest.
   input.path = relocated;
-  std::vector<draft::VerifiedForeignProviderInput> verified;
   draft::DiagnosticSink verify_diagnostics;
-  EXPECT(state, draft::verify_foreign_provider_inputs(
+  EXPECT(state, draft::inspect_foreign_provider_inputs(
       std::span<const draft::ForeignProviderInput>(&input, 1),
-      pins,
       verified,
       verify_diagnostics));
   EXPECT(state, !verify_diagnostics.has_errors());
@@ -176,18 +146,17 @@ void test_pin_verify_and_relocation(TestState &state) {
 
   std::ofstream(relocated, std::ios::binary | std::ios::trunc)
       << "changed object bytes\n";
-  draft::DiagnosticSink stale_diagnostics;
-  EXPECT(state, !draft::verify_foreign_provider_inputs(
+  draft::DiagnosticSink changed_diagnostics;
+  EXPECT(state, draft::inspect_foreign_provider_inputs(
       std::span<const draft::ForeignProviderInput>(&input, 1),
-      pins,
       verified,
-      stale_diagnostics));
-  EXPECT(state, stale_diagnostics.has_errors());
+      changed_diagnostics));
+  EXPECT(state, !changed_diagnostics.has_errors());
 
   std::vector<draft::ForeignProviderInput> duplicate{input, input};
   draft::DiagnosticSink duplicate_diagnostics;
-  EXPECT(state, !draft::pin_foreign_provider_inputs(
-      duplicate, pins, duplicate_diagnostics));
+  EXPECT(state, !draft::inspect_foreign_provider_inputs(
+      duplicate, verified, duplicate_diagnostics));
   EXPECT(state, duplicate_diagnostics.has_errors());
 }
 
@@ -195,7 +164,7 @@ void test_pin_verify_and_relocation(TestState &state) {
 
 int main() {
   TestState state;
-  test_pin_verify_and_relocation(state);
+  test_paths_and_summaries_are_not_content_pins(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " foreign input expectation(s) failed\n";
     return EXIT_FAILURE;

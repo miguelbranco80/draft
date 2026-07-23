@@ -792,15 +792,6 @@ draft::ResolveWorkspaceOptions parallel_resolve_options(
   return options;
 }
 
-draft::ExternalInputPin fake_runtime_asset_pin() {
-  draft::ExternalInputPin pin;
-  pin.kind = draft::ExternalInputKind::RuntimeAsset;
-  pin.name = "fixture-runtime-data";
-  pin.content_digest = draft::sha256("exact fixture runtime data tree");
-  pin.entry_point = "tables.bin";
-  return pin;
-}
-
 void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   TemporaryWorkspace workspace;
   workspace.write_source("first prompt");
@@ -814,8 +805,6 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   first_options.compile.emit_llvm = true;
   const draft::CompileWorkspaceOptions first_build_options =
       first_options.compile;
-  first_options.external_inputs_configured = true;
-  first_options.external_inputs.push_back(fake_runtime_asset_pin());
   draft::ResolveWorkspaceResult first = draft::resolve_workspace(
       first_sources,
       workspace.package.string(),
@@ -827,7 +816,6 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   EXPECT(state, first.ok);
   EXPECT(state, first.committed);
   EXPECT(state, first.synthesized_sites == 1);
-  EXPECT(state, first.manifest.external_inputs.size() == 1);
   EXPECT(state, first.compiled_program.has_value());
   if (first.compiled_program.has_value()) {
     EXPECT(state,
@@ -887,10 +875,6 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   EXPECT(state,
       offline_report.find("workspace loads: 1") != std::string::npos);
   EXPECT(state, offline.resolution_manifest.has_value());
-  if (offline.resolution_manifest.has_value()) {
-    EXPECT(state,
-        offline.resolution_manifest->external_inputs.size() == 1);
-  }
 
   draft::SourceManager reuse_sources;
   draft::DiagnosticSink reuse_diagnostics;
@@ -903,12 +887,6 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   EXPECT(state, reuse.reused_sites == 1);
   EXPECT(state, reuse.synthesized_sites == 0);
   EXPECT(state, provider.calls == 1);
-  EXPECT(state, reuse.manifest.external_inputs.size() == 1);
-  if (reuse.manifest.external_inputs.size() == 1) {
-    EXPECT(state,
-        reuse.manifest.external_inputs.front().content_digest ==
-            fake_runtime_asset_pin().content_digest);
-  }
 
   // Provider configuration is provenance, not source freshness. Selecting a
   // different model or adapter policy must reuse accepted source while the
@@ -959,7 +937,6 @@ void test_resolution_reuse_revalidation_and_failure(TestState &state) {
   EXPECT(state, revalidated.ok);
   EXPECT(state, revalidated.reused_sites == 1);
   EXPECT(state, provider.calls == 1);
-  EXPECT(state, revalidated.manifest.external_inputs.size() == 1);
 
   draft::DiagnosticSink before_failure_diagnostics;
   const draft::ResolutionManifestLoadResult before_failure =
@@ -1309,53 +1286,6 @@ void test_provider_error_cannot_hide_behind_success(TestState &state) {
           std::string::npos);
 }
 
-void test_external_inputs_commit_without_synthesis(TestState &state) {
-  TemporaryWorkspace workspace;
-  workspace.write_complete_source();
-  FakeProviderState provider;
-  draft::ResolveWorkspaceOptions options = resolve_options(workspace, provider);
-  options.provider = {};
-  options.external_inputs_configured = true;
-  options.external_inputs.push_back(fake_runtime_asset_pin());
-
-  draft::SourceManager sources;
-  draft::DiagnosticSink diagnostics;
-  const draft::ResolveWorkspaceResult resolved = draft::resolve_workspace(
-      sources,
-      workspace.package.string(),
-      std::move(options),
-      diagnostics);
-  if (!resolved.ok) {
-    std::cerr << draft::render_diagnostics(sources, diagnostics);
-  }
-  EXPECT(state, resolved.ok);
-  EXPECT(state, resolved.committed);
-  EXPECT(state, resolved.manifest.pins.empty());
-  EXPECT(state, resolved.manifest.external_inputs.size() == 1);
-  EXPECT(state, provider.calls == 0);
-
-  draft::DiagnosticSink loaded_diagnostics;
-  const draft::ResolutionManifestLoadResult loaded =
-      draft::load_resolution_manifest(
-          workspace.root, app_store_key(), loaded_diagnostics);
-  EXPECT(state,
-      loaded.state == draft::ResolutionManifestLoadState::Loaded);
-  EXPECT(state, loaded.manifest.external_inputs.size() == 1);
-
-  // The provider-free compiler still verifies the coherent program identity
-  // when a manifest exists solely to lock external build inputs.
-  draft::SourceManager offline_sources;
-  draft::DiagnosticSink offline_diagnostics;
-  const draft::CompileWorkspaceResult offline =
-      draft::compile_workspace_with_resolution(
-          offline_sources,
-          workspace.package.string(),
-          compile_options(workspace),
-          offline_diagnostics);
-  EXPECT(state, offline.ok);
-  EXPECT(state, !offline_diagnostics.has_errors());
-}
-
 void test_interface_sites_precede_dependent_bodies(TestState &state) {
   TemporaryWorkspace workspace;
   workspace.write_staged_source();
@@ -1410,7 +1340,7 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   }
   EXPECT(state, offline.ok);
   EXPECT(state, !offline_diagnostics.has_errors());
-  EXPECT(state, resolved.manifest.format == "draft-resolution-v6");
+  EXPECT(state, resolved.manifest.format == "draft-resolution-v7");
   EXPECT(state, resolved.manifest.pins.size() == 4);
   std::size_t composed_maps = 0;
   for (const draft::WorkspacePackage &package : offline.graph.packages) {
@@ -2576,7 +2506,6 @@ int main() {
   test_semantic_worker_counts_preserve_generated_source_identity(state);
   test_compiler_rejection_retries_with_feedback(state);
   test_provider_error_cannot_hide_behind_success(state);
-  test_external_inputs_commit_without_synthesis(state);
   test_interface_sites_precede_dependent_bodies(state);
   test_dependency_interface_rounds(state);
   test_same_interface_set_is_opaque(state);

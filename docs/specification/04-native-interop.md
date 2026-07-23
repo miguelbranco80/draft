@@ -163,20 +163,21 @@ dynamic linkage does not require a different source declaration or source-list
 build file.
 
 The bootstrap command-line spelling for a non-system mapping is
-`--provider zlib=object|archive|shared-library:<absolute-path>`. Resolution pins
-the provider identity, role, and exact artifact content; builds receive the
-physical path separately and require it to match. Target-profile system
+`--provider zlib=object|archive|shared-library:<absolute-path>`. The mapping is
+an operational linker input, not resolved Draft source identity. The compiler
+checks that the path is absolute, names a real regular file, is not a symlink,
+and maps each provider at most once; it does not hash the artifact or claim to
+identify its transitive dynamic-library environment. Target-profile system
 providers and compiler-owned runtime/package-assembly providers cannot be
 overridden.
 
 An external provider may additionally supply an audited denial summary with
-`--provider-summary zlib:<absolute-path>`. The canonical LF-terminated v1 format
+`--provider-summary zlib:<absolute-path>`. The canonical LF-terminated v2 format
 is deliberately small and line-oriented:
 
 ```text
-draft-provider-denial-summary-v1
+draft-provider-denial-summary-v2
 provider\tzlib
-artifact\t<64-hex canonical artifact content digest>
 symbol\tcompress
 callback\t0
 effect\tassembly
@@ -191,12 +192,12 @@ path, for example `callback\t0\tallocator\tprocedure`. Other records name
 an audited no-effect body. Missing symbols remain unknown; a summary never
 grants provider-wide trust.
 
-The summary names the provider and exact artifact content digest in its own
-bytes. Resolution also pins the summary file as a separate external input.
-Provider-free builds re-hash the relocated artifact and summary, require the
-complete manifest summary set, and retain the consumed digest through semantic
-compilation. A missing, stale, mismatched, unused, compiler-owned, or
-target-owned mapping fails before native linking.
+The summary names its provider and is parsed whenever a command explicitly
+supplies it. It is semantic metadata, not an authentication claim about native
+code: Draft does not hash either file or put it in the resolution manifest. A
+summary without a mapping, a mismatched provider name, or a compiler-/target-
+owned mapping is rejected. Omitting a summary returns that provider's body to
+the conservative unknown-effect rule.
 
 <a id="c-variadic-imports-and-calls"></a>
 

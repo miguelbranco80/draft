@@ -57,34 +57,6 @@ struct ResolutionPin {
   std::string configuration_identity;
 };
 
-// ExternalInputKind names the semantic role an exact external filesystem tree
-// plays in the resolved program. The content digest alone cannot distinguish
-// using identical bytes as an object, runtime asset, or provider summary; the
-// role and logical name are therefore part of program identity and the unique
-// key. Host compilers, linkers, and SDKs are operational build configuration,
-// not external program inputs, and consequently have no kinds here.
-enum class ExternalInputKind {
-  ForeignArtifact,
-  Object,
-  Archive,
-  SharedLibrary,
-  RuntimeAsset,
-  ProviderSummary,
-};
-
-// One row contains no physical host path. content_digest is the canonical
-// `draft.content-tree.v1` digest of the selected file or directory. entry_point
-// is a normalized relative path inside that tree when one executable or file is
-// invoked directly; it is empty when the root itself is the semantic input.
-// name is a manifest-local, user-facing identity such as a foreign provider or
-// runtime asset name and must be unique together with kind.
-struct ExternalInputPin {
-  ExternalInputKind kind = ExternalInputKind::ForeignArtifact;
-  std::string name;
-  Sha256Digest content_digest;
-  std::string entry_point;
-};
-
 // The manifest selects one target-qualified coherent program. Pins are a
 // logical map keyed by site_identity even though a vector retains deterministic
 // compact ownership. resolved_program_digest is computed only after every
@@ -92,14 +64,13 @@ struct ExternalInputPin {
 // benchmark, and judgment evidence live in their independent stores and never
 // mutate source selection.
 struct ResolutionManifest {
-  std::string format = "draft-resolution-v6";
+  std::string format = "draft-resolution-v7";
   std::string target_identity;
   // The selected executable root is semantic workspace identity, never a
   // physical path. It authenticates a loaded manifest and owns that program's
   // root/target-specific namespace in the persistent resolution store.
   PackageIdentity root_package{"workspace", "."};
   Sha256Digest resolved_program_digest;
-  std::vector<ExternalInputPin> external_inputs;
   std::vector<ResolutionPin> pins;
 };
 
@@ -116,8 +87,5 @@ struct ResolutionManifest {
     std::string_view json,
     ResolutionManifest &manifest,
     DiagnosticSink &diagnostics);
-
-[[nodiscard]] std::string_view external_input_kind_name(
-    ExternalInputKind kind);
 
 } // namespace draft

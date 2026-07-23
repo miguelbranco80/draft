@@ -399,13 +399,14 @@ previous manifest authoritative. Regeneration may accept the same source bytes;
 the resolved program changes only when the selected expansion bytes change.
 Regeneration and provider-free `--revalidate` are mutually exclusive.
 
-An external program input is dependency source, a foreign-provider artifact or
-summary, or a runtime asset supplied outside the workspace and selected compiler
-distribution. When such content participates in resolution or semantic
-checking, the manifest records its exact content identity while the physical
-path remains invocation-local. The native compiler, linker, SDK, and sysroot are
-host build configuration: they do not enter synthesis pins or resolved-program
-identity.
+Dependency and compiler-distributed Draft source participate in resolution like
+other selected source. Foreign-provider artifacts, explicit provider summaries,
+runtime assets, the native compiler, linker, SDK, and sysroot are invocation or
+host-build inputs: they are not recorded in the source-resolution manifest.
+Provider summaries still affect semantic checking directly whenever supplied,
+and the resulting denial facts enter a synthesis site's ordinary typed context.
+Draft does not infer control over a transitive native environment from the hash
+of one top-level file.
 
 `draft resolve --revalidate` stages existing generated source for stale sites,
 recomputes current obligations and input hashes in semantic dependency order,
@@ -442,8 +443,7 @@ configuration identity as non-semantic provenance.
 The manifest identifies the coherent resolved program from the selected root
 package and target;
 the exact identities of all selected workspace and dependency source,
-compiler-distributed core and runtime inputs, explicit foreign artifacts,
-provider summaries, and runtime assets; the build graph; and every
+compiler-distributed core and runtime inputs; the build graph; and every
 synthesis-site identity and selected expansion hash. Validation evidence binds
 that identity to the selected validation definitions, requested artifacts,
 tool version, and execution policy; it cannot be reused for a different

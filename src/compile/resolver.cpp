@@ -795,29 +795,6 @@ ResolveWorkspaceResult resolve_workspace(
   ResolutionManifest manifest;
   manifest.target_identity = options.compile.target.facts.identity;
   manifest.root_package = selected_root.identity;
-  if (options.external_inputs_configured) {
-    manifest.external_inputs = std::move(options.external_inputs);
-  } else if (loaded.state == ResolutionManifestLoadState::Loaded) {
-    manifest.external_inputs = loaded.manifest.external_inputs;
-  }
-
-  // Validate caller-produced rows before compiling or invoking a provider.
-  // The strict manifest parser is the single schema authority; round-tripping
-  // here also canonicalizes row order for the returned in-memory manifest.
-  ResolutionManifest external_input_check;
-  DiagnosticSink external_input_diagnostics;
-  if (!parse_resolution_manifest(
-          serialize_resolution_manifest(manifest),
-          external_input_check,
-          external_input_diagnostics)) {
-    for (const Diagnostic &diagnostic :
-         external_input_diagnostics.diagnostics()) {
-      diagnostics.report(
-          diagnostic.severity, diagnostic.range, diagnostic.message);
-    }
-    return result;
-  }
-  manifest.external_inputs = std::move(external_input_check.external_inputs);
   std::vector<WorkspaceSourceOverride> interface_overrides;
   std::vector<std::string> regeneration_matches;
   bool provider_prepared = false;
@@ -929,7 +906,7 @@ ResolveWorkspaceResult resolve_workspace(
   // An existing manifest still proceeds so obsolete pins become an empty map.
   // The checked handwritten graph is nevertheless returned, and a native
   // request continues it through lowering without another front-end pass.
-  if (manifest.pins.empty() && manifest.external_inputs.empty() &&
+  if (manifest.pins.empty() &&
       loaded.state == ResolutionManifestLoadState::Missing) {
     ResolutionManifest empty_manifest;
     empty_manifest.target_identity = options.compile.target.facts.identity;

@@ -72,8 +72,6 @@ struct ResolveWorkspaceOptions {
   // individual rows. When false, an existing manifest's set is preserved so a
   // routine synthesis refresh cannot silently unlock a build. When true, this
   // vector replaces it; an explicitly empty vector therefore removes the lock.
-  bool external_inputs_configured = false;
-  std::vector<ExternalInputPin> external_inputs;
 };
 
 // Counts describe provider/reuse work performed by the attempt, including work

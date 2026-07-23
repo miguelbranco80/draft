@@ -53,34 +53,11 @@ draft::ResolutionPin make_pin(
   return pin;
 }
 
-draft::ExternalInputPin make_external(
-    draft::ExternalInputKind kind,
-    std::string name,
-    std::string_view contents,
-    std::string entry) {
-  draft::ExternalInputPin input;
-  input.kind = kind;
-  input.name = std::move(name);
-  input.content_digest = draft::sha256(contents);
-  input.entry_point = std::move(entry);
-  return input;
-}
-
 void test_canonical_round_trip(TestState &state) {
   draft::ResolutionManifest manifest;
   manifest.target_identity = "aarch64-apple-macos";
   manifest.root_package = {"workspace", "tools/admin"};
   manifest.resolved_program_digest = draft::sha256("resolved program");
-  manifest.external_inputs.push_back(make_external(
-      draft::ExternalInputKind::RuntimeAsset,
-      "language-data",
-      "runtime data tree",
-      ""));
-  manifest.external_inputs.push_back(make_external(
-      draft::ExternalInputKind::Object,
-      "sqlite-provider",
-      "foreign object",
-      ""));
   // Intentionally provide pins out of order. Ordering is part of the on-disk
   // contract, not a requirement imposed on every in-memory producer.
   manifest.pins.push_back(make_pin(
@@ -107,21 +84,12 @@ void test_canonical_round_trip(TestState &state) {
   EXPECT(state,
       draft::parse_resolution_manifest(encoded, parsed, diagnostics));
   EXPECT(state, !diagnostics.has_errors());
-  EXPECT(state, parsed.format == "draft-resolution-v6");
+  EXPECT(state, parsed.format == "draft-resolution-v7");
   EXPECT(state, parsed.target_identity == manifest.target_identity);
   EXPECT(state, parsed.root_package == manifest.root_package);
   EXPECT(state,
       parsed.resolved_program_digest == manifest.resolved_program_digest);
   EXPECT(state, parsed.pins.size() == 2);
-  EXPECT(state, parsed.external_inputs.size() == 2);
-  if (parsed.external_inputs.size() == 2) {
-    EXPECT(state, parsed.external_inputs[0].kind ==
-        draft::ExternalInputKind::Object);
-    EXPECT(state, parsed.external_inputs[0].name == "sqlite-provider");
-    EXPECT(state, parsed.external_inputs[0].entry_point.empty());
-    EXPECT(state, parsed.external_inputs[1].kind ==
-        draft::ExternalInputKind::RuntimeAsset);
-  }
   if (parsed.pins.size() == 2) {
     EXPECT(state, parsed.pins[0].site_identity == site('a'));
     EXPECT(state,
@@ -157,20 +125,15 @@ void test_invalid_inputs(TestState &state) {
       "return;",
       "codex",
       "model"));
-  manifest.external_inputs.push_back(make_external(
-      draft::ExternalInputKind::RuntimeAsset,
-      "unicode-data",
-      "runtime data",
-      "tables.bin"));
   std::string encoded = draft::serialize_resolution_manifest(manifest);
 
   std::string unsupported_format = encoded;
-  const std::size_t format = unsupported_format.find("draft-resolution-v6");
+  const std::size_t format = unsupported_format.find("draft-resolution-v7");
   EXPECT(state, format != std::string::npos);
   if (format != std::string::npos) {
     unsupported_format.replace(
         format,
-        std::string_view("draft-resolution-v6").size(),
+        std::string_view("draft-resolution-v7").size(),
         "draft-resolution-unknown");
   }
   expect_rejected(state, unsupported_format);
@@ -211,24 +174,11 @@ void test_invalid_inputs(TestState &state) {
   expect_rejected(state, draft::serialize_resolution_manifest(manifest));
 
   manifest.pins.pop_back();
-  manifest.external_inputs.push_back(manifest.external_inputs.front());
-  expect_rejected(state, draft::serialize_resolution_manifest(manifest));
-  manifest.external_inputs.pop_back();
-
   manifest.pins[0].source_map.surface_begin = 20;
   manifest.pins[0].source_map.surface_end = 10;
   expect_rejected(state, draft::serialize_resolution_manifest(manifest));
   manifest.pins[0].source_map.surface_begin = 10;
   manifest.pins[0].source_map.surface_end = 13;
-
-  std::string escaping_entry = encoded;
-  const std::size_t entry = escaping_entry.find("tables.bin");
-  EXPECT(state, entry != std::string::npos);
-  if (entry != std::string::npos) {
-    escaping_entry.replace(
-        entry, std::string_view("tables.bin").size(), "../tables.bin");
-  }
-  expect_rejected(state, escaping_entry);
 
   // The manifest schema deliberately does not accept judgment evidence as a
   // source expansion. Evidence has its own format and validation lifecycle.
@@ -272,11 +222,6 @@ void test_deterministic_malformed_byte_corpus(TestState &state) {
   draft::ResolutionManifest manifest;
   manifest.target_identity = "aarch64-apple-macos";
   manifest.resolved_program_digest = draft::sha256("mutation-program");
-  manifest.external_inputs.push_back(make_external(
-      draft::ExternalInputKind::RuntimeAsset,
-      "unicode-data",
-      "runtime data",
-      "tables.bin"));
   manifest.pins.push_back(make_pin(
       site('c'),
       draft::AgentConstructKind::SynthesisExpression,
@@ -332,11 +277,6 @@ void test_deterministic_structural_mutation_corpus(TestState &state) {
   draft::ResolutionManifest manifest;
   manifest.target_identity = "aarch64-apple-macos";
   manifest.resolved_program_digest = draft::sha256("structure-program");
-  manifest.external_inputs.push_back(make_external(
-      draft::ExternalInputKind::RuntimeAsset,
-      "unicode-data",
-      "runtime data",
-      "tables.bin"));
   manifest.pins.push_back(make_pin(
       site('d'),
       draft::AgentConstructKind::SynthesisStatement,

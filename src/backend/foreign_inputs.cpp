@@ -1,12 +1,16 @@
-// Content pinning and relocation-safe verification of foreign provider files.
+// Filesystem validation for explicit foreign-provider linker inputs.
+//
+// This module validates the small operational boundary that the compiler can
+// honestly own: every mapping has one unique logical provider, an absolute
+// path, and a real regular file at command time. It deliberately does not hash
+// artifacts. A shared library's bytes do not identify its transitive libraries,
+// loader, SDK, or runtime environment, so putting that digest in Draft source
+// identity would be both expensive and misleading. The linker remains the
+// authority for consuming these paths and resolving their symbols.
 
 #include "backend/foreign_inputs.h"
 
-#include "base/content_tree.h"
-
-#include <algorithm>
 #include <filesystem>
-#include <iterator>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -14,49 +18,6 @@
 
 namespace draft {
 namespace {
-
-[[nodiscard]] ExternalInputKind external_kind(ForeignArtifactKind kind) {
-  switch (kind) {
-  case ForeignArtifactKind::Object: return ExternalInputKind::Object;
-  case ForeignArtifactKind::Archive: return ExternalInputKind::Archive;
-  case ForeignArtifactKind::SharedLibrary:
-    return ExternalInputKind::SharedLibrary;
-  }
-  return ExternalInputKind::ForeignArtifact;
-}
-
-[[nodiscard]] bool foreign_kind(
-    ExternalInputKind kind, ForeignArtifactKind &result) {
-  if (kind == ExternalInputKind::Object) {
-    result = ForeignArtifactKind::Object;
-    return true;
-  }
-  if (kind == ExternalInputKind::Archive) {
-    result = ForeignArtifactKind::Archive;
-    return true;
-  }
-  if (kind == ExternalInputKind::SharedLibrary) {
-    result = ForeignArtifactKind::SharedLibrary;
-    return true;
-  }
-  return false;
-}
-
-[[nodiscard]] bool input_less(
-    const ExternalInputPin &left, const ExternalInputPin &right) {
-  if (left.kind != right.kind) {
-    return static_cast<unsigned>(left.kind) <
-        static_cast<unsigned>(right.kind);
-  }
-  return left.name < right.name;
-}
-
-[[nodiscard]] bool pins_equal(
-    const ExternalInputPin &left, const ExternalInputPin &right) {
-  return left.kind == right.kind && left.name == right.name &&
-      left.content_digest == right.content_digest &&
-      left.entry_point == right.entry_point;
-}
 
 [[nodiscard]] bool inspect_input(
     const ForeignProviderInput &input,
@@ -107,12 +68,12 @@ std::string_view foreign_artifact_kind_name(ForeignArtifactKind kind) {
   return "unknown";
 }
 
-bool pin_foreign_provider_inputs(
+bool inspect_foreign_provider_inputs(
     std::span<const ForeignProviderInput> inputs,
-    std::vector<ExternalInputPin> &pins,
+    std::vector<VerifiedForeignProviderInput> &verified,
     DiagnosticSink &diagnostics) {
-  const std::size_t initial_errors = diagnostics.error_count();
-  std::vector<ExternalInputPin> additions;
+  std::vector<VerifiedForeignProviderInput> result;
+  result.reserve(inputs.size());
   for (std::size_t index = 0; index < inputs.size(); ++index) {
     for (std::size_t previous = 0; previous < index; ++previous) {
       if (inputs[previous].provider == inputs[index].provider) {
@@ -125,82 +86,8 @@ bool pin_foreign_provider_inputs(
     }
     std::filesystem::path canonical;
     if (!inspect_input(inputs[index], canonical, diagnostics)) return false;
-    ExternalInputPin pin;
-    pin.kind = external_kind(inputs[index].kind);
-    pin.name = inputs[index].provider;
-    if (!hash_content_tree(canonical, pin.content_digest, diagnostics)) {
-      return false;
-    }
-    additions.push_back(std::move(pin));
-  }
-  pins.insert(
-      pins.end(),
-      std::make_move_iterator(additions.begin()),
-      std::make_move_iterator(additions.end()));
-  std::sort(pins.begin(), pins.end(), input_less);
-  for (std::size_t index = 1; index < pins.size(); ++index) {
-    if (pins[index - 1].kind == pins[index].kind &&
-        pins[index - 1].name == pins[index].name) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "external input key is duplicated while pinning foreign providers");
-      return false;
-    }
-  }
-  return diagnostics.error_count() == initial_errors;
-}
-
-bool verify_foreign_provider_inputs(
-    std::span<const ForeignProviderInput> inputs,
-    std::span<const ExternalInputPin> manifest_pins,
-    std::vector<VerifiedForeignProviderInput> &verified,
-    DiagnosticSink &diagnostics) {
-  std::vector<ExternalInputPin> actual;
-  if (!pin_foreign_provider_inputs(inputs, actual, diagnostics)) return false;
-  std::vector<ExternalInputPin> expected;
-  for (const ExternalInputPin &pin : manifest_pins) {
-    ForeignArtifactKind ignored;
-    if (foreign_kind(pin.kind, ignored)) expected.push_back(pin);
-  }
-  std::sort(expected.begin(), expected.end(), input_less);
-  if (actual.size() != expected.size()) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "configured foreign providers do not match the complete resolved "
-        "object/archive/shared-library manifest set");
-    return false;
-  }
-  for (std::size_t index = 0; index < actual.size(); ++index) {
-    if (!pins_equal(actual[index], expected[index])) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "foreign provider artifact does not match the resolution manifest: '" +
-              actual[index].name + "'");
-      return false;
-    }
-  }
-
-  std::vector<VerifiedForeignProviderInput> result;
-  for (const ForeignProviderInput &input : inputs) {
-    std::filesystem::path canonical;
-    if (!inspect_input(input, canonical, diagnostics)) return false;
-    result.push_back({input.provider, input.kind, std::move(canonical)});
-  }
-  verified = std::move(result);
-  return true;
-}
-
-bool inspect_foreign_provider_inputs(
-    std::span<const ForeignProviderInput> inputs,
-    std::vector<VerifiedForeignProviderInput> &verified,
-    DiagnosticSink &diagnostics) {
-  std::vector<ExternalInputPin> ignored;
-  if (!pin_foreign_provider_inputs(inputs, ignored, diagnostics)) return false;
-  std::vector<VerifiedForeignProviderInput> result;
-  for (const ForeignProviderInput &input : inputs) {
-    std::filesystem::path canonical;
-    if (!inspect_input(input, canonical, diagnostics)) return false;
-    result.push_back({input.provider, input.kind, std::move(canonical)});
+    result.push_back(
+        {inputs[index].provider, inputs[index].kind, std::move(canonical)});
   }
   verified = std::move(result);
   return true;

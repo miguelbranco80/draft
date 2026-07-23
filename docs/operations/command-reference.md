@@ -138,7 +138,6 @@ build/draftc expand path/to/workspace [--root package/path] --out new-directory 
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows] [--assertions=off] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
-  [--runtime-asset name:/absolute/file-or-directory]... \
   [--timings|--timings=all]
 ```
 
@@ -173,13 +172,13 @@ build/draftc build path/to/workspace [--root package/path]... [-o output] \
 
 `build` is always provider-free. It compiles handwritten programs directly and
 resolved programs from their saved generated Draft source. It rechecks source,
-generated expansions, foreign artifacts, summaries, and runtime assets, but it
+generated expansions, explicit summaries, and linker/deployment paths, but it
 does not contact Codex, execute judgments, require validation evidence, or
 modify the resolution manifest.
 
 Each `--provider` artifact path is absolute and names a real regular file;
-symlinks are rejected so hashing and later identity checks never depend on link
-retargeting. Resolve a build-system convenience symlink with `realpath` before
+symlinks are rejected so the linker input cannot be silently retargeted through
+the mapping. Resolve a build-system convenience symlink with `realpath` before
 passing a dylib or shared object. A `shared-library` mapping supplies the link
 input. ELF executable and dynamic-library links record `$ORIGIN` as a runtime
 search directory so a copied provider can live beside the artifact. Mach-O
@@ -328,9 +327,9 @@ as generation provenance and does not invalidate accepted source.
 
 `--revalidate` rechecks all saved sites without a provider and writes a fresh
 source-resolution manifest. It cannot be combined with a provider model.
-External provider, summary, and runtime-asset mappings become content-addressed
-resolved-program inputs. Validation and judgment evidence remain separate and
-are changed only by their own commands.
+Foreign-provider mappings, summaries, and runtime assets remain explicit
+invocation inputs and are not written to that manifest. Validation and judgment
+evidence remain separate and are changed only by their own commands.
 
 The root/target-specific resolution manifest and all generated objects it
 references are normal project source and should ordinarily be committed

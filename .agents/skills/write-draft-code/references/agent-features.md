@@ -282,9 +282,9 @@ denials, supplied code/interfaces, and semantic compiler/resolver configuration.
 Provider, model, retry, and adapter identities are recorded only as provenance;
 changing them does not stale accepted source or change the resolved-program
 hash. The
-manifest also records exact source, dependency, foreign artifact, provider
-summary, and runtime-asset content identity. Invocation-local physical paths
-do not become semantic identity.
+manifest also records exact selected source and dependency identity. Native
+provider mappings, provider summaries, and runtime assets are explicit
+invocation inputs rather than source-resolution identity.
 
 Each selected root and target owns a distinct manifest below
 `.draft/resolutions/<target-identity>/`; generated objects remain shared below
@@ -333,9 +333,10 @@ semantic identities despite aliases, parametric instances, or linker names.
 
 The restriction applies to every reachable handwritten or generated helper,
 compiled interface, assembly symbol, and finite procedure-pointer target.
-Unknown dynamic or foreign edges fail an active denial. A matching exact-
-artifact provider summary may account for foreign effects; absence is unknown,
-not trusted.
+Unknown dynamic or foreign edges fail an active denial. An explicitly supplied
+provider summary may account for foreign effects for that invocation; absence
+is unknown, not trusted. The summary is not authenticated by hashing a native
+library or its transitive runtime environment.
 
 Nested denials only add restrictions. `deny unchecked` permits checked or
 statically proven bounded access but rejects multi-pointer indexing and

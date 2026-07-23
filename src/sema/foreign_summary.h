@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "base/sha256.h"
 #include "sema/analyzer.h"
 
 #include <cstdint>
@@ -32,14 +31,13 @@ struct ForeignAuditSymbol {
   std::vector<ForeignAuditEffect> effects;
 };
 
-// Both content digests are retained after filesystem verification. The
-// artifact digest binds semantics to code; the summary digest lets the native
-// adapter prove that every manifest ProviderSummary row was actually consumed
-// by semantic compilation.
+// One audit is semantic metadata supplied for one provider. It deliberately
+// carries no native-artifact identity: the linker mapping is operational input,
+// while this parsed contract is checked directly whenever semantic analysis
+// needs it. Draft does not claim that a digest of one library controls its
+// transitive runtime environment.
 struct ForeignProviderAudit {
   std::string provider;
-  Sha256Digest artifact_content_digest;
-  Sha256Digest summary_content_digest;
   std::vector<ForeignAuditSymbol> symbols;
 
   [[nodiscard]] const ForeignAuditSymbol *find_symbol(

@@ -1,10 +1,13 @@
-// Strict line-format parsing and relocation-safe content verification.
+// Strict line-format parsing for explicit foreign denial summaries.
+//
+// Summaries describe semantic effects which Draft cannot infer from a foreign
+// body. They are read and validated on every command that elects to use them.
+// They deliberately do not contain or verify an artifact digest: one library
+// file cannot identify the loader and transitive native environment which gives
+// it meaning, and the compiler should not claim otherwise.
 
 #include "backend/foreign_summaries.h"
 
-#include "base/content_tree.h"
-
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -22,22 +25,6 @@ namespace draft {
 namespace {
 
 constexpr std::size_t maximum_summary_bytes = 16U * 1024U * 1024U;
-
-[[nodiscard]] bool input_less(
-    const ExternalInputPin &left, const ExternalInputPin &right) {
-  if (left.kind != right.kind) {
-    return static_cast<unsigned>(left.kind) <
-        static_cast<unsigned>(right.kind);
-  }
-  return left.name < right.name;
-}
-
-[[nodiscard]] bool pins_equal(
-    const ExternalInputPin &left, const ExternalInputPin &right) {
-  return left.kind == right.kind && left.name == right.name &&
-      left.content_digest == right.content_digest &&
-      left.entry_point == right.entry_point;
-}
 
 [[nodiscard]] bool valid_field(std::string_view field, bool allow_empty) {
   if (field.empty()) return allow_empty;
@@ -164,32 +151,20 @@ constexpr std::size_t maximum_summary_bytes = 16U * 1024U * 1024U;
     lines.push_back(bytes.substr(begin, newline - begin));
     begin = newline + 1;
   }
-  if (lines.size() < 4 ||
-      lines[0] != "draft-provider-denial-summary-v1") {
+  if (lines.size() < 3 ||
+      lines[0] != "draft-provider-denial-summary-v2") {
     reason = "summary has an unsupported format header";
     return false;
   }
   const std::vector<std::string_view> provider = split_tabs(lines[1]);
-  const std::vector<std::string_view> artifact = split_tabs(lines[2]);
   if (provider.size() != 2 || provider[0] != "provider" ||
       !valid_field(provider[1], false)) {
     reason = "summary provider row is invalid";
     return false;
   }
-  if (artifact.size() != 2 || artifact[0] != "artifact") {
-    reason = "summary artifact row is invalid";
-    return false;
-  }
-  const std::optional<Sha256Digest> artifact_digest =
-      Sha256Digest::from_hex(artifact[1]);
-  if (!artifact_digest.has_value()) {
-    reason = "summary artifact digest must contain 64 hexadecimal digits";
-    return false;
-  }
   audit.provider = std::string(provider[1]);
-  audit.artifact_content_digest = *artifact_digest;
 
-  std::size_t line_index = 3;
+  std::size_t line_index = 2;
   std::string previous_symbol;
   while (line_index < lines.size()) {
     const std::vector<std::string_view> symbol_row =
@@ -238,7 +213,6 @@ constexpr std::size_t maximum_summary_bytes = 16U * 1024U * 1024U;
 
 [[nodiscard]] bool read_regular_file(
     const ForeignProviderSummaryInput &input,
-    std::filesystem::path &canonical,
     std::string &bytes,
     DiagnosticSink &diagnostics) {
   if (input.provider.empty() || input.path.empty() ||
@@ -259,7 +233,8 @@ constexpr std::size_t maximum_summary_bytes = 16U * 1024U * 1024U;
             "' summary must be a real regular file, not a symlink");
     return false;
   }
-  canonical = std::filesystem::canonical(input.path, error);
+  const std::filesystem::path canonical =
+      std::filesystem::canonical(input.path, error);
   if (error) {
     diagnostics.error(
         SourceRange::invalid(),
@@ -284,35 +259,25 @@ constexpr std::size_t maximum_summary_bytes = 16U * 1024U * 1024U;
   return true;
 }
 
-[[nodiscard]] const ExternalInputPin *artifact_pin(
-    std::span<const ExternalInputPin> pins, std::string_view provider) {
-  for (const ExternalInputPin &pin : pins) {
-    if ((pin.kind == ExternalInputKind::Object ||
-         pin.kind == ExternalInputKind::Archive ||
-         pin.kind == ExternalInputKind::SharedLibrary) &&
-        pin.name == provider) {
-      return &pin;
+[[nodiscard]] bool has_artifact(
+    std::span<const ForeignProviderInput> artifacts,
+    std::string_view provider) {
+  for (const ForeignProviderInput &artifact : artifacts) {
+    if (artifact.provider == provider) {
+      return true;
     }
   }
-  return nullptr;
+  return false;
 }
 
 } // namespace
 
-bool pin_foreign_provider_summary_inputs(
+bool load_foreign_provider_summaries(
     std::span<const ForeignProviderSummaryInput> inputs,
     std::span<const ForeignProviderInput> artifacts,
-    std::vector<ExternalInputPin> &pins,
     std::vector<ForeignProviderAudit> &audits,
     DiagnosticSink &diagnostics) {
   const std::size_t initial_errors = diagnostics.error_count();
-  std::vector<ExternalInputPin> artifact_pins;
-  if (!pin_foreign_provider_inputs(
-          artifacts, artifact_pins, diagnostics)) {
-    return false;
-  }
-
-  std::vector<ExternalInputPin> additions;
   std::vector<ForeignProviderAudit> parsed;
   for (std::size_t index = 0; index < inputs.size(); ++index) {
     for (std::size_t previous = 0; previous < index; ++previous) {
@@ -324,26 +289,15 @@ bool pin_foreign_provider_summary_inputs(
         return false;
       }
     }
-    const ExternalInputPin *artifact =
-        artifact_pin(artifact_pins, inputs[index].provider);
-    if (artifact == nullptr) {
+    if (!has_artifact(artifacts, inputs[index].provider)) {
       diagnostics.error(
           SourceRange::invalid(),
           "foreign provider '" + inputs[index].provider +
-              "' summary has no exact artifact mapping");
+              "' summary has no artifact mapping");
       return false;
     }
-    std::filesystem::path canonical;
     std::string bytes;
-    if (!read_regular_file(
-            inputs[index], canonical, bytes, diagnostics)) {
-      return false;
-    }
-    ExternalInputPin summary_pin;
-    summary_pin.kind = ExternalInputKind::ProviderSummary;
-    summary_pin.name = inputs[index].provider;
-    if (!hash_content_tree(
-            canonical, summary_pin.content_digest, diagnostics)) {
+    if (!read_regular_file(inputs[index], bytes, diagnostics)) {
       return false;
     }
     ForeignProviderAudit audit;
@@ -355,99 +309,17 @@ bool pin_foreign_provider_summary_inputs(
               "' summary: " + reason);
       return false;
     }
-    // The first byte read and the content-tree hash are separate filesystem
-    // operations. Read the file a second time and hash that same canonical
-    // path again so a replacement between those operations cannot associate
-    // parsed semantics from one file with the digest of another.
-    std::filesystem::path rechecked_canonical;
-    std::string rechecked_bytes;
-    if (!read_regular_file(
-            inputs[index],
-            rechecked_canonical,
-            rechecked_bytes,
-            diagnostics)) {
-      return false;
-    }
-    Sha256Digest rechecked_digest;
-    if (rechecked_canonical != canonical || rechecked_bytes != bytes ||
-        !hash_content_tree(
-            rechecked_canonical, rechecked_digest, diagnostics) ||
-        rechecked_digest != summary_pin.content_digest) {
+    if (audit.provider != inputs[index].provider) {
       diagnostics.error(
           SourceRange::invalid(),
-          "foreign provider summary changed while it was being verified");
-      return false;
-    }
-    if (audit.provider != inputs[index].provider ||
-        audit.artifact_content_digest != artifact->content_digest) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "foreign provider summary identity or artifact digest does not match '" +
+          "foreign provider summary identity does not match '" +
               inputs[index].provider + "'");
       return false;
     }
-    audit.summary_content_digest = summary_pin.content_digest;
-    additions.push_back(std::move(summary_pin));
     parsed.push_back(std::move(audit));
   }
-
-  // Validate a private combined vector first. Failure must not leave the
-  // caller with a partially installed manifest input set.
-  std::vector<ExternalInputPin> combined = pins;
-  combined.insert(
-      combined.end(),
-      std::make_move_iterator(additions.begin()),
-      std::make_move_iterator(additions.end()));
-  std::sort(combined.begin(), combined.end(), input_less);
-  for (std::size_t index = 1; index < combined.size(); ++index) {
-    if (combined[index - 1].kind == combined[index].kind &&
-        combined[index - 1].name == combined[index].name) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "external input key is duplicated while pinning provider summaries");
-      return false;
-    }
-  }
-  pins = std::move(combined);
   audits = std::move(parsed);
   return diagnostics.error_count() == initial_errors;
-}
-
-bool verify_foreign_provider_summary_inputs(
-    std::span<const ForeignProviderSummaryInput> inputs,
-    std::span<const ForeignProviderInput> artifacts,
-    std::span<const ExternalInputPin> manifest_pins,
-    std::vector<ForeignProviderAudit> &audits,
-    DiagnosticSink &diagnostics) {
-  std::vector<ExternalInputPin> actual;
-  if (!pin_foreign_provider_summary_inputs(
-          inputs, artifacts, actual, audits, diagnostics)) {
-    return false;
-  }
-  std::vector<ExternalInputPin> expected;
-  for (const ExternalInputPin &pin : manifest_pins) {
-    if (pin.kind == ExternalInputKind::ProviderSummary) {
-      expected.push_back(pin);
-    }
-  }
-  std::sort(expected.begin(), expected.end(), input_less);
-  if (actual.size() != expected.size()) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "configured provider summaries do not match the complete resolution "
-        "manifest summary set");
-    return false;
-  }
-  for (std::size_t index = 0; index < actual.size(); ++index) {
-    if (!pins_equal(actual[index], expected[index])) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "foreign provider summary does not match the resolution manifest: '" +
-              actual[index].name + "'");
-      return false;
-    }
-  }
-  return true;
 }
 
 } // namespace draft

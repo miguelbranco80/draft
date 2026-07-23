@@ -29,10 +29,10 @@
 namespace draft {
 
 // Hashes fields with explicit lengths and collection counts under the versioned
-// `draft.resolved-program.v6` domain. The selected root is hashed explicitly;
+// `draft.resolved-program.v7` domain. The selected root is hashed explicitly;
 // graph package/file order is already
-// canonical; external inputs and pins are sorted inside this operation so
-// caller vector order cannot affect the result.
+// canonical; synthesis pins are sorted inside this operation so caller vector
+// order cannot affect the result. Native paths and runtime assets are absent.
 [[nodiscard]] Sha256Digest hash_resolved_program(
     const SourceManager &sources,
     const WorkspaceGraph &graph,

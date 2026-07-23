@@ -634,47 +634,8 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
     }
   }
 
-  if (compiled.resolution_manifest.has_value()) {
-    if (!verify_foreign_provider_inputs(
-            options.foreign_providers,
-            compiled.resolution_manifest->external_inputs,
-            verified,
-            diagnostics)) {
-      return false;
-    }
-    for (const ExternalInputPin &pin : compiled.resolution_manifest->external_inputs) {
-      if (pin.kind == ExternalInputKind::ProviderSummary) {
-        const bool consumed = std::any_of(
-            compiled.foreign_provider_audits.begin(),
-            compiled.foreign_provider_audits.end(),
-            [&pin](const ForeignProviderAudit &audit) {
-              return audit.provider == pin.name &&
-                  audit.summary_content_digest == pin.content_digest;
-            });
-        if (!consumed) {
-          diagnostics.error(
-              SourceRange::invalid(),
-              "provider summary '" + pin.name +
-                  "' was not consumed by semantic compilation");
-          return false;
-        }
-        continue;
-      }
-      // Runtime assets have their own complete-set verifier. They are not
-      // foreign symbol providers and therefore do not enter the link list.
-      if (pin.kind == ExternalInputKind::RuntimeAsset) continue;
-      if (pin.kind != ExternalInputKind::Object &&
-          pin.kind != ExternalInputKind::Archive &&
-          pin.kind != ExternalInputKind::SharedLibrary) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "native adapter does not implement external input role '" +
-                std::string(external_input_kind_name(pin.kind)) + "'");
-        return false;
-      }
-    }
-  } else if (!inspect_foreign_provider_inputs(
-                 options.foreign_providers, verified, diagnostics)) {
+  if (!inspect_foreign_provider_inputs(
+          options.foreign_providers, verified, diagnostics)) {
     return false;
   }
 
@@ -714,31 +675,15 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
   return true;
 }
 
-// A manifest makes runtime assets part of the resolved program, so every
-// manifest-bearing native invocation must prove the complete mapping.
-// Conversely, an asset passed without a manifest would affect no program
-// identity and is rejected instead of being ignored.
-[[nodiscard]] bool verify_runtime_asset_set(
-    const CompileWorkspaceResult &compiled,
+// Runtime assets are deployment roots returned to embedding callers. Validate
+// only the mappings explicitly supplied to this invocation; they are not
+// source identity and do not require a resolution manifest.
+[[nodiscard]] bool inspect_runtime_asset_set(
     const NativeBuildOptions &options,
     std::vector<VerifiedRuntimeAssetInput> &verified,
     DiagnosticSink &diagnostics) {
-  if (compiled.resolution_manifest.has_value()) {
-    return verify_runtime_asset_inputs(
-        options.runtime_assets,
-        compiled.resolution_manifest->external_inputs,
-        verified,
-        diagnostics);
-  }
-  if (!options.runtime_assets.empty()) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "runtime assets require a resolution manifest; run 'draftc resolve' "
-        "with the mappings first");
-    return false;
-  }
-  verified.clear();
-  return true;
+  return inspect_runtime_asset_inputs(
+      options.runtime_assets, verified, diagnostics);
 }
 
 // One worker writes only its matching result slot. Native bytes stay in memory
@@ -1030,8 +975,7 @@ NativeBuildResult build_native_artifact(
   }
 
   std::vector<VerifiedRuntimeAssetInput> runtime_assets;
-  if (!verify_runtime_asset_set(
-          compiled, options, runtime_assets, diagnostics)) {
+  if (!inspect_runtime_asset_set(options, runtime_assets, diagnostics)) {
     return result;
   }
 

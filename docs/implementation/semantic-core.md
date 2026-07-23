@@ -673,14 +673,12 @@ retaining reusable procedure-body products. The rebuilt payload vectors align
 with the successor product IDs. The algorithmic package-wide flow and effect
 replay paths are gone.
 
-External artifact summaries use the strict
-`draft-provider-denial-summary-v1` line format documented in section 12. The
-summary declares the exact canonical artifact digest; the manifest separately
-pins the summary bytes under the same logical provider name. Compilation keeps
-the parsed audit and its digest in the compiled result, allowing the native
-adapter to reject a manifest summary row that semantic checking did not consume.
-An omitted symbol is unknown, and compiler-, package-assembly-, and target-owned
-providers cannot be overridden by an external audit.
+External provider summaries use the strict
+`draft-provider-denial-summary-v2` line format documented in section 12. They
+are parsed semantic metadata for the current invocation and contain no native
+artifact digest. Compilation retains the parsed audit for effect and denial
+closure; an omitted symbol is unknown, and compiler-, package-assembly-, and
+target-owned providers cannot be overridden by an external audit.
 
 ## Nominal generic inference and transitive interfaces
 

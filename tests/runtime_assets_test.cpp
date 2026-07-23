@@ -1,4 +1,4 @@
-// Runtime-asset pinning, relocation, and complete-set verification tests.
+// Runtime-asset path validation without content pinning.
 
 #include "backend/runtime_assets.h"
 
@@ -44,7 +44,7 @@ void write_file(const std::filesystem::path &path, std::string_view bytes) {
   output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
-void test_file_and_directory_relocation(TestState &state) {
+void test_file_and_directory_paths(TestState &state) {
   TemporaryAssets temporary;
   const std::filesystem::path first_file = temporary.root / "first.data";
   const std::filesystem::path second_file = temporary.root / "relocated.data";
@@ -62,25 +62,25 @@ void test_file_and_directory_relocation(TestState &state) {
 
   std::vector<draft::RuntimeAssetInput> inputs{
       {"dictionary", first_file}, {"tables", first_directory}};
-  std::vector<draft::ExternalInputPin> pins;
-  draft::DiagnosticSink pin_diagnostics;
+  std::vector<draft::VerifiedRuntimeAssetInput> verified;
+  draft::DiagnosticSink inspect_diagnostics;
   EXPECT(state,
-      draft::pin_runtime_asset_inputs(inputs, pins, pin_diagnostics));
-  EXPECT(state, !pin_diagnostics.has_errors());
-  EXPECT(state, pins.size() == 2);
-  if (pins.size() == 2) {
-    EXPECT(state, pins[0].kind == draft::ExternalInputKind::RuntimeAsset);
-    EXPECT(state, pins[0].name == "dictionary");
-    EXPECT(state, pins[1].name == "tables");
+      draft::inspect_runtime_asset_inputs(
+          inputs, verified, inspect_diagnostics));
+  EXPECT(state, !inspect_diagnostics.has_errors());
+  EXPECT(state, verified.size() == 2);
+  if (verified.size() == 2) {
+    EXPECT(state, verified[0].name == "dictionary");
+    EXPECT(state, verified[0].path == std::filesystem::canonical(first_file));
+    EXPECT(state, verified[1].name == "tables");
   }
 
   inputs[0].path = second_file;
   inputs[1].path = second_directory;
-  std::vector<draft::VerifiedRuntimeAssetInput> verified;
   draft::DiagnosticSink verify_diagnostics;
   EXPECT(state,
-      draft::verify_runtime_asset_inputs(
-          inputs, pins, verified, verify_diagnostics));
+      draft::inspect_runtime_asset_inputs(
+          inputs, verified, verify_diagnostics));
   EXPECT(state, !verify_diagnostics.has_errors());
   EXPECT(state, verified.size() == 2);
   if (verified.size() == 2) {
@@ -90,39 +90,32 @@ void test_file_and_directory_relocation(TestState &state) {
   }
 
   write_file(second_directory / "nested" / "table", "changed table\n");
-  draft::DiagnosticSink stale_diagnostics;
+  draft::DiagnosticSink changed_diagnostics;
   EXPECT(state,
-      !draft::verify_runtime_asset_inputs(
-          inputs, pins, verified, stale_diagnostics));
-  EXPECT(state, stale_diagnostics.has_errors());
+      draft::inspect_runtime_asset_inputs(
+          inputs, verified, changed_diagnostics));
+  EXPECT(state, !changed_diagnostics.has_errors());
 }
 
-void test_invalid_and_incomplete_mappings(TestState &state) {
+void test_invalid_mappings(TestState &state) {
   TemporaryAssets temporary;
   const std::filesystem::path file = temporary.root / "asset";
   write_file(file, "asset bytes\n");
 
   draft::RuntimeAssetInput input{"locale", file};
-  std::vector<draft::ExternalInputPin> pins;
-  draft::DiagnosticSink pin_diagnostics;
-  EXPECT(state,
-      draft::pin_runtime_asset_inputs(
-          std::span<const draft::RuntimeAssetInput>(&input, 1),
-          pins,
-          pin_diagnostics));
-
   std::vector<draft::VerifiedRuntimeAssetInput> verified;
-  draft::DiagnosticSink missing_diagnostics;
+  draft::DiagnosticSink inspect_diagnostics;
   EXPECT(state,
-      !draft::verify_runtime_asset_inputs(
-          {}, pins, verified, missing_diagnostics));
-  EXPECT(state, missing_diagnostics.has_errors());
+      draft::inspect_runtime_asset_inputs(
+          std::span<const draft::RuntimeAssetInput>(&input, 1),
+          verified,
+          inspect_diagnostics));
 
   std::vector<draft::RuntimeAssetInput> duplicate{input, input};
   draft::DiagnosticSink duplicate_diagnostics;
   EXPECT(state,
-      !draft::pin_runtime_asset_inputs(
-          duplicate, pins, duplicate_diagnostics));
+      !draft::inspect_runtime_asset_inputs(
+          duplicate, verified, duplicate_diagnostics));
   EXPECT(state, duplicate_diagnostics.has_errors());
 
   std::error_code error;
@@ -132,9 +125,9 @@ void test_invalid_and_incomplete_mappings(TestState &state) {
   input.path = link;
   draft::DiagnosticSink link_diagnostics;
   EXPECT(state,
-      !draft::pin_runtime_asset_inputs(
+      !draft::inspect_runtime_asset_inputs(
           std::span<const draft::RuntimeAssetInput>(&input, 1),
-          pins,
+          verified,
           link_diagnostics));
   EXPECT(state, link_diagnostics.has_errors());
 }
@@ -143,8 +136,8 @@ void test_invalid_and_incomplete_mappings(TestState &state) {
 
 int main() {
   TestState state;
-  test_file_and_directory_relocation(state);
-  test_invalid_and_incomplete_mappings(state);
+  test_file_and_directory_paths(state);
+  test_invalid_mappings(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " runtime-asset expectation(s) failed\n";

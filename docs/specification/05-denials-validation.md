@@ -97,12 +97,13 @@ by semantic assignments in the selected build graph. Unknown writes, type
 erasure, or dynamically supplied targets produce an unknown edge. Optimization
 may not narrow this set. These contracts are inferred and add no source syntax.
 
-A foreign link provider may supply an audited denial summary for each imported
+A foreign link provider may supply an explicit denial summary for each imported
 symbol, including reachable Draft entries and flow-through callbacks. The
-compiler trusts it as an explicit boundary only when it matches the exact
-provider artifact hash recorded in the resolution manifest. Without a matching
-summary the foreign body contributes an unknown edge. An unknown edge rejects
-an active denial; compiler and runtime providers ship matching summaries.
+compiler uses a supplied summary as the semantic boundary for that invocation;
+it does not treat a hash of one artifact as authentication of the transitive
+native runtime. Without a summary the foreign body contributes an unknown edge.
+An unknown edge rejects an active denial; compiler and runtime providers expose
+their effects through compiler-owned contracts.
 
 The compiler checks a denial after resolving each handwritten or generated
 fragment and again after composing package and link-time summaries.

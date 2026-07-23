@@ -67,7 +67,7 @@ enum class NativeObjectEmitter {
 };
 
 // NativeBuildOptions is complete operational configuration for one synchronous
-// build. String paths and external-input vectors are owned by the caller's
+// build. String paths and operational input vectors are owned by the caller's
 // value; timings is the sole non-owning pointer and must outlive the call. None
 // of these fields is serialized as Draft semantic identity.
 struct NativeBuildOptions {
@@ -99,8 +99,8 @@ struct NativeBuildOptions {
   // task identity, object order, or any later publication step.
   std::size_t object_worker_count = 0;
   std::vector<ForeignProviderInput> foreign_providers;
-  // Runtime assets participate in resolved-program identity but are not passed
-  // to Clang. A manifest-bearing build must supply its complete relocated set.
+  // Runtime assets are deployment roots returned to embedding callers and are
+  // not passed to Clang or included in Draft source identity.
   std::vector<RuntimeAssetInput> runtime_assets;
   // Non-owning command diagnostic sink shared with semantic compilation.
   // Native timing includes parent wait time and, where the host exposes it,
@@ -140,8 +140,8 @@ struct NativeBuildResult {
   // linker side effect, so callers can copy and verify the exact companion.
   std::string import_library_path;
   Sha256Digest import_library_digest;
-  // Canonical physical roots verified for the exact manifest rows. This lets
-  // an embedding build system deploy them without the compiler inventing a
+  // Canonical physical roots checked for this invocation. This lets an
+  // embedding build system deploy them without the compiler inventing a
   // target-specific output layout. Empty on failure.
   std::vector<VerifiedRuntimeAssetInput> runtime_assets;
 };
@@ -153,8 +153,8 @@ struct NativeBuildResult {
 // retain every LLVM and package-assembly object; assembly mode produces a
 // directory with one collision-free source per unit/input. Remaining host-tool
 // arguments are passed directly to exec rather than through a shell. Runtime
-// assets are verified as external program inputs and returned to the caller,
-// but are never linker operands. The linked LLVM version is reported for
+// assets are validated as deployment inputs and returned to the caller, but
+// are never linker operands. The linked LLVM version is reported for
 // diagnostics/evidence and is not a semantic pin.
 [[nodiscard]] NativeBuildResult build_native_artifact(
     const TargetProfile &target,

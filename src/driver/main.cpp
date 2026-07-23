@@ -176,12 +176,6 @@ void configure_core_distribution(draft::WorkspaceLoadOptions &options) {
       workspace_directory, root_selector, package, diagnostics);
 }
 
-[[nodiscard]] draft::ResolutionStoreKey resolution_store_key(
-    const draft::TargetProfile &target,
-    const draft::WorkspacePackageSelection &package) {
-  return {target.facts.identity, package.identity};
-}
-
 // Resolves one user-facing target selector at the process boundary.  All
 // package commands call this helper before constructing compiler options so a
 // command cannot accidentally compile semantics for one profile and emit or
@@ -330,31 +324,17 @@ parse_native_artifact_kind(std::string_view spelling) {
   return true;
 }
 
-// Semantic compilation must consume the exact summary set selected by an
-// existing manifest. A development build without a manifest still validates
-// summary-to-artifact binding, but has no persistent pin set to compare.
+// Foreign summaries are explicit semantic inputs for this invocation. They are
+// parsed every time rather than being authenticated through a resolution
+// manifest: a native artifact digest cannot describe its transitive runtime
+// environment, and accepted Draft source does not own that environment.
 [[nodiscard]] bool load_foreign_provider_audits(
-    const std::string &workspace_directory,
-    const draft::ResolutionStoreKey &store_key,
     const std::vector<draft::ForeignProviderSummaryInput> &summary_inputs,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     std::vector<draft::ForeignProviderAudit> &audits,
     draft::DiagnosticSink &diagnostics) {
-  const draft::ResolutionManifestLoadResult loaded =
-      draft::load_resolution_manifest(
-          workspace_directory, store_key, diagnostics);
-  if (loaded.state == draft::ResolutionManifestLoadState::Invalid) return false;
-  if (loaded.state == draft::ResolutionManifestLoadState::Loaded) {
-    return draft::verify_foreign_provider_summary_inputs(
-        summary_inputs,
-        foreign_providers,
-        loaded.manifest.external_inputs,
-        audits,
-        diagnostics);
-  }
-  std::vector<draft::ExternalInputPin> ignored;
-  return draft::pin_foreign_provider_summary_inputs(
-      summary_inputs, foreign_providers, ignored, audits, diagnostics);
+  return draft::load_foreign_provider_summaries(
+      summary_inputs, foreign_providers, audits, diagnostics);
 }
 
 [[nodiscard]] std::string escaped(std::string_view text) {
@@ -546,11 +526,11 @@ int compile_package(
 }
 
 // Materializes the exact final SourceManager buffers selected by one complete
-// provider-free compilation. The command authenticates the same external
-// program inputs as a native build before publishing the projection, but it
-// never invokes a linker, provider, validation command, or resolution-store
-// mutation. The output directory must be absent so old files cannot survive a
-// later graph and masquerade as part of the current expanded program.
+// provider-free compilation. Native linker inputs and deployment assets are
+// operational and do not enter this source projection. The command never
+// invokes a linker, provider, validation command, or resolution-store mutation.
+// The output directory must be absent so old files cannot survive a later graph
+// and masquerade as part of the current expanded program.
 int expand_package(
     const std::string &workspace_spelling,
     std::string_view root_selector,
@@ -559,7 +539,6 @@ int expand_package(
     draft::RuntimeAssertionMode runtime_assertions,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
-    const std::vector<draft::RuntimeAssetInput> &runtime_assets,
     draft::TimingRecorder *timings) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -582,8 +561,6 @@ int expand_package(
   configure_core_distribution(options.workspace);
   options.timings = timings;
   if (!load_foreign_provider_audits(
-          options.workspace.workspace_directory,
-          resolution_store_key(target, selected_package),
           provider_summaries,
           foreign_providers,
           options.foreign_provider_audits,
@@ -598,39 +575,8 @@ int expand_package(
           selected_package.physical_directory.string(),
           std::move(options),
           diagnostics);
-  bool authenticated_inputs = compiled.ok;
-  if (compiled.ok && compiled.resolution_manifest.has_value()) {
-    // Source projection does not consume native artifacts or runtime assets,
-    // but their content hashes are part of this manifest's resolved-program
-    // identity. Re-authenticate the complete sets before labeling the output
-    // with that identity instead of trusting unrelated current filesystem
-    // bytes that happen to share the same logical names.
-    std::vector<draft::VerifiedForeignProviderInput> verified_providers;
-    std::vector<draft::VerifiedRuntimeAssetInput> verified_assets;
-    authenticated_inputs = draft::verify_foreign_provider_inputs(
-        foreign_providers,
-        compiled.resolution_manifest->external_inputs,
-        verified_providers,
-        diagnostics);
-    if (authenticated_inputs) {
-      authenticated_inputs = draft::verify_runtime_asset_inputs(
-          runtime_assets,
-          compiled.resolution_manifest->external_inputs,
-          verified_assets,
-          diagnostics);
-    }
-  } else if (compiled.ok &&
-             (!foreign_providers.empty() || !provider_summaries.empty() ||
-              !runtime_assets.empty())) {
-    diagnostics.error(
-        draft::SourceRange::invalid(),
-        "expanded source cannot attach external inputs to a handwritten "
-        "program without a resolution manifest");
-    authenticated_inputs = false;
-  }
-
   bool materialized = false;
-  if (authenticated_inputs && !diagnostics.has_errors()) {
+  if (compiled.ok && !diagnostics.has_errors()) {
     const draft::ExpandedSourceProjectionResult projected =
         draft::materialize_expanded_source(
             sources, compiled, output_directory, diagnostics);
@@ -775,8 +721,6 @@ int build_selected_package(
   compile_options.workspace.workspace_directory = workspace_directory.string();
   configure_core_distribution(compile_options.workspace);
   if (!load_foreign_provider_audits(
-          compile_options.workspace.workspace_directory,
-          resolution_store_key(target, selected_package),
           provider_summaries,
           foreign_providers,
           compile_options.foreign_provider_audits,
@@ -946,8 +890,6 @@ int validate_package(
   options.workspace.workspace_directory = workspace_directory.string();
   configure_core_distribution(options.workspace);
   if (!load_foreign_provider_audits(
-          options.workspace.workspace_directory,
-          resolution_store_key(target, selected_package),
           provider_summaries,
           foreign_providers,
           options.foreign_provider_audits,
@@ -1175,55 +1117,13 @@ int run_agent_command(
     resolve_options.regeneration_site_identities =
         regeneration_site_identities;
     resolve_options.cancellation_requested = command_cancellation_requested;
-    const bool external_inputs_configured = !foreign_providers.empty() ||
-        !provider_summaries.empty() || !runtime_assets.empty();
-    if (!external_inputs_configured) {
-      // A preserved manifest summary remains a semantic compiler input. The
-      // relocatable summary and matching artifact must be supplied again;
-      // compiling without them while retaining the previous manifest claim
-      // would silently turn audited edges back into unknown calls.
-      const draft::ResolutionManifestLoadResult loaded =
-          draft::load_resolution_manifest(
-              resolve_options.compile.workspace.workspace_directory,
-              resolution_store_key(target, selected_package),
-              diagnostics);
-      if (loaded.state == draft::ResolutionManifestLoadState::Invalid ||
-          (loaded.state == draft::ResolutionManifestLoadState::Loaded &&
-           !draft::verify_foreign_provider_summary_inputs(
-               {},
-               {},
-               loaded.manifest.external_inputs,
-               resolve_options.compile.foreign_provider_audits,
-               diagnostics))) {
-        std::cerr << draft::render_diagnostics(sources, diagnostics);
-        return 1;
-      }
-    }
-    if (external_inputs_configured) {
-      resolve_options.external_inputs_configured = true;
-      if (!draft::pin_runtime_asset_inputs(
-              runtime_assets,
-              resolve_options.external_inputs,
-              diagnostics)) {
-        std::cerr << draft::render_diagnostics(sources, diagnostics);
-        return 1;
-      }
-      if (!draft::pin_foreign_provider_inputs(
-              foreign_providers,
-              resolve_options.external_inputs,
-              diagnostics)) {
-        std::cerr << draft::render_diagnostics(sources, diagnostics);
-        return 1;
-      }
-      if (!draft::pin_foreign_provider_summary_inputs(
-              provider_summaries,
-              foreign_providers,
-              resolve_options.external_inputs,
-              resolve_options.compile.foreign_provider_audits,
-              diagnostics)) {
-        std::cerr << draft::render_diagnostics(sources, diagnostics);
-        return 1;
-      }
+    if (!load_foreign_provider_audits(
+            provider_summaries,
+            foreign_providers,
+            resolve_options.compile.foreign_provider_audits,
+            diagnostics)) {
+      std::cerr << draft::render_diagnostics(sources, diagnostics);
+      return 1;
     }
     // Copy after external provider summaries have populated the semantic audit
     // set. The post-commit continuation must receive the same target,
@@ -1312,8 +1212,6 @@ int run_agent_command(
   }
 
   if (!load_foreign_provider_audits(
-          options.workspace.workspace_directory,
-          resolution_store_key(target, selected_package),
           provider_summaries,
           foreign_providers,
           options.foreign_provider_audits,
@@ -1333,16 +1231,6 @@ int run_agent_command(
     }
     return 1;
   }
-  if (!compiled.resolution_manifest.has_value() &&
-      (!foreign_providers.empty() || !provider_summaries.empty())) {
-    diagnostics.error(
-        draft::SourceRange::invalid(),
-        "judgment cannot introduce external-input pins for a handwritten "
-        "program; run 'draftc resolve' with those inputs first");
-    std::cerr << draft::render_diagnostics(sources, diagnostics);
-    return 1;
-  }
-
   draft::JudgmentSelection selection;
   if (!draft::select_judgment_sites(
           compiled, judgment_selectors, selection, diagnostics)) {
@@ -1553,7 +1441,6 @@ int main(int argc, char **argv) {
     std::string root_selector = ".";
     std::vector<draft::ForeignProviderInput> foreign_providers;
     std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
-    std::vector<draft::RuntimeAssetInput> runtime_assets;
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--out" && !output_directory.has_value() &&
@@ -1585,14 +1472,6 @@ int main(int argc, char **argv) {
           return 2;
         }
         provider_summaries.push_back(std::move(summary));
-      } else if (argument == "--runtime-asset" && index + 1 < argc) {
-        draft::RuntimeAssetInput asset;
-        std::string reason;
-        if (!parse_runtime_asset(argv[++index], asset, reason)) {
-          std::cerr << "error: " << reason << '\n';
-          return 2;
-        }
-        runtime_assets.push_back(std::move(asset));
       } else if (is_timing_argument(argument)) {
         continue;
       } else {
@@ -1614,7 +1493,6 @@ int main(int argc, char **argv) {
             : draft::RuntimeAssertionMode::On,
         foreign_providers,
         provider_summaries,
-        runtime_assets,
         timings);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "resolve") {
