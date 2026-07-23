@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <limits>
@@ -18,6 +19,40 @@
 
 namespace draft {
 namespace {
+
+// EffectPhaseTimer is the semantic subsystem's narrow diagnostic boundary. A
+// null destination performs no clock reads. The explicit destination keeps
+// timing out of EffectSummaryResult and makes the ordinary semantic path
+// identical except for the requested observation.
+class EffectPhaseTimer {
+public:
+  explicit EffectPhaseTimer(std::uint64_t *destination)
+      : destination_(destination) {
+    if (destination_ != nullptr) started_ = Clock::now();
+  }
+
+  EffectPhaseTimer(const EffectPhaseTimer &) = delete;
+  EffectPhaseTimer &operator=(const EffectPhaseTimer &) = delete;
+
+  ~EffectPhaseTimer() { finish(); }
+
+  void finish() {
+    if (destination_ == nullptr) return;
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            Clock::now() - started_)
+            .count();
+    assert(elapsed >= 0 && "effect phase duration must be nonnegative");
+    *destination_ = static_cast<std::uint64_t>(elapsed);
+    destination_ = nullptr;
+  }
+
+private:
+  using Clock = std::chrono::steady_clock;
+
+  std::uint64_t *destination_ = nullptr;
+  Clock::time_point started_;
+};
 
 void add_effect(std::vector<SemanticEffect> &effects, SemanticEffect effect) {
   if (std::find(effects.begin(), effects.end(), effect) == effects.end()) {
@@ -336,7 +371,12 @@ public:
 
   [[nodiscard]] EffectSummaryResult close(
       std::span<const EffectSourceProcedure> source_procedures,
-      const DirectEffectSummaryResult &direct) {
+      const DirectEffectSummaryResult &direct,
+      ProcedureEffectClosureTimings *timings) {
+    EffectPhaseTimer setup_timing(
+        timings == nullptr
+            ? nullptr
+            : &timings->contract_table_setup_nanoseconds);
     assert(direct_lookup_ != nullptr);
     direct_ = *direct_lookup_;
     direct_lookup_ = &direct_;
@@ -347,14 +387,21 @@ public:
           direct_.procedures[index].procedure);
       direct_.procedures[index] = direct.procedures[index];
     }
+    setup_timing.finish();
 
     // Returned procedure values and caller-visible pointer writes are closed
     // only after the independent body-local products exist. Concrete target
     // discovery may refine the graph; each refinement rebuilds SCCs before the
     // affected components continue.
-    close_source_flow(source_procedures, false);
-    local_returns_complete_ = true;
-    close_source_flow(source_procedures, true);
+    {
+      EffectPhaseTimer flow_timing(
+          timings == nullptr
+              ? nullptr
+              : &timings->procedure_flow_nanoseconds);
+      close_source_flow(source_procedures, false);
+      local_returns_complete_ = true;
+      close_source_flow(source_procedures, true);
+    }
 
     closed_.procedures.reserve(direct_.procedures.size());
     for (const DirectProcedureEffectSummary &source : direct_.procedures) {
@@ -371,7 +418,17 @@ public:
     // callees to callers. An acyclic singleton executes once. A recursive SCC
     // repeats only its own rows; each changing pass adds one member of a finite
     // source-derived effect set, so no arbitrary iteration bound is required.
-    closed_.components = build_effect_components(direct_.procedures);
+    {
+      EffectPhaseTimer component_timing(
+          timings == nullptr
+              ? nullptr
+              : &timings->scc_construction_nanoseconds);
+      closed_.components = build_effect_components(direct_.procedures);
+    }
+    EffectPhaseTimer propagation_timing(
+        timings == nullptr
+            ? nullptr
+            : &timings->effect_propagation_nanoseconds);
     for (const ClosedEffectComponent &component : closed_.components) {
       bool changed = false;
       do {
@@ -394,11 +451,16 @@ public:
         }
       } while (changed);
     }
+    propagation_timing.finish();
 
     // Recompose each source call once against the closed procedure summaries.
     // The denial walker consumes these exact rows, so a typed field selected at
     // one call site cannot degrade back into an unknown edge during its second
     // lexical-policy check.
+    EffectPhaseTimer call_site_timing(
+        timings == nullptr
+            ? nullptr
+            : &timings->call_site_composition_nanoseconds);
     for (const DirectProcedureEffectSummary &summary : direct_.procedures) {
       for (const ProcedureInvocationSummary &invocation :
            summary.direct_invocations) {
@@ -417,6 +479,7 @@ public:
             {summary.procedure, invocation.expression, std::move(site.effects)});
       }
     }
+    call_site_timing.finish();
     return std::move(closed_);
   }
 
@@ -2395,9 +2458,10 @@ DirectProcedureEffectSummary collect_direct_procedure_effect(
 
 EffectSummaryResult close_procedure_effects(
     const ProcedureEffectAnalysis &analysis,
-    const DirectEffectSummaryResult &direct) {
+    const DirectEffectSummaryResult &direct,
+    ProcedureEffectClosureTimings *timings) {
   EffectCollector collector(analysis);
-  return collector.close(analysis.source_procedures, direct);
+  return collector.close(analysis.source_procedures, direct, timings);
 }
 
 DirectEffectSummaryResult collect_direct_procedure_effects(

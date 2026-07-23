@@ -73,6 +73,11 @@ if(NOT all_stderr MATCHES "source file I/O: package.draft" OR
    NOT all_stderr MATCHES "lex and parse: package.draft" OR
    NOT all_stderr MATCHES "import graph resolution: workspace:hello" OR
    NOT all_stderr MATCHES "package declarations: workspace:hello" OR
+   NOT all_stderr MATCHES "semantic ready-wave selection:" OR
+   NOT all_stderr MATCHES "interface task execution:" OR
+   NOT all_stderr MATCHES "procedure-flow fixed point:" OR
+   NOT all_stderr MATCHES "effect SCC construction:" OR
+   NOT all_stderr MATCHES "transitive effect propagation:" OR
    NOT all_stderr MATCHES "\\(self ")
   message(FATAL_ERROR
     "all report lacks source/import/package/exclusive detail\n${all_stderr}")

@@ -88,10 +88,11 @@ The process driver may attach one command-owned timing recorder to the existing
 phase option structs. Compiler, validation, and native adapters contribute
 nested events and deterministic work counters; none may consult recorded time
 or make it part of semantic identity. Sequential phases use an explicit nesting
-stack. Parallel native workers measure into task-owned result slots; after the
-join, the command thread appends those completed events in stable task-ID order.
-The recorder itself therefore remains single-threaded, and scheduler completion
-order cannot change timing row order or compiler results.
+stack. Parallel semantic and native workers measure into task-owned result
+slots; after the join, the command thread appends completed events and their
+phase children in stable task-ID order. The recorder itself therefore remains
+single-threaded, and scheduler completion order cannot change timing row order
+or compiler results.
 
 The events reflect the implementation's real orchestration rather than the
 conceptual diagram alone. An ordinary handwritten `check` constructs one graph:
@@ -142,9 +143,13 @@ O(packages + imports), without a persistent cache. The `compiler passes`,
 `workspace loads`, `workspace source transitions`, `package body starts`,
 `procedure bodies checked`, `external procedure bodies materialized`, and ABI
 classification wave/task/worker counters make those distinct operations
-visible. `--timings=all` adds package/tool scopes, file
-discovery and I/O, lexing/parsing, import-graph resolution, and exclusive time;
-child process CPU is reported separately from parent wall time.
+visible. `--timings=all` adds package/tool scopes, file discovery and I/O,
+lexing/parsing, import-graph resolution, declaration ready-wave execution and
+publication, procedure-flow/effect closure subphases, and per-package LLVM
+parse/verify/optimize/code-generation phases. Exclusive time remains meaningful
+inside sequential groups; independently scheduled child durations may overlap
+their parent wall time. Child process CPU is reported separately from parent
+wall time.
 
 Each package row separates its immutable package-interface payload from its
 body-owned semantic tables and constants. Every authored symbolic template and

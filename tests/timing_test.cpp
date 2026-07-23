@@ -13,6 +13,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -131,6 +132,44 @@ void test_completed_parallel_events_keep_caller_order() {
   expect_contains(report, "system: 1.000 ms", "parallel child system CPU");
 }
 
+void test_completed_event_group_preserves_hierarchy() {
+  std::uint64_t now = 0;
+  draft::TimingRecorder recorder(draft::TimingOutput::All, fake_now, &now);
+  {
+    draft::TimingScope native = recorder.scope("native objects");
+    now += 8'000'000;
+    const std::vector<draft::CompletedTimingEvent> phases{
+        {"IR parsing", 2'000'000},
+        {"IR verification", 1'000'000},
+        {"object emission", 4'000'000},
+    };
+    recorder.record_completed_event_group(
+        "package module",
+        7'000'000,
+        draft::TimingVisibility::Detail,
+        phases);
+  }
+
+  const std::string report = recorder.render();
+  expect_contains(
+      report,
+      "package module: 7.000 ms (self 0.000 ms)",
+      "completed group parent");
+  expect_contains(
+      report,
+      "IR parsing: 2.000 ms (self 2.000 ms)",
+      "completed group child");
+  const std::size_t parent = report.find("package module:");
+  const std::size_t parsing = report.find("IR parsing:");
+  const std::size_t verification = report.find("IR verification:");
+  if (parent == std::string::npos || parsing == std::string::npos ||
+      verification == std::string::npos || parent >= parsing ||
+      parsing >= verification) {
+    std::cerr << "completed event group lost hierarchy order\n" << report;
+    std::exit(1);
+  }
+}
+
 void test_disabled_recorder_is_a_no_op() {
   std::uint64_t now = 0;
   draft::TimingRecorder recorder(
@@ -153,6 +192,7 @@ int main() {
   test_summary_filters_detail_but_keeps_accounting();
   test_all_reports_exclusive_and_child_cpu_time();
   test_completed_parallel_events_keep_caller_order();
+  test_completed_event_group_preserves_hierarchy();
   test_disabled_recorder_is_a_no_op();
   return 0;
 }

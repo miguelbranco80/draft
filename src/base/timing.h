@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -48,6 +49,16 @@ enum class TimingVisibility {
 using TimingNowFunction = std::uint64_t (*)(void *state);
 
 class TimingRecorder;
+
+// One already measured child of a completed parallel operation. The caller
+// owns name and supplies children in deterministic semantic order; the
+// recorder copies the name while replaying the group on its owning thread.
+// Child durations may overlap because they can describe independently
+// scheduled work inside the parent. They are diagnostic observations only.
+struct CompletedTimingEvent {
+  std::string name;
+  std::uint64_t elapsed_nanoseconds = 0;
+};
 
 // TimingScope is the movable, noncopyable lifetime token for one event. Its
 // destructor closes the event, so early diagnostic returns cannot leave the
@@ -128,6 +139,17 @@ public:
       std::uint64_t elapsed_nanoseconds,
       TimingVisibility visibility);
 
+  // Appends one completed parent plus its completed direct children beneath
+  // the active scope. Parallel workers use this after joining to preserve a
+  // useful hierarchy without ever mutating the recorder themselves. Parent
+  // and child insertion follows caller order and is therefore independent of
+  // worker completion order.
+  void record_completed_event_group(
+      std::string_view name,
+      std::uint64_t elapsed_nanoseconds,
+      TimingVisibility visibility,
+      std::span<const CompletedTimingEvent> children);
+
   // Appends one completed external-process event and accounts its child CPU.
   // Keeping this spelling separate avoids a boolean whose meaning would be
   // unclear at call sites. When a detail row is hidden in Summary mode, child
@@ -165,6 +187,11 @@ private:
 
   [[nodiscard]] std::uint64_t now_nanoseconds() const;
   [[nodiscard]] std::size_t append_completed_event(
+      std::string_view name,
+      std::uint64_t elapsed_nanoseconds,
+      TimingVisibility visibility);
+  [[nodiscard]] std::size_t append_completed_child_event(
+      std::size_t parent,
       std::string_view name,
       std::uint64_t elapsed_nanoseconds,
       TimingVisibility visibility);

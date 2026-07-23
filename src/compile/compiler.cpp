@@ -58,6 +58,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -87,6 +89,90 @@ namespace {
       std::string(phase) + display_package_identity(identity),
       TimingVisibility::Detail);
 }
+
+// AccumulatedPhaseTimer adds one lexical interval to a caller-owned total. A
+// null destination performs no clock reads, keeping ordinary compilation free
+// of diagnostic measurement overhead. Interface analysis uses this because
+// its dynamic graph may execute dozens of sequential ready waves, while the
+// useful report is the aggregate cost of selection, preparation, execution,
+// and deterministic publication rather than one row per wave.
+class AccumulatedPhaseTimer {
+public:
+  explicit AccumulatedPhaseTimer(std::uint64_t *destination)
+      : destination_(destination) {
+    if (destination_ != nullptr) started_ = Clock::now();
+  }
+
+  AccumulatedPhaseTimer(const AccumulatedPhaseTimer &) = delete;
+  AccumulatedPhaseTimer &operator=(const AccumulatedPhaseTimer &) = delete;
+
+  ~AccumulatedPhaseTimer() { finish(); }
+
+  void finish() {
+    if (destination_ == nullptr) return;
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            Clock::now() - started_)
+            .count();
+    assert(elapsed >= 0 && "compiler phase duration must be nonnegative");
+    *destination_ += static_cast<std::uint64_t>(elapsed);
+    destination_ = nullptr;
+  }
+
+private:
+  using Clock = std::chrono::steady_clock;
+
+  std::uint64_t *destination_ = nullptr;
+  Clock::time_point started_;
+};
+
+// InterfaceTimingBreakdown owns aggregate detail for one complete declaration
+// product graph. Its destructor runs before the enclosing declaration scope
+// closes, replaying stable children on the command thread even when semantic
+// analysis returns early. Package-name task rows are worker-local durations
+// collected in ready-wave/product order; they remain nested beneath the total
+// execution cost and never mutate TimingRecorder from a worker.
+struct InterfaceTimingBreakdown {
+  explicit InterfaceTimingBreakdown(TimingRecorder *command_timings)
+      : timings(command_timings != nullptr &&
+                    command_timings->output() == TimingOutput::All
+                ? command_timings
+                : nullptr) {}
+
+  ~InterfaceTimingBreakdown() {
+    if (timings == nullptr) return;
+    timings->record_completed_event(
+        "semantic ready-wave selection",
+        ready_wave_nanoseconds,
+        TimingVisibility::Detail);
+    timings->record_completed_event(
+        "interface task preparation",
+        preparation_nanoseconds,
+        TimingVisibility::Detail);
+    timings->record_completed_event_group(
+        "interface task execution",
+        execution_nanoseconds,
+        TimingVisibility::Detail,
+        package_events);
+    timings->record_completed_event(
+        "interface result publication",
+        publication_nanoseconds,
+        TimingVisibility::Detail);
+  }
+
+  [[nodiscard]] bool enabled() const { return timings != nullptr; }
+
+  [[nodiscard]] std::uint64_t *destination(std::uint64_t &value) {
+    return enabled() ? &value : nullptr;
+  }
+
+  TimingRecorder *timings = nullptr;
+  std::uint64_t ready_wave_nanoseconds = 0;
+  std::uint64_t preparation_nanoseconds = 0;
+  std::uint64_t execution_nanoseconds = 0;
+  std::uint64_t publication_nanoseconds = 0;
+  std::vector<CompletedTimingEvent> package_events;
+};
 
 // Publishes a private diagnostic packet into the coordinator sink without
 // exposing DiagnosticSink's storage for mutation. Interface synthesis body
@@ -1382,8 +1468,6 @@ void bind_handwritten_program_identity(
     package.validation_context = std::move(validation_context);
     package.validation_context_is_typed = validation_context_is_typed;
   }
-  TimingScope package_timing = time_package_phase(
-      options.timings, "package declarations: ", workspace_package.identity);
   if (!resume_product_discovery) {
     for (const LoadedPackageFile &file : workspace_package.loaded.files) {
       if (file.kind != PackageFileKind::AssemblySource)
@@ -1450,6 +1534,9 @@ struct WorkspaceInterfaceTaskSlot {
   std::optional<ConstantProductAttempt> constant;
   std::optional<SemanticPackage> constant_package;
   std::size_t constant_shared_type_count = 0;
+  // Worker-local wall time is populated only for --timings=all and replayed by
+  // the coordinator after the ready wave joins. It never orders publication.
+  std::uint64_t elapsed_nanoseconds = 0;
 };
 
 // InterfaceSynthesisSurface is the immutable semantic side of one exact product
@@ -2604,9 +2691,14 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       options.timings != nullptr
           ? options.timings->scope("declaration semantics")
           : TimingScope{};
+  InterfaceTimingBreakdown interface_timing(options.timings);
   while (true) {
-    const SemanticReadyWave wave =
-        freeze_semantic_ready_wave(result.semantic_graph);
+    SemanticReadyWave wave;
+    {
+      AccumulatedPhaseTimer ready_timing(interface_timing.destination(
+          interface_timing.ready_wave_nanoseconds));
+      wave = freeze_semantic_ready_wave(result.semantic_graph);
+    }
     if (wave.status == SemanticReadyWaveStatus::Complete)
       return true;
     if (wave.status == SemanticReadyWaveStatus::WaitingForSynthesis) {
@@ -2627,6 +2719,8 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       return false;
     }
 
+    AccumulatedPhaseTimer preparation_timing(interface_timing.destination(
+        interface_timing.preparation_nanoseconds));
     std::vector<WorkspaceInterfaceTaskSlot> slots(wave.products.size());
     // Every read-only interface task starts from a frozen canonical prefix and
     // returns only its private payload. Declaration and generic-owner products
@@ -2647,6 +2741,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       std::vector<bool> *retained_validation_is_typed = nullptr;
       std::vector<WorkspaceInterfaceTaskSlot> *slots = nullptr;
       const std::vector<std::size_t> *task_indices = nullptr;
+      bool collect_task_timings = false;
     };
     InterfaceWaveExecution execution{
         &sources,
@@ -2658,6 +2753,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         &retained_validation_is_typed,
         &slots,
         nullptr,
+        interface_timing.enabled(),
     };
     const auto execute_interface_task = [](
         void *opaque, WorkTaskId scheduled_task,
@@ -2675,9 +2771,13 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       auto &slots = *execution.slots;
       const std::size_t task_index =
           (*execution.task_indices)[static_cast<std::size_t>(scheduled_task)];
+      WorkspaceInterfaceTaskSlot &slot = slots[task_index];
+      AccumulatedPhaseTimer task_timing(
+          execution.collect_task_timings
+              ? &slot.elapsed_nanoseconds
+              : nullptr);
       do {
       const SemanticProductId product = wave.products[task_index];
-      WorkspaceInterfaceTaskSlot &slot = slots[task_index];
       if (static_cast<std::size_t>(product.value) >=
           result.semantic_products.package_by_product.size()) {
         slot.outcome.kind = SemanticProductOutcomeKind::Error;
@@ -3244,11 +3344,36 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         execution_graph.tasks[task].dependencies.push_back(task - 1);
       }
     }
-    const WorkGraphRunResult scheduled = run_work_graph(
-        execution_graph,
-        WorkGraphRunOptions{options.semantic_worker_count},
-        execute_interface_task,
-        &execution);
+    preparation_timing.finish();
+    WorkGraphRunResult scheduled;
+    {
+      AccumulatedPhaseTimer execution_timing(interface_timing.destination(
+          interface_timing.execution_nanoseconds));
+      scheduled = run_work_graph(
+          execution_graph,
+          WorkGraphRunOptions{options.semantic_worker_count},
+          execute_interface_task,
+          &execution);
+    }
+    AccumulatedPhaseTimer publication_timing(interface_timing.destination(
+        interface_timing.publication_nanoseconds));
+    if (interface_timing.enabled()) {
+      for (std::size_t task_index = 0;
+           task_index < wave.products.size(); ++task_index) {
+        const SemanticProductId product = wave.products[task_index];
+        if (result.semantic_graph.products[product.value].kind !=
+            SemanticProductKind::PackageNameSet) {
+          continue;
+        }
+        const PackageId owner =
+            result.semantic_products.package_by_product[product.value];
+        interface_timing.package_events.push_back({
+            "package declarations: " + display_package_identity(
+                result.graph.packages[owner.value].identity),
+            slots[task_index].elapsed_nanoseconds,
+        });
+      }
+    }
     if (options.timings != nullptr) {
       std::size_t generic_owner_tasks = 0;
       std::size_t declaration_tasks = 0;
@@ -7063,8 +7188,37 @@ bool continue_compiled_workspace_semantics(
     TimingScope effect_closure_timing = options.timings != nullptr
         ? options.timings->scope("effect flow closure")
         : TimingScope{};
+    ProcedureEffectClosureTimings effect_closure_phases;
     package.effects = close_procedure_effects(
-        effect_analysis, package.direct_effects);
+        effect_analysis,
+        package.direct_effects,
+        options.timings != nullptr &&
+                options.timings->output() == TimingOutput::All
+            ? &effect_closure_phases
+            : nullptr);
+    if (options.timings != nullptr &&
+        options.timings->output() == TimingOutput::All) {
+      options.timings->record_completed_event(
+          "effect contract-table setup",
+          effect_closure_phases.contract_table_setup_nanoseconds,
+          TimingVisibility::Detail);
+      options.timings->record_completed_event(
+          "procedure-flow fixed point",
+          effect_closure_phases.procedure_flow_nanoseconds,
+          TimingVisibility::Detail);
+      options.timings->record_completed_event(
+          "effect SCC construction",
+          effect_closure_phases.scc_construction_nanoseconds,
+          TimingVisibility::Detail);
+      options.timings->record_completed_event(
+          "transitive effect propagation",
+          effect_closure_phases.effect_propagation_nanoseconds,
+          TimingVisibility::Detail);
+      options.timings->record_completed_event(
+          "call-site effect composition",
+          effect_closure_phases.call_site_composition_nanoseconds,
+          TimingVisibility::Detail);
+    }
     effect_closure_timing.finish();
     if (!publish_package_effect_scc_products(
             package_index,

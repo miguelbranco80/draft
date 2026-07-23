@@ -73,12 +73,20 @@ executables. In-process LLVM work contributes ordinary parent wall/CPU time.
 
 `--timings=all` adds package/tool-level events, source discovery and I/O,
 lexing/parsing, import-graph resolution, and each visible event's exclusive
-`self` duration. Reports are diagnostic observations only: the flag does not
-enter compiler configuration, resolved-program identity, manifests,
-or emitted artifacts. Durations naturally vary with the host, while counters
-and phase names describe the work the command actually performed. Failed
-commands still print the completed portion of an enabled report, which makes
-the option useful for locating failure-path costs.
+`self` duration. Declaration semantics is divided into ready-wave selection,
+task preparation, bounded task execution, and coordinator publication. Effect
+closure separates procedure-flow convergence, SCC construction, transitive
+effect propagation, and call-site composition. Each parallel LLVM package row
+separates context/input preparation, textual IR parsing, target validation,
+one-time verification, target-machine setup, optional O2/ASan passes, machine
+code emission, and output copying.
+
+Reports are diagnostic observations only: the flag does not enter compiler
+configuration, resolved-program identity, manifests, or emitted artifacts.
+Durations naturally vary with the host, while counters and phase names describe
+the work the command actually performed. Failed commands still print the
+completed portion of an enabled report, which makes the option useful for
+locating failure-path costs.
 
 ## Run Turbo Draft
 

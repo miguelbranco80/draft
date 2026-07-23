@@ -152,6 +152,27 @@ void TimingRecorder::record_completed_event(
   (void)append_completed_event(name, elapsed_nanoseconds, visibility);
 }
 
+void TimingRecorder::record_completed_event_group(
+    std::string_view name,
+    std::uint64_t elapsed_nanoseconds,
+    TimingVisibility visibility,
+    std::span<const CompletedTimingEvent> children) {
+  if (!enabled() ||
+      (output_ == TimingOutput::Summary &&
+       visibility == TimingVisibility::Detail)) {
+    return;
+  }
+  const std::size_t parent =
+      append_completed_event(name, elapsed_nanoseconds, visibility);
+  for (const CompletedTimingEvent &child : children) {
+    (void)append_completed_child_event(
+        parent,
+        child.name,
+        child.elapsed_nanoseconds,
+        TimingVisibility::Detail);
+  }
+}
+
 void TimingRecorder::record_completed_process_event(
     std::string_view name,
     std::uint64_t elapsed_nanoseconds,
@@ -265,6 +286,23 @@ std::size_t TimingRecorder::append_completed_event(
   Event event;
   event.name = std::string(name);
   event.parent = active_events_.back();
+  event.visibility = visibility;
+  event.elapsed_nanoseconds = elapsed_nanoseconds;
+  event.finished = true;
+  const std::size_t index = events_.size();
+  events_.push_back(std::move(event));
+  return index;
+}
+
+std::size_t TimingRecorder::append_completed_child_event(
+    std::size_t parent,
+    std::string_view name,
+    std::uint64_t elapsed_nanoseconds,
+    TimingVisibility visibility) {
+  assert(parent < events_.size() && "completed child parent must be valid");
+  Event event;
+  event.name = std::string(name);
+  event.parent = parent;
   event.visibility = visibility;
   event.elapsed_nanoseconds = elapsed_nanoseconds;
   event.finished = true;

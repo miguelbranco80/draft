@@ -130,6 +130,14 @@ non-recursive transfers run once, and later HIR rediscovery is limited to rows
 that actually consumed a local returned-procedure or pointer-write contract.
 Only recursive flow SCCs iterate internally.
 
+Detailed command timing observes this boundary without entering semantic data.
+The interface graph reports aggregate ready-wave selection, task preparation,
+bounded execution, and deterministic publication across all dynamic waves.
+Effect closure reports contract-table setup, procedure-flow convergence, final
+SCC construction, transitive effect propagation, and call-site composition for
+each package. Worker measurements stay in task-owned slots and are replayed by
+the coordinator in product order.
+
 ## Emission reachability
 
 Semantic checking and machine emission are separate questions. The first

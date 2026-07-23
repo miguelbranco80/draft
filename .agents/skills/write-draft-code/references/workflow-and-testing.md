@@ -271,11 +271,13 @@ build/draftc build path/to/workspace --root package -o /tmp/program --timings=al
 
 `--timings` reports major wall-clock phases and work counters to stderr.
 `--timings=all` adds package/tool scopes, file I/O, lexing/parsing,
-import-graph resolution, and exclusive `self` time; native and validation
-commands also distinguish child-process CPU from wall time. Compare
-phase structure and counters before comparing small durations, which vary with
-the host and warm filesystem caches. Timing is diagnostic only and never
-changes program identity or output.
+import-graph resolution, declaration ready-wave execution/publication,
+procedure-flow and effect-closure stages, per-package LLVM
+parse/verify/optimize/code-generation stages, and exclusive `self` time. Native
+and validation commands also distinguish child-process CPU from wall time.
+Compare phase structure and counters before comparing small durations, which
+vary with the host and warm filesystem caches. Timing is diagnostic only and
+never changes program identity or output.
 
 Provider-using resolution reports `provider synthesis` for each ready wave and
 counts both `synthesis provider ready waves` and actual provider calls. Calls in

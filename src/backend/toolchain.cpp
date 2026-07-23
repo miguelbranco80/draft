@@ -674,11 +674,13 @@ struct NativeObjectTaskProduct {
   std::string native_bytes;
   std::string source_bytes;
   std::string timing_name;
+  LlvmObjectEmissionPhaseTimings llvm_phase_timings;
   std::uint64_t elapsed_nanoseconds = 0;
   std::uint64_t child_user_nanoseconds = 0;
   std::uint64_t child_system_nanoseconds = 0;
   bool publish_source = false;
   bool child_started = false;
+  bool has_llvm_phase_timings = false;
 };
 
 // The context borrows immutable build inputs for one synchronous WorkGraph
@@ -693,6 +695,7 @@ struct NativeObjectExecutionContext {
   NativeInstrumentationProfile instrumentation =
       NativeInstrumentationProfile::None;
   bool assembly_output = false;
+  bool collect_llvm_phase_timings = false;
   std::string clang_path;
   std::filesystem::path build_directory;
   std::vector<NativeObjectTaskProduct> *products = nullptr;
@@ -766,11 +769,15 @@ void capture_child_usage(
               NativeInstrumentationProfile::AddressSanitizer
           ? LlvmNativeInstrumentation::AddressSanitizer
           : LlvmNativeInstrumentation::None;
+      emission_options.collect_phase_timings =
+          context.collect_llvm_phase_timings;
       LlvmObjectEmissionResult emitted = emit_llvm_object_in_process(
           *context.target,
           task.display_name,
           native_module,
           emission_options);
+      product.llvm_phase_timings = emitted.phase_timings;
+      product.has_llvm_phase_timings = context.collect_llvm_phase_timings;
       if (!emitted.ok) {
         failure = std::move(emitted.failure);
         return false;
@@ -1037,6 +1044,8 @@ NativeBuildResult build_native_artifact(
   execution.optimization = options.optimization;
   execution.instrumentation = options.instrumentation;
   execution.assembly_output = assembly_output;
+  execution.collect_llvm_phase_timings = options.timings != nullptr &&
+      options.timings->output() == TimingOutput::All;
   execution.clang_path = clang_path;
   execution.build_directory = build_directory;
   execution.products = &products;
@@ -1071,6 +1080,50 @@ NativeBuildResult build_native_artifact(
             product.child_user_nanoseconds,
             product.child_system_nanoseconds,
             TimingVisibility::Detail);
+      } else if (product.has_llvm_phase_timings) {
+        const LlvmObjectEmissionPhaseTimings &phase =
+            product.llvm_phase_timings;
+        std::vector<CompletedTimingEvent> children;
+        children.reserve(10);
+        const auto append_phase = [&](std::string_view name,
+                                      std::uint64_t elapsed) {
+          if (elapsed != 0) {
+            children.push_back({std::string(name), elapsed});
+          }
+        };
+        append_phase(
+            "LLVM target initialization",
+            phase.target_initialization_nanoseconds);
+        append_phase(
+            "LLVM context and input preparation",
+            phase.input_preparation_nanoseconds);
+        append_phase("LLVM IR parsing", phase.ir_parsing_nanoseconds);
+        append_phase(
+            "LLVM module target validation",
+            phase.target_validation_nanoseconds);
+        append_phase(
+            "LLVM IR verification",
+            phase.ir_verification_nanoseconds);
+        append_phase(
+            "LLVM target-machine setup",
+            phase.target_machine_nanoseconds);
+        append_phase(
+            "LLVM O2 optimization",
+            phase.o2_optimization_nanoseconds);
+        append_phase(
+            "LLVM ASan instrumentation",
+            phase.asan_instrumentation_nanoseconds);
+        append_phase(
+            assembly_output
+                ? "LLVM assembly emission"
+                : "LLVM object emission",
+            phase.machine_code_emission_nanoseconds);
+        append_phase("native output copy", phase.output_copy_nanoseconds);
+        options.timings->record_completed_event_group(
+            timing_name,
+            product.elapsed_nanoseconds,
+            TimingVisibility::Detail,
+            children);
       } else {
         options.timings->record_completed_event(
             timing_name,

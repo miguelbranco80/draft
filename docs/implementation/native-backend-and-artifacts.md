@@ -175,10 +175,16 @@ diagnostic sink or timing recorder.
 
 After every started task joins, the command thread replays timing records,
 selects the lowest-ID failure, and publishes successful products in task-ID
-order. A failed ready set publishes no canonical native object. Successful
-publication fixes assembly filenames, object/link argument order, and archive
-member order independently of worker completion order. One-worker and
-four-worker qualification builds compare every artifact tree byte for byte.
+order. Detailed LLVM rows retain task-local durations for target initialization,
+context/input preparation, textual parsing, target validation, one-time module
+verification, target-machine setup, optional O2 or ASan passes, machine-code
+emission, and output copying. The command thread nests those children beneath
+their package event; no worker touches the timing recorder.
+
+A failed ready set publishes no canonical native object. Successful publication
+fixes assembly filenames, object/link argument order, and archive member order
+independently of worker completion order. One-worker and four-worker
+qualification builds compare every artifact tree byte for byte.
 
 The external Clang oracle is also exercised against the same real compiled
 graphs for executable, relocatable object, static library, dynamic library, and

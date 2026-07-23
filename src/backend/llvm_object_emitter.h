@@ -27,6 +27,7 @@
 
 #include "target/profile.h"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -79,15 +80,39 @@ struct LlvmObjectEmissionOptions {
   NativeOptimizationLevel optimization = NativeOptimizationLevel::O0;
   LlvmNativeInstrumentation instrumentation =
       LlvmNativeInstrumentation::None;
+  // Phase timing performs steady-clock reads only for --timings=all. The
+  // resulting observations travel back through the task-owned result and are
+  // replayed by the command thread; the worker never touches TimingRecorder.
+  bool collect_phase_timings = false;
+};
+
+// Wall durations for the sequential operations inside one isolated LLVM
+// package-module task. Zero means the diagnostic measurement was disabled or
+// the operation was not reached. These values never enter artifact identity or
+// influence LLVM behavior; they exist solely so the native coordinator can
+// reconstruct nested --timings=all rows after parallel workers join.
+struct LlvmObjectEmissionPhaseTimings {
+  std::uint64_t target_initialization_nanoseconds = 0;
+  std::uint64_t input_preparation_nanoseconds = 0;
+  std::uint64_t ir_parsing_nanoseconds = 0;
+  std::uint64_t target_validation_nanoseconds = 0;
+  std::uint64_t ir_verification_nanoseconds = 0;
+  std::uint64_t target_machine_nanoseconds = 0;
+  std::uint64_t o2_optimization_nanoseconds = 0;
+  std::uint64_t asan_instrumentation_nanoseconds = 0;
+  std::uint64_t machine_code_emission_nanoseconds = 0;
+  std::uint64_t output_copy_nanoseconds = 0;
 };
 
 // bytes contains exactly one object file or one textual assembly file on
 // success. failure is empty on success and owns a stable adapter-prefixed reason
-// on failure. No LLVM reference or pointer escapes this value.
+// on failure. phase_timings contains only diagnostic wall durations requested
+// by the caller. No LLVM reference or pointer escapes this value.
 struct LlvmObjectEmissionResult {
   bool ok = false;
   std::string bytes;
   std::string failure;
+  LlvmObjectEmissionPhaseTimings phase_timings;
 };
 
 // Returns the LLVM distribution version linked into draftc. This is build

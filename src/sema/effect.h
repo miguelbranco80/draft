@@ -321,6 +321,18 @@ struct EffectSummaryResult {
       SymbolId procedure, HirExpressionId expression) const;
 };
 
+// Diagnostic wall durations for the sequential subphases of one package's
+// effect closure. The caller supplies this optional output only for detailed
+// compiler timing. Measurements neither enter EffectSummaryResult nor affect
+// graph construction, fixed-point ordering, or semantic identity.
+struct ProcedureEffectClosureTimings {
+  std::uint64_t contract_table_setup_nanoseconds = 0;
+  std::uint64_t procedure_flow_nanoseconds = 0;
+  std::uint64_t scc_construction_nanoseconds = 0;
+  std::uint64_t effect_propagation_nanoseconds = 0;
+  std::uint64_t call_site_composition_nanoseconds = 0;
+};
+
 // Builds the shared read-only package context used by direct discovery and
 // closure. selected_indices must be strictly increasing. A selected body may
 // own no runtime HIR row; every nonempty body owns exactly one, as guaranteed
@@ -344,7 +356,8 @@ struct EffectSummaryResult {
 // deterministic fixed point without mutating worker-visible input.
 [[nodiscard]] EffectSummaryResult close_procedure_effects(
     const ProcedureEffectAnalysis &analysis,
-    const DirectEffectSummaryResult &direct);
+    const DirectEffectSummaryResult &direct,
+    ProcedureEffectClosureTimings *timings = nullptr);
 
 // Discovers direct summaries from the selected immutable procedure products.
 // selected_indices addresses procedures, must be strictly increasing, and

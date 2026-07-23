@@ -120,6 +120,7 @@ void test_o0_and_o2_pipelines(TestState &state) {
 
     draft::LlvmObjectEmissionOptions o0;
     o0.output_kind = draft::LlvmNativeOutputKind::Assembly;
+    o0.collect_phase_timings = true;
     const draft::LlvmObjectEmissionResult unoptimized =
         draft::emit_llvm_object_in_process(target, "o0", module, o0);
     EXPECT(state, unoptimized.ok);
@@ -127,6 +128,16 @@ void test_o0_and_o2_pipelines(TestState &state) {
         std::string::npos);
     EXPECT(state, unoptimized.bytes.find("draft_unused_value") !=
         std::string::npos);
+    EXPECT(state,
+        unoptimized.phase_timings.input_preparation_nanoseconds != 0);
+    EXPECT(state, unoptimized.phase_timings.ir_parsing_nanoseconds != 0);
+    EXPECT(state, unoptimized.phase_timings.ir_verification_nanoseconds != 0);
+    EXPECT(state, unoptimized.phase_timings.target_machine_nanoseconds != 0);
+    EXPECT(state,
+        unoptimized.phase_timings.machine_code_emission_nanoseconds != 0);
+    EXPECT(state, unoptimized.phase_timings.output_copy_nanoseconds != 0);
+    EXPECT(state,
+        unoptimized.phase_timings.o2_optimization_nanoseconds == 0);
 
     draft::LlvmObjectEmissionOptions o2 = o0;
     o2.optimization = draft::NativeOptimizationLevel::O2;
@@ -142,6 +153,7 @@ void test_o0_and_o2_pipelines(TestState &state) {
         std::string::npos);
     EXPECT(state, optimized.bytes.find("draft_unused_value") ==
         std::string::npos);
+    EXPECT(state, optimized.phase_timings.o2_optimization_nanoseconds != 0);
   }
 }
 
