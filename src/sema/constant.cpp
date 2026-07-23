@@ -6317,14 +6317,15 @@ ConstantTable ConstantTable::fork_append_only() const {
 }
 
 std::vector<ConstantBinding> ConstantTable::appended_since(
-    std::size_t base_size) const {
+    [[maybe_unused]] std::size_t base_size) const {
   assert(base_ != nullptr);
   assert(base_size == base_->size());
   return bindings;
 }
 
 void ConstantTable::append_exact(
-    std::size_t base_size, std::vector<ConstantBinding> appended) {
+    [[maybe_unused]] std::size_t base_size,
+    std::vector<ConstantBinding> appended) {
   assert(base_ == nullptr);
   assert(size() == base_size);
   bindings.insert(

@@ -250,7 +250,7 @@ private:
   const SymbolTable *base_ = nullptr;
   std::size_t base_scope_count_ = 0;
   std::size_t base_symbol_count_ = 0;
-  bool permits_prefix_patches_ = false;
+  [[maybe_unused]] bool permits_prefix_patches_ = false;
   // One declaration product normally refines one root or a small member list.
   // Preserve first-mutation order and use a direct scan instead of introducing
   // a hash/index whose order would become another semantic invariant.

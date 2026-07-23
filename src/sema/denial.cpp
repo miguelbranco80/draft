@@ -540,13 +540,11 @@ bool check_procedure_denials(
     DiagnosticSink &diagnostics) {
   std::vector<const HirProgram *> programs;
   programs.reserve(selected_indices.size());
-  std::size_t previous = 0;
-  bool has_previous = false;
-  for (std::size_t index : selected_indices) {
+  for (std::size_t position = 0; position < selected_indices.size();
+       ++position) {
+    const std::size_t index = selected_indices[position];
     assert(index < procedures.size());
-    assert(!has_previous || previous < index);
-    previous = index;
-    has_previous = true;
+    assert(position == 0 || selected_indices[position - 1] < index);
     programs.push_back(&procedures[index].program);
   }
   DenialChecker checker(sources, loaded, package, programs, effects, diagnostics);

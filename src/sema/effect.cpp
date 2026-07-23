@@ -636,6 +636,7 @@ private:
               direct_.procedures[procedure_index];
           DirectProcedureEffectSummary discovered =
               discover_source_procedure(source_procedures[procedure_index]);
+#ifndef NDEBUG
           for (SymbolId edge : previous.direct_calls) {
             // Losing a finite target would make termination and scheduling
             // depend on replay order. Such a loss is an internal compiler
@@ -646,6 +647,7 @@ private:
                     discovered.direct_calls.end(),
                     edge) != discovered.direct_calls.end());
           }
+#endif
           if (previous == discovered) return false;
           direct_.procedures[procedure_index] = std::move(discovered);
           flow_changed[procedure_index] = true;

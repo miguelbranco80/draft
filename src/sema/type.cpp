@@ -270,7 +270,7 @@ TypeStoreAppend TypeStore::appended_since(std::size_t base_size) const {
 }
 
 std::vector<TypeStorePatch> TypeStore::prefix_patches_since(
-    std::size_t base_size) const {
+    [[maybe_unused]] std::size_t base_size) const {
   assert(base_ != nullptr);
   assert(base_size == base_size_);
   return prefix_patches_;
@@ -818,7 +818,7 @@ TypeId TypeStore::begin_nominal(TypeKind kind, std::string name, SourceRange dec
 }
 
 void TypeStore::publish_nominal_members(TypeId id) {
-  Type &nominal = type_mut(id);
+  [[maybe_unused]] Type &nominal = type_mut(id);
   assert(nominal.kind == TypeKind::Struct || nominal.kind == TypeKind::Enum ||
          nominal.kind == TypeKind::Variant || nominal.kind == TypeKind::Union);
   TypeCompletion &facets = completion_mut(id);

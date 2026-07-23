@@ -209,8 +209,8 @@ SymbolTableAppend SymbolTable::appended_since(
 }
 
 std::vector<SymbolTablePatch> SymbolTable::prefix_patches_since(
-    std::size_t base_scope_count,
-    std::size_t base_symbol_count) const {
+    [[maybe_unused]] std::size_t base_scope_count,
+    [[maybe_unused]] std::size_t base_symbol_count) const {
   assert(base_ != nullptr);
   assert(base_scope_count == base_scope_count_);
   assert(base_symbol_count == base_symbol_count_);

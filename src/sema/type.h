@@ -430,7 +430,7 @@ private:
   // body task lifetime guaranteed by PackageBodyWorkState.
   const TypeStore *base_ = nullptr;
   std::size_t base_size_ = 0;
-  bool permits_prefix_patches_ = false;
+  [[maybe_unused]] bool permits_prefix_patches_ = false;
   // Prefix patches are tiny and remain in first-mutation order. A declaration
   // product normally changes one root type, so a direct scan is cheaper and
   // clearer than maintaining another index whose iteration order would need a
