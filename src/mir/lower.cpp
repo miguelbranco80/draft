@@ -1420,6 +1420,14 @@ private:
       }
       if (expression.constant.text == "len") {
         const HirExpression &argument = hir_.expression(expression.operands.front());
+        const Type argument_type = runtime_scalar_type(argument.type);
+        if (argument_type.kind == TypeKind::Array) {
+          // Fixed-array length is encoded by the checked type and the query
+          // does not evaluate its operand. Lowering first would turn a member
+          // expression into a complete aggregate load, or preserve calls and
+          // other side effects that are outside this compile-time operation.
+          return usize_constant(argument_type.element_count, expression.range);
+        }
         return length(
             lower_expression(expression.operands.front()),
             argument.type,

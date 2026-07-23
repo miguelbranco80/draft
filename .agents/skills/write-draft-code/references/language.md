@@ -225,7 +225,9 @@ is inherently unchecked. Construct a bounded slice with `pointer[:length]`.
 Array, slice, and string indexing and half-open slicing are bounds checked by
 default. A slice or string never owns or extends the lifetime of its backing
 storage. Array assignment copies the entire inline array; slice assignment
-copies only the view.
+copies only the view. `len(array_expression)` is a compile-time query of the
+fixed-array type and does not evaluate `array_expression`; slice and string
+lengths are runtime values.
 
 `string` is immutable bytes, not an owning Unicode string. Indexing returns one
 byte. Use `core/utf8` to validate, decode, count, or encode Unicode scalars when

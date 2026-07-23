@@ -524,6 +524,53 @@ main :: proc() -> int {
   }
 }
 
+// A fixed-array length belongs to its static type. The operand remains in HIR
+// so body checking can diagnose it normally, but MIR must not preserve a call,
+// aggregate load, or any other runtime evaluation solely to compute the known
+// element count.
+void test_fixed_array_length_does_not_lower_operand(TestState &state) {
+  LoweredSource source(R"draft(
+package mir
+
+make_values :: proc(counter: ^usize) -> [4096]u8 {
+    counter^ += 1
+    values: [4096]u8
+    return values
+}
+
+fixed_length :: proc(counter: ^usize) -> usize {
+    return len(make_values(counter))
+}
+)draft");
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, source.mir.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  bool saw_fixed_length = false;
+  bool saw_length_constant = false;
+  for (const draft::MirProcedure &procedure : source.mir.procedures) {
+    const draft::Symbol &owner =
+        source.bodies.package.symbols.symbol(procedure.symbol);
+    if (owner.name != "fixed_length") continue;
+    saw_fixed_length = true;
+    for (const draft::MirInstruction &instruction : procedure.instructions) {
+      EXPECT(state, instruction.kind != draft::MirInstructionKind::Call);
+      EXPECT(state, instruction.kind != draft::MirInstructionKind::Load);
+      if (instruction.kind == draft::MirInstructionKind::Constant &&
+          instruction.constant.kind == draft::ConstantKind::Integer &&
+          instruction.constant.integer == draft::BigInteger::from_u64(4096)) {
+        saw_length_constant = true;
+      }
+    }
+  }
+  EXPECT(state, saw_fixed_length);
+  EXPECT(state, saw_length_constant);
+}
+
 // String data extraction remains an explicit MIR operation. This prevents the
 // backend from inferring language meaning from the current two-word string
 // representation and proves both literals and derived string views reach the
@@ -626,6 +673,7 @@ int main() {
   test_disabled_assertions_do_not_evaluate_operands(state);
   test_static_argument_packs_erase_before_mir(state);
   test_compile_time_type_procedures_erase_before_mir(state);
+  test_fixed_array_length_does_not_lower_operand(state);
   test_raw_string_data_lowering(state);
   test_named_argument_call_order(state);
 

@@ -168,8 +168,9 @@ backing storage. Bounds follow the checked and `unchecked` rules in
 expressions require `usize` after contextual conversion of an untyped constant.
 
 `len(value)` is a predeclared query. It is a compile-time value for a fixed
-array and a runtime `usize` for a slice or string. Growable owning arrays and
-maps are explicit core-library types described in
+array and does not evaluate the fixed-array operand. It is a runtime `usize`
+for a slice or string. Growable owning arrays and maps are explicit core-library
+types described in
 [section 7](02-types-memory-runtime.md#growable-arrays-and-maps) rather than
 built-in language types.
 
