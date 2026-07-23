@@ -438,10 +438,15 @@ struct PackageSemanticProducts {
   // parallel to the direct and denial vectors and maps each row back to the
   // retained PackageBodyWorkState tables. A selected work row which owns no HIR
   // procedure has no effect/denial product. Replacing the projection supersedes
-  // and clears all three product slices without touching reusable body products.
+  // and clears the direct, SCC, package-closure, and denial products without
+  // touching reusable body products.
   std::vector<std::size_t> effect_body_work_indices;
   std::vector<SemanticProductId> direct_effect_summaries;
   std::vector<SemanticProductId> closed_effect_sccs;
+  // One completed package barrier depends on every local SCC product. An
+  // importing package names this compact row instead of copying every imported
+  // SCC ID into each of its own component dependency lists.
+  SemanticProductId effect_closure;
   std::vector<SemanticProductId> denial_results;
   // Semantic closure publishes package_assembly over every checked body beside
   // direct effect discovery, and each concrete runtime body owns one

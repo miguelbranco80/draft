@@ -73,6 +73,7 @@ enum class SemanticProductKind {
   ProcedureInstanceBody,
   DirectEffectSummary,
   ClosedEffectScc,
+  PackageEffectClosure,
   DenialResult,
   NativeReferenceSummary,
   ArtifactReachability,
@@ -168,9 +169,10 @@ append_semantic_product(SemanticProductGraph &graph, SemanticProductKind kind,
                         std::string &reason);
 
 // Appends an already complete eager input or product. Every dependency must be
-// Complete. This is the explicit boundary used after target selection,
-// workspace loading, and parsing have already produced immutable command
-// inputs before semantic scheduling begins; semantic tasks must instead use a
+// Complete. This is the explicit boundary used when immutable work finished
+// before its graph row could exist: target selection, workspace parsing, or a
+// phase-owned cycle computation whose component membership defines the rows.
+// A product with an independently schedulable operation must instead use a
 // normal Waiting row and publish an outcome.
 [[nodiscard]] SemanticProductId append_completed_semantic_product(
     SemanticProductGraph &graph, SemanticProductKind kind,

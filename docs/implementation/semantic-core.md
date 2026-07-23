@@ -681,16 +681,19 @@ Every dependency-ready package contributes those rows to the same bounded
 workspace wave rather than running a private package executor.
 `ClosedEffectScc` rows map one-for-one to the dependency-first components above;
 each row names its source direct products, its exact earlier component
-dependencies, the target, and completed imported component products. SCCs from
-independent ready packages publish together whenever those exact edges allow.
-One independently checked `DenialResult` row then names its exact body and
-owning closed component, again sharing the complete package frontier.
+dependencies, the target, and one completed effect barrier per imported
+package. Because the package effect task has already produced the immutable
+component table, these rows publish through the completed-product boundary
+rather than fake no-op ready waves. One `PackageEffectClosure` row depends on
+all local components and is the compact final-contract input named by importers.
+One independently checked `DenialResult` row then names its exact body and owning
+closed component, again sharing the complete package frontier.
 Diagnostics remain task-local until canonical graph publication, so a denial
 violation is the `Error` state of the specific procedure product rather than an
 unstructured package failure.
 
 A body or interface source transition supersedes the affected direct,
-closed-SCC, and denial rows transitively through package consumers while
+closed-SCC, package-effect-closure, and denial rows transitively through package consumers while
 retaining reusable procedure-body products. The rebuilt payload vectors align
 with the successor product IDs. The algorithmic package-wide flow and effect
 replay paths are gone.

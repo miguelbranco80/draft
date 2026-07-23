@@ -225,6 +225,20 @@ void test_procedure_bodies_are_dynamic_semantic_products(TestState &state) {
                  row.dependencies.end());
     }
   }
+  EXPECT(state, products.effect_closure.is_valid());
+  if (products.effect_closure.is_valid()) {
+    const draft::SemanticProduct &closure =
+        compiled.semantic_graph.products[products.effect_closure.value];
+    EXPECT(state, closure.kind ==
+                      draft::SemanticProductKind::PackageEffectClosure);
+    EXPECT(state, closure.state == draft::SemanticProductState::Complete);
+    for (draft::SemanticProductId component : products.closed_effect_sccs) {
+      EXPECT(state,
+             std::find(closure.dependencies.begin(),
+                       closure.dependencies.end(), component) !=
+                 closure.dependencies.end());
+    }
+  }
   for (std::size_t position = 0;
        position < products.denial_results.size(); ++position) {
     const std::size_t work_index =
@@ -2193,6 +2207,10 @@ void test_body_source_update_reuses_closed_generic_dependency(
       initial_formatting_effect_scc_products =
           compiled.semantic_products.packages[*formatting_index]
               .closed_effect_sccs;
+  const draft::SemanticProductId initial_app_effect_closure =
+      compiled.semantic_products.packages[app_index].effect_closure;
+  const draft::SemanticProductId initial_formatting_effect_closure =
+      compiled.semantic_products.packages[*formatting_index].effect_closure;
   const std::vector<draft::SemanticProductId> initial_app_denial_products =
       compiled.semantic_products.packages[app_index].denial_results;
   const std::vector<draft::SemanticProductId> initial_formatting_denial_products =
@@ -2216,6 +2234,8 @@ void test_body_source_update_reuses_closed_generic_dependency(
   EXPECT(state, !initial_formatting_direct_effect_products.empty());
   EXPECT(state, !initial_app_effect_scc_products.empty());
   EXPECT(state, !initial_formatting_effect_scc_products.empty());
+  EXPECT(state, initial_app_effect_closure.is_valid());
+  EXPECT(state, initial_formatting_effect_closure.is_valid());
   EXPECT(state, !initial_app_denial_products.empty());
   EXPECT(state, !initial_formatting_denial_products.empty());
   EXPECT(state, !initial_app_reference_products.empty());
@@ -2225,12 +2245,23 @@ void test_body_source_update_reuses_closed_generic_dependency(
   for (draft::SemanticProductId product : initial_app_direct_effect_products) {
     const std::vector<draft::SemanticProductId> &dependencies =
         compiled.semantic_graph.products[product.value].dependencies;
-    for (draft::SemanticProductId imported :
-         initial_formatting_effect_scc_products) {
-      EXPECT(state,
-             std::find(dependencies.begin(), dependencies.end(), imported) !=
-                 dependencies.end());
-    }
+    EXPECT(state,
+           std::find(dependencies.begin(), dependencies.end(),
+                     initial_formatting_effect_closure) != dependencies.end());
+  }
+  const draft::SemanticProduct &formatting_effect_closure =
+      compiled.semantic_graph.products[
+          initial_formatting_effect_closure.value];
+  EXPECT(state, formatting_effect_closure.kind ==
+                    draft::SemanticProductKind::PackageEffectClosure);
+  EXPECT(state, formatting_effect_closure.state ==
+                    draft::SemanticProductState::Complete);
+  for (draft::SemanticProductId component :
+       initial_formatting_effect_scc_products) {
+    EXPECT(state,
+           std::find(formatting_effect_closure.dependencies.begin(),
+                     formatting_effect_closure.dependencies.end(),
+                     component) != formatting_effect_closure.dependencies.end());
   }
   EXPECT(state,
          initial_formatting.declarations.package.parametric_instances.empty());
@@ -2296,6 +2327,12 @@ void test_body_source_update_reuses_closed_generic_dependency(
          compiled.semantic_products.packages[*formatting_index]
                  .closed_effect_sccs ==
              initial_formatting_effect_scc_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[app_index].effect_closure !=
+             initial_app_effect_closure);
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .effect_closure == initial_formatting_effect_closure);
   EXPECT(state,
          compiled.semantic_products.packages[app_index].denial_results !=
              initial_app_denial_products);

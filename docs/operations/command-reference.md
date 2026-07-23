@@ -75,6 +75,11 @@ in a package.
 Semantic closure reports `effect/reference ready waves`, task counts, and
 worker slots because package effect-flow tasks and procedure native-reference
 tasks share one executor after direct effects publish.
+Detailed output also separates closure input preparation, direct effects and
+assembly, effect/reference closure, SCC-product publication, denial products,
+and interface finalization. SCC counters distinguish exact local component rows
+from the compact package effect-closure barriers and report their dependency
+edge count.
 Selection changes which reuse already completed products perform no body work
 and need no special “reuse” counter. All rows remain command-local; none is
 evidence of a persistent compiler cache.

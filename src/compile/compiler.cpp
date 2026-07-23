@@ -1039,6 +1039,7 @@ void bind_handwritten_program_identity(
       std::all_of(
           products.closed_effect_sccs.begin(),
           products.closed_effect_sccs.end(), complete) &&
+      complete(products.effect_closure) &&
       std::all_of(
           products.denial_results.begin(),
           products.denial_results.end(), complete) &&
@@ -1100,6 +1101,9 @@ void bind_handwritten_program_identity(
         superseded.end(),
         products.closed_effect_sccs.begin(),
         products.closed_effect_sccs.end());
+    if (products.effect_closure.is_valid()) {
+      superseded.push_back(products.effect_closure);
+    }
     superseded.insert(
         superseded.end(),
         products.denial_results.begin(),
@@ -1143,6 +1147,7 @@ void bind_handwritten_program_identity(
     products.effect_body_work_indices.clear();
     products.direct_effect_summaries.clear();
     products.closed_effect_sccs.clear();
+    products.effect_closure = {};
     products.denial_results.clear();
     products.package_assembly = {};
     products.checked_runtime_body_work_indices.clear();
@@ -1352,6 +1357,9 @@ void bind_handwritten_program_identity(
         superseded.end(),
         products.closed_effect_sccs.begin(),
         products.closed_effect_sccs.end());
+    if (products.effect_closure.is_valid()) {
+      superseded.push_back(products.effect_closure);
+    }
     superseded.insert(
         superseded.end(),
         products.denial_results.begin(),
@@ -1411,6 +1419,7 @@ void bind_handwritten_program_identity(
     products.effect_body_work_indices.clear();
     products.direct_effect_summaries.clear();
     products.closed_effect_sccs.clear();
+    products.effect_closure = {};
     products.denial_results.clear();
     products.package_assembly = {};
     products.checked_runtime_body_work_indices.clear();
@@ -5215,11 +5224,12 @@ struct AbiClassificationWaveExecution {
   return true;
 }
 
-// Returns the exact already-closed effect inputs imported by one package. A
+// Returns one already-closed effect barrier per directly imported package. A
 // consumer's direct rows may substitute imported return/write contracts, so its
-// products must name the dependency SCC rows rather than relying on the earlier
-// preliminary PackageInterface barrier.
-[[nodiscard]] std::vector<SemanticProductId> dependency_effect_products(
+// SCCs cannot rely on the earlier preliminary PackageInterface row. The compact
+// barrier depends on every SCC in that dependency and avoids repeating the
+// dependency's complete component table in every consumer component.
+[[nodiscard]] std::vector<SemanticProductId> dependency_effect_barriers(
     std::size_t package_index,
     const WorkspaceDependencyIndex &schedule,
     const CompileWorkspaceResult &result) {
@@ -5229,10 +5239,7 @@ struct AbiClassificationWaveExecution {
     const PackageImport &edge = result.graph.imports[edge_index];
     const PackageSemanticProducts &imported =
         result.semantic_products.packages[edge.imported_package.value];
-    dependencies.insert(
-        dependencies.end(),
-        imported.closed_effect_sccs.begin(),
-        imported.closed_effect_sccs.end());
+    dependencies.push_back(imported.effect_closure);
   }
   return dependencies;
 }
@@ -5461,7 +5468,7 @@ struct DirectSemanticWaveExecution {
     }
 
     const std::vector<SemanticProductId> imported_dependencies =
-        dependency_effect_products(package_index, schedule, result);
+        dependency_effect_barriers(package_index, schedule, result);
     const PackageId owner{static_cast<std::uint32_t>(package_index)};
     for (std::size_t position = 0;
          position < products.effect_body_work_indices.size(); ++position) {
@@ -5634,33 +5641,85 @@ struct DirectSemanticWaveExecution {
 }
 
 // Appends the explicit legal-cycle products discovered by flow/effect closure.
-// The SCC algorithm is itself the cycle-aware coordinator: ordinary DAG task
+// The SCC algorithm is itself the cycle-aware computation: ordinary DAG task
 // rows cannot represent a legal recursive component before its membership is
-// known. Once the task-owned EffectSummaryResult exists, these rows publish its
-// immutable component payloads through normal waiting/ready/complete graph
-// transitions. Exact component dependencies preserve all available parallelism.
+// known. By this boundary the task-owned EffectSummaryResult already contains
+// every immutable component payload. Appending each row as completed therefore
+// records the real computation rather than manufacturing no-op worker waves.
+// Dependency-first component order lets the completed-product boundary verify
+// every imported, direct-effect, and earlier-component prerequisite exactly.
 [[nodiscard]] bool publish_ready_package_effect_scc_products(
     std::span<const PackageClosureWork> ready_packages,
     const WorkspaceDependencyIndex &schedule,
     TimingRecorder *timings,
     CompileWorkspaceResult &result,
     DiagnosticSink &diagnostics) {
-  std::vector<bool> ready_owner(result.packages.size(), false);
-  std::size_t product_count = 0;
+  std::size_t expected_product_count = 0;
+  for (const PackageClosureWork &work : ready_packages) {
+    const std::size_t package_products =
+        result.packages[work.package_index]->effects.components.size();
+    if (package_products == std::numeric_limits<std::size_t>::max()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "closed-effect SCC product count exceeds the host size domain");
+      return false;
+    }
+    const std::size_t package_rows = package_products + 1U;
+    if (package_rows >
+        std::numeric_limits<std::size_t>::max() - expected_product_count) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "closed-effect SCC product count exceeds the host size domain");
+      return false;
+    }
+    expected_product_count += package_rows;
+  }
+
+  // This phase knows its exact append count before assigning the first ID.
+  // Reserve every graph-parallel table together so vector growth cannot move
+  // thousands of existing product rows independently while preserving their
+  // index correspondence only by accident. No ID is assigned by reserve.
+  if (expected_product_count > std::numeric_limits<std::size_t>::max() -
+          result.semantic_graph.products.size()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "semantic product reservation exceeds the host size domain");
+    return false;
+  }
+  const std::size_t final_product_count = result.semantic_graph.products.size() +
+      expected_product_count;
+  result.semantic_graph.products.reserve(final_product_count);
+  result.semantic_products.package_by_product.reserve(final_product_count);
+  result.semantic_products.constant_by_product.reserve(final_product_count);
+  result.semantic_products.declaration_by_product.reserve(final_product_count);
+  result.semantic_products.procedure_by_product.reserve(final_product_count);
+  result.semantic_products.type_by_product.reserve(final_product_count);
+  result.semantic_products.condition_by_product.reserve(final_product_count);
+  result.semantic_products.generic_type_demand_by_product.reserve(
+      final_product_count);
+  result.semantic_products.native_reference_by_product.reserve(
+      final_product_count);
+  result.semantic_products.mir_procedure_by_product.reserve(
+      final_product_count);
+
+  std::size_t scc_product_count = 0;
+  std::size_t barrier_count = 0;
+  std::size_t dependency_edge_count = 0;
   for (const PackageClosureWork &work : ready_packages) {
     const std::size_t package_index = work.package_index;
-    ready_owner[package_index] = true;
     CompiledPackage &package = *result.packages[package_index];
     PackageSemanticProducts &products =
         result.semantic_products.packages[package_index];
-    if (!products.closed_effect_sccs.empty()) {
+    if (!products.closed_effect_sccs.empty() ||
+        products.effect_closure.is_valid()) {
       diagnostics.error(
           SourceRange::invalid(),
           "closed-effect SCC products were already published");
       return false;
     }
+    products.closed_effect_sccs.reserve(package.effects.components.size());
     const std::vector<SemanticProductId> imported_dependencies =
-        dependency_effect_products(package_index, schedule, result);
+        dependency_effect_barriers(package_index, schedule, result);
     const PackageId owner{static_cast<std::uint32_t>(package_index)};
     for (std::size_t component_index = 0;
          component_index < package.effects.components.size();
@@ -5688,62 +5747,42 @@ struct DirectSemanticWaveExecution {
         }
         dependencies.push_back(products.closed_effect_sccs[dependency]);
       }
+      dependency_edge_count += dependencies.size();
       const SemanticProductId product = append_workspace_semantic_product(
           result,
           SemanticProductKind::ClosedEffectScc,
           dependencies,
           owner,
-          false,
+          true,
           diagnostics);
       if (!product.is_valid()) return false;
       products.closed_effect_sccs.push_back(product);
-      ++product_count;
+      ++scc_product_count;
     }
-  }
 
-  std::size_t completed = 0;
-  while (completed < product_count) {
-    const SemanticReadyWave wave =
-        freeze_semantic_ready_wave(result.semantic_graph);
-    if (wave.status != SemanticReadyWaveStatus::Ready) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "closed-effect SCC products did not form a ready wave" +
-              (wave.failure.empty() ? std::string{} : ": " + wave.failure));
-      return false;
-    }
-    std::vector<SemanticProductOutcome> outcomes(wave.products.size());
-    for (SemanticProductId product : wave.products) {
-      const PackageId owner =
-          result.semantic_products.package_by_product[product.value];
-      if (product.value >= result.semantic_graph.products.size() ||
-          result.semantic_graph.products[product.value].kind !=
-              SemanticProductKind::ClosedEffectScc ||
-          !owner.is_valid() || owner.value >= ready_owner.size() ||
-          !ready_owner[owner.value]) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "closed-effect ready wave contains another product");
-        return false;
-      }
-    }
-    std::string publication_error;
-    if (!publish_semantic_ready_wave(
-            result.semantic_graph,
-            wave,
-            outcomes,
-            diagnostics,
-            publication_error)) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "cannot publish closed-effect SCC wave: " + publication_error);
-      return false;
-    }
-    completed += wave.products.size();
-    if (timings != nullptr) {
-      timings->add_counter("closed effect SCC ready waves", 1);
-      timings->add_counter("closed effect SCC products", wave.products.size());
-    }
+    std::vector<SemanticProductId> closure_dependencies{
+        result.semantic_products.target};
+    closure_dependencies.insert(
+        closure_dependencies.end(),
+        products.closed_effect_sccs.begin(),
+        products.closed_effect_sccs.end());
+    dependency_edge_count += closure_dependencies.size();
+    products.effect_closure = append_workspace_semantic_product(
+        result,
+        SemanticProductKind::PackageEffectClosure,
+        closure_dependencies,
+        owner,
+        true,
+        diagnostics);
+    if (!products.effect_closure.is_valid()) return false;
+    ++barrier_count;
+  }
+  if (timings != nullptr) {
+    timings->add_counter("closed effect SCC publication batches", 1);
+    timings->add_counter("closed effect SCC products", scc_product_count);
+    timings->add_counter("package effect closure products", barrier_count);
+    timings->add_counter(
+        "closed effect SCC dependency edges", dependency_edge_count);
   }
   return true;
 }
@@ -5824,31 +5863,54 @@ struct DenialWaveExecution {
       return false;
     }
 
+    // Effect closure already partitions the procedure-row domain exactly once.
+    // Materialize that inverse relation in linear time; searching every SCC for
+    // every denial product made a large package quadratic in its procedure
+    // count even though both sides use compact stable indices.
+    const std::size_t no_component = package.effects.components.size();
+    std::vector<std::size_t> component_by_procedure(
+        package.effects.procedures.size(), no_component);
+    for (std::size_t component_index = 0;
+         component_index < package.effects.components.size();
+         ++component_index) {
+      for (std::size_t procedure_index :
+           package.effects.components[component_index].procedure_indices) {
+        if (procedure_index >= component_by_procedure.size() ||
+            component_by_procedure[procedure_index] != no_component) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "closed effect SCCs do not partition the procedure table");
+          return false;
+        }
+        component_by_procedure[procedure_index] = component_index;
+      }
+    }
+    if (std::find(
+            component_by_procedure.begin(),
+            component_by_procedure.end(),
+            no_component) != component_by_procedure.end()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "closed effect SCCs omit a procedure-table row");
+      return false;
+    }
+
     const PackageId owner{static_cast<std::uint32_t>(package_index)};
     for (std::size_t position = 0;
          position < products.effect_body_work_indices.size(); ++position) {
-      std::optional<std::size_t> component_index;
-      for (std::size_t candidate = 0;
-           candidate < package.effects.components.size(); ++candidate) {
-        const std::vector<std::size_t> &members =
-            package.effects.components[candidate].procedure_indices;
-        if (std::find(members.begin(), members.end(), position) !=
-            members.end()) {
-          component_index = candidate;
-          break;
-        }
-      }
-      if (!component_index.has_value() ||
-          *component_index >= products.closed_effect_sccs.size()) {
+      if (position >= component_by_procedure.size() ||
+          component_by_procedure[position] >=
+              products.closed_effect_sccs.size()) {
         diagnostics.error(
             SourceRange::invalid(),
             "selected procedure has no closed effect SCC product");
         return false;
       }
+      const std::size_t component_index = component_by_procedure[position];
       const std::array dependencies{
           products.procedure_bodies[
               products.effect_body_work_indices[position]],
-          products.closed_effect_sccs[*component_index]};
+          products.closed_effect_sccs[component_index]};
       const SemanticProductId product = append_workspace_semantic_product(
           result,
           SemanticProductKind::DenialResult,
@@ -6318,21 +6380,34 @@ struct EffectReferenceExecution {
             diagnostics)) {
       return false;
     }
+    const std::size_t no_effect = products.effect_body_work_indices.size();
+    std::vector<std::size_t> effect_position_by_work(
+        package.bodies.work.size(), no_effect);
+    for (std::size_t effect_position = 0;
+         effect_position < products.effect_body_work_indices.size();
+         ++effect_position) {
+      const std::size_t work_index =
+          products.effect_body_work_indices[effect_position];
+      if (work_index >= effect_position_by_work.size() ||
+          effect_position_by_work[work_index] != no_effect) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "effect body projection contains an invalid or duplicate work row");
+        return false;
+      }
+      effect_position_by_work[work_index] = effect_position;
+    }
     const PackageId owner{static_cast<std::uint32_t>(package_index)};
     for (std::size_t work_index :
          products.checked_runtime_body_work_indices) {
-      const auto position = std::find(
-          products.effect_body_work_indices.begin(),
-          products.effect_body_work_indices.end(),
-          work_index);
-      if (position == products.effect_body_work_indices.end()) {
+      if (work_index >= effect_position_by_work.size() ||
+          effect_position_by_work[work_index] == no_effect) {
         diagnostics.error(
             SourceRange::invalid(),
             "checked runtime body has no direct-effect product");
         return false;
       }
-      const std::size_t effect_position = static_cast<std::size_t>(
-          position - products.effect_body_work_indices.begin());
+      const std::size_t effect_position = effect_position_by_work[work_index];
       if (effect_position >= products.direct_effect_summaries.size() ||
           effect_position >= package.direct_effects.procedures.size()) {
         diagnostics.error(
@@ -8595,6 +8670,10 @@ bool continue_compiled_workspace_semantics(
               "package closure ready wave", TimingVisibility::Detail)
         : TimingScope{};
     std::vector<PackageClosureWork> ready_packages;
+    TimingScope preparation_timing = options.timings != nullptr
+        ? options.timings->scope(
+              "closure input preparation", TimingVisibility::Detail)
+        : TimingScope{};
     if (!prepare_package_closure_wave(
             sources,
             options,
@@ -8606,6 +8685,11 @@ bool continue_compiled_workspace_semantics(
       result.ok = false;
       return false;
     }
+    preparation_timing.finish();
+    TimingScope direct_timing = options.timings != nullptr
+        ? options.timings->scope(
+              "direct effects and assembly", TimingVisibility::Detail)
+        : TimingScope{};
     if (!run_ready_package_direct_effect_products(
             sources,
             options.target,
@@ -8619,11 +8703,22 @@ bool continue_compiled_workspace_semantics(
       result.ok = false;
       return false;
     }
+    direct_timing.finish();
+    TimingScope flow_timing = options.timings != nullptr
+        ? options.timings->scope(
+              "effect and native-reference closure",
+              TimingVisibility::Detail)
+        : TimingScope{};
     if (!close_ready_package_effects(
             ready_packages, options, result, diagnostics)) {
       result.ok = false;
       return false;
     }
+    flow_timing.finish();
+    TimingScope scc_publication_timing = options.timings != nullptr
+        ? options.timings->scope(
+              "effect SCC product publication", TimingVisibility::Detail)
+        : TimingScope{};
     if (!publish_ready_package_effect_scc_products(
             ready_packages,
             schedule,
@@ -8633,6 +8728,11 @@ bool continue_compiled_workspace_semantics(
       result.ok = false;
       return false;
     }
+    scc_publication_timing.finish();
+    TimingScope denial_timing = options.timings != nullptr
+        ? options.timings->scope(
+              "denial products", TimingVisibility::Detail)
+        : TimingScope{};
     if (!run_ready_package_denial_products(
             sources,
             ready_packages,
@@ -8644,11 +8744,17 @@ bool continue_compiled_workspace_semantics(
       result.ok = false;
       return false;
     }
+    denial_timing.finish();
+    TimingScope finalization_timing = options.timings != nullptr
+        ? options.timings->scope(
+              "closure interface finalization", TimingVisibility::Detail)
+        : TimingScope{};
     if (!finalize_package_closure_wave(
             ready_packages, options, result, diagnostics)) {
       result.ok = false;
       return false;
     }
+    finalization_timing.finish();
 
     // Replay all source diagnostics only after the full wave joins. Within one
     // package the historical semantic phase order is retained; packages follow

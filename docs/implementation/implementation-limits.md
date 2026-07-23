@@ -95,9 +95,12 @@ package-local execution chain; only source-loading name/interface barriers are
 serialized after read-only task slots join.
 Final effect/interface closure likewise uses dependency-ready package fronts.
 Preparation and flow closure run as package tasks; direct effects and denials
-from every package in the front share procedure waves; completed SCC products
-retain exact local and imported edges. Diagnostics publish only after join in
-PackageId and phase order, and an invalid dependency never unlocks its consumer.
+from every package in the front share procedure waves. Completed SCC products
+retain exact local edges, and one package effect-closure barrier owns the full
+component set consumed by importers. This avoids repeating every imported SCC
+on every consumer component while preserving dependency invalidation.
+Diagnostics publish only after join in PackageId and phase order, and an invalid
+dependency never unlocks its consumer.
 Parsed assembly consumes the same checked-body frontier as direct effects and
 runs in that ready executor rather than waiting for a workspace-wide native
 phase. It is therefore available to `check` as well as later artifact commands.

@@ -76,6 +76,7 @@ expression, or name lookup.
 | Procedure instance body | A canonical concrete argument tuple owns one independently checkable typed body. |
 | Direct effect summary | Facts local to one concrete body, before transitive call and pointer-flow closure. |
 | Closed effect SCC | Monotonic closure over one concrete call/flow strongly connected component. |
+| Package effect closure | One completed package barrier over every local SCC; consumers name this compact final imported-contract input instead of copying the dependency's complete SCC table into every local component. |
 | Denial result | Checked only after the summaries on which the denial depends are closed. |
 | Direct native-reference summary | One checked concrete runtime body records direct calls, procedure values and escapes, globals, foreign edges, and uncertain indirect targets without producing MIR. |
 | Artifact reachability | One command-selected root closure separates the complete checked procedure set from the procedure/global subset required by the requested artifact. |
@@ -159,6 +160,15 @@ Only recursive flow SCCs iterate internally. Transitive effect closure interns
 each complete semantic effect once and propagates insertion-ordered 32-bit IDs
 through membership bit sets; full strings, paths, and nested callback summaries
 are materialized only at the public closed-summary boundary.
+
+Effect closure computes the complete dependency-first component table in one
+package task before those graph rows can exist. The coordinator therefore
+appends each immutable SCC as an already-completed, dependency-checked product
+rather than scheduling a no-op publication wave. One subsequent package effect
+closure product depends on every local SCC. A consumer's direct and SCC rows
+depend on one such barrier per imported package, matching the package-level
+availability of final interface contracts without duplicating all imported SCC
+IDs across every consumer component.
 
 Detailed command timing observes this boundary without entering semantic data.
 The interface graph reports aggregate ready-wave selection, task preparation,

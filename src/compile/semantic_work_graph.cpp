@@ -420,6 +420,8 @@ std::string_view semantic_product_kind_name(SemanticProductKind kind) {
     return "direct effect summary";
   case SemanticProductKind::ClosedEffectScc:
     return "closed effect SCC";
+  case SemanticProductKind::PackageEffectClosure:
+    return "package effect closure";
   case SemanticProductKind::DenialResult:
     return "denial result";
   case SemanticProductKind::NativeReferenceSummary:
