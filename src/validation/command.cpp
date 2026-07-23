@@ -210,6 +210,8 @@ void initialize_claim(
     const TargetProfile &target,
     WorkspaceLoadOptions workspace,
     ValidationKind kind,
+    NativeOptimizationLevel optimization,
+    std::span<const ValidationInstrumentationKind> instrumentation,
     std::vector<ForeignProviderAudit> audits,
     TimingRecorder *timings,
     DiagnosticSink &diagnostics) {
@@ -219,7 +221,13 @@ void initialize_claim(
   options.validation_kind = kind;
   options.foreign_provider_audits = std::move(audits);
   options.lower_mir = true;
-  options.emit_llvm = true;
+  options.emit_native_output = true;
+  options.native_output.output_kind = LlvmNativeOutputKind::Object;
+  options.native_output.optimization = optimization;
+  if (!instrumentation.empty()) {
+    options.native_output.instrumentation =
+        LlvmNativeInstrumentation::AddressSanitizer;
+  }
   options.emit_program_entry = true;
   options.timings = timings;
   return compile_workspace_with_resolution(
@@ -446,6 +454,8 @@ ValidationCommandResult execute_validation_command(
       options.target,
       options.workspace,
       options.kind,
+      options.optimization,
+      options.instrumentation,
       options.foreign_provider_audits,
       options.timings,
       diagnostics);

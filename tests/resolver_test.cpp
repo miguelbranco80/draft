@@ -1328,6 +1328,7 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   draft::CompileWorkspaceOptions offline_options = compile_options(workspace);
   offline_options.lower_mir = true;
   offline_options.emit_llvm = true;
+  offline_options.emit_native_output = true;
   offline_options.emit_debug_information = true;
   const draft::CompileWorkspaceResult offline =
       draft::compile_workspace_with_resolution(

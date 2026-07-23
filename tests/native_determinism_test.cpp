@@ -113,6 +113,7 @@ using ArtifactSnapshot =
     draft::SourceManager &sources,
     std::string_view package,
     bool emit_program_entry,
+    draft::LlvmNativeOutputKind output_kind,
     const draft::TargetProfile &target,
     draft::DiagnosticSink &diagnostics) {
   draft::CompileWorkspaceOptions options;
@@ -123,7 +124,8 @@ using ArtifactSnapshot =
       std::string(DRAFT_SOURCE_DIRECTORY) + "/core";
   options.workspace.core_content_identity = "draft-core-bootstrap-v4";
   options.lower_mir = true;
-  options.emit_llvm = true;
+  options.emit_native_output = true;
+  options.native_output.output_kind = output_kind;
   options.emit_debug_information = true;
   options.emit_program_entry = emit_program_entry;
   return draft::compile_workspace(
@@ -230,16 +232,34 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   // depend only on source/package identity and canonical type arguments, never
   // process addresses or filesystem paths.
   draft::CompileWorkspaceResult executable = compile_fixture(
-      sources, "packages/app", true, target, compile_diagnostics);
+      sources,
+      "packages/app",
+      true,
+      draft::LlvmNativeOutputKind::Object,
+      target,
+      compile_diagnostics);
   draft::CompileWorkspaceResult library = compile_fixture(
-      sources, "c-library", false, target, compile_diagnostics);
+      sources,
+      "c-library",
+      false,
+      draft::LlvmNativeOutputKind::Object,
+      target,
+      compile_diagnostics);
+  draft::CompileWorkspaceResult library_assembly = compile_fixture(
+      sources,
+      "c-library",
+      false,
+      draft::LlvmNativeOutputKind::Assembly,
+      target,
+      compile_diagnostics);
   if (compile_diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, compile_diagnostics);
   }
   EXPECT(state, executable.ok);
   EXPECT(state, library.ok);
+  EXPECT(state, library_assembly.ok);
   EXPECT(state, native_task_count(executable) > 1);
-  if (!executable.ok || !library.ok) return;
+  if (!executable.ok || !library.ok || !library_assembly.ok) return;
   struct ArtifactCase {
     std::string_view name;
     draft::NativeArtifactKind kind;
@@ -253,7 +273,10 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
           "static-library", draft::NativeArtifactKind::StaticLibrary, &library},
       ArtifactCase{
           "dynamic-library", draft::NativeArtifactKind::DynamicLibrary, &library},
-      ArtifactCase{"assembly", draft::NativeArtifactKind::Assembly, &library},
+      ArtifactCase{
+          "assembly",
+          draft::NativeArtifactKind::Assembly,
+          &library_assembly},
   };
   for (const ArtifactCase &artifact : artifacts) {
     compare_repeated_artifact(
@@ -265,21 +288,18 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
         artifact.kind);
   }
 
-  // Corrupt two independent package modules after planning facts have
-  // been produced. Workers may fail in either order, but only the lowest task
-  // ID's reason is diagnosed and no canonical object or complete-looking
-  // correlation map may be published from the failed ready set.
+  // Native output configuration is part of the command-local product contract.
+  // Reject a mismatched product before scheduling or publishing any object;
+  // silently re-emitting retained text here would restore the old broad LLVM
+  // phase and make optimization choice depend on the later artifact caller.
   if (executable.packages.size() >= 2 &&
       executable.packages[0].has_value() &&
       executable.packages[1].has_value()) {
     draft::CompileWorkspaceResult broken = executable;
-    broken.packages[0]->llvm_module.text =
-        "not an LLVM module for task zero\n";
-    broken.packages[1]->llvm_module.text =
-        "not an LLVM module for a later task\n";
-    const std::string first_identity =
-        draft::display_package_identity(broken.packages[0]->identity) +
-        " LLVM module";
+    broken.packages[0]->native_output.optimization =
+        draft::NativeOptimizationLevel::O2;
+    broken.packages[1]->native_output.optimization =
+        draft::NativeOptimizationLevel::O2;
     const std::filesystem::path failed_directory = temporary / "failed-ready-set";
     draft::NativeBuildOptions failed_options;
     failed_options.build_directory = (failed_directory / "build").string();
@@ -292,7 +312,7 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
     EXPECT(state, failed_diagnostics.diagnostics().size() == 1);
     if (!failed_diagnostics.diagnostics().empty()) {
       EXPECT(state, failed_diagnostics.diagnostics().front().message.find(
-          "native object task '" + first_identity + "' failed") !=
+          "compiled package 0 has no matching native package output") !=
           std::string::npos);
     }
     EXPECT(state, !std::filesystem::exists(

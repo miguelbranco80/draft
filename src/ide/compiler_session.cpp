@@ -777,7 +777,9 @@ CheckResult CompilerSession::build_checked() {
   DiagnosticSink diagnostics;
   CompileWorkspaceOptions options = compile_options();
   options.lower_mir = true;
-  options.emit_llvm = true;
+  options.emit_native_output = true;
+  options.native_output.output_kind = LlvmNativeOutputKind::Object;
+  options.native_output.optimization = NativeOptimizationLevel::O0;
   if (!continue_compiled_workspace(sources, options, compiled, diagnostics)) {
     publish_diagnostics(sources, diagnostics);
     return {false, diagnostic_count_};

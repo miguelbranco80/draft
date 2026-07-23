@@ -39,6 +39,8 @@ draft::CompileWorkspaceResult make_compiled_fixture() {
   root.identity = {"workspace", "app"};
   root.llvm_module.ok = true;
   root.llvm_module.text = "; root module\n";
+  root.native_output.ok = true;
+  root.native_output.bytes = "root object";
   root.artifact_layout.ok = true;
   root.artifact_layout.inputs.push_back({
       draft::PackageArtifactInputKind::PackageLlvmModule, 0, {0}});
@@ -48,6 +50,8 @@ draft::CompileWorkspaceResult make_compiled_fixture() {
   dependency.identity = {"draft-core-test", "os"};
   dependency.llvm_module.ok = true;
   dependency.llvm_module.text = "; dependency module\n";
+  dependency.native_output.ok = true;
+  dependency.native_output.bytes = "dependency object";
   dependency.assembly_sources.push_back({"first.s", "first:\n  ret\n"});
   dependency.assembly_sources.push_back({"second.S", "second:\n  ret\n"});
   dependency.artifact_layout.ok = true;
@@ -66,9 +70,10 @@ draft::CompileWorkspaceResult make_compiled_fixture() {
 void test_canonical_task_order(TestState &state) {
   const draft::CompileWorkspaceResult compiled = make_compiled_fixture();
   draft::NativeObjectPlan plan;
+  draft::NativeObjectPlanOptions options;
   std::string reason;
   EXPECT(state, draft::prepare_native_object_plan(
-      draft::make_aarch64_macos_profile(), compiled, plan, reason));
+      draft::make_aarch64_macos_profile(), compiled, options, plan, reason));
   EXPECT(state, reason.empty());
   EXPECT(state, plan.tasks.size() == 4);
   EXPECT(state, plan.graph.tasks.size() == plan.tasks.size());
@@ -80,9 +85,12 @@ void test_canonical_task_order(TestState &state) {
       plan.tasks[0].kind == draft::NativeObjectTaskKind::PackageLlvmModule);
   EXPECT(state, plan.tasks[0].package_index == 0);
   EXPECT(state, plan.tasks[0].producer == draft::SemanticProductId{0});
+  EXPECT(state,
+      plan.tasks[0].package_module_input ==
+          draft::NativePackageModuleInputKind::EmittedNativeBytes);
   EXPECT(state, plan.tasks[0].display_name == "workspace:app LLVM module");
   EXPECT(state, plan.tasks[0].output_stem == "package-0-module");
-  EXPECT(state, plan.tasks[0].input_bytes == "; root module\n");
+  EXPECT(state, plan.tasks[0].input_bytes == "root object");
 
   EXPECT(state,
       plan.tasks[1].kind == draft::NativeObjectTaskKind::PackageLlvmModule);
@@ -100,6 +108,41 @@ void test_canonical_task_order(TestState &state) {
   EXPECT(state, plan.tasks[3].source_extension == ".S");
 }
 
+// The artifact layer must consume exactly the representation requested by its
+// caller. Production planning rejects a mismatched optimization product, while
+// the qualification oracle deliberately consumes retained LLVM text instead.
+void test_plan_selects_one_exact_package_representation(TestState &state) {
+  draft::CompileWorkspaceResult compiled = make_compiled_fixture();
+  draft::NativeObjectPlan plan;
+  draft::NativeObjectPlanOptions production;
+  production.expected_native_output.optimization =
+      draft::NativeOptimizationLevel::O2;
+  std::string reason;
+  EXPECT(state, !draft::prepare_native_object_plan(
+      draft::make_aarch64_macos_profile(),
+      compiled,
+      production,
+      plan,
+      reason));
+  EXPECT(state, reason ==
+      "compiled package 0 has no matching native package output");
+  EXPECT(state, plan.tasks.empty());
+
+  draft::NativeObjectPlanOptions oracle;
+  oracle.package_module_input =
+      draft::NativePackageModuleInputKind::LlvmTextOracle;
+  EXPECT(state, draft::prepare_native_object_plan(
+      draft::make_aarch64_macos_profile(), compiled, oracle, plan, reason));
+  EXPECT(state, reason.empty());
+  EXPECT(state, !plan.tasks.empty());
+  if (!plan.tasks.empty()) {
+    EXPECT(state,
+        plan.tasks.front().package_module_input ==
+            draft::NativePackageModuleInputKind::LlvmTextOracle);
+    EXPECT(state, plan.tasks.front().input_bytes == "; root module\n");
+  }
+}
+
 // A missing lowered package and an extension outside the selected target
 // contract must fail during planning, before any task or filesystem output is
 // published.
@@ -107,9 +150,10 @@ void test_plan_rejects_incomplete_or_unknown_input(TestState &state) {
   draft::CompileWorkspaceResult incomplete = make_compiled_fixture();
   incomplete.packages[0]->artifact_layout.ok = false;
   draft::NativeObjectPlan plan;
+  draft::NativeObjectPlanOptions options;
   std::string reason;
   EXPECT(state, !draft::prepare_native_object_plan(
-      draft::make_aarch64_macos_profile(), incomplete, plan, reason));
+      draft::make_aarch64_macos_profile(), incomplete, options, plan, reason));
   EXPECT(state, reason ==
       "compiled package 0 has no valid native artifact layout");
   EXPECT(state, plan.tasks.empty());
@@ -119,6 +163,7 @@ void test_plan_rejects_incomplete_or_unknown_input(TestState &state) {
   EXPECT(state, !draft::prepare_native_object_plan(
       draft::make_aarch64_macos_profile(),
       incomplete_layout,
+      options,
       plan,
       reason));
   EXPECT(state, reason ==
@@ -128,7 +173,7 @@ void test_plan_rejects_incomplete_or_unknown_input(TestState &state) {
   draft::CompileWorkspaceResult unknown = make_compiled_fixture();
   unknown.packages[1]->assembly_sources[0].relative_name = "first.asm-unknown";
   EXPECT(state, !draft::prepare_native_object_plan(
-      draft::make_aarch64_macos_profile(), unknown, plan, reason));
+      draft::make_aarch64_macos_profile(), unknown, options, plan, reason));
   EXPECT(state, reason ==
       "package assembly input 'first.asm-unknown' has no exact "
       "non-preprocessed target rule");
@@ -140,6 +185,7 @@ void test_plan_rejects_incomplete_or_unknown_input(TestState &state) {
 int main() {
   TestState state;
   test_canonical_task_order(state);
+  test_plan_selects_one_exact_package_representation(state);
   test_plan_rejects_incomplete_or_unknown_input(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " native object task expectation(s) failed\n";

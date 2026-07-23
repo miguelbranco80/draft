@@ -1158,6 +1158,7 @@ void bind_handwritten_program_identity(
     package.native_live_globals.clear();
     package.assembly = {};
     package.llvm_module = {};
+    package.native_output = {};
     package.artifact_layout = {};
   }
   return true;
@@ -6883,8 +6884,50 @@ struct PackageLlvmModuleTaskSlot {
   std::vector<SymbolId> globals;
   std::vector<const MirProcedure *> procedures;
   LlvmIrOptions options;
+  bool retain_llvm_text = false;
+  std::optional<LlvmObjectEmissionOptions> native_options;
   LlvmIrResult llvm;
+  PackageNativeOutput native;
+  std::uint64_t elapsed_nanoseconds = 0;
 };
+
+// Reconstructs the sequential LLVM adapter subphases after a package worker
+// joins. Workers cannot touch TimingRecorder because insertion order must stay
+// independent of scheduling; the coordinator calls this in stable native-task
+// order while the enclosing target-lowering scope is still active.
+[[nodiscard]] std::vector<CompletedTimingEvent>
+llvm_native_phase_timing_events(
+    const LlvmObjectEmissionPhaseTimings &phase,
+    LlvmNativeOutputKind output_kind) {
+  std::vector<CompletedTimingEvent> children;
+  children.reserve(10);
+  const auto append = [&](std::string_view name, std::uint64_t elapsed) {
+    if (elapsed != 0) children.push_back({std::string(name), elapsed});
+  };
+  append(
+      "LLVM target initialization",
+      phase.target_initialization_nanoseconds);
+  append(
+      "LLVM context and input preparation",
+      phase.input_preparation_nanoseconds);
+  append("LLVM IR parsing", phase.ir_parsing_nanoseconds);
+  append(
+      "LLVM module target validation",
+      phase.target_validation_nanoseconds);
+  append("LLVM IR verification", phase.ir_verification_nanoseconds);
+  append("LLVM target-machine setup", phase.target_machine_nanoseconds);
+  append("LLVM O2 optimization", phase.o2_optimization_nanoseconds);
+  append(
+      "LLVM ASan instrumentation",
+      phase.asan_instrumentation_nanoseconds);
+  append(
+      output_kind == LlvmNativeOutputKind::Assembly
+          ? "LLVM assembly emission"
+          : "LLVM object emission",
+      phase.machine_code_emission_nanoseconds);
+  append("native output copy", phase.output_copy_nanoseconds);
+  return children;
+}
 
 struct PackageLlvmModuleWaveExecution {
   std::vector<PackageLlvmModuleTaskSlot> *slots = nullptr;
@@ -6911,6 +6954,7 @@ struct PackageLlvmModuleWaveExecution {
     return false;
   }
   SemanticProductOutcome &outcome = (*context.outcomes)[index];
+  const auto started = std::chrono::steady_clock::now();
   slot.llvm = emit_llvm_package_module(
       *slot.target,
       *slot.sources,
@@ -6921,10 +6965,35 @@ struct PackageLlvmModuleWaveExecution {
       slot.globals,
       slot.procedures,
       outcome.diagnostics);
-  outcome.kind = slot.llvm.ok
+  if (slot.llvm.ok && slot.native_options.has_value()) {
+    LlvmObjectEmissionResult emitted = emit_llvm_object_in_process(
+        *slot.target,
+        display_package_identity(slot.options.package),
+        slot.llvm.text,
+        *slot.native_options);
+    if (!emitted.ok) {
+      outcome.diagnostics.error(
+          SourceRange::invalid(), emitted.failure);
+    } else {
+      slot.native.ok = true;
+      slot.native.output_kind = slot.native_options->output_kind;
+      slot.native.optimization = slot.native_options->optimization;
+      slot.native.instrumentation = slot.native_options->instrumentation;
+      slot.native.bytes = std::move(emitted.bytes);
+      slot.native.phase_timings = emitted.phase_timings;
+    }
+  }
+  if (!slot.retain_llvm_text && slot.native.ok) slot.llvm.text.clear();
+  const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - started).count();
+  assert(elapsed >= 0 && "package LLVM task duration must be nonnegative");
+  slot.elapsed_nanoseconds = static_cast<std::uint64_t>(elapsed);
+  const bool native_ok =
+      !slot.native_options.has_value() || slot.native.ok;
+  outcome.kind = slot.llvm.ok && native_ok
       ? SemanticProductOutcomeKind::Complete
       : SemanticProductOutcomeKind::Error;
-  if (!slot.llvm.ok) {
+  if (outcome.kind == SemanticProductOutcomeKind::Error) {
     outcome.failure = "package failed LLVM module emission";
   }
   return true;
@@ -7083,6 +7152,8 @@ struct NativePipelineExecution {
     const TargetProfile &target,
     RuntimeAssertionMode runtime_assertions,
     bool emit_llvm,
+    bool emit_native_output,
+    LlvmObjectEmissionOptions native_output,
     bool emit_debug_information,
     bool emit_program_entry,
     ValidationKind validation_kind,
@@ -7113,7 +7184,9 @@ struct NativePipelineExecution {
   std::size_t module_count = 0;
   std::size_t layout_count = 0;
   std::vector<NativePipelineTask> tasks;
-  tasks.reserve(mir_count + (emit_llvm ? 2 * package_count : 0));
+  const bool emit_package_module = emit_llvm || emit_native_output;
+  tasks.reserve(
+      mir_count + (emit_package_module ? 2 * package_count : 0));
   WorkGraph execution_graph;
 
   const auto append_execution_task = [&tasks, &execution_graph](
@@ -7196,7 +7269,7 @@ struct NativePipelineExecution {
     }
   }
 
-  if (emit_llvm) {
+  if (emit_package_module) {
     for (std::size_t package_index = 0;
          package_index < package_count; ++package_index) {
       if (!result.packages[package_index].has_value()) continue;
@@ -7205,7 +7278,7 @@ struct NativePipelineExecution {
           result.semantic_products.packages[package_index];
       if (products.package_llvm_module.is_valid() ||
           products.artifact_layout.is_valid() || package.llvm_module.ok ||
-          package.artifact_layout.ok) {
+          package.native_output.ok || package.artifact_layout.ok) {
         diagnostics.error(
             SourceRange::invalid(),
             "native product slice is not empty before native scheduling");
@@ -7270,6 +7343,10 @@ struct NativePipelineExecution {
       }
       slot.options.package = result.graph.packages[package_index].identity;
       slot.options.emit_debug_information = emit_debug_information;
+      slot.retain_llvm_text = emit_llvm;
+      if (emit_native_output) {
+        slot.native_options = native_output;
+      }
       slot.options.emit_runtime_support =
           package_index == result.graph.root_package.value;
       slot.options.emit_program_entry =
@@ -7421,7 +7498,7 @@ struct NativePipelineExecution {
     timings->add_counter(
         "package LLVM modules initially ready", initially_ready_module_count);
     timings->add_counter("MIR procedure tasks", mir_slots.size());
-    if (emit_llvm) {
+    if (emit_package_module) {
       timings->add_counter("package LLVM module tasks", module_count);
       timings->add_counter("artifact-layout tasks", layout_count);
     }
@@ -7497,11 +7574,29 @@ struct NativePipelineExecution {
         break;
       case NativePipelineTaskKind::PackageLlvmModule:
         package.llvm_module = std::move(module_slots[task.slot].llvm);
+        package.native_output =
+            std::move(module_slots[task.slot].native);
         if (timings != nullptr) {
           timings->add_counter("LLVM package modules emitted", 1);
           timings->add_counter(
               "LLVM IR bytes",
               static_cast<std::uint64_t>(package.llvm_module.text.size()));
+          if (package.native_output.ok) {
+            timings->add_counter(
+                "LLVM native bytes",
+                static_cast<std::uint64_t>(
+                    package.native_output.bytes.size()));
+            if (timings->output() == TimingOutput::All) {
+              timings->record_completed_event_group(
+                  "LLVM package emission: " +
+                      display_package_identity(package.identity),
+                  module_slots[task.slot].elapsed_nanoseconds,
+                  TimingVisibility::Detail,
+                  llvm_native_phase_timing_events(
+                      package.native_output.phase_timings,
+                      package.native_output.output_kind));
+            }
+          }
         }
         break;
       case NativePipelineTaskKind::ArtifactLayout:
@@ -7681,7 +7776,7 @@ CompileWorkspaceResult compile_workspace(
   }
   const bool needs_target_continuation =
       options.validation_kind != ValidationKind::None ||
-      options.lower_mir || options.emit_llvm;
+      options.lower_mir || options.emit_llvm || options.emit_native_output;
   if (needs_target_continuation &&
       !continue_compiled_workspace(
           sources, options, result, diagnostics)) {
@@ -8473,7 +8568,10 @@ bool continue_compiled_workspace(
   // exact procedure/global projection. MIR is one immutable task per live
   // concrete runtime body rather than per checked body. No package HIR
   // projection or semantic-table mutation participates in lowering.
-  if (options.lower_mir || options.emit_llvm) {
+  if (options.lower_mir || options.emit_llvm || options.emit_native_output) {
+    LlvmObjectEmissionOptions native_output = options.native_output;
+    native_output.collect_phase_timings = options.timings != nullptr &&
+        options.timings->output() == TimingOutput::All;
     if (!run_workspace_native_reachability_product(
             options.emit_program_entry,
             options.validation_kind,
@@ -8486,6 +8584,8 @@ bool continue_compiled_workspace(
             options.target,
             options.configuration.runtime_assertions,
             options.emit_llvm,
+            options.emit_native_output,
+            native_output,
             options.emit_debug_information,
             options.emit_program_entry,
             options.validation_kind,
@@ -8502,7 +8602,7 @@ bool continue_compiled_workspace(
 
   compiled.ok = diagnostics.error_count() == initial_errors;
   if (compiled.ok) {
-    if (options.lower_mir || options.emit_llvm) {
+    if (options.lower_mir || options.emit_llvm || options.emit_native_output) {
       compiled.progress = CompileWorkspaceProgress::TargetLowering;
     } else if (options.validation_kind != ValidationKind::None) {
       compiled.progress = CompileWorkspaceProgress::ValidationDiscovery;
@@ -8727,7 +8827,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     identity_timing.finish();
     const bool needs_target_continuation =
         options.validation_kind != ValidationKind::None ||
-        options.lower_mir || options.emit_llvm;
+        options.lower_mir || options.emit_llvm || options.emit_native_output;
     if (needs_target_continuation &&
         !continue_compiled_workspace(
             sources, options, body_surface, diagnostics)) {
@@ -8849,7 +8949,7 @@ CompileWorkspaceResult compile_workspace_with_resolution(
     }
     const bool needs_target_continuation =
         options.validation_kind != ValidationKind::None ||
-        options.lower_mir || options.emit_llvm;
+        options.lower_mir || options.emit_llvm || options.emit_native_output;
     if (needs_target_continuation &&
         !continue_compiled_workspace(
             sources, options, body_surface, diagnostics)) {

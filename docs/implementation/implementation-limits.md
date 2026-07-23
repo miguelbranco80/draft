@@ -136,10 +136,12 @@ projection is ready, one `PackageLlvmModule` per package borrows its MIR task
 payloads in canonical order and emits only live package globals and concrete
 definitions. MIR, package modules, and layouts share one exact closed executor,
 so a package module waits only for its own MIR rather than a workspace barrier.
-Each package publishes a deterministic `ArtifactLayout` over that module and
-its assembly. The object planner consumes only that layout; no package-wide MIR
-container or alternative per-function LLVM representation remains in compiler
-state.
+For a native command that same package task publishes matching object or
+assembly bytes and discards LLVM text unless an explicit consumer requests it.
+Each package publishes a deterministic `ArtifactLayout` over that emission and
+its assembly. The artifact planner consumes only that layout; no package-wide
+MIR container or alternative per-function LLVM representation remains in
+compiler state.
 
 ## Native host and instrumentation limits
 

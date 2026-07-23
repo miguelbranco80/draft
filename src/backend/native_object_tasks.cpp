@@ -37,6 +37,7 @@ namespace {
 bool prepare_native_object_plan(
     const TargetProfile &target,
     const CompileWorkspaceResult &compiled,
+    const NativeObjectPlanOptions &options,
     NativeObjectPlan &plan,
     std::string &reason) {
   plan = NativeObjectPlan{};
@@ -69,8 +70,7 @@ bool prepare_native_object_plan(
        ++package_index) {
     const std::optional<CompiledPackage> &package =
         compiled.packages[package_index];
-    if (!package.has_value() || !package->llvm_module.ok ||
-        !package->artifact_layout.ok) {
+    if (!package.has_value() || !package->artifact_layout.ok) {
       reason = "compiled package " + std::to_string(package_index) +
           " has no valid native artifact layout";
       plan = NativeObjectPlan{};
@@ -90,21 +90,49 @@ bool prepare_native_object_plan(
         return false;
       }
       if (layout.kind == PackageArtifactInputKind::PackageLlvmModule) {
-        if (saw_module || saw_assembly || layout.index != 0 ||
-            !package->llvm_module.ok) {
+        if (saw_module || saw_assembly || layout.index != 0) {
           reason = "package LLVM module layout is malformed";
           plan = NativeObjectPlan{};
           return false;
         }
         NativeObjectTask task;
         task.kind = NativeObjectTaskKind::PackageLlvmModule;
+        task.package_module_input = options.package_module_input;
         task.package_index = package_index;
         task.producer = layout.producer;
         task.display_name =
             display_package_identity(package->identity) + " LLVM module";
         task.output_stem = package_stem + "-module";
-        task.source_extension = ".ll";
-        task.input_bytes = package->llvm_module.text;
+        if (options.package_module_input ==
+            NativePackageModuleInputKind::EmittedNativeBytes) {
+          const PackageNativeOutput &native = package->native_output;
+          if (!native.ok || native.bytes.empty() ||
+              native.output_kind !=
+                  options.expected_native_output.output_kind ||
+              native.optimization !=
+                  options.expected_native_output.optimization ||
+              native.instrumentation !=
+                  options.expected_native_output.instrumentation) {
+            reason = "compiled package " + std::to_string(package_index) +
+                " has no matching native package output";
+            plan = NativeObjectPlan{};
+            return false;
+          }
+          task.source_extension = native.output_kind ==
+                  LlvmNativeOutputKind::Assembly
+              ? ".s"
+              : std::string{};
+          task.input_bytes = native.bytes;
+        } else {
+          if (!package->llvm_module.ok || package->llvm_module.text.empty()) {
+            reason = "compiled package " + std::to_string(package_index) +
+                " has no retained LLVM text for the external oracle";
+            plan = NativeObjectPlan{};
+            return false;
+          }
+          task.source_extension = ".ll";
+          task.input_bytes = package->llvm_module.text;
+        }
         plan.tasks.push_back(std::move(task));
         plan.graph.tasks.emplace_back();
         saw_module = true;

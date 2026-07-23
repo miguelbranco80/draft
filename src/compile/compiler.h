@@ -27,6 +27,7 @@
 
 #include "assembly/analyze.h"
 #include "backend/llvm_ir.h"
+#include "backend/llvm_object_emitter.h"
 #include "compile/body_work.h"
 #include "compile/configuration.h"
 #include "compile/semantic_work_graph.h"
@@ -86,6 +87,12 @@ struct CompileWorkspaceOptions {
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
+  // A native-producing command can request that each package task immediately
+  // turn its complete module into object or assembly bytes. Those bytes remain
+  // command-local derived products and let final artifact assembly avoid a
+  // second broad LLVM phase after every package has finished lowering.
+  bool emit_native_output = false;
+  LlvmObjectEmissionOptions native_output;
   // Native debug information is opt-in so an ordinary development build does
   // not construct and lower source-location metadata. This affects derived
   // artifacts only and never enters semantic or resolved-program identity.
@@ -160,6 +167,21 @@ struct PackageArtifactLayout {
   std::vector<PackageArtifactInput> inputs;
 };
 
+// PackageNativeOutput is the copyable terminal product of one package LLVM
+// task. No LLVM context or module escapes the worker: bytes own exactly one
+// object or assembly unit, while configuration records the choices used to
+// create them so a later artifact request cannot silently consume a mismatched
+// product. Phase timings are observations only and never enter identity.
+struct PackageNativeOutput {
+  bool ok = false;
+  LlvmNativeOutputKind output_kind = LlvmNativeOutputKind::Object;
+  NativeOptimizationLevel optimization = NativeOptimizationLevel::O0;
+  LlvmNativeInstrumentation instrumentation =
+      LlvmNativeInstrumentation::None;
+  std::string bytes;
+  LlvmObjectEmissionPhaseTimings phase_timings;
+};
+
 // One row owns every representation of one package. Keeping phase products
 // together makes driver commands thin and gives later manifests a single place
 // to collect canonical inputs without rerunning semantic analysis.
@@ -229,6 +251,7 @@ struct CompiledPackage {
   // the package-level native lowering product consumed by LLVM verification
   // and object emission.
   LlvmIrResult llvm_module;
+  PackageNativeOutput native_output;
   PackageArtifactLayout artifact_layout;
 };
 

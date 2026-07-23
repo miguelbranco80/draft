@@ -81,15 +81,15 @@ expression, or name lookup.
 | Artifact reachability | One command-selected root closure separates the complete checked procedure set from the procedure/global subset required by the requested artifact. |
 | MIR procedure | Lowering is owned by one checked concrete procedure and does not mutate semantic type tables. |
 | Package assembly | Captured and parsed assembly is an explicit checked-body product, published beside direct effects and consumed by MIR and native layout. |
-| Package LLVM module | One complete module consumes the package's ordered artifact-live MIR products and owns only its artifact-live globals and concrete definitions. |
+| Package LLVM module | One complete package task consumes ordered artifact-live MIR products, owns only live globals/definitions, and may immediately publish requested object/assembly bytes while retaining text only for explicit inspection or qualification. |
 | Artifact layout | The package module and assembly link inputs are published in canonical order after their products complete. |
 
 After artifact reachability closes, MIR procedures, package modules, and
 artifact layouts form one closed execution subgraph rather than three global
 phase barriers. Each MIR task is independent; one package-module task depends
 only on its package's MIR tasks; one layout task depends only on that package
-module. `WorkGraph` may therefore start a module or layout while unrelated MIR
-is unfinished. Package assembly has already published in the direct-semantic
+emission. `WorkGraph` may therefore start native emission or layout while
+unrelated MIR is unfinished. Package assembly has already published in the direct-semantic
 ready wave for its checked bodies. The dynamic semantic graph remains the
 authority: private results are published after join through canonical ready
 waves, so scheduling cannot reorder product state, diagnostics, or durable

@@ -105,6 +105,7 @@ struct TestState {
   options.validation_kind = kind;
   options.lower_mir = true;
   options.emit_llvm = true;
+  options.emit_native_output = true;
   return draft::compile_workspace_with_resolution(
       sources, (root / "app").string(), std::move(options), diagnostics);
 }

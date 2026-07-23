@@ -1,11 +1,12 @@
 // Native artifact adapter for target-profiled objects, archives, and final
 // links.
 //
-// This module receives a completely lowered Draft program, schedules its
-// independent semantic-package modules and package-assembly objects, and
-// invokes the remaining selected platform tools to materialize the requested
-// artifact. Tool paths are operational configuration: they do not enter
-// resolution manifests or synthesis identities. The adapter owns the exact
+// This module receives a completely lowered Draft program whose dependency-
+// ready package tasks already own object or assembly bytes. It schedules the
+// remaining independent package-assembly work, publishes package bytes in
+// canonical order, and invokes selected platform tools to materialize the
+// requested artifact. Tool paths are operational configuration: they do not
+// enter resolution manifests or synthesis identities. The adapter owns the exact
 // argument/publication
 // contract for each Draft target and keeps language semantics in MIR/LLVM
 // lowering rather than inferring them from the host environment.
@@ -140,8 +141,9 @@ struct NativeBuildResult {
   std::vector<VerifiedRuntimeAssetInput> runtime_assets;
 };
 
-// Emits each complete semantic-package module in-process and
-// materializes the requested native artifact. Mach-O/ELF object mode performs
+// Consumes each complete semantic-package native product and materializes the
+// requested artifact. The explicit ExternalClangOracle option instead compiles
+// retained LLVM text for qualification. Mach-O/ELF object mode performs
 // a relocatable link over every layout object; COFF object mode requires one
 // native input because COFF defines no partial link. Archive and dynamic modes
 // retain every LLVM and package-assembly object; assembly mode produces a

@@ -1,16 +1,18 @@
 // Stable native object work derived from a completely lowered package graph.
 //
 // This module is the boundary between compiler-owned package products and an
-// object emitter. It converts every complete package LLVM module and selected
-// package-assembly input into one explicit task. Task IDs, stems, and diagnostic
-// names are fixed before execution; emitters may run tasks concurrently but
-// must place products back into corresponding task-indexed result slots.
+// artifact publisher. It converts every package layout row into one explicit
+// task. An ordinary package row borrows already emitted object/assembly bytes;
+// only the qualification oracle borrows retained LLVM text. Selected package
+// assembly remains source input for the platform assembler. Task IDs, stems,
+// and diagnostic names are fixed before execution; workers place products back
+// into corresponding task-indexed result slots.
 //
 // Input byte views borrow CompileWorkspaceResult storage for the synchronous
 // native build and retain nothing afterward. The plan owns only small metadata
-// and an edgeless WorkGraph: after semantic closure and target lowering, every
-// package module contains external declarations for dependency symbols and can
-// be emitted independently. Linking is a later ordered publication phase.
+// and an edgeless WorkGraph: package native bytes are complete, while every
+// selected assembly input can be assembled independently. Linking is a later
+// ordered publication phase.
 //
 // This module depends on compile products, target profiles, and the base work
 // graph. It deliberately knows nothing about LLVM APIs, subprocesses, object
@@ -39,16 +41,39 @@ enum class NativeObjectTaskKind {
   PackageAssembly,
 };
 
+// Selects the representation carried by a package-module task. Ordinary builds
+// consume bytes already emitted by the dependency-ready package LLVM task. The
+// textual form exists only for the explicit external-Clang qualification
+// oracle. Package assembly has its own task kind and ignores this value.
+enum class NativePackageModuleInputKind {
+  EmittedNativeBytes,
+  LlvmTextOracle,
+};
+
+// NativeObjectPlanOptions states which package product the artifact layer is
+// authorized to consume. expected_native_output is checked exactly when using
+// emitted bytes, preventing a later O2/object request from silently reusing an
+// O0/assembly product. Oracle planning instead requires retained LLVM text and
+// deliberately ignores that expected native product.
+struct NativeObjectPlanOptions {
+  NativePackageModuleInputKind package_module_input =
+      NativePackageModuleInputKind::EmittedNativeBytes;
+  LlvmObjectEmissionOptions expected_native_output;
+};
+
 // One task names one independently emittable native input. package_index is in
 // CompileWorkspaceResult::packages. input_index addresses the package's
 // assembly-source vector and is zero for its LLVM module. output_stem is
 // collision-free within one native build directory and contains no physical
-// source path. source_extension is ".ll" for an LLVM unit
-// or the exact selected assembly extension for a package source. producer is
+// source path. source_extension is ".ll" for an oracle unit, ".s" for emitted
+// assembly, empty for an emitted object, or the exact selected extension for a
+// package source. producer is
 // the exact semantic product copied from PackageArtifactLayout; this preserves
 // graph-to-object identity without making workers inspect compiler side tables.
 struct NativeObjectTask {
   NativeObjectTaskKind kind = NativeObjectTaskKind::PackageLlvmModule;
+  NativePackageModuleInputKind package_module_input =
+      NativePackageModuleInputKind::EmittedNativeBytes;
   std::size_t package_index = 0;
   std::size_t input_index = 0;
   SemanticProductId producer;
@@ -75,6 +100,7 @@ struct NativeObjectPlan {
 [[nodiscard]] bool prepare_native_object_plan(
     const TargetProfile &target,
     const CompileWorkspaceResult &compiled,
+    const NativeObjectPlanOptions &options,
     NativeObjectPlan &plan,
     std::string &reason);
 

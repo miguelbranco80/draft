@@ -157,21 +157,24 @@ After artifact reachability, target lowering constructs live MIR,
 `PackageLlvmModule`, and `ArtifactLayout` products in one exact dependency
 executor. A module may start as soon as its own MIR inputs finish; its layout
 does not wait for unrelated packages. The layout's canonical order is the
-complete live package module followed by selected package assembly. Once those
-semantic products publish, the object backend freezes one task for every row in
-the package layouts.
-The native graph is intentionally edgeless: each package module defines its own
-storage and procedures, declares dependency imports, and can be emitted without
-another package module. Final linking combines package and assembly objects.
+complete live package emission followed by selected package assembly. A native
+package task immediately turns its module into the requested object or assembly
+bytes and retains text only for an explicit IR consumer or Clang qualification.
+Once those semantic products publish, the artifact backend freezes one task for
+every layout row.
+That later graph is intentionally edgeless: package bytes are already complete,
+and each selected assembly input can be assembled without another package.
+Final linking combines package and assembly objects.
 The layout row retains the exact semantic producer for every native input.
 LLVM owns section and relocation placement inside one isolated object; its
 verified object bytes are the task result. The coordinator owns only the
 canonical cross-object publication and linker order, so it never reconstructs
 or guesses LLVM's internal section graph.
 
-The shared work scheduler uses at most the requested worker bound, or the
-host-reported hardware concurrency capped to the task count. Each LLVM task
-owns a fresh context, module, target machine, and in-memory output buffer. Each
+The dependency-ready native executor uses bounded workers. Each package LLVM
+task owns a fresh context, module, target machine, and in-memory output buffer;
+its object/assembly bytes remain an owned command-local product after the task
+joins. The later artifact scheduler borrows those bytes without copying. Each
 assembler or Clang-oracle task uses task-private input/output paths and launches
 through `posix_spawnp`, avoiding unsafe post-`fork` C++ work in a multithreaded
 process. Workers mutate only their matching result slots and never touch the
@@ -179,11 +182,14 @@ diagnostic sink or timing recorder.
 
 After every started task joins, the command thread replays timing records,
 selects the lowest-ID failure, and publishes successful products in task-ID
-order. Detailed LLVM rows retain task-local durations for target initialization,
+order. Detailed LLVM rows are replayed during target lowering and retain
+task-local durations for target initialization,
 context/input preparation, textual parsing, target validation, one-time module
 verification, target-machine setup, optional O2 or ASan passes, machine-code
-emission, and output copying. The command thread nests those children beneath
-their package event; no worker touches the timing recorder.
+emission, and output copying. Artifact timing separately exposes the negligible
+pre-emitted package rows and any real assembler/oracle work. The command thread
+nests those children beneath their package event; no worker touches the timing
+recorder.
 
 A failed ready set publishes no canonical native object. Successful publication
 fixes assembly filenames, object/link argument order, and archive member order

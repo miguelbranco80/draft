@@ -210,6 +210,8 @@ void test_explicit_foreign_provider_mapping(TestState &state) {
   options.dsymutil_path = fake_dsymutil.string();
   options.build_directory = (temporary / "build").string();
   options.output_path = (temporary / "program").string();
+  options.object_emitter =
+      draft::NativeObjectEmitter::ExternalClangOracle;
   draft::DiagnosticSink missing_diagnostics;
   const draft::NativeBuildResult missing = draft::build_native_artifact(
       draft::make_aarch64_macos_profile(),
@@ -251,6 +253,8 @@ void test_explicit_foreign_provider_mapping(TestState &state) {
   linux_options.clang_path = fake_clang.string();
   linux_options.build_directory = (temporary / "linux-build").string();
   linux_options.output_path = (temporary / "linux-program").string();
+  linux_options.object_emitter =
+      draft::NativeObjectEmitter::ExternalClangOracle;
   draft::ForeignProviderInput shared_mapping;
   shared_mapping.provider = "custom_math";
   shared_mapping.kind = draft::ForeignArtifactKind::SharedLibrary;
@@ -470,6 +474,8 @@ void test_linux_toolchain_arguments(TestState &state,
     options.output_path = output.string();
     options.artifact_kind = kind;
     options.emit_debug_symbols = true;
+    options.object_emitter =
+        draft::NativeObjectEmitter::ExternalClangOracle;
     return draft::build_native_artifact(
         target, compiled, options, diagnostics);
   };
@@ -582,6 +588,8 @@ void test_windows_toolchain_arguments(TestState &state) {
     options.output_path = output.string();
     options.artifact_kind = kind;
     options.emit_debug_symbols = true;
+    options.object_emitter =
+        draft::NativeObjectEmitter::ExternalClangOracle;
     return draft::build_native_artifact(
         target, compiled, options, diagnostics);
   };
@@ -644,6 +652,8 @@ void test_windows_toolchain_arguments(TestState &state) {
   object_options.build_directory = (temporary / "object-build").string();
   object_options.output_path = (temporary / "windows_toolchain.obj").string();
   object_options.artifact_kind = draft::NativeArtifactKind::Object;
+  object_options.object_emitter =
+      draft::NativeObjectEmitter::ExternalClangOracle;
   draft::DiagnosticSink object_diagnostics;
   const draft::NativeBuildResult object = draft::build_native_artifact(
       target, object_compiled, object_options, object_diagnostics);
@@ -725,6 +735,12 @@ void test_package_assembly_reaches_link(TestState &state) {
   native_options.build_directory = (temporary / "build").string();
   native_options.output_path = (temporary / "program").string();
   native_options.emit_debug_symbols = true;
+  native_options.object_emitter =
+      draft::NativeObjectEmitter::ExternalClangOracle;
+  // Both external-oracle compilation and package assembly append to one tiny
+  // recording script. Keep this argument-contract fixture sequential so shell
+  // writes cannot interleave; parallel artifact determinism has a real-tool gate.
+  native_options.object_worker_count = 1;
   const draft::NativeBuildResult built = draft::build_native_executable(
       target, compiled, native_options, diagnostics);
   if (diagnostics.has_errors()) {
@@ -739,6 +755,9 @@ void test_package_assembly_reaches_link(TestState &state) {
           "Relocations"));
 
   const std::string arguments = read_file(log);
+  if (arguments.find("\n-x\nassembler\n-c\n") == std::string::npos) {
+    std::cerr << "recorded package-assembly commands:\n" << arguments;
+  }
   EXPECT(state, arguments.find(
       "\n-x\nassembler\n-c\n") != std::string::npos);
   EXPECT(state, arguments.find(

@@ -237,7 +237,7 @@ void test_native_examples(TestState &state) {
     compile_options.workspace.core_content_identity =
         "draft-core-bootstrap-v4";
     compile_options.lower_mir = true;
-    compile_options.emit_llvm = true;
+    compile_options.emit_native_output = true;
     compile_options.emit_debug_information = true;
     draft::CompileWorkspaceResult compiled = draft::compile_workspace(
         sources,
@@ -619,7 +619,7 @@ main :: proc() -> int {
   compile_options.workspace.core_content_identity =
       "draft-partial-text-write-core-v1";
   compile_options.lower_mir = true;
-  compile_options.emit_llvm = true;
+  compile_options.emit_native_output = true;
   compile_options.emit_debug_information = true;
   draft::CompileWorkspaceResult compiled = draft::compile_workspace(
       sources,

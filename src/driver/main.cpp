@@ -732,7 +732,12 @@ int build_selected_package(
     return 1;
   }
   compile_options.lower_mir = true;
-  compile_options.emit_llvm = true;
+  compile_options.emit_native_output = true;
+  compile_options.native_output.output_kind =
+      artifact_kind == draft::NativeArtifactKind::Assembly
+      ? draft::LlvmNativeOutputKind::Assembly
+      : draft::LlvmNativeOutputKind::Object;
+  compile_options.native_output.optimization = optimization;
   compile_options.emit_debug_information = emit_debug_symbols;
   compile_options.emit_program_entry =
       artifact_kind == draft::NativeArtifactKind::Executable;
@@ -1140,7 +1145,14 @@ int run_agent_command(
     if (resolve_build.has_value()) {
       build_options = resolve_options.compile;
       build_options->lower_mir = true;
-      build_options->emit_llvm = true;
+      build_options->emit_native_output = true;
+      build_options->native_output.output_kind =
+          resolve_build->artifact_kind ==
+                  draft::NativeArtifactKind::Assembly
+              ? draft::LlvmNativeOutputKind::Assembly
+              : draft::LlvmNativeOutputKind::Object;
+      build_options->native_output.optimization =
+          resolve_build->optimization;
       build_options->emit_debug_information =
           resolve_build->emit_debug_symbols;
       build_options->emit_program_entry =

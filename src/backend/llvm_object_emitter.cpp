@@ -82,6 +82,46 @@ struct TargetDataOwner {
   TargetDataOwner &operator=(const TargetDataOwner &) = delete;
 };
 
+// AddressSanitizer's module pass instruments only functions carrying LLVM's
+// sanitize_address attribute. Add that opt-in directly to parsed definitions
+// so the production adapter does not rewrite or rescan textual IR. The frame
+// pointer string attribute is part of Draft's selected diagnostic profile and
+// remains attached even at O2.
+[[nodiscard]] bool add_address_sanitizer_attributes(
+    LLVMContextRef context,
+    LLVMModuleRef module,
+    std::string &failure) {
+  static constexpr std::string_view sanitize_name = "sanitize_address";
+  const unsigned sanitize_kind = LLVMGetEnumAttributeKindForName(
+      sanitize_name.data(), sanitize_name.size());
+  if (sanitize_kind == 0) {
+    failure = "linked LLVM has no sanitize_address function attribute";
+    return false;
+  }
+  LLVMAttributeRef sanitize =
+      LLVMCreateEnumAttribute(context, sanitize_kind, 0);
+  static constexpr std::string_view frame_pointer = "frame-pointer";
+  static constexpr std::string_view frame_pointer_value = "all";
+  LLVMAttributeRef retain_frame_pointer = LLVMCreateStringAttribute(
+      context,
+      frame_pointer.data(),
+      static_cast<unsigned>(frame_pointer.size()),
+      frame_pointer_value.data(),
+      static_cast<unsigned>(frame_pointer_value.size()));
+  const LLVMAttributeIndex function_attributes =
+      static_cast<LLVMAttributeIndex>(LLVMAttributeFunctionIndex);
+  for (LLVMValueRef function = LLVMGetFirstFunction(module);
+       function != nullptr;
+       function = LLVMGetNextFunction(function)) {
+    if (LLVMCountBasicBlocks(function) == 0) continue;
+    LLVMAddAttributeAtIndex(function, function_attributes, sanitize);
+    LLVMAddAttributeAtIndex(
+        function, function_attributes, retain_frame_pointer);
+  }
+  failure.clear();
+  return true;
+}
+
 struct PassOptionsOwner {
   LLVMPassBuilderOptionsRef value = nullptr;
   PassOptionsOwner() = default;
@@ -307,6 +347,15 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
   // generation.
   LLVMDisposeMemoryBuffer(input.value);
   input.value = nullptr;
+
+  if (options.instrumentation ==
+      LlvmNativeInstrumentation::AddressSanitizer) {
+    std::string attribute_failure;
+    if (!add_address_sanitizer_attributes(
+            context.value, module.value, attribute_failure)) {
+      return fail("AddressSanitizer attribute setup", attribute_failure);
+    }
+  }
 
   PhaseTimer target_validation_timing(
       options.collect_phase_timings,

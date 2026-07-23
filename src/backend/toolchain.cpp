@@ -671,16 +671,19 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
 // Child CPU belongs to the one optional assembler/qualification process for
 // this task and is replayed into TimingRecorder later by the owning thread.
 struct NativeObjectTaskProduct {
-  std::string native_bytes;
+  // Native bytes normally borrow the already owned package output. Oracle and
+  // assembly tasks fill owned_native_bytes and then point native_bytes at that
+  // stable storage. products is fixed-size before workers start, so neither
+  // the record nor its string moves before ordered publication completes.
+  std::string owned_native_bytes;
+  std::string_view native_bytes;
   std::string source_bytes;
   std::string timing_name;
-  LlvmObjectEmissionPhaseTimings llvm_phase_timings;
   std::uint64_t elapsed_nanoseconds = 0;
   std::uint64_t child_user_nanoseconds = 0;
   std::uint64_t child_system_nanoseconds = 0;
   bool publish_source = false;
   bool child_started = false;
-  bool has_llvm_phase_timings = false;
 };
 
 // The context borrows immutable build inputs for one synchronous WorkGraph
@@ -690,12 +693,10 @@ struct NativeObjectTaskProduct {
 struct NativeObjectExecutionContext {
   const TargetProfile *target = nullptr;
   const NativeObjectPlan *plan = nullptr;
-  NativeObjectEmitter emitter = NativeObjectEmitter::InProcessLlvm;
   NativeOptimizationLevel optimization = NativeOptimizationLevel::O0;
   NativeInstrumentationProfile instrumentation =
       NativeInstrumentationProfile::None;
   bool assembly_output = false;
-  bool collect_llvm_phase_timings = false;
   std::string clang_path;
   std::filesystem::path build_directory;
   std::vector<NativeObjectTaskProduct> *products = nullptr;
@@ -743,6 +744,14 @@ void capture_child_usage(
   NativeObjectTaskProduct &product = (*context.products)[task_id];
 
   if (task.kind != NativeObjectTaskKind::PackageAssembly) {
+    if (task.package_module_input ==
+        NativePackageModuleInputKind::EmittedNativeBytes) {
+      product.timing_name =
+          "pre-emitted native unit: " + task.display_name;
+      product.native_bytes = task.input_bytes;
+      return true;
+    }
+
     std::string native_module(task.input_bytes);
     if (context.instrumentation ==
         NativeInstrumentationProfile::AddressSanitizer) {
@@ -755,35 +764,6 @@ void capture_child_usage(
         return false;
       }
       native_module = std::move(instrumented);
-    }
-
-    if (context.emitter == NativeObjectEmitter::InProcessLlvm) {
-      product.timing_name =
-          "LLVM native unit emission: " + task.display_name;
-      LlvmObjectEmissionOptions emission_options;
-      emission_options.output_kind = context.assembly_output
-          ? LlvmNativeOutputKind::Assembly
-          : LlvmNativeOutputKind::Object;
-      emission_options.optimization = context.optimization;
-      emission_options.instrumentation = context.instrumentation ==
-              NativeInstrumentationProfile::AddressSanitizer
-          ? LlvmNativeInstrumentation::AddressSanitizer
-          : LlvmNativeInstrumentation::None;
-      emission_options.collect_phase_timings =
-          context.collect_llvm_phase_timings;
-      LlvmObjectEmissionResult emitted = emit_llvm_object_in_process(
-          *context.target,
-          task.display_name,
-          native_module,
-          emission_options);
-      product.llvm_phase_timings = emitted.phase_timings;
-      product.has_llvm_phase_timings = context.collect_llvm_phase_timings;
-      if (!emitted.ok) {
-        failure = std::move(emitted.failure);
-        return false;
-      }
-      product.native_bytes = std::move(emitted.bytes);
-      return true;
     }
 
     // The external oracle consumes a private copy and returns bytes through the
@@ -830,9 +810,11 @@ void capture_child_usage(
       failure = phase_failure("Clang qualification emission", process);
       return false;
     }
-    if (!read_file_bytes(private_output, product.native_bytes, failure)) {
+    if (!read_file_bytes(
+            private_output, product.owned_native_bytes, failure)) {
       return false;
     }
+    product.native_bytes = product.owned_native_bytes;
     remove_successful_task_file(private_source);
     remove_successful_task_file(private_output);
     return true;
@@ -881,9 +863,10 @@ void capture_child_usage(
         "assembly object emission for '" + task.display_name + "'", process);
     return false;
   }
-  if (!read_file_bytes(private_output, product.native_bytes, failure)) {
+  if (!read_file_bytes(private_output, product.owned_native_bytes, failure)) {
     return false;
   }
+  product.native_bytes = product.owned_native_bytes;
   remove_successful_task_file(private_source);
   remove_successful_task_file(private_output);
   return true;
@@ -1008,7 +991,9 @@ NativeBuildResult build_native_artifact(
   }
   const std::filesystem::path build_directory(options.build_directory);
   const std::filesystem::path output_path(options.output_path);
-  if (options.artifact_kind == NativeArtifactKind::Assembly) {
+  const bool assembly_output =
+      options.artifact_kind == NativeArtifactKind::Assembly;
+  if (assembly_output) {
     std::filesystem::create_directories(output_path, directory_error);
     if (directory_error) {
       diagnostics.error(
@@ -1023,8 +1008,22 @@ NativeBuildResult build_native_artifact(
   // later execution can change scheduling without changing task identity,
   // output names, diagnostic order, or linker order.
   NativeObjectPlan object_plan;
+  NativeObjectPlanOptions plan_options;
+  plan_options.package_module_input =
+      options.object_emitter == NativeObjectEmitter::ExternalClangOracle
+      ? NativePackageModuleInputKind::LlvmTextOracle
+      : NativePackageModuleInputKind::EmittedNativeBytes;
+  plan_options.expected_native_output.output_kind = assembly_output
+      ? LlvmNativeOutputKind::Assembly
+      : LlvmNativeOutputKind::Object;
+  plan_options.expected_native_output.optimization = options.optimization;
+  plan_options.expected_native_output.instrumentation =
+      options.instrumentation == NativeInstrumentationProfile::AddressSanitizer
+      ? LlvmNativeInstrumentation::AddressSanitizer
+      : LlvmNativeInstrumentation::None;
   std::string plan_error;
-  if (!prepare_native_object_plan(target, compiled, object_plan, plan_error)) {
+  if (!prepare_native_object_plan(
+          target, compiled, plan_options, object_plan, plan_error)) {
     diagnostics.error(SourceRange::invalid(), plan_error);
     return result;
   }
@@ -1034,18 +1033,13 @@ NativeBuildResult build_native_artifact(
   TimingScope object_emission_timing = options.timings != nullptr
       ? options.timings->scope("LLVM and assembly object emission")
       : TimingScope{};
-  const bool assembly_output =
-      options.artifact_kind == NativeArtifactKind::Assembly;
   std::vector<NativeObjectTaskProduct> products(object_plan.tasks.size());
   NativeObjectExecutionContext execution;
   execution.target = &target;
   execution.plan = &object_plan;
-  execution.emitter = options.object_emitter;
   execution.optimization = options.optimization;
   execution.instrumentation = options.instrumentation;
   execution.assembly_output = assembly_output;
-  execution.collect_llvm_phase_timings = options.timings != nullptr &&
-      options.timings->output() == TimingOutput::All;
   execution.clang_path = clang_path;
   execution.build_directory = build_directory;
   execution.products = &products;
@@ -1080,50 +1074,6 @@ NativeBuildResult build_native_artifact(
             product.child_user_nanoseconds,
             product.child_system_nanoseconds,
             TimingVisibility::Detail);
-      } else if (product.has_llvm_phase_timings) {
-        const LlvmObjectEmissionPhaseTimings &phase =
-            product.llvm_phase_timings;
-        std::vector<CompletedTimingEvent> children;
-        children.reserve(10);
-        const auto append_phase = [&](std::string_view name,
-                                      std::uint64_t elapsed) {
-          if (elapsed != 0) {
-            children.push_back({std::string(name), elapsed});
-          }
-        };
-        append_phase(
-            "LLVM target initialization",
-            phase.target_initialization_nanoseconds);
-        append_phase(
-            "LLVM context and input preparation",
-            phase.input_preparation_nanoseconds);
-        append_phase("LLVM IR parsing", phase.ir_parsing_nanoseconds);
-        append_phase(
-            "LLVM module target validation",
-            phase.target_validation_nanoseconds);
-        append_phase(
-            "LLVM IR verification",
-            phase.ir_verification_nanoseconds);
-        append_phase(
-            "LLVM target-machine setup",
-            phase.target_machine_nanoseconds);
-        append_phase(
-            "LLVM O2 optimization",
-            phase.o2_optimization_nanoseconds);
-        append_phase(
-            "LLVM ASan instrumentation",
-            phase.asan_instrumentation_nanoseconds);
-        append_phase(
-            assembly_output
-                ? "LLVM assembly emission"
-                : "LLVM object emission",
-            phase.machine_code_emission_nanoseconds);
-        append_phase("native output copy", phase.output_copy_nanoseconds);
-        options.timings->record_completed_event_group(
-            timing_name,
-            product.elapsed_nanoseconds,
-            TimingVisibility::Detail,
-            children);
       } else {
         options.timings->record_completed_event(
             timing_name,

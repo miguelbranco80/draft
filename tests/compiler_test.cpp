@@ -3110,6 +3110,55 @@ void test_multi_package_native_pipeline(TestState &state) {
   }
 }
 
+// A normal native command asks the dependency-ready package task for final
+// bytes. The copyable compiler result retains those bytes and discards LLVM
+// text, proving that the later artifact stage has no textual input available
+// to reparse or re-emit accidentally.
+void test_native_output_is_a_package_product(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::TimingRecorder timings(draft::TimingOutput::All);
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples";
+  options.lower_mir = true;
+  options.emit_native_output = true;
+  options.native_output.optimization = draft::NativeOptimizationLevel::O2;
+  options.semantic_worker_count = 4;
+  options.timings = &timings;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources,
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/hello",
+      std::move(options),
+      diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state,
+      result.progress == draft::CompileWorkspaceProgress::TargetLowering);
+  EXPECT(state, result.graph.root_package.is_valid());
+  if (!result.ok || !result.graph.root_package.is_valid()) return;
+  const std::optional<draft::CompiledPackage> &root =
+      result.packages[result.graph.root_package.value];
+  EXPECT(state, root.has_value());
+  if (!root.has_value()) return;
+  EXPECT(state, root->llvm_module.text.empty());
+  EXPECT(state, root->native_output.ok);
+  EXPECT(state, !root->native_output.bytes.empty());
+  EXPECT(state,
+      root->native_output.output_kind == draft::LlvmNativeOutputKind::Object);
+  EXPECT(state,
+      root->native_output.optimization == draft::NativeOptimizationLevel::O2);
+  EXPECT(state, root->artifact_layout.ok);
+  const std::string report = timings.render();
+  EXPECT(state,
+      report.find("LLVM package emission: workspace:hello") !=
+          std::string::npos);
+  EXPECT(state, report.find("LLVM native bytes:") != std::string::npos);
+}
+
 // A package with no artifact-live procedures has no MIR prerequisites for its
 // module. The unified native executor must therefore start that module in the
 // same initial ready set as another package's MIR instead of preserving the old
@@ -4856,6 +4905,7 @@ int main() {
   test_body_work_graph_promotes_matching_local_instance(state);
   test_target_lowering_continues_checked_graph(state);
   test_multi_package_native_pipeline(state);
+  test_native_output_is_a_package_product(state);
   test_native_pipeline_overlaps_empty_module_with_other_mir(state);
   test_native_emission_uses_artifact_reachability(state);
   test_hosted_entry_contract(state);

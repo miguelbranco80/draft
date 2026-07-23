@@ -86,6 +86,8 @@ struct ArtifactCase {
     std::string_view workspace,
     std::string_view package,
     bool emit_program_entry,
+    draft::LlvmNativeOutputKind output_kind,
+    draft::NativeOptimizationLevel optimization,
     draft::DiagnosticSink &diagnostics) {
   const std::filesystem::path source_root(DRAFT_SOURCE_DIRECTORY);
   draft::CompileWorkspaceOptions options;
@@ -94,7 +96,12 @@ struct ArtifactCase {
   options.workspace.core_directory = (source_root / "core").string();
   options.workspace.core_content_identity = "draft-core-bootstrap-v4";
   options.lower_mir = true;
+  // Retain text for the independent Clang oracle while the ordinary route
+  // consumes the exact native product emitted by the same package task.
   options.emit_llvm = true;
+  options.emit_native_output = true;
+  options.native_output.output_kind = output_kind;
+  options.native_output.optimization = optimization;
   options.emit_debug_information = true;
   options.emit_program_entry = emit_program_entry;
   return draft::compile_workspace(
@@ -206,6 +213,8 @@ void test_backend_routes(TestState &state) {
       "examples/packages",
       "examples/packages/app",
       true,
+      draft::LlvmNativeOutputKind::Object,
+      draft::NativeOptimizationLevel::O0,
       compile_diagnostics);
   const draft::CompileWorkspaceResult library = compile_fixture(
       library_sources,
@@ -213,10 +222,33 @@ void test_backend_routes(TestState &state) {
       "examples",
       "examples/c-library",
       false,
+      draft::LlvmNativeOutputKind::Object,
+      draft::NativeOptimizationLevel::O0,
+      compile_diagnostics);
+  const draft::CompileWorkspaceResult library_assembly = compile_fixture(
+      library_sources,
+      target,
+      "examples",
+      "examples/c-library",
+      false,
+      draft::LlvmNativeOutputKind::Assembly,
+      draft::NativeOptimizationLevel::O0,
+      compile_diagnostics);
+  const draft::CompileWorkspaceResult executable_o2 = compile_fixture(
+      executable_sources,
+      target,
+      "examples/packages",
+      "examples/packages/app",
+      true,
+      draft::LlvmNativeOutputKind::Object,
+      draft::NativeOptimizationLevel::O2,
       compile_diagnostics);
   EXPECT(state, "compile", executable.ok);
   EXPECT(state, "compile", library.ok);
-  if (!executable.ok || !library.ok) {
+  EXPECT(state, "compile", library_assembly.ok);
+  EXPECT(state, "compile", executable_o2.ok);
+  if (!executable.ok || !library.ok || !library_assembly.ok ||
+      !executable_o2.ok) {
     std::cerr << draft::render_diagnostics(
         executable_sources, compile_diagnostics);
     return;
@@ -231,7 +263,9 @@ void test_backend_routes(TestState &state) {
   };
   for (const ArtifactCase &artifact : artifacts) {
     const draft::CompileWorkspaceResult &compiled =
-        artifact.executable_program ? executable : library;
+        artifact.kind == draft::NativeArtifactKind::Assembly
+        ? library_assembly
+        : (artifact.executable_program ? executable : library);
     draft::DiagnosticSink embedded_diagnostics;
     draft::DiagnosticSink oracle_diagnostics;
     const std::filesystem::path embedded_root =
@@ -336,7 +370,7 @@ void test_backend_routes(TestState &state) {
   draft::DiagnosticSink oracle_o2_diagnostics;
   const draft::NativeBuildResult embedded_o2 = build_route(
       target,
-      executable,
+      executable_o2,
       embedded_o2_root,
       optimized_artifact,
       draft::NativeObjectEmitter::InProcessLlvm,
@@ -344,7 +378,7 @@ void test_backend_routes(TestState &state) {
       embedded_o2_diagnostics);
   const draft::NativeBuildResult oracle_o2 = build_route(
       target,
-      executable,
+      executable_o2,
       oracle_o2_root,
       optimized_artifact,
       draft::NativeObjectEmitter::ExternalClangOracle,
