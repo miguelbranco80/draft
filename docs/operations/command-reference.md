@@ -176,11 +176,12 @@ generated expansions, explicit summaries, and linker/deployment paths, but it
 does not contact Codex, execute judgments, require validation evidence, or
 modify the resolution manifest.
 
-Each `--provider` artifact path is absolute and names a real regular file;
-symlinks are rejected so the linker input cannot be silently retargeted through
-the mapping. Resolve a build-system convenience symlink with `realpath` before
-passing a dylib or shared object. A `shared-library` mapping supplies the link
-input. ELF executable and dynamic-library links record `$ORIGIN` as a runtime
+Each `--provider` artifact path is resolved against the command's current
+directory and must name a real regular file. Symlinks are rejected so the
+linker input cannot be silently retargeted through the mapping; resolve a
+build-system convenience symlink with `realpath` before passing a dylib or
+shared object. A `shared-library` mapping supplies the link input. ELF
+executable and dynamic-library links record `$ORIGIN` as a runtime
 search directory so a copied provider can live beside the artifact. Mach-O
 still follows the provider's install name and normal `@rpath`/loader rules;
 Windows requires the matching DLL beside the executable or otherwise visible

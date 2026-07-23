@@ -285,6 +285,10 @@ hash. The
 manifest also records exact selected source and dependency identity. Native
 provider mappings, provider summaries, and runtime assets are explicit
 invocation inputs rather than source-resolution identity.
+Parsed provider-summary facts nevertheless affect ordinary effect/denial
+checking and the typed context hashed for any synthesis site which can observe
+them. Changing or omitting those semantic facts can therefore stale an affected
+generated-source pin even though neither native file is itself hashed.
 
 Each selected root and target owns a distinct manifest below
 `.draft/resolutions/<target-identity>/`; generated objects remain shared below

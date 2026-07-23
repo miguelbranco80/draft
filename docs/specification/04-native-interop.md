@@ -163,10 +163,11 @@ dynamic linkage does not require a different source declaration or source-list
 build file.
 
 The bootstrap command-line spelling for a non-system mapping is
-`--provider zlib=object|archive|shared-library:<absolute-path>`. The mapping is
-an operational linker input, not resolved Draft source identity. The compiler
-checks that the path is absolute, names a real regular file, is not a symlink,
-and maps each provider at most once; it does not hash the artifact or claim to
+`--provider zlib=object|archive|shared-library:<path>`. The command boundary
+resolves the spelling against its current directory. The mapping is an
+operational linker input, not resolved Draft source identity. The compiler
+checks that the resulting path names a real regular file, is not a symlink, and
+maps each provider at most once; it does not hash the artifact or claim to
 identify its transitive dynamic-library environment. Target-profile system
 providers and compiler-owned runtime/package-assembly providers cannot be
 overridden.
