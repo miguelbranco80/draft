@@ -1,0 +1,289 @@
+// Tree views apply hierarchical visibility and navigation to the package's
+// existing compound list. The application owns a flat preorder node table,
+// every expansion bit, the List_State selection/viewport, and the scratch
+// index array used for one frame. This module retains no labels or nodes and
+// allocates nothing.
+//
+// Nodes must form a preorder forest: roots have depth zero, depth may increase
+// by at most one between adjacent nodes, and an increased depth follows a node
+// marked has_children. The representation is deliberately plain because
+// compiler packages, filesystem entries, and outline declarations already
+// arrive as deterministic flat tables. A visible-index indirection is enough
+// to hide collapsed descendants without manufacturing a retained widget tree.
+package turbo_ui
+
+import core/tui
+
+// Tree_Node is the caller-owned structural state beside one application row.
+// depth is measured in logical parent edges. has_children describes model
+// structure; expanded is meaningful only when has_children is true and may be
+// preserved independently when a model refresh keeps node identity stable.
+pub Tree_Node :: struct {
+    depth: usize,
+    has_children: bool,
+    expanded: bool,
+}
+
+// Tree_View combines the underlying visible-list transaction with a borrowed
+// prefix of the caller's scratch mapping. selected_node is the original model
+// index selected after this frame. toggled identifies an expansion change;
+// activated is reserved for activation of a leaf node.
+pub Tree_View :: struct {
+    list: List_View,
+    visible_indices: []usize,
+    selected_node: usize,
+    toggled: bool,
+    toggled_node: usize,
+    activated: bool,
+    activated_node: usize,
+}
+
+// Tree_Row is one already-painted visible row. bounds is the full list row;
+// content starts after two columns per depth and the disclosure marker. The
+// application may paint arbitrary columns into content using style.
+pub Tree_Row :: struct {
+    visible: bool,
+    selected: bool,
+    bounds: Rect,
+    content: Rect,
+    style: tui.Style,
+    model_index: usize,
+    depth: usize,
+    has_children: bool,
+    expanded: bool,
+}
+
+// build_tree_visibility writes model indices for the visible preorder forest.
+// collapsed_depth records the nearest collapsed ancestor. A sibling or later
+// ancestor closes that hidden interval as soon as its depth is no greater.
+build_tree_visibility :: proc(
+    nodes: []Tree_Node,
+    destination: []usize,
+) -> usize {
+    assert(len(destination) >= len(nodes),
+        "tree visibility scratch must cover every node")
+    hidden := false
+    collapsed_depth: usize
+    previous_depth: usize
+    previous_had_children := true
+    count: usize
+    for index: usize = 0; index < len(nodes); index += 1 {
+        node := nodes[index]
+        if index == 0 {
+            assert(node.depth == 0, "tree preorder must begin at depth zero")
+        } else {
+            if node.depth > previous_depth {
+                assert(node.depth - previous_depth == 1,
+                    "tree preorder depth cannot skip a parent")
+                assert(previous_had_children,
+                    "tree child must follow a node marked has_children")
+            }
+        }
+        previous_depth = node.depth
+        previous_had_children = node.has_children
+
+        if hidden {
+            if node.depth > collapsed_depth {
+                continue
+            }
+            hidden = false
+        }
+        destination[count] = index
+        count += 1
+        if node.has_children && !node.expanded {
+            hidden = true
+            collapsed_depth = node.depth
+        }
+    }
+    return count
+}
+
+// tree_view performs visible-list interaction, then applies conventional tree
+// keys. Right expands a closed branch or enters its first child. Left closes
+// an open branch or selects its nearest visible ancestor. Enter and, when
+// requested, a completed click toggle branches; leaf activation is returned to
+// the caller. Any structural change requests one event-free repaint because
+// the current frame's visibility mapping was necessarily computed beforehand.
+pub tree_view :: proc(
+    state: ^State,
+    body_id, scrollbar_id: Widget_Id,
+    bounds: Rect,
+    nodes: []Tree_Node,
+    visibility_scratch: []usize,
+    model: ^List_State,
+    activation: List_Activation = .enter_only,
+) -> Tree_View {
+    visible_count := build_tree_visibility(nodes, visibility_scratch)
+    visible := visibility_scratch[:visible_count]
+    list_result := list_view(
+        state,
+        body_id,
+        scrollbar_id,
+        bounds,
+        visible_count,
+        model,
+        activation,
+    )
+    result := Tree_View{
+        list = list_result,
+        visible_indices = visible,
+        selected_node = len(nodes),
+        toggled_node = len(nodes),
+        activated_node = len(nodes),
+    }
+    if visible_count == 0 {
+        return result
+    }
+    result.selected_node = visible[model^.cursor]
+
+    if list_result.activated {
+        node_index := visible[list_result.activated_index]
+        if nodes[node_index].has_children {
+            nodes[node_index].expanded = !nodes[node_index].expanded
+            result.toggled = true
+            result.toggled_node = node_index
+            state^.repaint_requested = true
+        } else {
+            result.activated = true
+            result.activated_node = node_index
+        }
+    }
+
+    if !state^.event_handled && has_focus(state, body_id) &&
+        state^.event.kind == .key {
+        key := state^.event.key
+        node_index := visible[model^.cursor]
+        node := &nodes[node_index]
+        moved := false
+        if key.code == .right {
+            if node^.has_children && !node^.expanded {
+                node^.expanded = true
+                result.toggled = true
+                result.toggled_node = node_index
+            } else if node^.has_children && model^.cursor + 1 < visible_count &&
+                nodes[visible[model^.cursor + 1]].depth > node^.depth {
+                model^.cursor += 1
+                moved = true
+            }
+            state^.event_handled = true
+        } else if key.code == .left {
+            if node^.has_children && node^.expanded {
+                node^.expanded = false
+                result.toggled = true
+                result.toggled_node = node_index
+            } else if node^.depth != 0 {
+                parent_depth := node^.depth - 1
+                candidate := model^.cursor
+                for candidate != 0 {
+                    candidate -= 1
+                    if nodes[visible[candidate]].depth == parent_depth {
+                        model^.cursor = candidate
+                        moved = true
+                        break
+                    }
+                }
+            }
+            state^.event_handled = true
+        }
+        if moved {
+            keep_list_cursor_visible(model, list_result.item_bounds.height)
+        }
+        if moved {
+            result.list.cursor = model^.cursor
+            result.list.selection_changed = true
+            result.selected_node = visible[model^.cursor]
+        }
+        if moved || result.toggled {
+            state^.repaint_requested = true
+        }
+    }
+    return result
+}
+
+// tree_row_begin paints one visible list row and its disclosure marker. The
+// marker consumes one column after a two-column indentation per depth; content
+// starts one separating column later. Narrow bounds clamp to an empty content
+// rectangle rather than underflowing terminal coordinates.
+pub tree_row_begin :: proc(
+    state: ^State,
+    view: Tree_View,
+    visible_index: usize,
+    nodes: []Tree_Node,
+) -> Tree_Row {
+    result: Tree_Row
+    if visible_index >= len(view.visible_indices) {
+        return result
+    }
+    model_index := view.visible_indices[visible_index]
+    if model_index >= len(nodes) {
+        return result
+    }
+    list_row := list_row_begin(state, view.list, visible_index)
+    if !list_row.visible {
+        return result
+    }
+    node := nodes[model_index]
+    result = Tree_Row{
+        visible = true,
+        selected = list_row.selected,
+        bounds = list_row.bounds,
+        content = list_row.bounds,
+        style = list_row.style,
+        model_index = model_index,
+        depth = node.depth,
+        has_children = node.has_children,
+        expanded = node.expanded,
+    }
+    indentation := result.bounds.width
+    if node.depth <= result.bounds.width / 2 {
+        indentation = node.depth * 2
+    }
+    if indentation < result.bounds.width && node.has_children {
+        marker := '+'
+        if node.expanded {
+            marker = '-'
+        }
+        put_clipped(
+            state^.surface,
+            intersect(state^.clip, result.bounds),
+            Point{
+                column = result.bounds.column + indentation,
+                row = result.bounds.row,
+            },
+            marker,
+            result.style,
+        )
+    }
+    if indentation >= result.content.width ||
+        result.content.width - indentation <= 2 {
+        result.content.column += result.content.width
+        result.content.width = 0
+    } else {
+        consumed := indentation + 2
+        result.content.column += consumed
+        result.content.width -= consumed
+    }
+    return result
+}
+
+// tree_row_bytes is the allocation-free one-label counterpart to
+// list_row_bytes. Rich rows call tree_row_begin and paint additional columns.
+pub tree_row_bytes :: proc(
+    state: ^State,
+    view: Tree_View,
+    visible_index: usize,
+    nodes: []Tree_Node,
+    text: []u8,
+) -> bool {
+    row := tree_row_begin(state, view, visible_index, nodes)
+    if !row.visible {
+        return true
+    }
+    return write_clipped_bytes(
+        state^.surface,
+        intersect(state^.clip, row.content),
+        Point{column = row.content.column, row = row.content.row},
+        text,
+        row.style,
+    )
+}

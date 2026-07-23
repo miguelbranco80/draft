@@ -194,6 +194,24 @@ void test_service_transactions_and_native_build(TestState &state) {
                    .find(tooling_needles[section]) != std::string_view::npos);
   }
 
+  // Structured package rows are paired with the same checked graph as the
+  // textual sections. The one-package program has one root row and no import
+  // child; out-of-range inspection is a deterministic zero record.
+  EXPECT(state, draft_compiler_session_package_row_count(session) == 1);
+  DraftCompilerServicePackageRow initial_package{};
+  draft_compiler_session_package_row(session, 0, &initial_package);
+  EXPECT(state, initial_package.package_index == 0);
+  EXPECT(state, initial_package.kind == 0 && initial_package.depth == 0);
+  EXPECT(state, initial_package.root == 1);
+  EXPECT(state, initial_package.has_children == 0);
+  DraftCompilerServicePackageRow absent_package{
+      99, 99, 99, 99, 99,
+  };
+  draft_compiler_session_package_row(session, 99, &absent_package);
+  EXPECT(state, absent_package.package_index == 0);
+  EXPECT(state, absent_package.kind == 0 && absent_package.depth == 0);
+  EXPECT(state, absent_package.root == 0 && absent_package.has_children == 0);
+
   std::string invalid = "package app\n"
                         "main :: proc() -> int {\n"
                         "    return missing_name\n"
@@ -224,6 +242,7 @@ void test_service_transactions_and_native_build(TestState &state) {
              reinterpret_cast<const char *>(retained_declarations.data()),
              std::min(retained_size, retained_declarations.size() - 1))
                  .find("Answer") != std::string_view::npos);
+  EXPECT(state, draft_compiler_session_package_row_count(session) == 1);
 
   // Adding an import cannot preserve PackageIds through the overlay path. A
   // successful result therefore proves that the service used its explicit
@@ -243,6 +262,33 @@ void test_service_transactions_and_native_build(TestState &state) {
   }
   EXPECT(state, reloaded.success == 1);
   EXPECT(state, reloaded.diagnostic_count == 0);
+
+  // The deterministic row order is package followed by its authored imports.
+  // Import rows name their parent package index and carry depth one, allowing a
+  // Draft client to filter expansion without parsing the formatted tooling
+  // text or recreating semantic edges.
+  EXPECT(state, draft_compiler_session_package_row_count(session) == 3);
+  DraftCompilerServicePackageRow app_package{};
+  DraftCompilerServicePackageRow app_import{};
+  DraftCompilerServicePackageRow lib_package{};
+  draft_compiler_session_package_row(session, 0, &app_package);
+  draft_compiler_session_package_row(session, 1, &app_import);
+  draft_compiler_session_package_row(session, 2, &lib_package);
+  EXPECT(state, app_package.kind == 0 && app_package.depth == 0);
+  EXPECT(state, app_package.root == 1 && app_package.has_children == 1);
+  EXPECT(state, app_import.kind == 1 && app_import.depth == 1);
+  EXPECT(state, app_import.package_index == app_package.package_index);
+  EXPECT(state, lib_package.kind == 0 && lib_package.depth == 0);
+  std::array<std::uint8_t, 256> package_label{};
+  const std::size_t package_label_size =
+      draft_compiler_session_copy_package_row_text(
+          session, 1, package_label.data(), package_label.size());
+  EXPECT(state, package_label_size != 0);
+  EXPECT(
+      state,
+      std::string_view(reinterpret_cast<const char *>(package_label.data()),
+                       std::min(package_label_size, package_label.size() - 1))
+              .find("lib -> workspace:lib") != std::string_view::npos);
 
   EXPECT(state, draft_compiler_session_source_count(session) == 2);
   std::array<std::uint8_t, 256> source_name_bytes{};

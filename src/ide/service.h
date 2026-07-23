@@ -66,6 +66,20 @@ typedef struct DraftCompilerServiceOverlay {
   size_t source_length;
 } DraftCompilerServiceOverlay;
 
+// PackageRow is the fixed record beside one copied package-tree label. kind is
+// zero for a package and one for an authored import. package_index identifies
+// the package row itself or the importing parent of an import row. depth is
+// consequently zero or one in this first structured view. root and
+// has_children are meaningful only for package rows. The record borrows no
+// compiler memory and its padding is part of the asserted Draft C ABI.
+typedef struct DraftCompilerServicePackageRow {
+  size_t package_index;
+  uint8_t kind;
+  uint8_t depth;
+  uint8_t root;
+  uint8_t has_children;
+} DraftCompilerServicePackageRow;
+
 // create validates and canonicalizes the borrowed configuration ranges, owns a
 // new compiler session on success, and returns NULL on failure. root may be
 // empty to select the first deterministically discovered executable root;
@@ -120,6 +134,21 @@ DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_diagnostics(
 // zero and writes an empty string.
 DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_tooling_section(
     void *session, uint8_t section, uint8_t *destination, size_t capacity);
+
+// Package rows enumerate the retained successful WorkspaceGraph in
+// deterministic package/import order. A failed check leaves this table paired
+// with the same last-good semantic program as the textual tooling sections.
+// Out-of-range record access writes a zero record. copy_package_row_text uses
+// the complete-size/truncated-copy contract described above.
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_package_row_count(void *session);
+
+DRAFT_COMPILER_SERVICE_API void
+draft_compiler_session_package_row(void *session, size_t index,
+                                   DraftCompilerServicePackageRow *result);
+
+DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_package_row_text(
+    void *session, size_t index, uint8_t *destination, size_t capacity);
 
 // source_path identifies the active ordinary file. artifact_path is empty until
 // one successful build and is cleared by any later failed build or selection

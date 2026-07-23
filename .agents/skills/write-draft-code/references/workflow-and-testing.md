@@ -104,6 +104,8 @@ Files is populated from the compiler's target-selected reachable workspace
 graph, while Buffers lists open documents. Check and F5 submit the active buffer
 plus every other dirty buffer belonging to that graph as one transactional
 source-override set; the active buffer also chooses the syntax-span result.
+F6 presents the checked package/import graph as an expandable structured tree;
+F7-F11 remain read-only semantic reports without source-jump navigation.
 
 ## Choose the owning layer
 

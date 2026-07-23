@@ -267,6 +267,7 @@ void CompilerSession::reset_checked_program() {
   syntax_spans_.clear();
   for (std::string &text : tooling_text_)
     text.clear();
+  package_tree_rows_.clear();
   diagnostics_text_.clear();
   diagnostic_count_ = 0;
   built_output_path_.clear();
@@ -483,6 +484,7 @@ void CompilerSession::collect_syntax_spans(const SourceOverlay &active) {
 void CompilerSession::rebuild_tooling_index() {
   for (std::string &text : tooling_text_)
     text.clear();
+  package_tree_rows_.clear();
   if (!last_good_.has_value())
     return;
 
@@ -509,8 +511,21 @@ void CompilerSession::rebuild_tooling_index() {
        package_index < compiled.graph.packages.size(); ++package_index) {
     const WorkspacePackage &workspace_package =
         compiled.graph.packages[package_index];
-    packages +=
-        package_index == compiled.graph.root_package.value ? "* " : "  ";
+    const bool root = package_index == compiled.graph.root_package.value;
+    std::string package_label =
+        display_package_identity(workspace_package.identity);
+    package_label += " (";
+    package_label += workspace_package.loaded.short_name;
+    package_label += ')';
+    package_tree_rows_.push_back({
+        std::move(package_label),
+        package_index,
+        PackageTreeRowKind::Package,
+        root,
+        false,
+    });
+    const std::size_t package_row_index = package_tree_rows_.size() - 1;
+    packages += root ? "* " : "  ";
     packages += display_package_identity(workspace_package.identity);
     packages += " (";
     packages += workspace_package.loaded.short_name;
@@ -518,12 +533,25 @@ void CompilerSession::rebuild_tooling_index() {
     for (const PackageImport &import : compiled.graph.imports) {
       if (import.importing_package.value != package_index)
         continue;
+      package_tree_rows_[package_row_index].has_children = true;
       packages += "    -> ";
       packages += display_package_identity(
           compiled.graph.package(import.imported_package).identity);
       packages += " via ";
       packages += import.path;
       packages += '\n';
+
+      std::string import_label = import.path;
+      import_label += " -> ";
+      import_label += display_package_identity(
+          compiled.graph.package(import.imported_package).identity);
+      package_tree_rows_.push_back({
+          std::move(import_label),
+          package_index,
+          PackageTreeRowKind::Import,
+          false,
+          false,
+      });
     }
   }
 
@@ -784,6 +812,10 @@ std::string_view CompilerSession::tooling_text(ToolingSection section) const {
   if (index >= tooling_text_.size())
     return {};
   return tooling_text_[index];
+}
+
+const std::vector<PackageTreeRow> &CompilerSession::package_tree_rows() const {
+  return package_tree_rows_;
 }
 
 const std::filesystem::path &CompilerSession::workspace_directory() const {

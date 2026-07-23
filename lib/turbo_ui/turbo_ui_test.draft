@@ -319,6 +319,68 @@ test_collection_viewports :: proc(test: ^testing.Test) {
     testing.expect(test, text_model.offset == 2)
 }
 
+// test_tree_view fixes allocation-free preorder filtering and familiar outline
+// navigation. Expansion belongs to the model, while selection remains the
+// visible List_State index; the caller's scratch mapping connects the two.
+test_tree_view :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 30, 10)
+    defer tui.surface_destroy(&surface)
+    state: State
+    theme := turbo_theme()
+    nodes := [5]Tree_Node{
+        Tree_Node{depth = 0, has_children = true, expanded = true},
+        Tree_Node{depth = 1, has_children = true, expanded = true},
+        Tree_Node{depth = 2},
+        Tree_Node{depth = 1},
+        Tree_Node{depth = 0},
+    }
+    scratch: [5]usize
+    model := List_State{cursor = 2}
+    bounds := Rect{column = 1, row = 1, width = 20, height = 6}
+    state.focused_id = 35
+
+    // Left on a leaf selects its nearest visible parent without changing the
+    // tree model. A second Left closes that parent and requests repaint.
+    begin_frame(&state, &surface, key_event(Key_Event{code = .left}), theme)
+    view := tree_view(
+        &state, 35, 36, bounds, nodes[:], scratch[:], &model,
+    )
+    end_frame(&state)
+    testing.expect(test, model.cursor == 1 && view.selected_node == 1)
+
+    begin_frame(&state, &surface, key_event(Key_Event{code = .left}), theme)
+    view = tree_view(&state, 35, 36, bounds, nodes[:], scratch[:], &model)
+    testing.expect(test, view.toggled && view.toggled_node == 1)
+    testing.expect(test, !view.list.selection_changed)
+    testing.expect(test, state.repaint_requested)
+    end_frame(&state)
+    testing.expect(test, !nodes[1].expanded)
+    testing.expect(test, build_tree_visibility(nodes[:], scratch[:]) == 4)
+
+    // Enter closes the root. The child subtree disappears, while the second
+    // root remains visible because equal depth ends the collapsed interval.
+    model.cursor = 0
+    begin_frame(&state, &surface, key_event(Key_Event{code = .enter}), theme)
+    view = tree_view(&state, 35, 36, bounds, nodes[:], scratch[:], &model)
+    end_frame(&state)
+    testing.expect(test, view.toggled && !nodes[0].expanded)
+    testing.expect(test, build_tree_visibility(nodes[:], scratch[:]) == 2)
+
+    // Right reopens the root; a second Right enters its first visible child.
+    begin_frame(&state, &surface, key_event(Key_Event{code = .right}), theme)
+    view = tree_view(&state, 35, 36, bounds, nodes[:], scratch[:], &model)
+    end_frame(&state)
+    testing.expect(test, nodes[0].expanded)
+    begin_frame(&state, &surface, key_event(Key_Event{code = .right}), theme)
+    view = tree_view(&state, 35, 36, bounds, nodes[:], scratch[:], &model)
+    row := tree_row_begin(&state, view, model.cursor, nodes[:])
+    end_frame(&state)
+    testing.expect(test, model.cursor == 1 && row.model_index == 1)
+    (marker, marker_valid) := tui.cell_at(&surface, 3, 2)
+    testing.expect(test, marker_valid && marker.value == '+')
+}
+
 // test_window_order_drag_and_resize fixes z selection, explicit capture, and
 // viewport clamping. The same public frame/window calls are used by the gallery.
 test_window_order_drag_and_resize :: proc(test: ^testing.Test) {

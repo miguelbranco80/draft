@@ -91,8 +91,8 @@ Controls are ordinary procedure calls over caller-owned values:
 - `label`, `button`, `checkbox`, and `radio_button`;
 - `text_box`, a bounded single-line UTF-8 editor over caller storage;
 - `combo_box` plus its topmost `combo_box_popup` pass;
-- compound lists with custom immediate-mode rows, read-only text viewports,
-  proportional scrollbars, and draggable splitters;
+- compound lists and preorder trees with custom immediate-mode rows, read-only
+  text viewports, proportional scrollbars, and draggable splitters;
 - `status_bar`; and
 - `dialog_begin`, which applies dialog content styling to a normal window
   transaction.
@@ -113,6 +113,15 @@ selection is what keeps the cursor visible. `Text_View_State` and
 `text_view_bytes` provide the same scrolling behavior for allocation-free
 read-only line views. Vertical scrollbars have arrow cells, a proportional
 thumb, page regions, and grab-relative dragging.
+
+`tree_view` applies that same list behavior to a caller-owned flat preorder
+table of `Tree_Node` records. Each node retains its own expansion bit; the
+caller also supplies one scratch index array for the frame, so hiding
+descendants allocates nothing and does not create a retained widget tree. Right
+expands or enters a branch, Left closes it or selects its parent, and Enter
+toggles it.
+`tree_row_begin` paints indentation and a classic `+`/`-` disclosure marker
+before returning an application-customizable content rectangle.
 
 Every live control and window has a stable, nonzero `Widget_Id`. IDs are the
 only link between frames; no widget objects, callback tree, or application

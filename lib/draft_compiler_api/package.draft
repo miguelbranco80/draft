@@ -64,6 +64,29 @@ pub Copy_Tooling_Proc :: c proc(
     capacity: usize,
 ) -> usize
 
+// Package_Row is the fixed structural half of one compiler-owned project-tree
+// row. kind and depth distinguish a package from its direct authored imports;
+// package_index identifies the package itself or the importing parent. The
+// accompanying label is copied separately into application-owned storage.
+pub Package_Row_Kind :: enum u8 {
+    package_node,
+    import_edge,
+}
+
+pub Package_Row :: c struct {
+    package_index: usize,
+    kind: Package_Row_Kind,
+    depth: u8,
+    root: u8,
+    has_children: u8,
+}
+
+pub Package_Row_Proc :: c proc(
+    user: rawptr,
+    index: usize,
+    result: ^Package_Row,
+)
+
 pub Count_Proc :: c proc(user: rawptr) -> usize
 pub Index_Proc :: c proc(user: rawptr) -> usize
 pub Copy_Indexed_Text_Proc :: c proc(
@@ -93,6 +116,9 @@ pub Host_Api :: c struct {
     span: Span_Proc,
     copy_diagnostics: Copy_Text_Proc,
     copy_tooling: Copy_Tooling_Proc,
+    package_row_count: Count_Proc,
+    package_row: Package_Row_Proc,
+    copy_package_row_text: Copy_Indexed_Text_Proc,
     copy_source_path: Copy_Text_Proc,
     open_workspace: Open_Workspace_Proc,
     copy_workspace_path: Copy_Text_Proc,

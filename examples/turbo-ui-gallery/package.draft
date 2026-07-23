@@ -1,9 +1,10 @@
 // turbo-ui-gallery is the independent interactive proof for lib/turbo_ui. It
 // owns the terminal resources, event loop, persistent window/control values,
 // and renderer; the UI library sees only one borrowed Surface and semantic
-// event at a time. The program demonstrates menus, buttons, checkboxes, lists,
-// scrollbars, splitters, dialogs, overlapping movable windows, mouse capture,
-// keyboard focus, popup capture, resize handling, and differential presentation.
+// event at a time. The program demonstrates menus, buttons, checkboxes, a
+// preorder tree, proportional scrolling, splitters, dialogs, overlapping
+// movable windows, mouse capture, keyboard focus, popup capture, resize
+// handling, and differential presentation.
 package turbo_ui_gallery
 
 import core/io
@@ -44,6 +45,7 @@ Gallery_State :: struct {
     text_box: turbo_ui.Text_Box_State,
     text: [Text_Capacity]u8,
     files: turbo_ui.List_State,
+    file_nodes: [9]turbo_ui.Tree_Node,
     split: usize,
     clicks: usize,
 }
@@ -72,6 +74,17 @@ init_gallery :: proc(gallery: ^Gallery_State) {
     gallery^.windows[Window_Dialog].visible = false
     gallery^.checked = true
     gallery^.split = 21
+    gallery^.file_nodes = [9]turbo_ui.Tree_Node{
+        turbo_ui.Tree_Node{depth = 0, has_children = true, expanded = true},
+        turbo_ui.Tree_Node{depth = 1, has_children = true, expanded = true},
+        turbo_ui.Tree_Node{depth = 2},
+        turbo_ui.Tree_Node{depth = 2},
+        turbo_ui.Tree_Node{depth = 0, has_children = true, expanded = true},
+        turbo_ui.Tree_Node{depth = 1},
+        turbo_ui.Tree_Node{depth = 0, has_children = true, expanded = true},
+        turbo_ui.Tree_Node{depth = 1, has_children = true, expanded = true},
+        turbo_ui.Tree_Node{depth = 2},
+    }
     turbo_ui.text_box_set_text(&gallery^.text_box, gallery^.text[:], "Draft UI")
 }
 
@@ -149,35 +162,61 @@ paint_controls :: proc(
     )
 }
 
-// paint_files demonstrates the complete compound list: caller-owned cursor and
-// viewport state, keyboard selection, and the integrated proportional
-// scrollbar. The borrowed literals remain valid only for this frame.
+// paint_files demonstrates the tree specialization of the compound list:
+// caller-owned preorder nodes and expansion bits, keyboard parent/child
+// navigation, custom immediate rows, and the integrated proportional scrollbar.
+// The borrowed literals and visibility mapping remain valid only for this frame.
 paint_files :: proc(
     gallery: ^Gallery_State,
     content: turbo_ui.Rect,
 ) {
     files := [9]string{
-        "README.md",
-        "package.draft",
-        "geometry.draft",
-        "state.draft",
-        "window.draft",
-        "widgets.draft",
-        "terminal_adapter.draft",
-        "turbo_ui_test.draft",
-        "TODO_editor.md",
+        "lib",
+        "turbo_ui",
+        "list.draft",
+        "tree.draft",
+        "examples",
+        "turbo-ui-gallery",
+        "docs",
+        "implementation",
+        "turbo-draft.md",
     }
     if content.width == 0 {
         return
     }
-    turbo_ui.list(
+    visibility: [9]usize
+    view := turbo_ui.tree_view(
         &gallery^.ui,
         210,
         211,
         content,
-        files[:],
+        gallery^.file_nodes[:],
+        visibility[:],
         &gallery^.files,
+        .click_and_enter,
     )
+    for visible_index := view.list.first;
+        visible_index < view.list.end;
+        visible_index += 1 {
+        row := turbo_ui.tree_row_begin(
+            &gallery^.ui,
+            view,
+            visible_index,
+            gallery^.file_nodes[:],
+        )
+        if row.visible {
+            turbo_ui.write_clipped(
+                gallery^.ui.surface,
+                turbo_ui.intersect(gallery^.ui.clip, row.content),
+                turbo_ui.Point{
+                    column = row.content.column,
+                    row = row.content.row,
+                },
+                files[row.model_index],
+                row.style,
+            )
+        }
+    }
 }
 
 // paint_layout demonstrates a reusable splitter and clipped panel drawing.

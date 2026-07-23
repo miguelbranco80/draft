@@ -67,6 +67,19 @@ Maximum_Project_Sources :: 512
 Project_Root_Name_Capacity :: 512
 Project_Root_Overflow_Label :: "<root path exceeds IDE display limit>"
 Project_Source_Copy_Capacity :: 4096
+Maximum_Package_Rows :: 512
+Package_Row_Text_Capacity :: 512
+Package_Row_Overflow_Label :: "<package row exceeds IDE display limit>"
+
+// Package_Tree_Row keeps the compiler's fixed structural record beside the
+// Draft-owned display bytes. The parallel package_nodes table is contiguous so
+// turbo_ui can borrow it directly; corresponding indices always describe the
+// same service row.
+Package_Tree_Row :: struct {
+    info: draft_compiler_api.Package_Row,
+    text: [Package_Row_Text_Capacity]u8,
+    length: usize,
+}
 
 // App owns every persistent document and window value. Buffer owns independent
 // zero-terminated pathname copies for file operations; source-list names and
@@ -103,6 +116,12 @@ App :: struct {
     project_root_length: [Maximum_Project_Roots]usize,
     project_root_count: usize,
     project_roots: turbo_ui.List_State,
+    package_rows: [Maximum_Package_Rows]Package_Tree_Row,
+    package_nodes: [Maximum_Package_Rows]turbo_ui.Tree_Node,
+    package_row_count: usize,
+    package_tree: turbo_ui.List_State,
+    package_expanded: [Maximum_Package_Rows]bool,
+    package_seen: [Maximum_Package_Rows]bool,
     // Project source rows are compiler-discovered ordinary workspace files.
     // Each label/path owner is independent because C ABI copy operations
     // return variable-length bytes that cannot borrow compiler storage.
@@ -429,6 +448,11 @@ root_name_destination :: proc(app: ^App, index: usize) -> [^]u8 {
     return cast[[^]u8](&app^.project_root_names[index][0])
 }
 
+package_row_destination :: proc(app: ^App, index: usize) -> [^]u8 {
+    assert(index < Maximum_Package_Rows, "package row index is invalid")
+    return cast[[^]u8](&app^.package_rows[index].text[0])
+}
+
 // store_root_overflow_label replaces a truncated pathname with complete ASCII
 // text. The compiler service reports the full required byte count, so retaining
 // its fixed-buffer prefix could split a UTF-8 code point and make the entire
@@ -442,6 +466,19 @@ store_root_overflow_label :: proc(app: ^App, index: usize) {
             Project_Root_Overflow_Label[byte_index]
     }
     app^.project_root_length[index] = len(Project_Root_Overflow_Label)
+}
+
+// store_package_row_overflow_label avoids retaining a truncated UTF-8 prefix
+// when an unusually long semantic identity exceeds the first-version display
+// table. The row's fixed structural identity remains intact.
+store_package_row_overflow_label :: proc(app: ^App, index: usize) {
+    for byte_index: usize = 0;
+        byte_index < len(Package_Row_Overflow_Label);
+        byte_index += 1 {
+        app^.package_rows[index].text[byte_index] =
+            Package_Row_Overflow_Label[byte_index]
+    }
+    app^.package_rows[index].length = len(Package_Row_Overflow_Label)
 }
 
 // refresh_project_roots copies the compiler service's deterministic executable
@@ -480,6 +517,65 @@ refresh_project_roots :: proc(app: ^App) {
     }
 }
 
+// refresh_package_tree copies the compiler-owned structured WorkspaceGraph
+// projection into bounded application storage. Expansion is preserved by the
+// stable semantic package index across ordinary body edits. A newly observed
+// package begins expanded so its authored imports are discoverable without an
+// extra gesture. Import rows never retain independent expansion state.
+refresh_package_tree :: proc(app: ^App) {
+    app^.package_row_count = 0
+    if app^.host.package_row_count == nil || app^.host.package_row == nil ||
+        app^.host.copy_package_row_text == nil {
+        return
+    }
+    count := app^.host.package_row_count(app^.host.user)
+    if count > Maximum_Package_Rows {
+        count = Maximum_Package_Rows
+    }
+    next_seen: [Maximum_Package_Rows]bool
+    for index: usize = 0; index < count; index += 1 {
+        row := &app^.package_rows[index]
+        node := &app^.package_nodes[index]
+        app^.host.package_row(app^.host.user, index, &row^.info)
+        node^.depth = cast[usize](row^.info.depth)
+        node^.has_children = row^.info.has_children != 0
+        node^.expanded = false
+        if row^.info.kind == .package_node {
+            package_index := row^.info.package_index
+            if package_index < Maximum_Package_Rows {
+                if !app^.package_seen[package_index] {
+                    app^.package_expanded[package_index] = true
+                }
+                node^.expanded = app^.package_expanded[package_index]
+                next_seen[package_index] = true
+            } else {
+                // The bounded expansion table is a UI limit only. A package
+                // beyond it remains open rather than hiding compiler data that
+                // the user has no persistent bit with which to reveal.
+                node^.expanded = true
+            }
+        }
+        required := app^.host.copy_package_row_text(
+            app^.host.user,
+            index,
+            package_row_destination(app, index),
+            Package_Row_Text_Capacity,
+        )
+        if required >= Package_Row_Text_Capacity {
+            store_package_row_overflow_label(app, index)
+        } else {
+            row^.length = required
+        }
+    }
+    for index: usize = 0; index < Maximum_Package_Rows; index += 1 {
+        app^.package_seen[index] = next_seen[index]
+        if !next_seen[index] {
+            app^.package_expanded[index] = false
+        }
+    }
+    app^.package_row_count = count
+}
+
 bind_active_buffer_to_host_root :: proc(app: ^App) {
     if app^.active >= app^.buffer_count || app^.host.selected_root == nil {
         return
@@ -509,6 +605,7 @@ refresh_tooling_text :: proc(app: ^App) {
         app^.tooling_length[0] = required
     }
     if app^.host.copy_tooling == nil {
+        refresh_package_tree(app)
         return
     }
     for section_index: usize = 0; section_index < 5; section_index += 1 {
@@ -524,6 +621,7 @@ refresh_tooling_text :: proc(app: ^App) {
         }
         app^.tooling_length[destination_index] = required
     }
+    refresh_package_tree(app)
 }
 
 // refresh_host synchronously checks current bytes and replaces syntax spans
@@ -916,6 +1014,12 @@ open_workspace_now :: proc(app: ^App) -> bool {
     app^.active = 0
     app^.files = turbo_ui.List_State{}
     app^.buffers_list = turbo_ui.List_State{}
+    app^.package_tree = turbo_ui.List_State{}
+    app^.package_row_count = 0
+    for index: usize = 0; index < Maximum_Package_Rows; index += 1 {
+        app^.package_seen[index] = false
+        app^.package_expanded[index] = false
+    }
     refresh_project_roots(app)
     refresh_project_sources(app)
     if !open_selected_host_source(app) {
@@ -1657,10 +1761,79 @@ paint_text_view :: proc(
     )
 }
 
+// paint_package_tree presents the compiler's structured package/import rows
+// through turbo_ui's reusable preorder control. The compiler owns graph truth;
+// this procedure owns only visibility, expansion, selection, and copied labels.
+// A completed click or Enter toggles a package. Left/Right use conventional
+// parent/child navigation supplied by tree_view.
+paint_package_tree :: proc(app: ^App, content: turbo_ui.Rect) {
+    visibility: [Maximum_Package_Rows]usize
+    nodes := app^.package_nodes[:app^.package_row_count]
+    view := turbo_ui.tree_view(
+        &app^.ui,
+        770,
+        771,
+        content,
+        nodes,
+        visibility[:],
+        &app^.package_tree,
+        .click_and_enter,
+    )
+    if view.toggled {
+        info := app^.package_rows[view.toggled_node].info
+        if info.kind == .package_node &&
+            info.package_index < Maximum_Package_Rows {
+            app^.package_expanded[info.package_index] =
+                app^.package_nodes[view.toggled_node].expanded
+        }
+    }
+    for visible_index := view.list.first;
+        visible_index < view.list.end;
+        visible_index += 1 {
+        row := turbo_ui.tree_row_begin(
+            &app^.ui,
+            view,
+            visible_index,
+            nodes,
+        )
+        if !row.visible {
+            continue
+        }
+        package_row := &app^.package_rows[row.model_index]
+        marker := "  "
+        if package_row^.info.kind == .package_node &&
+            package_row^.info.root != 0 {
+            marker = "* "
+        }
+        turbo_ui.write_clipped(
+            app^.ui.surface,
+            turbo_ui.intersect(app^.ui.clip, row.content),
+            turbo_ui.Point{column = row.content.column, row = row.content.row},
+            marker,
+            row.style,
+        )
+        label_bounds := row.content
+        if label_bounds.width > 2 {
+            label_bounds.column += 2
+            label_bounds.width -= 2
+            turbo_ui.write_clipped_bytes(
+                app^.ui.surface,
+                turbo_ui.intersect(app^.ui.clip, label_bounds),
+                turbo_ui.Point{
+                    column = label_bounds.column,
+                    row = label_bounds.row,
+                },
+                package_row^.text[:package_row^.length],
+                row.style,
+            )
+        }
+    }
+}
+
 // paint_project_view combines the selectable program-root table with the
-// semantic package/import projection for the currently checked root. It is a
-// real project selector and graph view; declaration/reference jump navigation
-// remains a separate future structured-tooling operation.
+// structured semantic package/import tree for the currently checked root. A
+// provider without the newer row functions falls back to its retained package
+// text, preserving the optional-host boundary without parsing that text.
 paint_project_view :: proc(app: ^App, content: turbo_ui.Rect) {
     if content.height < 4 {
         paint_text_view(app, Window_Project, content)
@@ -1716,7 +1889,11 @@ paint_project_view :: proc(app: ^App, content: turbo_ui.Rect) {
         width = content.width,
         height = content.height - picker_height - 2,
     }
-    paint_text_view(app, Window_Project, graph)
+    if app^.package_row_count != 0 {
+        paint_package_tree(app, graph)
+    } else {
+        paint_text_view(app, Window_Project, graph)
+    }
 }
 
 save_active_buffer :: proc(app: ^App) {
@@ -2488,7 +2665,8 @@ pub run_with_host_bytes :: proc(
     }
     if has_smoke_argument() {
         if app.diagnostic_count != 0 || app.syntax_span_count == 0 ||
-            app.tooling_length[1] == 0 || app.tooling_length[2] == 0 {
+            app.tooling_length[1] == 0 || app.tooling_length[2] == 0 ||
+            app.package_row_count == 0 {
             return 1
         }
         // The integration smoke exercises the same Build operation as F5,

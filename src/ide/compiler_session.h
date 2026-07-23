@@ -84,6 +84,28 @@ enum class ToolingSection : std::uint8_t {
   Count = 5,
 };
 
+// PackageTreeRowKind distinguishes a semantic package from one of its direct
+// authored import edges. The IDE presents packages as top-level expandable
+// rows and their imports as depth-one children; it never parses the textual
+// tooling projection or reconstructs the compiler graph.
+enum class PackageTreeRowKind : std::uint8_t {
+  Package = 0,
+  Import = 1,
+};
+
+// PackageTreeRow is one deterministic display row derived from WorkspaceGraph.
+// package_index is the graph index of a package row or the importing parent of
+// an import row. label is UI text, not semantic identity. root and has_children
+// are meaningful only for package rows. Values are rebuilt with the retained
+// successful graph and never serialized or included in compiler hashes.
+struct PackageTreeRow {
+  std::string label;
+  std::size_t package_index = 0;
+  PackageTreeRowKind kind = PackageTreeRowKind::Package;
+  bool root = false;
+  bool has_children = false;
+};
+
 // CompilerConfiguration contains only durable selection facts. Physical paths
 // are canonicalized by the C service before construction. source_relative_name
 // names a selected Draft file inside root_package_directory and is also the
@@ -172,6 +194,7 @@ public:
   [[nodiscard]] const std::vector<SyntaxSpan> &syntax_spans() const;
   [[nodiscard]] std::string_view diagnostics_text() const;
   [[nodiscard]] std::string_view tooling_text(ToolingSection section) const;
+  [[nodiscard]] const std::vector<PackageTreeRow> &package_tree_rows() const;
   [[nodiscard]] const std::filesystem::path &workspace_directory() const;
   [[nodiscard]] const std::filesystem::path &source_path() const;
   [[nodiscard]] const std::filesystem::path &built_output_path() const;
@@ -210,6 +233,7 @@ private:
   std::vector<SyntaxSpan> syntax_spans_;
   std::array<std::string, static_cast<std::size_t>(ToolingSection::Count)>
       tooling_text_;
+  std::vector<PackageTreeRow> package_tree_rows_;
   std::string diagnostics_text_;
   std::uint32_t diagnostic_count_ = 0;
 };

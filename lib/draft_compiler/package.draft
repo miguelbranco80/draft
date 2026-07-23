@@ -91,6 +91,23 @@ foreign draft_compiler_service {
         capacity: usize,
     ) -> usize
 
+    pub package_row_count as "draft_compiler_session_package_row_count" :: c proc(
+        session: rawptr,
+    ) -> usize
+
+    pub package_row as "draft_compiler_session_package_row" :: c proc(
+        session: rawptr,
+        index: usize,
+        result: ^draft_compiler_api.Package_Row,
+    )
+
+    pub copy_package_row_text as "draft_compiler_session_copy_package_row_text" :: c proc(
+        session: rawptr,
+        index: usize,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
     pub copy_source_path as "draft_compiler_session_copy_source_path" :: c proc(
         session: rawptr,
         destination: [^]u8,
@@ -228,6 +245,9 @@ pub host_api :: proc(session: rawptr) -> draft_compiler_api.Host_Api {
         span = span,
         copy_diagnostics = copy_diagnostics,
         copy_tooling = copy_tooling,
+        package_row_count = package_row_count,
+        package_row = package_row,
+        copy_package_row_text = copy_package_row_text,
         copy_source_path = copy_source_path,
         open_workspace = open_workspace,
         copy_workspace_path = copy_workspace_path,

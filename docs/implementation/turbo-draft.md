@@ -26,8 +26,9 @@ The C ABI owns no editor concept and never calls back into Draft. Draft creates
 and destroys the opaque compiler-session handle and supplies caller-owned byte
 buffers for every operation. The service borrows those buffers only during a
 synchronous call. C++ retains `SourceManager`, `CompileWorkspaceResult`,
-diagnostic text, syntax spans, tooling projections, and temporary native build
-artifacts. No STL, filesystem, compiler, or LLVM type crosses the boundary.
+diagnostic text, syntax spans, tooling projections, structured package rows,
+and temporary native build artifacts. No STL, filesystem, compiler, or LLVM
+type crosses the boundary.
 This seam can therefore be replaced by the self-hosted compiler without
 rewriting the Draft application.
 
@@ -132,7 +133,7 @@ latency justifies them.
 
 ## Compiler-derived views and native actions
 
-On each successful check, the service derives deterministic text projections
+On each successful check, the service derives deterministic inspection data
 from existing compiler products:
 
 - package/import rows from `WorkspaceGraph`;
@@ -142,7 +143,10 @@ from existing compiler products:
 - denial regions from semantic denial records; and
 - diagnostics from the latest check attempt.
 
-These are views, not another parser, indexer, or semantic engine. The Draft UI
+Package/import data crosses the C ABI as fixed records—kind, depth, parent
+package index, root and child flags—plus separately copied labels. The other
+sections remain formatted text. These are views, not another parser, indexer,
+or semantic engine. The Draft UI
 copies them into its own bounded storage and presents independent movable,
 resizable windows. The document editor uses that same ordinary window model:
 its content is the reusable `turbo_editor` view, while the application owns its
@@ -151,12 +155,16 @@ non-tileable tool panes, so Tile/Cascade arrange the document together with
 visible semantic windows without moving those browsers. Opening a buffer
 reopens and focuses the document window if it was closed.
 
-Files, Buffers, executable roots, and read-only semantic sections share
-`lib/turbo_ui`'s collection viewport policy. Applications retain cursor and
-offset only; the reusable layer owns keyboard movement, distinct activation,
-wheel scrolling, proportional scrollbar geometry, and visible-row mapping.
+Files, Buffers, executable roots, the package tree, and read-only semantic
+sections share `lib/turbo_ui`'s collection viewport policy. Applications retain
+cursor and offset only; the reusable layer owns keyboard movement, distinct
+activation, wheel scrolling, proportional scrollbar geometry, and visible-row
+mapping.
 Rich rows paint markers and byte labels directly after `list_view`, so reuse
-does not require callbacks, label allocation, or a retained item model.
+does not require callbacks, label allocation, or a retained item model. The
+tree specialization consumes a caller-owned flat preorder table and scratch
+visible-index mapping; expansion, Left/Right parent navigation, and `+`/`-`
+disclosure remain reusable UI policy while graph identity stays in the compiler.
 
 `lib/turbo_ui` distinguishes ordinary zoomable windows,
 non-zooming tool windows, fixed-size dialogs, and topmost popup scopes through
@@ -173,13 +181,14 @@ application policy, so Turbo Draft handles them before focused controls and
 invokes the same direct operation as the corresponding menu branch.
 No retained widget tree, callback table, or editor pointer crosses that layer.
 
-F6 opens Project: its top list selects a runnable root by
-mouse or Enter and its lower section displays the checked package/dependency
-graph. F7 through F11 toggle declaration, reference/call, effect, denial, and
+F6 opens Project: its top list selects a runnable root by mouse or Enter and
+its lower section displays an expandable checked package/dependency tree.
+Click or Enter toggles a package; Left/Right close, open, or enter branches.
+F7 through F11 toggle declaration, reference/call, effect, denial, and
 diagnostic views. F12 remains a quick root cycle and Shift-F12 cycles targets.
 The Window menu tiles or cascades ordinary tileable windows without disturbing
 auxiliary tools or fixed dialogs.
-The semantic sections are currently read-only text projections, not trees with
+The F7-F11 semantic sections are currently read-only text projections without
 source-jump navigation.
 
 Build first checks the exact active-plus-dirty project buffer set. Only a
@@ -208,19 +217,20 @@ minutes, while the event/repaint fixes keep the interactive path responsive.
 The compiler optimization selected for the open project remains independent.
 
 Identifier completion, background checking, broad Codex worktree editing,
-structured semantic navigation, richer build/run configurations, and body-only
-invalidation remain later measurements or features. Open Workspace currently
-uses a typed path rather than a directory browser. Ordinary Codex can
-continue editing the normal files, and Draft `...` retains its existing
-compiler-synthesis meaning.
+declaration/reference source-jump navigation, richer build/run configurations,
+and body-only invalidation remain later measurements or features. Open
+Workspace currently uses a typed path rather than a directory browser.
+Ordinary Codex can continue editing the normal files, and Draft `...` retains
+its existing compiler-synthesis meaning.
 
 ## Verification boundary
 
 `draft_project` package tests cover the optional versioned manifest grammar and
 path constraints. `draft_compiler_service_tests` cover C ABI creation, canonical
 paths, multi-file source transactions, source enumeration, production syntax
-spans, semantic views, invalid-overlay diagnostics, retained last-good state,
-topology changes, automatic root discovery, transactional workspace replacement,
+spans, structured package rows, semantic views, invalid-overlay diagnostics,
+retained last-good state, topology changes, automatic root discovery,
+transactional workspace replacement,
 root/target switching, traversal rejection, and native Build.
 Draft package tests cover the application-side Host table, overlay assembly,
 Draft-owned Run, and the buffer/root invariant. `draft_draftide_smoke` launches

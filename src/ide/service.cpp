@@ -39,6 +39,8 @@ static_assert(sizeof(DraftCompilerServiceSpan) == 24);
 static_assert(alignof(DraftCompilerServiceSpan) == alignof(std::size_t));
 static_assert(sizeof(DraftCompilerServiceOverlay) == 32);
 static_assert(alignof(DraftCompilerServiceOverlay) == alignof(void *));
+static_assert(sizeof(DraftCompilerServicePackageRow) == 16);
+static_assert(alignof(DraftCompilerServicePackageRow) == alignof(std::size_t));
 
 // ServiceSession is the stable opaque C handle. Keeping the compiler behind
 // one extra owner lets Open Workspace replace a complete workspace session
@@ -414,6 +416,44 @@ std::size_t draft_compiler_session_copy_tooling_section(
   return copy_text(
       session->tooling_text(static_cast<draft::ide::ToolingSection>(section)),
       destination, capacity);
+}
+
+std::size_t draft_compiler_session_package_row_count(void *opaque_session) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  return session == nullptr ? 0 : session->package_tree_rows().size();
+}
+
+void draft_compiler_session_package_row(
+    void *opaque_session, std::size_t index,
+    DraftCompilerServicePackageRow *result) {
+  if (result == nullptr)
+    return;
+  *result = {};
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr || index >= session->package_tree_rows().size())
+    return;
+  const draft::ide::PackageTreeRow &row = session->package_tree_rows()[index];
+  *result = {
+      row.package_index,
+      static_cast<std::uint8_t>(row.kind),
+      static_cast<std::uint8_t>(
+          row.kind == draft::ide::PackageTreeRowKind::Import ? 1 : 0),
+      static_cast<std::uint8_t>(row.root ? 1 : 0),
+      static_cast<std::uint8_t>(row.has_children ? 1 : 0),
+  };
+}
+
+std::size_t draft_compiler_session_copy_package_row_text(
+    void *opaque_session, std::size_t index, std::uint8_t *destination,
+    std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr || index >= session->package_tree_rows().size()) {
+    if (capacity != 0 && destination != nullptr)
+      destination[0] = 0;
+    return 0;
+  }
+  return copy_text(session->package_tree_rows()[index].label, destination,
+                   capacity);
 }
 
 std::size_t draft_compiler_session_copy_source_path(void *opaque_session,

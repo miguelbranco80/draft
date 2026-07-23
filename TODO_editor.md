@@ -104,6 +104,9 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
 - [x] Make Files the compiler-discovered source browser and Buffers the open
   document list. Add Open File through Files and transactional Open Workspace
   with Save all / Discard / Cancel dirty-buffer policy.
+- [x] Add reusable compound lists, proportional scrollbars, read-only text
+  viewports and preorder trees; present the F6 package/dependency graph as an
+  expandable compiler-backed tree without parsing its text report.
 
 ## Explicitly later
 
@@ -120,5 +123,5 @@ These are future additions, not incomplete first-version work:
   providers, arguments, environment, or working directories are implemented.
   It must not list source files, redefine package discovery, or become a
   dependency manager.
-- Replace the current read-only semantic text projections with selectable
-  compiler-backed navigation when source-jump queries exist.
+- Replace the remaining declaration/reference/effect/denial text projections
+  with selectable compiler-backed navigation when source-jump queries exist.

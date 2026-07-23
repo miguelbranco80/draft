@@ -46,10 +46,12 @@ access letters are underlined: use Alt-F/Alt-E/Alt-P/Alt-W to open a menu, then
 press an underlined command letter, or use the mouse. The right-aligned command
 shortcuts are active application-wide rather than only when the editor owns
 focus: Ctrl-S saves, Ctrl-F opens Find, and F2 opens Files. F5 checks, builds,
-and runs the currently selected root. F6 opens Project, with
-a selectable run-root list above the package/dependency graph. F7-F11 open
-declaration, reference, effect, denial, and diagnostic windows. Those semantic
-sections are currently read-only reports rather than source-jump navigation.
+and runs the currently selected root. F6 opens Project, with a selectable
+run-root list above an expandable package/dependency tree. Click or Enter
+toggles a package; Left closes a branch or selects its parent, and Right opens
+a branch or enters its first child. F7-F11 open declaration, reference, effect,
+denial, and diagnostic windows. Those remaining semantic sections are currently
+read-only reports rather than source-jump navigation.
 Files lists the compiler-discovered workspace sources reachable from the active
 root; arrow keys browse without changing documents, and Enter opens a row.
 Buffers is the separate list of already-open documents and marks dirty rows.

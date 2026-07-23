@@ -32,13 +32,27 @@ endif()
 
 execute_process(
   COMMAND "${DRAFTC}" test "${TEST_ROOT}/workspace"
+    --root lib/turbo_ui --target "${TARGET_SELECTOR}"
+  RESULT_VARIABLE ui_status
+  OUTPUT_VARIABLE ui_output
+  ERROR_VARIABLE ui_error
+)
+if(NOT ui_status EQUAL 0 OR
+   NOT ui_output MATCHES "test passed: 23 selected procedures")
+  message(FATAL_ERROR
+    "Turbo UI tests failed (${ui_status})\n"
+    "stdout:\n${ui_output}\nstderr:\n${ui_error}")
+endif()
+
+execute_process(
+  COMMAND "${DRAFTC}" test "${TEST_ROOT}/workspace"
     --root lib/turbo_editor_app --target "${TARGET_SELECTOR}"
   RESULT_VARIABLE editor_status
   OUTPUT_VARIABLE editor_output
   ERROR_VARIABLE editor_error
 )
 if(NOT editor_status EQUAL 0 OR
-   NOT editor_output MATCHES "test passed: 32 selected procedures")
+   NOT editor_output MATCHES "test passed: 35 selected procedures")
   message(FATAL_ERROR
     "Turbo IDE library tests failed (${editor_status})\n"
     "stdout:\n${editor_output}\nstderr:\n${editor_error}")
