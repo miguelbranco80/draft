@@ -20,15 +20,17 @@ The direct-construction replacement now has its final ownership boundary: one
 task-local builder creates nominal types, reachable globals, ordinary-ABI MIR,
 atomics, inline assembly, runtime aggregate values, exact selected-member
 constant bytes, and typed nested string/procedure relocations in an LLVM
-context. It uses fixed entry-block scratch storage for variants, unions, and
-bit-field structs whose language layout cannot be represented by structural
-LLVM SSA. The builder may print the already-built module for inspection and
-passes that same mutable module to verification/optimization/native emission. A
+context. Assert, index-bounds, and slice-bounds rows construct their exact
+hidden runtime calls and source strings directly as well. The builder uses
+fixed entry-block scratch storage for variants, unions, and bit-field structs
+whose language layout cannot be represented by structural LLVM SSA. It may
+print the already-built module for inspection and passes that same mutable
+module to verification/optimization/native emission. A
 checked-source-to-object regression proves this path has no input-preparation or
 IR-parsing phase. Production package tasks still use the complete textual
-emitter until runtime checks and support, the full C ABI, debug metadata, and
-every remaining MIR operation reach parity; there is no partial production
-fallback. The external textual entry remains useful as the explicit Clang/LLVM
+emitter until root runtime support, the full C ABI, debug metadata, and every
+remaining MIR operation reach parity; there is no partial production fallback.
+The external textual entry remains useful as the explicit Clang/LLVM
 qualification oracle rather than as the intended package-construction
 architecture.
 

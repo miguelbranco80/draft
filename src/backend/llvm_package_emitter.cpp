@@ -146,15 +146,10 @@ public:
                        DiagnosticSink &diagnostics)
       : target_(target), options_(options), semantic_(semantic), abi_(abi),
         global_initializers_(global_initializers), globals_(globals),
-        procedures_(procedures), diagnostics_(diagnostics),
+        procedures_(procedures), sources_(sources), diagnostics_(diagnostics),
         llvm_types_(semantic.types.size(), nullptr),
         functions_(semantic.symbols.symbol_count(), nullptr),
-        global_values_(semantic.symbols.symbol_count(), nullptr) {
-    // Debug locations join this same builder as their direct lowering lands.
-    // Keep SourceManager in the public package boundary now, but do not retain
-    // an inert reference before metadata construction uses it.
-    (void)sources;
-  }
+        global_values_(semantic.symbols.symbol_count(), nullptr) {}
 
   [[nodiscard]] LlvmPackageEmissionResult run() {
     LlvmPackageEmissionResult result;
@@ -721,6 +716,26 @@ private:
         overloaded_types.size());
   }
 
+  // Returns one compiler-runtime helper declaration with an exact fixed
+  // signature. Root runtime emission later supplies definitions under these
+  // same names; dependency package modules retain hidden external references.
+  [[nodiscard]] LLVMValueRef runtime_helper(std::string_view name,
+                                            LLVMTypeRef result,
+                                            std::span<LLVMTypeRef> parameters) {
+    const std::string owned_name(name);
+    LLVMValueRef function =
+        LLVMGetNamedFunction(module_.value, owned_name.c_str());
+    if (function != nullptr)
+      return function;
+    LLVMTypeRef function_type = LLVMFunctionType(
+        result, parameters.empty() ? nullptr : parameters.data(),
+        static_cast<unsigned>(parameters.size()), 0);
+    function =
+        LLVMAddFunction(module_.value, owned_name.c_str(), function_type);
+    LLVMSetVisibility(function, LLVMHiddenVisibility);
+    return function;
+  }
+
   // Creates or returns one global declaration. Definitions are selected by the
   // artifact reachability product and initialized later by emit_globals;
   // foreign/imported references use the same SymbolId slot but remain external.
@@ -828,6 +843,33 @@ private:
         global,
         LLVMConstInt(LLVMInt64TypeInContext(context_.value), text.size(), 0)};
     return LLVMConstStructInContext(context_.value, members, 2, 0);
+  }
+
+  // Bounds helpers accept a C-style path because their small runtime ABI
+  // predates the richer assertion string-view record. Keep the terminator in
+  // compiler-owned private storage and return only its opaque address.
+  [[nodiscard]] LLVMValueRef cstring_constant(std::string_view text) {
+    LLVMValueRef bytes =
+        LLVMConstStringInContext2(context_.value, text.data(), text.size(), 0);
+    LLVMValueRef global = LLVMAddGlobal(
+        module_.value, LLVMTypeOf(bytes),
+        (".draft.cstring." + std::to_string(next_cstring_constant_++)).c_str());
+    LLVMSetInitializer(global, bytes);
+    LLVMSetLinkage(global, LLVMPrivateLinkage);
+    LLVMSetGlobalConstant(global, 1);
+    LLVMSetUnnamedAddress(global, LLVMGlobalUnnamedAddr);
+    LLVMSetAlignment(global, 1);
+    return global;
+  }
+
+  [[nodiscard]] std::string source_file_path(SourceRange range) const {
+    if (!range.is_valid())
+      return {};
+    return sources_.file(range.begin.file).display_path;
+  }
+
+  [[nodiscard]] LineColumn source_location(SourceRange range) const {
+    return range.is_valid() ? sources_.line_column(range.begin) : LineColumn{};
   }
 
   [[nodiscard]] bool target_uses_little_endian() const {
@@ -1929,6 +1971,79 @@ private:
         instruction.range, procedure, values);
   }
 
+  void emit_assertion(const MirProcedure &procedure,
+                      const MirInstruction &instruction,
+                      const std::vector<LLVMValueRef> &values,
+                      LLVMValueRef context_parameter) {
+    SourceRange condition_range = instruction.range;
+    if (!instruction.operands.empty()) {
+      const MirValueId condition = instruction.operands.front();
+      if (condition.is_valid() && condition.value < procedure.values.size()) {
+        const MirInstructionId definition =
+            procedure.value(condition).definition;
+        if (definition.is_valid() &&
+            definition.value < procedure.instructions.size()) {
+          condition_range = procedure.instruction(definition).range;
+        }
+      }
+    }
+    const std::string condition_text =
+        condition_range.is_valid() ? std::string(sources_.text(condition_range))
+                                   : std::string();
+    const std::string file_path = source_file_path(instruction.range);
+    const LineColumn location = source_location(instruction.range);
+    LLVMTypeRef string_type = llvm_type(semantic_.types.builtins().string_type);
+    LLVMTypeRef pointer_type = LLVMPointerTypeInContext(context_.value, 0);
+    LLVMTypeRef integer_type = LLVMInt64TypeInContext(context_.value);
+    LLVMTypeRef parameter_types[]{
+        pointer_type, LLVMInt1TypeInContext(context_.value),
+        string_type,  string_type,
+        string_type,  integer_type,
+        integer_type};
+    LLVMValueRef function =
+        runtime_helper("__draft.assert", LLVMVoidTypeInContext(context_.value),
+                       parameter_types);
+    LLVMValueRef arguments[]{
+        context_parameter,
+        value_operand(values, instruction.operands[0], instruction.range),
+        string_constant(condition_text),
+        instruction.operands.size() == 2
+            ? value_operand(values, instruction.operands[1], instruction.range)
+            : LLVMConstNull(string_type),
+        string_constant(file_path),
+        LLVMConstInt(integer_type, location.line, 0),
+        LLVMConstInt(integer_type, location.column, 0)};
+    (void)LLVMBuildCall2(builder_.value, LLVMGlobalGetValueType(function),
+                         function, arguments, 7, "");
+  }
+
+  void emit_bounds_check(const MirInstruction &instruction,
+                         const std::vector<LLVMValueRef> &values, bool slice) {
+    const std::string file_path = source_file_path(instruction.range);
+    const LineColumn location = source_location(instruction.range);
+    LLVMTypeRef integer_type = LLVMInt64TypeInContext(context_.value);
+    LLVMTypeRef pointer_type = LLVMPointerTypeInContext(context_.value, 0);
+    const std::size_t value_count = slice ? 3U : 2U;
+    std::vector<LLVMTypeRef> parameter_types(value_count, integer_type);
+    parameter_types.push_back(pointer_type);
+    parameter_types.push_back(integer_type);
+    parameter_types.push_back(integer_type);
+    LLVMValueRef function =
+        runtime_helper(slice ? "__draft.slice_bounds" : "__draft.bounds",
+                       LLVMVoidTypeInContext(context_.value), parameter_types);
+    LLVMValueRef arguments[6]{};
+    for (std::size_t index = 0; index < value_count; ++index) {
+      arguments[index] =
+          value_operand(values, instruction.operands[index], instruction.range);
+    }
+    arguments[value_count] = cstring_constant(file_path);
+    arguments[value_count + 1] = LLVMConstInt(integer_type, location.line, 0);
+    arguments[value_count + 2] = LLVMConstInt(integer_type, location.column, 0);
+    (void)LLVMBuildCall2(builder_.value, LLVMGlobalGetValueType(function),
+                         function, arguments,
+                         static_cast<unsigned>(value_count + 3U), "");
+  }
+
   void emit_instruction(const MirProcedure &procedure,
                         std::size_t instruction_index,
                         const MirInstruction &instruction,
@@ -2372,10 +2487,16 @@ private:
       }
       break;
     }
-    case MirInstructionKind::Invalid:
     case MirInstructionKind::Assert:
+      emit_assertion(procedure, instruction, values, context_parameter);
+      break;
     case MirInstructionKind::BoundsCheck:
+      emit_bounds_check(instruction, values, false);
+      break;
     case MirInstructionKind::SliceBoundsCheck:
+      emit_bounds_check(instruction, values, true);
+      break;
+    case MirInstructionKind::Invalid:
       error(instruction.range,
             std::string("MIR operation is not yet implemented directly: ") +
                 mir_instruction_kind_name(instruction.kind));
@@ -2539,6 +2660,7 @@ private:
   const ConstantTable &global_initializers_;
   std::span<const SymbolId> globals_;
   std::span<const MirProcedure *const> procedures_;
+  const SourceManager &sources_;
   DiagnosticSink &diagnostics_;
   std::size_t initial_errors_ = 0;
 
@@ -2549,6 +2671,7 @@ private:
   std::vector<LLVMValueRef> functions_;
   std::vector<LLVMValueRef> global_values_;
   std::size_t next_string_constant_ = 0;
+  std::size_t next_cstring_constant_ = 0;
   std::size_t next_relocatable_constant_ = 0;
   std::size_t next_auxiliary_block_ = 0;
 };

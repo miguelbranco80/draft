@@ -169,6 +169,18 @@ bit_total :: proc(kind: u8, delta: i16, active: bool) -> i16 {
 compile_time_box :: proc() -> Relocation_Box {
     return Compile_Time_Box
 }
+
+require_nonzero :: proc(value: i64) {
+    assert(value != 0, "expected a nonzero value")
+}
+
+first_value :: proc(values: []i64) -> i64 {
+    return values[0]
+}
+
+subview :: proc(values: []i64, low, high: usize) -> []i64 {
+    return values[low:high]
+}
 )draft");
   file.syntax.emplace(
       draft::parse_source_file(sources, file.source, diagnostics));
@@ -231,6 +243,12 @@ void test_direct_scalar_package_emits_native_object(TestState &state) {
   EXPECT(state, first.emitted.llvm_text.find("narrow") != std::string::npos);
   EXPECT(state,
          first.emitted.llvm_text.find(".draft.string.0") != std::string::npos);
+  EXPECT(state,
+         first.emitted.llvm_text.find("__draft.assert") != std::string::npos);
+  EXPECT(state,
+         first.emitted.llvm_text.find("__draft.bounds") != std::string::npos);
+  EXPECT(state, first.emitted.llvm_text.find("__draft.slice_bounds") !=
+                    std::string::npos);
   EXPECT(state, first.emitted.native.ok);
   EXPECT(state, !first.emitted.native.bytes.empty());
   EXPECT(state,
