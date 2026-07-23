@@ -4920,11 +4920,8 @@ struct AbiClassificationWaveExecution {
 }
 
 struct DirectEffectTaskSlot {
-  const CompiledPackage *package = nullptr;
-  std::span<const std::size_t> selected_indices;
+  const ProcedureEffectAnalysis *analysis = nullptr;
   std::size_t selected_position = 0;
-  const TargetProfile *target = nullptr;
-  std::span<const ForeignProviderAudit> provider_audits;
   DirectProcedureEffectSummary result;
 };
 
@@ -4946,32 +4943,13 @@ struct DirectEffectWaveExecution {
     return false;
   }
   DirectEffectTaskSlot &slot = (*context.slots)[index];
-  if (slot.package == nullptr || slot.target == nullptr ||
-      slot.selected_position >= slot.selected_indices.size()) {
+  if (slot.analysis == nullptr ||
+      slot.selected_position >= slot.analysis->source_procedures.size()) {
     failure = "direct-effect worker received an invalid package projection";
     return false;
   }
-  const std::size_t work_index =
-      slot.selected_indices[slot.selected_position];
-  if (work_index >= slot.package->bodies.procedures.size()) {
-    failure = "direct-effect body work index is outside the HIR product table";
-    return false;
-  }
-  const std::size_t hir_procedure_count =
-      slot.package->bodies.procedures[work_index].program.procedures().size();
-  if (hir_procedure_count != 1) {
-    failure = "direct-effect body product owns " +
-        std::to_string(hir_procedure_count) + " HIR procedure rows";
-    return false;
-  }
   slot.result = collect_direct_procedure_effect(
-      slot.package->bodies.package,
-      slot.package->bodies.procedures,
-      slot.selected_indices,
-      slot.selected_position,
-      slot.package->imported_contracts,
-      slot.target,
-      slot.provider_audits);
+      *slot.analysis, slot.selected_position);
   (*context.outcomes)[index].kind = SemanticProductOutcomeKind::Complete;
   return true;
 }
@@ -4983,8 +4961,7 @@ struct DirectEffectWaveExecution {
 [[nodiscard]] bool run_package_direct_effect_products(
     std::size_t package_index,
     const WorkspaceDependencyIndex &schedule,
-    const TargetProfile &target,
-    std::span<const ForeignProviderAudit> provider_audits,
+    const ProcedureEffectAnalysis &analysis,
     std::size_t worker_count,
     TimingRecorder *timings,
     CompileWorkspaceResult &result,
@@ -5020,6 +4997,13 @@ struct DirectEffectWaveExecution {
       return false;
     }
     products.effect_body_work_indices.push_back(work_index);
+  }
+  if (analysis.source_procedures.size() !=
+      products.effect_body_work_indices.size()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "prepared effect context is not aligned with selected body products");
+    return false;
   }
 
   const std::vector<SemanticProductId> imported_dependencies =
@@ -5064,11 +5048,8 @@ struct DirectEffectWaveExecution {
   std::vector<DirectEffectTaskSlot> slots(wave.products.size());
   std::vector<SemanticProductOutcome> outcomes(wave.products.size());
   for (std::size_t index = 0; index < slots.size(); ++index) {
-    slots[index].package = &package;
-    slots[index].selected_indices = products.effect_body_work_indices;
+    slots[index].analysis = &analysis;
     slots[index].selected_position = index;
-    slots[index].target = &target;
-    slots[index].provider_audits = provider_audits;
   }
   WorkGraph execution_graph;
   execution_graph.tasks.resize(slots.size());
@@ -7049,11 +7030,28 @@ bool continue_compiled_workspace_semantics(
         package.validation_context,
         package.bodies.procedures,
         package.selected_procedure_work);
+    // Build package-sized effect lookup data once. Every direct worker borrows
+    // this immutable context, and closure later makes the sole mutable copy for
+    // its return/write fixed point.
+    TimingScope effect_context_timing = options.timings != nullptr
+        ? options.timings->scope("effect analysis context")
+        : TimingScope{};
+    const ProcedureEffectAnalysis effect_analysis =
+        prepare_procedure_effect_analysis(
+            package.bodies.package,
+            package.bodies.procedures,
+            package.selected_procedure_work,
+            package.imported_contracts,
+            &options.target,
+            options.foreign_provider_audits);
+    effect_context_timing.finish();
+    TimingScope direct_effect_timing = options.timings != nullptr
+        ? options.timings->scope("direct effect discovery")
+        : TimingScope{};
     if (!run_package_direct_effect_products(
             package_index,
             schedule,
-            options.target,
-            options.foreign_provider_audits,
+            effect_analysis,
             options.semantic_worker_count,
             options.timings,
             result,
@@ -7061,14 +7059,13 @@ bool continue_compiled_workspace_semantics(
       result.ok = false;
       return false;
     }
+    direct_effect_timing.finish();
+    TimingScope effect_closure_timing = options.timings != nullptr
+        ? options.timings->scope("effect flow closure")
+        : TimingScope{};
     package.effects = close_procedure_effects(
-        package.bodies.package,
-        package.bodies.procedures,
-        package.selected_procedure_work,
-        package.direct_effects,
-        package.imported_contracts,
-        &options.target,
-        options.foreign_provider_audits);
+        effect_analysis, package.direct_effects);
+    effect_closure_timing.finish();
     if (!publish_package_effect_scc_products(
             package_index,
             schedule,

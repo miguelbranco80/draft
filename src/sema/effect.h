@@ -228,6 +228,16 @@ struct DirectProcedureEffectSummary {
   SymbolId procedure;
   std::vector<SemanticEffect> direct_effects;
   std::vector<SymbolId> direct_calls;
+  // Local callees whose returned procedure values or caller-visible writes
+  // were consulted while evaluating this body's value flow. Only these rows
+  // need HIR rediscovery when a local flow contract grows; ordinary calls with
+  // no procedure-value flow never re-enter the body during closure.
+  std::vector<SymbolId> flow_dependencies;
+  // Subset of flow_dependencies for which a requested returned procedure path
+  // was still bottom. After finite target discovery stabilizes, these rows
+  // seed the final pass that turns a genuinely absent local return into
+  // unknown. Changes then propagate only to their recorded consumers.
+  std::vector<SymbolId> unresolved_return_dependencies;
   std::vector<ProcedureInvocationSummary> direct_invocations;
   std::vector<ProcedureFlowInvocationSummary> direct_flow_calls;
   // Procedure leaves returned by this procedure, keyed relative to the result
@@ -247,6 +257,47 @@ struct DirectEffectSummaryResult {
 
   [[nodiscard]] const DirectProcedureEffectSummary *find(
       SymbolId procedure) const;
+};
+
+// EffectSourceProcedure binds one selected immutable HIR arena to its single
+// procedure row. A ProcedureBodyHirResult owns the arena; this borrowed view is
+// valid only while that body-product table remains alive and unchanged.
+struct EffectSourceProcedure {
+  const HirProgram *hir = nullptr;
+  const HirProcedure *procedure = nullptr;
+};
+
+// ProcedureEffectAnalysis is the immutable package context shared by every
+// DirectEffectSummary worker and by the later SCC closure. The selected source
+// projection and terminal native/imported contracts are constructed exactly
+// once. Source rows in lookup_rows are bottom placeholders; later rows are
+// complete terminal contracts. Workers only read this value, so sharing it
+// removes package-sized reconstruction from each procedure task without
+// creating mutable cross-worker state.
+//
+// package, imported, HIR pointers, target, and provider_audits are borrowed
+// from one compiler command and must outlive all direct workers and closure.
+// lookup_rows and source_procedures own their compact indexing data.
+struct ProcedureEffectAnalysis {
+  const SemanticPackage *package = nullptr;
+  const ImportedProcedureContracts *imported = nullptr;
+  const TargetProfile *target = nullptr;
+  std::span<const ForeignProviderAudit> provider_audits;
+  std::vector<EffectSourceProcedure> source_procedures;
+  DirectEffectSummaryResult lookup_rows;
+  // Dense consumer-local SymbolId -> lookup_rows index. The sentinel is
+  // lookup_rows.procedures.size(). Direct workers perform this lookup for most
+  // typed calls, so a package-wide linear scan here would make large packages
+  // quadratic even though SymbolId already provides a compact domain.
+  std::vector<std::size_t> row_by_symbol;
+  // Structural procedure-leaf paths are immutable for this completed semantic
+  // package. The two tables are indexed by TypeId and differ only in whether a
+  // pointer at the root is followed. Body rediscovery asks this question at
+  // nearly every call argument; computing it once avoids recursively walking
+  // the same large UI state types in every fixed-point pass.
+  std::vector<std::vector<std::vector<std::string>>> procedure_paths;
+  std::vector<std::vector<std::vector<std::string>>>
+      pointer_procedure_paths;
 };
 
 // One closed procedure contract. Return and write rows are copied from the
@@ -270,6 +321,31 @@ struct EffectSummaryResult {
       SymbolId procedure, HirExpressionId expression) const;
 };
 
+// Builds the shared read-only package context used by direct discovery and
+// closure. selected_indices must be strictly increasing. A selected body may
+// own no runtime HIR row; every nonempty body owns exactly one, as guaranteed
+// by the body-product graph.
+[[nodiscard]] ProcedureEffectAnalysis prepare_procedure_effect_analysis(
+    const SemanticPackage &package,
+    std::span<const ProcedureBodyHirResult> procedures,
+    std::span<const std::size_t> selected_indices,
+    const ImportedProcedureContracts &imported,
+    const TargetProfile *target = nullptr,
+    std::span<const ForeignProviderAudit> provider_audits = {});
+
+// Worker form over a prepared immutable context. selected_position addresses
+// analysis.source_procedures. No package-sized table is copied or rebuilt.
+[[nodiscard]] DirectProcedureEffectSummary collect_direct_procedure_effect(
+    const ProcedureEffectAnalysis &analysis,
+    std::size_t selected_position);
+
+// Closes the direct rows prepared from the same analysis context. Only this
+// call makes one mutable copy of lookup_rows so return/write flow can reach its
+// deterministic fixed point without mutating worker-visible input.
+[[nodiscard]] EffectSummaryResult close_procedure_effects(
+    const ProcedureEffectAnalysis &analysis,
+    const DirectEffectSummaryResult &direct);
+
 // Discovers direct summaries from the selected immutable procedure products.
 // selected_indices addresses procedures, must be strictly increasing, and
 // preserves the body scheduler's canonical product order. Each HIR-local ID is
@@ -278,18 +354,6 @@ struct EffectSummaryResult {
     const SemanticPackage &package,
     std::span<const ProcedureBodyHirResult> procedures,
     std::span<const std::size_t> selected_indices,
-    const ImportedProcedureContracts &imported,
-    const TargetProfile *target = nullptr,
-    std::span<const ForeignProviderAudit> provider_audits = {});
-
-// Worker form of direct discovery. selected_position addresses selected_indices
-// rather than procedures, and the returned row depends only on that exact body,
-// the selected source symbol domain, and immutable native/imported contracts.
-[[nodiscard]] DirectProcedureEffectSummary collect_direct_procedure_effect(
-    const SemanticPackage &package,
-    std::span<const ProcedureBodyHirResult> procedures,
-    std::span<const std::size_t> selected_indices,
-    std::size_t selected_position,
     const ImportedProcedureContracts &imported,
     const TargetProfile *target = nullptr,
     std::span<const ForeignProviderAudit> provider_audits = {});

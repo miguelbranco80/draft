@@ -231,21 +231,24 @@ danger :: proc() {
   for (std::size_t index = 0; index < selected_indices.size(); ++index) {
     selected_indices[index] = index;
   }
+  const draft::ProcedureEffectAnalysis analysis =
+      draft::prepare_procedure_effect_analysis(
+          bodies.package,
+          bodies.procedures,
+          selected_indices,
+          imported,
+          &target);
   EXPECT(state, direct.procedures.size() == selected_indices.size());
+  EXPECT(state,
+      analysis.source_procedures.size() == direct.procedures.size());
   for (std::size_t position = 0;
        position < direct.procedures.size(); ++position) {
     const draft::DirectProcedureEffectSummary independent =
-        draft::collect_direct_procedure_effect(
-            bodies.package,
-            bodies.procedures,
-            selected_indices,
-            position,
-            imported,
-            &target);
+        draft::collect_direct_procedure_effect(analysis, position);
     EXPECT(state, independent == direct.procedures[position]);
   }
-  const draft::EffectSummaryResult effects = draft::close_procedure_effects(
-      bodies.package, bodies.procedures, direct, imported, &target);
+  const draft::EffectSummaryResult effects =
+      draft::close_procedure_effects(analysis, direct);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }

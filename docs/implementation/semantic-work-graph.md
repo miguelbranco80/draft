@@ -121,6 +121,15 @@ the concrete call and procedure-pointer-flow graph. MIR and package emission
 start only from closed semantic products, so lowering never feeds facts back
 into type checking.
 
+One immutable `ProcedureEffectAnalysis` is prepared per package before its
+direct ready wave. It owns the selected HIR-row projection, terminal
+native/imported contracts, dense SymbolId lookup, and procedure-leaf paths for
+each completed TypeId. Direct workers borrow this context instead of rebuilding
+package-sized lookup data. Flow closure makes one mutable summary-table copy;
+non-recursive transfers run once, and later HIR rediscovery is limited to rows
+that actually consumed a local returned-procedure or pointer-write contract.
+Only recursive flow SCCs iterate internally.
+
 ## Emission reachability
 
 Semantic checking and machine emission are separate questions. The first

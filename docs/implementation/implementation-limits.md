@@ -99,9 +99,15 @@ MIR lowering reads the shared `TypeStore` immutably. Compiler-only addresses
 use MIR-local addressed-type metadata, so there is no unclassified post-ABI
 type suffix. Direct effects, denials, parsed assembly, and MIR consume
 authoritative procedure-owned HIR arenas and publish live products; they no
-longer use a package-wide HIR compatibility projection. Metadata/obligation
-context, native interop, and validation discovery also resolve only the exact
-selected procedure products. Each completed MIR product owns its procedure
+longer use a package-wide HIR compatibility projection.
+Direct-effect workers share one immutable package lookup context rather than
+reconstructing terminal contracts and type paths per procedure. Flow closure
+copies that context once, executes acyclic transfers once, and re-enters only
+HIR rows which consumed a local procedure-value flow contract; legal recursive
+flow components retain their explicit finite fixed point.
+Metadata/obligation context, native interop, and validation discovery also
+resolve only the exact selected procedure products. Each completed MIR product
+owns its procedure
 payload directly in the workspace side table; the compiler retains neither a
 package-wide HIR copy nor a reconstructed package MIR program. The standalone
 HIR projection and package MIR container/lowering pass have been deleted; direct

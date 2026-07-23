@@ -280,36 +280,66 @@ public:
         target_(target),
         provider_audits_(provider_audits) {}
 
-  [[nodiscard]] DirectEffectSummaryResult collect_direct() {
-    const std::vector<SourceProcedure> source_procedures =
-        selected_source_procedures();
-    initialize_direct_rows(source_procedures);
+  // Direct workers and closure borrow one package context prepared before the
+  // ready wave. The context owns all package-sized lookup construction; this
+  // collector owns only body-local traversal state until closure explicitly
+  // copies lookup_rows into its mutable fixed-point table.
+  explicit EffectCollector(const ProcedureEffectAnalysis &analysis)
+      : package_(*analysis.package), imported_(*analysis.imported),
+        target_(analysis.target), provider_audits_(analysis.provider_audits),
+        direct_lookup_(&analysis.lookup_rows),
+        row_by_symbol_(&analysis.row_by_symbol),
+        procedure_paths_(&analysis.procedure_paths),
+        pointer_procedure_paths_(&analysis.pointer_procedure_paths),
+        source_procedure_count_(analysis.source_procedures.size()) {
+    assert(analysis.package != nullptr && analysis.imported != nullptr);
+  }
 
-    // Every source row is discovered against the same bottom source prefix and
-    // immutable terminal contracts. Results therefore have no source-order
-    // dependency and can be computed by independent DirectEffectSummary tasks.
-    DirectEffectSummaryResult result;
-    result.procedures.reserve(source_procedures.size());
-    for (const SourceProcedure &source : source_procedures) {
-      result.procedures.push_back(discover_source_procedure(source));
+  [[nodiscard]] ProcedureEffectAnalysis prepare_analysis() {
+    ProcedureEffectAnalysis analysis;
+    analysis.package = &package_;
+    analysis.imported = &imported_;
+    analysis.target = target_;
+    analysis.provider_audits = provider_audits_;
+    analysis.source_procedures = selected_source_procedures();
+    initialize_direct_rows(analysis.source_procedures);
+    analysis.lookup_rows = std::move(direct_);
+    const std::size_t absent = analysis.lookup_rows.procedures.size();
+    analysis.row_by_symbol.assign(package_.symbols.symbol_count(), absent);
+    for (std::size_t row = 0;
+         row < analysis.lookup_rows.procedures.size(); ++row) {
+      const SymbolId symbol = analysis.lookup_rows.procedures[row].procedure;
+      assert(symbol.is_valid() && symbol.value < analysis.row_by_symbol.size());
+      assert(analysis.row_by_symbol[symbol.value] == absent);
+      analysis.row_by_symbol[symbol.value] = row;
     }
-    return result;
+    analysis.procedure_paths.resize(package_.types.size());
+    analysis.pointer_procedure_paths.resize(package_.types.size());
+    for (std::size_t index = 0; index < package_.types.size(); ++index) {
+      const TypeId type{static_cast<std::uint32_t>(index)};
+      analysis.procedure_paths[index] =
+          compute_procedure_paths(type, false);
+      analysis.pointer_procedure_paths[index] =
+          compute_procedure_paths(type, true);
+    }
+    direct_lookup_ = nullptr;
+    return analysis;
   }
 
   [[nodiscard]] DirectProcedureEffectSummary collect_direct_at(
+      std::span<const EffectSourceProcedure> source_procedures,
       std::size_t selected_index) {
-    const std::vector<SourceProcedure> source_procedures =
-        selected_source_procedures();
+    assert(direct_lookup_ != nullptr);
     assert(selected_index < source_procedures.size());
-    initialize_direct_rows(source_procedures);
     return discover_source_procedure(source_procedures[selected_index]);
   }
 
   [[nodiscard]] EffectSummaryResult close(
+      std::span<const EffectSourceProcedure> source_procedures,
       const DirectEffectSummaryResult &direct) {
-    const std::vector<SourceProcedure> source_procedures =
-        selected_source_procedures();
-    initialize_direct_rows(source_procedures);
+    assert(direct_lookup_ != nullptr);
+    direct_ = *direct_lookup_;
+    direct_lookup_ = &direct_;
     assert(direct.procedures.size() == source_procedure_count_);
     for (std::size_t index = 0; index < source_procedure_count_; ++index) {
       assert(
@@ -322,9 +352,9 @@ public:
     // only after the independent body-local products exist. Concrete target
     // discovery may refine the graph; each refinement rebuilds SCCs before the
     // affected components continue.
-    close_source_flow(source_procedures);
+    close_source_flow(source_procedures, false);
     local_returns_complete_ = true;
-    close_source_flow(source_procedures);
+    close_source_flow(source_procedures, true);
 
     closed_.procedures.reserve(direct_.procedures.size());
     for (const DirectProcedureEffectSummary &source : direct_.procedures) {
@@ -391,17 +421,9 @@ public:
   }
 
 private:
-  // SourceProcedure binds one selected immutable HIR arena to one procedure
-  // row inside that arena. DirectEffectSummaryResult uses the same canonical
-  // order, so SCC node indices can recover their source without a package-wide
-  // HIR projection or a symbol lookup table.
-  struct SourceProcedure {
-    const HirProgram *hir = nullptr;
-    const HirProcedure *procedure = nullptr;
-  };
-
-  [[nodiscard]] std::vector<SourceProcedure> selected_source_procedures() const {
-    std::vector<SourceProcedure> result;
+  [[nodiscard]] std::vector<EffectSourceProcedure>
+  selected_source_procedures() const {
+    std::vector<EffectSourceProcedure> result;
     for (const HirProgram *program : programs_) {
       for (const HirProcedure &procedure : program->procedures()) {
         result.push_back({program, &procedure});
@@ -414,10 +436,10 @@ private:
   // closure. Source rows begin as bottom placeholders; native and imported rows
   // are immutable terminal contracts. No HIR body is visited here.
   void initialize_direct_rows(
-      const std::vector<SourceProcedure> &source_procedures) {
+      std::span<const EffectSourceProcedure> source_procedures) {
     assert(direct_.procedures.empty());
     source_procedure_count_ = source_procedures.size();
-    for (const SourceProcedure &source : source_procedures) {
+    for (const EffectSourceProcedure &source : source_procedures) {
       DirectProcedureEffectSummary summary;
       summary.procedure = source.procedure->symbol;
       direct_.procedures.push_back(std::move(summary));
@@ -510,6 +532,7 @@ private:
       }
       direct_.procedures.push_back(std::move(direct));
     }
+    direct_lookup_ = &direct_;
   }
 
   struct StoragePath {
@@ -554,7 +577,7 @@ private:
   // operation is therefore deterministic: only explicit callee contracts can
   // change its result.
   [[nodiscard]] DirectProcedureEffectSummary discover_source_procedure(
-      const SourceProcedure &source) {
+      const EffectSourceProcedure &source) {
     assert(source.hir != nullptr && source.procedure != nullptr);
     hir_ = source.hir;
     DirectProcedureEffectSummary discovered;
@@ -590,9 +613,15 @@ private:
   // termination. Existing edges may never disappear, which is the central
   // monotonicity invariant of this flow lattice.
   void close_source_flow(
-      const std::vector<SourceProcedure> &source_procedures) {
+      std::span<const EffectSourceProcedure> source_procedures,
+      bool finalize_absent_returns) {
     bool graph_changed = false;
     do {
+      // A changed callee contract wakes only consumers which recorded that
+      // exact flow dependency. During the discovery pass every dependent row
+      // runs once. During finalization, unresolved returned paths seed the
+      // wave and changes propagate in dependency-first component order.
+      std::vector<bool> flow_changed(source_procedure_count_, false);
       std::vector<std::vector<SymbolId>> previous_edges;
       previous_edges.reserve(source_procedure_count_);
       for (std::size_t index = 0; index < source_procedure_count_; ++index) {
@@ -602,30 +631,94 @@ private:
       const std::vector<ClosedEffectComponent> components =
           build_effect_components(direct_.procedures);
       for (const ClosedEffectComponent &component : components) {
+        auto rediscover = [&](std::size_t procedure_index) {
+          const DirectProcedureEffectSummary &previous =
+              direct_.procedures[procedure_index];
+          DirectProcedureEffectSummary discovered =
+              discover_source_procedure(source_procedures[procedure_index]);
+          for (SymbolId edge : previous.direct_calls) {
+            // Losing a finite target would make termination and scheduling
+            // depend on replay order. Such a loss is an internal compiler
+            // error: source-local flow joins only add possible values.
+            assert(
+                std::find(
+                    discovered.direct_calls.begin(),
+                    discovered.direct_calls.end(),
+                    edge) != discovered.direct_calls.end());
+          }
+          if (previous == discovered) return false;
+          direct_.procedures[procedure_index] = std::move(discovered);
+          flow_changed[procedure_index] = true;
+          return true;
+        };
+
+        auto needs_rediscovery = [&](std::size_t procedure_index) {
+          const DirectProcedureEffectSummary &procedure =
+              direct_.procedures[procedure_index];
+          if (procedure.flow_dependencies.empty()) return false;
+          if (!finalize_absent_returns ||
+              !procedure.unresolved_return_dependencies.empty()) {
+            return true;
+          }
+          for (SymbolId dependency : procedure.flow_dependencies) {
+            const std::size_t dependency_row = direct_row(dependency);
+            if (dependency_row < flow_changed.size() &&
+                flow_changed[dependency_row]) {
+              return true;
+            }
+          }
+          return false;
+        };
+
+        // A non-recursive singleton consumes only already-closed dependency
+        // rows, so one rediscovery is its exact transfer operation. Repeating
+        // it merely to observe the same result doubled every acyclic body walk.
+        // A newly discovered outgoing edge is handled by the outer graph
+        // rebuild below. Only a real recursive component needs an internal
+        // fixed point.
+        bool recursive = component.procedure_indices.size() > 1;
+        if (!recursive && !component.procedure_indices.empty()) {
+          const std::size_t procedure_index =
+              component.procedure_indices.front();
+          const SymbolId procedure =
+              direct_.procedures[procedure_index].procedure;
+          recursive = std::find(
+              direct_.procedures[procedure_index].direct_calls.begin(),
+              direct_.procedures[procedure_index].direct_calls.end(),
+              procedure) !=
+              direct_.procedures[procedure_index].direct_calls.end();
+        }
+        if (!recursive) {
+          for (std::size_t procedure_index : component.procedure_indices) {
+            if (procedure_index < source_procedure_count_ &&
+                needs_rediscovery(procedure_index)) {
+              rediscover(procedure_index);
+            }
+          }
+          continue;
+        }
+
+        bool component_is_ready = false;
+        for (std::size_t procedure_index : component.procedure_indices) {
+          if (procedure_index < source_procedure_count_ &&
+              needs_rediscovery(procedure_index)) {
+            component_is_ready = true;
+            break;
+          }
+        }
+        if (!component_is_ready) continue;
+
         bool component_changed = false;
         do {
           component_changed = false;
           for (std::size_t procedure_index : component.procedure_indices) {
-            if (procedure_index >= source_procedure_count_) continue;
-            const DirectProcedureEffectSummary &previous =
-                direct_.procedures[procedure_index];
-            DirectProcedureEffectSummary discovered =
-                discover_source_procedure(
-                    source_procedures[procedure_index]);
-            for (SymbolId edge : previous.direct_calls) {
-              // Losing a finite target would make termination and scheduling
-              // depend on replay order. Such a loss is an internal compiler
-              // error: source-local flow joins only add possible values.
-              assert(
-                  std::find(
-                      discovered.direct_calls.begin(),
-                      discovered.direct_calls.end(),
-                      edge) != discovered.direct_calls.end());
+            if (procedure_index >= source_procedure_count_ ||
+                direct_.procedures[procedure_index]
+                    .flow_dependencies.empty()) {
+              continue;
             }
-            if (previous != discovered) {
-              direct_.procedures[procedure_index] = std::move(discovered);
-              component_changed = true;
-            }
+            component_changed =
+                rediscover(procedure_index) || component_changed;
           }
         } while (component_changed);
       }
@@ -714,13 +807,26 @@ private:
     active.pop_back();
   }
 
-  [[nodiscard]] std::vector<std::vector<std::string>> procedure_paths(
-      TypeId type, bool follow_pointer = false) const {
+  [[nodiscard]] std::vector<std::vector<std::string>> compute_procedure_paths(
+      TypeId type, bool follow_pointer) const {
     std::vector<std::vector<std::string>> result;
     std::vector<std::string> path;
     std::vector<TypeId> active;
     collect_procedure_paths(type, path, active, follow_pointer, result);
     return result;
+  }
+
+  [[nodiscard]] const std::vector<std::vector<std::string>> &procedure_paths(
+      TypeId type, bool follow_pointer = false) const {
+    const auto *cache = follow_pointer
+        ? pointer_procedure_paths_
+        : procedure_paths_;
+    if (type.is_valid() && cache != nullptr && type.value < cache->size()) {
+      return (*cache)[type.value];
+    }
+    procedure_path_scratch_ =
+        compute_procedure_paths(type, follow_pointer);
+    return procedure_path_scratch_;
   }
 
   [[nodiscard]] std::optional<std::string> member_name(
@@ -984,7 +1090,7 @@ private:
   }
 
   [[nodiscard]] bool has_direct_summary(SymbolId symbol) const {
-    return direct_.find(symbol) != nullptr;
+    return direct_summary(symbol) != nullptr;
   }
 
   // Source rows occupy the stable prefix installed before native and imported
@@ -992,10 +1098,8 @@ private:
   // rows means "not discovered yet"; absence on a terminal row is already a
   // final unknown contract.
   [[nodiscard]] bool has_source_body(SymbolId symbol) const {
-    for (std::size_t index = 0; index < source_procedure_count_; ++index) {
-      if (direct_.procedures[index].procedure == symbol) return true;
-    }
-    return false;
+    const std::size_t row = direct_row(symbol);
+    return row < source_procedure_count_;
   }
 
   [[nodiscard]] const NativeBinding *native_binding(SymbolId symbol) const {
@@ -1247,7 +1351,17 @@ private:
       }
     };
 
-    if (const DirectProcedureEffectSummary *summary = direct_.find(callee)) {
+    if (const DirectProcedureEffectSummary *summary = direct_summary(callee)) {
+      if (has_source_body(callee)) {
+        const bool carries_procedure_value = std::any_of(
+            arguments.begin(), arguments.end(),
+            [](const ProcedureArgumentSummary &argument) {
+              return !argument.fields.empty();
+            });
+        if (carries_procedure_value && current_ != nullptr) {
+          add_call(current_->flow_dependencies, callee);
+        }
+      }
       for (const ProcedureFieldWriteSummary &write : summary->field_writes) {
         apply(
             write.parameter,
@@ -1312,7 +1426,10 @@ private:
       return result;
     }
     if (const DirectProcedureEffectSummary *summary =
-            direct_.find(callee.symbol)) {
+            direct_summary(callee.symbol)) {
+      if (has_source_body(callee.symbol) && current_ != nullptr) {
+        add_call(current_->flow_dependencies, callee.symbol);
+      }
       for (const ProcedureFieldValueSummary &returned :
            summary->return_values) {
         if (returned.path == path) {
@@ -1337,6 +1454,10 @@ private:
         // The dependency SCC has not yet published this local path. Bottom is
         // intentionally distinct from unknown: a later component pass may
         // still discover an exact finite procedure value.
+        if (current_ != nullptr) {
+          add_call(
+              current_->unresolved_return_dependencies, callee.symbol);
+        }
         return result;
       }
       result.unknown = true;
@@ -1836,7 +1957,7 @@ private:
            {}}) || changed;
     }
     composition_stack_.push_back({callee, arguments});
-    if (const ProcedureEffectSummary *summary = closed_.find(callee)) {
+    if (const ProcedureEffectSummary *summary = closed_summary(callee)) {
       // Copy the row before adding to destination: recursive calls may make
       // summary and destination the same vector.
       const std::vector<SemanticEffect> effects = summary->effects;
@@ -2120,6 +2241,38 @@ private:
     }
   }
 
+  // Direct workers read the prepared package rows while closure redirects the
+  // same lookup operation to its one mutable fixed-point copy.
+  [[nodiscard]] const DirectEffectSummaryResult &direct_rows() const {
+    assert(direct_lookup_ != nullptr);
+    return *direct_lookup_;
+  }
+
+  [[nodiscard]] std::size_t direct_row(SymbolId symbol) const {
+    const std::size_t absent = direct_rows().procedures.size();
+    if (!symbol.is_valid() || row_by_symbol_ == nullptr ||
+        symbol.value >= row_by_symbol_->size()) {
+      return absent;
+    }
+    return (*row_by_symbol_)[symbol.value];
+  }
+
+  [[nodiscard]] const DirectProcedureEffectSummary *direct_summary(
+      SymbolId symbol) const {
+    const std::size_t row = direct_row(symbol);
+    return row < direct_rows().procedures.size()
+        ? &direct_rows().procedures[row]
+        : nullptr;
+  }
+
+  [[nodiscard]] const ProcedureEffectSummary *closed_summary(
+      SymbolId symbol) const {
+    const std::size_t row = direct_row(symbol);
+    return row < closed_.procedures.size()
+        ? &closed_.procedures[row]
+        : nullptr;
+  }
+
   const SemanticPackage &package_;
   std::span<const HirProgram *const> programs_;
   const ImportedProcedureContracts &imported_;
@@ -2127,6 +2280,13 @@ private:
   const TargetProfile *target_ = nullptr;
   std::span<const ForeignProviderAudit> provider_audits_;
   DirectEffectSummaryResult direct_;
+  const DirectEffectSummaryResult *direct_lookup_ = nullptr;
+  const std::vector<std::size_t> *row_by_symbol_ = nullptr;
+  const std::vector<std::vector<std::vector<std::string>>> *procedure_paths_ =
+      nullptr;
+  const std::vector<std::vector<std::vector<std::string>>> *
+      pointer_procedure_paths_ = nullptr;
+  mutable std::vector<std::vector<std::string>> procedure_path_scratch_;
   EffectSummaryResult closed_;
   // Source rows are a prefix of direct_.procedures. local_returns_complete_
   // changes only after concrete target/edge discovery reaches its fixed point;
@@ -2202,7 +2362,7 @@ const CallSiteEffectSummary *EffectSummaryResult::find_call_site(
   return nullptr;
 }
 
-DirectEffectSummaryResult collect_direct_procedure_effects(
+ProcedureEffectAnalysis prepare_procedure_effect_analysis(
     const SemanticPackage &package,
     std::span<const ProcedureBodyHirResult> procedures,
     std::span<const std::size_t> selected_indices,
@@ -2211,43 +2371,55 @@ DirectEffectSummaryResult collect_direct_procedure_effects(
     std::span<const ForeignProviderAudit> provider_audits) {
   std::vector<const HirProgram *> programs;
   programs.reserve(selected_indices.size());
-  std::size_t previous = 0;
-  bool has_previous = false;
-  for (std::size_t index : selected_indices) {
+  for (std::size_t position = 0; position < selected_indices.size();
+       ++position) {
+    const std::size_t index = selected_indices[position];
     assert(index < procedures.size());
-    assert(!has_previous || previous < index);
-    previous = index;
-    has_previous = true;
+    assert(position == 0 || selected_indices[position - 1] < index);
     programs.push_back(&procedures[index].program);
   }
   EffectCollector collector(
       package, programs, imported, target, provider_audits);
-  return collector.collect_direct();
+  return collector.prepare_analysis();
 }
 
 DirectProcedureEffectSummary collect_direct_procedure_effect(
+    const ProcedureEffectAnalysis &analysis,
+    std::size_t selected_position) {
+  EffectCollector collector(analysis);
+  return collector.collect_direct_at(
+      analysis.source_procedures, selected_position);
+}
+
+EffectSummaryResult close_procedure_effects(
+    const ProcedureEffectAnalysis &analysis,
+    const DirectEffectSummaryResult &direct) {
+  EffectCollector collector(analysis);
+  return collector.close(analysis.source_procedures, direct);
+}
+
+DirectEffectSummaryResult collect_direct_procedure_effects(
     const SemanticPackage &package,
     std::span<const ProcedureBodyHirResult> procedures,
     std::span<const std::size_t> selected_indices,
-    std::size_t selected_position,
     const ImportedProcedureContracts &imported,
     const TargetProfile *target,
     std::span<const ForeignProviderAudit> provider_audits) {
-  std::vector<const HirProgram *> programs;
-  programs.reserve(selected_indices.size());
-  std::size_t previous = 0;
-  bool has_previous = false;
-  for (std::size_t index : selected_indices) {
-    assert(index < procedures.size());
-    assert(!has_previous || previous < index);
-    previous = index;
-    has_previous = true;
-    programs.push_back(&procedures[index].program);
+  const ProcedureEffectAnalysis analysis = prepare_procedure_effect_analysis(
+      package,
+      procedures,
+      selected_indices,
+      imported,
+      target,
+      provider_audits);
+  DirectEffectSummaryResult result;
+  result.procedures.reserve(analysis.source_procedures.size());
+  for (std::size_t position = 0;
+       position < analysis.source_procedures.size(); ++position) {
+    result.procedures.push_back(
+        collect_direct_procedure_effect(analysis, position));
   }
-  assert(selected_position < programs.size());
-  EffectCollector collector(
-      package, programs, imported, target, provider_audits);
-  return collector.collect_direct_at(selected_position);
+  return result;
 }
 
 DirectEffectSummaryResult collect_direct_procedure_effects(
@@ -2256,14 +2428,17 @@ DirectEffectSummaryResult collect_direct_procedure_effects(
     const ImportedProcedureContracts &imported,
     const TargetProfile *target,
     std::span<const ForeignProviderAudit> provider_audits) {
-  std::vector<const HirProgram *> programs;
-  programs.reserve(procedures.size());
-  for (const ProcedureBodyHirResult &procedure : procedures) {
-    programs.push_back(&procedure.program);
+  std::vector<std::size_t> selected_indices(procedures.size());
+  for (std::size_t index = 0; index < selected_indices.size(); ++index) {
+    selected_indices[index] = index;
   }
-  EffectCollector collector(
-      package, programs, imported, target, provider_audits);
-  return collector.collect_direct();
+  return collect_direct_procedure_effects(
+      package,
+      procedures,
+      selected_indices,
+      imported,
+      target,
+      provider_audits);
 }
 
 EffectSummaryResult close_procedure_effects(
@@ -2274,20 +2449,14 @@ EffectSummaryResult close_procedure_effects(
     const ImportedProcedureContracts &imported,
     const TargetProfile *target,
     std::span<const ForeignProviderAudit> provider_audits) {
-  std::vector<const HirProgram *> programs;
-  programs.reserve(selected_indices.size());
-  std::size_t previous = 0;
-  bool has_previous = false;
-  for (std::size_t index : selected_indices) {
-    assert(index < procedures.size());
-    assert(!has_previous || previous < index);
-    previous = index;
-    has_previous = true;
-    programs.push_back(&procedures[index].program);
-  }
-  EffectCollector collector(
-      package, programs, imported, target, provider_audits);
-  return collector.close(direct);
+  const ProcedureEffectAnalysis analysis = prepare_procedure_effect_analysis(
+      package,
+      procedures,
+      selected_indices,
+      imported,
+      target,
+      provider_audits);
+  return close_procedure_effects(analysis, direct);
 }
 
 EffectSummaryResult close_procedure_effects(
