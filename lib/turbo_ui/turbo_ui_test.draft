@@ -215,9 +215,10 @@ test_window_order_drag_and_resize :: proc(test: ^testing.Test) {
     testing.expect(test, window_order(windows[:], order[:]) == 2)
     testing.expect(test, order[0] == 0 && order[1] == 1)
 
-    // Press the uncovered part of window 30's title, then drag it four cells.
+    // Press the uncovered title text rather than the new close box, then drag
+    // it four cells. Visible frame controls must not steal ordinary dragging.
     begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
-        position = Point{column = 2, row = 1},
+        position = Point{column = 6, row = 1},
         action = .press,
         button = .primary,
         primary_down = true,
@@ -229,7 +230,7 @@ test_window_order_drag_and_resize :: proc(test: ^testing.Test) {
     testing.expect(test, windows[0].z > windows[1].z)
 
     begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
-        position = Point{column = 6, row = 3},
+        position = Point{column = 10, row = 3},
         action = .move,
         primary_down = true,
     }), theme, windows[:])
@@ -240,7 +241,7 @@ test_window_order_drag_and_resize :: proc(test: ^testing.Test) {
     testing.expect(test, windows[0].bounds.row == 3)
 
     begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
-        position = Point{column = 6, row = 3},
+        position = Point{column = 10, row = 3},
         action = .release,
         button = .primary,
     }), theme, windows[:])
@@ -249,4 +250,298 @@ test_window_order_drag_and_resize :: proc(test: ^testing.Test) {
     end_frame(&state)
     testing.expect(test, state.active_kind == .none)
     tui.surface_destroy(&surface)
+}
+
+// test_window_chrome_and_modality fixes the externally visible desktop policy:
+// close requests do not destroy caller state, zoom restores its old rectangle,
+// the resize handle changes extents, and a modal dialog owns the input scope.
+test_window_chrome_and_modality :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 60, 24)
+    defer tui.surface_destroy(&surface)
+    state: State
+    theme := turbo_theme()
+    windows := [2]Window_State{
+        window_init(40, Rect{column = 2, row = 2, width = 24, height = 9}, 1),
+        dialog_window_init(41, Rect{column = 14, row = 7, width = 25, height = 8}, 2),
+    }
+    windows[1].visible = false
+
+    // Close is a completed press/release request; visibility remains entirely
+    // under the caller's policy.
+    close_point := Point{column = 3, row = 2}
+    begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = close_point, action = .press, button = .primary,
+        primary_down = true,
+    }), theme, windows[:])
+    frame := begin_window(&state, &windows[0], "Main")
+    end_window(&state, frame)
+    end_frame(&state)
+    begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = close_point, action = .release, button = .primary,
+    }), theme, windows[:])
+    frame = begin_window(&state, &windows[0], "Main")
+    testing.expect(test, frame.close_requested)
+    testing.expect(test, windows[0].visible)
+    end_window(&state, frame)
+    end_frame(&state)
+
+    resize_point := Point{
+        column = rect_right(windows[0].bounds) - 1,
+        row = rect_bottom(windows[0].bounds) - 1,
+    }
+    begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = resize_point, action = .press, button = .primary,
+        primary_down = true,
+    }), theme, windows[:])
+    frame = begin_window(&state, &windows[0], "Main")
+    end_window(&state, frame)
+    end_frame(&state)
+    begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = resize_point.column + 3, row = resize_point.row + 2},
+        action = .move, primary_down = true,
+    }), theme, windows[:])
+    frame = begin_window(&state, &windows[0], "Main")
+    end_window(&state, frame)
+    end_frame(&state)
+    testing.expect(test, windows[0].bounds.width == 27)
+    testing.expect(test, windows[0].bounds.height == 11)
+    begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = resize_point.column + 3, row = resize_point.row + 2},
+        action = .release, button = .primary,
+    }), theme, windows[:])
+    frame = begin_window(&state, &windows[0], "Main")
+    end_window(&state, frame)
+    end_frame(&state)
+
+    // The upper-right chrome toggles zoom and preserves an exact restore rect.
+    original := windows[0].bounds
+    zoom_point := Point{
+        column = rect_right(windows[0].bounds) - 2,
+        row = windows[0].bounds.row,
+    }
+    begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = zoom_point, action = .press, button = .primary,
+        primary_down = true,
+    }), theme, windows[:])
+    frame = begin_window(&state, &windows[0], "Main")
+    end_window(&state, frame)
+    end_frame(&state)
+    begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = zoom_point, action = .release, button = .primary,
+    }), theme, windows[:])
+    frame = begin_window(&state, &windows[0], "Main")
+    end_window(&state, frame)
+    end_frame(&state)
+    testing.expect(test, windows[0].zoomed)
+    testing.expect(test, rect_equal(windows[0].restore_bounds, original))
+
+    windows[1].visible = true
+    begin_window_frame(
+        &state,
+        &surface,
+        mouse_event(Mouse_Event{
+            position = Point{column = 4, row = 4},
+            action = .press,
+            button = .primary,
+            primary_down = true,
+        }),
+        theme,
+        windows[:],
+        Rect{row = 1, width = 60, height = 22},
+        windows[1].id,
+    )
+    testing.expect(test, state.active_window == windows[1].id)
+    testing.expect(test, state.input_scope == windows[1].id)
+    testing.expect(test, state.target_window == windows[1].id)
+    end_frame(&state)
+}
+
+// submit_test_menu is the deterministic two-pass spelling used by the menu
+// interaction test. It mirrors a real app: title before content, popup after.
+submit_test_menu :: proc(
+    state: ^State,
+    menu: ^Menu_State,
+    checked: ^bool,
+) -> bool {
+    menu_bar(state, menu, Rect{width = 40, height = 1})
+    menu_title(
+        state, menu, 50, 51,
+        Rect{column = 1, width = 8, height = 1},
+        "File", cast[u8]('f'),
+        Rect{column = 1, row = 1, width = 22, height = 6},
+    )
+    menu_bar_end(state, menu)
+    popup := begin_menu(
+        state, menu, 50, 51,
+        Rect{column = 1, row = 1, width = 22, height = 6},
+    )
+    menu_action(state, menu, &popup, 52, "Open", "Ctrl-O")
+    menu_separator(state, &popup)
+    menu_action(state, menu, &popup, 53, "Disabled", "", false)
+    changed := menu_check(state, menu, &popup, 54, "Checked", checked)
+    end_menu(state, menu, popup)
+    return changed
+}
+
+// test_menu_popup_navigation proves title access, separator/disabled skipping,
+// checked actions, and popup dismissal without any retained item collection.
+test_menu_popup_navigation :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 40, 14)
+    defer tui.surface_destroy(&surface)
+    state: State
+    menu: Menu_State
+    checked := false
+    theme := turbo_theme()
+
+    begin_frame(&state, &surface, key_event(Key_Event{
+        code = .character, byte_value = cast[u8]('f'), alt = true,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, popup_is_open(&state, 51))
+
+    // One Down moves from row 0 past separator row 1 and disabled row 2 to the
+    // checked action on row 3.
+    begin_frame(&state, &surface, key_event(Key_Event{code = .down}), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, menu.highlighted == 3)
+
+    begin_frame(&state, &surface, key_event(Key_Event{code = .enter}), theme)
+    changed := submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, changed && checked)
+    testing.expect(test, state.popup_id == No_Widget)
+
+    begin_frame(&state, &surface, key_event(Key_Event{
+        code = .character, byte_value = cast[u8]('f'), alt = true,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 30, row = 10},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, state.popup_id == No_Widget)
+}
+
+// test_utf8_text_box proves byte-stream assembly, grapheme deletion, bounded
+// storage, and immutable-text initialization through only public operations.
+test_utf8_text_box :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 30, 6)
+    defer tui.surface_destroy(&surface)
+    state: State
+    field: Text_Box_State
+    storage: [8]u8
+    testing.expect(test, text_box_set_text(&field, storage[:], "A"))
+    state.focused_id = 60
+    theme := turbo_theme()
+    bounds := Rect{column = 1, row = 1, width = 12, height = 1}
+
+    begin_frame(&state, &surface, key_event(Key_Event{
+        code = .character, byte_value = 0xc3,
+    }), theme)
+    first := text_box(&state, 60, bounds, &field, storage[:])
+    end_frame(&state)
+    testing.expect(test, !first.changed && field.pending_length == 1)
+
+    begin_frame(&state, &surface, key_event(Key_Event{
+        code = .character, byte_value = 0xa9,
+    }), theme)
+    second := text_box(&state, 60, bounds, &field, storage[:])
+    end_frame(&state)
+    testing.expect(test, second.changed && field.length == 3)
+
+    begin_frame(&state, &surface, key_event(Key_Event{code = .backspace}), theme)
+    third := text_box(&state, 60, bounds, &field, storage[:])
+    end_frame(&state)
+    testing.expect(test, third.changed && field.length == 1 && field.cursor == 1)
+
+    begin_frame(&state, &surface, text_event("界"), theme)
+    fourth := text_box(&state, 60, bounds, &field, storage[:])
+    end_frame(&state)
+    testing.expect(test, fourth.changed && field.length == 4)
+}
+
+// submit_test_combo keeps the field/popup draw order identical across events.
+submit_test_combo :: proc(
+    state: ^State,
+    combo: ^Combo_Box_State,
+    selected: ^usize,
+) -> bool {
+    items := [3]string{"one", "two", "three"}
+    combo_box(
+        state, combo, 70, 71,
+        Rect{column = 2, row = 2, width = 14, height = 1},
+        items[:], selected,
+    )
+    return combo_box_popup(state, combo, 71, items[:], selected)
+}
+
+// test_combo_and_dialog_buttons proves the shared popup selection path and the
+// default/cancel roles used by modal dialogs.
+test_combo_and_dialog_buttons :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 32, 12)
+    defer tui.surface_destroy(&surface)
+    state: State
+    combo: Combo_Box_State
+    selected: usize
+    state.focused_id = 70
+    theme := turbo_theme()
+
+    begin_frame(&state, &surface, key_event(Key_Event{code = .enter}), theme)
+    submit_test_combo(&state, &combo, &selected)
+    end_frame(&state)
+    testing.expect(test, popup_is_open(&state, 71))
+
+    begin_frame(&state, &surface, key_event(Key_Event{code = .down}), theme)
+    submit_test_combo(&state, &combo, &selected)
+    end_frame(&state)
+    begin_frame(&state, &surface, key_event(Key_Event{code = .enter}), theme)
+    changed := submit_test_combo(&state, &combo, &selected)
+    end_frame(&state)
+    testing.expect(test, changed && selected == 1)
+    testing.expect(test, state.popup_id == No_Widget)
+
+    begin_frame(&state, &surface, key_event(Key_Event{code = .enter}), theme)
+    submit_test_combo(&state, &combo, &selected)
+    end_frame(&state)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 3, row = 6},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    submit_test_combo(&state, &combo, &selected)
+    end_frame(&state)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 3, row = 6},
+        action = .release,
+        button = .primary,
+    }), theme)
+    changed = submit_test_combo(&state, &combo, &selected)
+    end_frame(&state)
+    testing.expect(test, changed && selected == 2)
+
+    state.focused_id = 80
+    begin_frame(&state, &surface, key_event(Key_Event{code = .escape}), theme)
+    button(&state, 80, Rect{column = 1, row = 8, width = 8, height = 1}, "OK")
+    cancelled := button(
+        &state,
+        81,
+        Rect{column = 10, row = 8, width = 10, height = 1},
+        "Cancel",
+        true,
+        .cancel_action,
+    )
+    end_frame(&state)
+    testing.expect(test, cancelled)
 }

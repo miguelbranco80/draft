@@ -2,7 +2,8 @@
 
 `turbo_editor_app` is the reusable Draft application shell shared by the
 standalone editor example and Turbo Draft. It owns buffers, terminal resource
-lifetime, the event loop, immediate-mode windows, and Build/Run interaction.
+lifetime, the event loop, File/Edit/Project/Window menus, modal search/quit
+dialogs, managed tool windows, and Build/Run interaction.
 
 Its optional `draft_compiler_api.Host_Api` is a borrowed procedure table rather
 than a compiler dependency. A zero table produces the standalone editor;

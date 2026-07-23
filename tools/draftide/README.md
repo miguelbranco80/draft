@@ -38,11 +38,15 @@ it discovers packages containing `main` and F12 switches among those executable
 roots. The explicitly selected root may also be a library for focused editing,
 although it is not runnable.
 
-F5 checks, builds, and runs the currently selected root. F6 opens Project, with
+The top row contains real File, Edit, Project, and Window drop-down menus; use
+Alt-F/Alt-E/Alt-P/Alt-W as well as the mouse. F5 checks, builds, and runs the
+currently selected root. F6 opens Project, with
 a selectable run-root list above the package/dependency graph. F7-F11 open
 declaration, reference, effect, denial, and diagnostic windows. Those semantic
 sections are currently read-only reports rather than source-jump navigation.
-F12 changes root and Shift-F12 changes target. Editing, selection, search,
+F12 changes root and Shift-F12 changes target. Alt-F3 closes the active tool
+window, Ctrl-F5 enters keyboard move/size mode, and Ctrl-F6 selects the next
+window. Editing, selection, search,
 save, undo/redo, mouse input, and dirty-file conflict rules are inherited from
 `lib/turbo_editor_app` and `lib/turbo_editor`.
 

@@ -126,7 +126,14 @@ from existing compiler products:
 
 These are views, not another parser, indexer, or semantic engine. The Draft UI
 copies them into its own bounded storage and presents independent movable,
-resizable windows. F6 opens Project: its top list selects a runnable root by
+resizable windows. `lib/turbo_ui` distinguishes ordinary zoomable windows,
+non-zooming tool windows, fixed-size dialogs, and topmost popup scopes through
+plain capability records and balanced immediate-mode calls. Close is a request
+returned to Draft application policy; modal dialogs exclusively route mouse,
+keyboard, and focus; drop-down menus and combo lists share one popup capture.
+No retained widget tree, callback table, or editor pointer crosses that layer.
+
+F6 opens Project: its top list selects a runnable root by
 mouse or Enter and its lower section displays the checked package/dependency
 graph. F7 through F11 toggle declaration, reference/call, effect, denial, and
 diagnostic views. F12 remains a quick root cycle and Shift-F12 cycles targets.

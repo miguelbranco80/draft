@@ -22,6 +22,11 @@ pub Theme :: struct {
     selected: tui.Style,
     menu: tui.Style,
     menu_selected: tui.Style,
+    menu_disabled: tui.Style,
+    menu_shortcut: tui.Style,
+    input: tui.Style,
+    input_focused: tui.Style,
+    input_cursor: tui.Style,
     dialog: tui.Style,
     status: tui.Style,
 }
@@ -49,6 +54,11 @@ pub turbo_theme :: proc() -> Theme {
         selected = style(0, 3, true),
         menu = style(0, 7),
         menu_selected = style(15, 4, true),
+        menu_disabled = style(8, 7),
+        menu_shortcut = style(8, 7),
+        input = style(0, 7),
+        input_focused = style(15, 0),
+        input_cursor = style(0, 15, true),
         dialog = style(15, 1),
         status = style(0, 7),
     }

@@ -413,7 +413,7 @@ pub edit :: proc(
             state^.event_handled = true
         }
     }
-    if state^.focused_id == id && !state^.event_handled {
+    if turbo_ui.has_focus(state, id) && !state^.event_handled {
         if state^.event.kind == .key {
             result = apply_key(buffer, state^.event.key)
             state^.event_handled = true

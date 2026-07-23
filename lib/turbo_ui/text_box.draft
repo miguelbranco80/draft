@@ -1,0 +1,444 @@
+// Text boxes edit one caller-owned fixed byte buffer as valid single-line
+// UTF-8. Text_Box_State owns only cursor/scroll and at most one incomplete
+// terminal UTF-8 sequence; it never allocates or retains the supplied slice.
+// Editing is explicit and bounded, so applications choose storage lifetime and
+// can distinguish a full field from a successful change.
+package turbo_ui
+
+import core/unicode
+import core/utf8
+
+pub Text_Box_State :: struct {
+    length: usize,
+    cursor: usize,
+    scroll: usize,
+    pending: [4]u8,
+    pending_length: usize,
+}
+
+pub Text_Box_Result :: struct {
+    changed: bool,
+    submitted: bool,
+    full: bool,
+}
+
+single_line_text :: proc(bytes: []u8) -> bool {
+    if !utf8.valid_bytes(bytes) {
+        return false
+    }
+    for byte in bytes {
+        if byte < 32 || byte == 127 {
+            return false
+        }
+    }
+    return true
+}
+
+// text_box_set replaces the complete field only when source is valid
+// single-line UTF-8 and fits. Failure preserves both storage and state.
+pub text_box_set :: proc(
+    field: ^Text_Box_State,
+    storage: []u8,
+    source: []u8,
+) -> bool {
+    if len(source) > len(storage) || !single_line_text(source) {
+        return false
+    }
+    for index: usize = 0; index < len(source); index += 1 {
+        storage[index] = source[index]
+    }
+    field^.length = len(source)
+    field^.cursor = len(source)
+    field^.scroll = 0
+    field^.pending_length = 0
+    return true
+}
+
+// text_box_set_text is the immutable-string counterpart. It exists because a
+// Draft string is a read-only byte sequence and must not be cast to []u8 merely
+// to share the mutable-slice spelling above.
+pub text_box_set_text :: proc(
+    field: ^Text_Box_State,
+    storage: []u8,
+    source: string,
+) -> bool {
+    if len(source) > len(storage) || !utf8.valid(source) {
+        return false
+    }
+    for index: usize = 0; index < len(source); index += 1 {
+        byte := source[index]
+        if byte < 32 || byte == 127 {
+            return false
+        }
+    }
+    for index: usize = 0; index < len(source); index += 1 {
+        storage[index] = source[index]
+    }
+    field^.length = len(source)
+    field^.cursor = len(source)
+    field^.scroll = 0
+    field^.pending_length = 0
+    return true
+}
+
+pub text_box_bytes :: proc(
+    field: ^Text_Box_State,
+    storage: []u8,
+) -> []u8 {
+    assert(field^.length <= len(storage), "turbo_ui text box length exceeds storage")
+    return storage[:field^.length]
+}
+
+insert_bytes :: proc(
+    field: ^Text_Box_State,
+    storage: []u8,
+    source: []u8,
+) -> bool {
+    if field^.length + len(source) > len(storage) {
+        return false
+    }
+    index := field^.length
+    for index > field^.cursor {
+        storage[index + len(source) - 1] = storage[index - 1]
+        index -= 1
+    }
+    for source_index: usize = 0; source_index < len(source); source_index += 1 {
+        storage[field^.cursor + source_index] = source[source_index]
+    }
+    field^.length += len(source)
+    field^.cursor += len(source)
+    return true
+}
+
+erase_range :: proc(
+    field: ^Text_Box_State,
+    storage: []u8,
+    begin, end: usize,
+) {
+    assert(begin <= end && end <= field^.length,
+        "turbo_ui text box erase range is invalid")
+    source := end
+    destination := begin
+    for source < field^.length {
+        storage[destination] = storage[source]
+        destination += 1
+        source += 1
+    }
+    field^.length -= end - begin
+    field^.cursor = begin
+}
+
+previous_grapheme :: proc(bytes: []u8, cursor: usize) -> usize {
+    if cursor == 0 {
+        return 0
+    }
+    previous: usize
+    offset: usize
+    for offset < cursor {
+        (end, _, error) := unicode.next_grapheme_bytes(bytes, offset)
+        if error != .none || end >= cursor {
+            return previous
+        }
+        previous = end
+        offset = end
+    }
+    return previous
+}
+
+next_grapheme :: proc(bytes: []u8, cursor: usize) -> usize {
+    if cursor >= len(bytes) {
+        return len(bytes)
+    }
+    (end, _, error) := unicode.next_grapheme_bytes(bytes, cursor)
+    if error != .none {
+        return cursor
+    }
+    return end
+}
+
+grapheme_columns :: proc(bytes: []u8, begin, end: usize) -> usize {
+    column: usize
+    offset := begin
+    for offset < end {
+        (next, width, error) := unicode.next_grapheme_bytes(bytes, offset)
+        if error != .none || next > end {
+            break
+        }
+        column = saturated_add(column, width)
+        offset = next
+    }
+    return column
+}
+
+cursor_at_column :: proc(bytes: []u8, start, desired: usize) -> usize {
+    offset := start
+    column: usize
+    for offset < len(bytes) {
+        (next, width, error) := unicode.next_grapheme_bytes(bytes, offset)
+        if error != .none || column + width > desired {
+            break
+        }
+        column += width
+        offset = next
+    }
+    return offset
+}
+
+expected_utf8_length :: proc(first: u8) -> usize {
+    if first >= 0xc2 && first <= 0xdf {
+        return 2
+    }
+    if first >= 0xe0 && first <= 0xef {
+        return 3
+    }
+    if first >= 0xf0 && first <= 0xf4 {
+        return 4
+    }
+    return 0
+}
+
+// accept_character buffers a raw terminal UTF-8 sequence until complete. This
+// avoids exposing a temporarily invalid field when the terminal adapter emits
+// one byte event at a time. Invalid leading/continuation bytes are discarded.
+accept_character :: proc(
+    field: ^Text_Box_State,
+    storage: []u8,
+    byte: u8,
+) -> (bool, bool) {
+    if byte >= 32 && byte < 127 && field^.pending_length == 0 {
+        one := [1]u8{byte}
+        inserted := insert_bytes(field, storage, one[:])
+        return (inserted, !inserted)
+    }
+    if field^.pending_length == 0 {
+        expected := expected_utf8_length(byte)
+        if expected == 0 {
+            return (false, false)
+        }
+        field^.pending[0] = byte
+        field^.pending_length = 1
+        return (false, false)
+    }
+    if byte < 0x80 || byte > 0xbf {
+        field^.pending_length = 0
+        return accept_character(field, storage, byte)
+    }
+    field^.pending[field^.pending_length] = byte
+    field^.pending_length += 1
+    expected := expected_utf8_length(field^.pending[0])
+    if field^.pending_length < expected {
+        return (false, false)
+    }
+    pending := field^.pending[:field^.pending_length]
+    field^.pending_length = 0
+    if !utf8.valid_bytes(pending) {
+        return (false, false)
+    }
+    inserted := insert_bytes(field, storage, pending)
+    return (inserted, !inserted)
+}
+
+ensure_text_cursor_visible :: proc(
+    field: ^Text_Box_State,
+    bytes: []u8,
+    width: usize,
+) {
+    if field^.cursor < field^.scroll {
+        field^.scroll = field^.cursor
+    }
+    if width == 0 {
+        field^.scroll = field^.cursor
+        return
+    }
+    for grapheme_columns(bytes, field^.scroll, field^.cursor) >= width &&
+        field^.scroll < field^.cursor {
+        field^.scroll = next_grapheme(bytes, field^.scroll)
+    }
+}
+
+paint_text_box :: proc(
+    state: ^State,
+    bounds: Rect,
+    field: ^Text_Box_State,
+    storage: []u8,
+    focused: bool,
+    enabled: bool,
+) -> bool {
+    style_value := state^.theme.input
+    if !enabled {
+        style_value = state^.theme.disabled
+    } else if focused {
+        style_value = state^.theme.input_focused
+    }
+    if !fill_rect(state^.surface, state^.clip, bounds, ' ', style_value) {
+        return false
+    }
+    if bounds.width == 0 || bounds.height == 0 {
+        return true
+    }
+    put_clipped(
+        state^.surface,
+        state^.clip,
+        Point{column = bounds.column, row = bounds.row},
+        '[',
+        style_value,
+    )
+    if bounds.width > 1 {
+        put_clipped(
+            state^.surface,
+            state^.clip,
+            Point{column = rect_right(bounds) - 1, row = bounds.row},
+            ']',
+            style_value,
+        )
+    }
+    if bounds.width <= 2 {
+        return true
+    }
+    content := Rect{
+        column = bounds.column + 1,
+        row = bounds.row,
+        width = bounds.width - 2,
+        height = 1,
+    }
+    bytes := storage[:field^.length]
+    write_clipped_bytes(
+        state^.surface,
+        intersect(state^.clip, content),
+        Point{column = content.column, row = content.row},
+        bytes[field^.scroll:],
+        style_value,
+    )
+    if focused {
+        cursor_column := content.column +
+            grapheme_columns(bytes, field^.scroll, field^.cursor)
+        if cursor_column < rect_right(content) {
+            if field^.cursor < field^.length {
+                end := next_grapheme(bytes, field^.cursor)
+                write_clipped_bytes(
+                    state^.surface,
+                    intersect(state^.clip, content),
+                    Point{column = cursor_column, row = content.row},
+                    storage[field^.cursor:end],
+                    state^.theme.input_cursor,
+                )
+            } else {
+                put_clipped(
+                    state^.surface,
+                    intersect(state^.clip, content),
+                    Point{column = cursor_column, row = content.row},
+                    ' ',
+                    state^.theme.input_cursor,
+                )
+            }
+        }
+    }
+    return true
+}
+
+// text_box edits one line and returns per-frame facts. Enter is consumed as a
+// submit request; Tab remains available to end_frame focus traversal; Escape
+// remains available to a dialog cancel button or popup owner.
+pub text_box :: proc(
+    state: ^State,
+    id: Widget_Id,
+    bounds: Rect,
+    field: ^Text_Box_State,
+    storage: []u8,
+    enabled: bool = true,
+) -> Text_Box_Result {
+    assert(field^.length <= len(storage), "turbo_ui text box length exceeds storage")
+    assert(field^.cursor <= field^.length, "turbo_ui text box cursor exceeds text")
+    assert(single_line_text(storage[:field^.length]),
+        "turbo_ui text box contains invalid single-line UTF-8")
+    result: Text_Box_Result
+    focused := enabled && has_focus(state, id)
+    interaction: Interaction
+    if enabled {
+        interaction = focus_area(state, id, bounds)
+    }
+    if enabled && interaction.activated && bounds.width > 2 {
+        point := state^.event.mouse.position
+        desired: usize
+        if point.column > bounds.column + 1 {
+            desired = point.column - bounds.column - 1
+        }
+        field^.cursor = cursor_at_column(
+            storage[:field^.length],
+            field^.scroll,
+            desired,
+        )
+        field^.pending_length = 0
+        focused = true
+    }
+
+    if focused && !state^.event_handled {
+        if state^.event.kind == .text {
+            source := state^.event.text
+            if utf8.valid(source) {
+                for index: usize = 0; index < len(source); index += 1 {
+                    byte := source[index]
+                    if byte < 32 || byte == 127 {
+                        continue
+                    }
+                    (changed, full) := accept_character(field, storage, byte)
+                    result.changed = result.changed || changed
+                    result.full = result.full || full
+                }
+            }
+            state^.event_handled = true
+        } else if state^.event.kind == .key {
+            key := state^.event.key
+            bytes := storage[:field^.length]
+            if key.code == .character && !key.control && !key.alt {
+                (changed, full) := accept_character(
+                    field,
+                    storage,
+                    key.byte_value,
+                )
+                result.changed = changed
+                result.full = full
+                state^.event_handled = true
+            } else if key.code == .left {
+                field^.cursor = previous_grapheme(bytes, field^.cursor)
+                field^.pending_length = 0
+                state^.event_handled = true
+            } else if key.code == .right {
+                field^.cursor = next_grapheme(bytes, field^.cursor)
+                field^.pending_length = 0
+                state^.event_handled = true
+            } else if key.code == .home {
+                field^.cursor = 0
+                field^.pending_length = 0
+                state^.event_handled = true
+            } else if key.code == .end {
+                field^.cursor = field^.length
+                field^.pending_length = 0
+                state^.event_handled = true
+            } else if key.code == .backspace && field^.cursor != 0 {
+                begin := previous_grapheme(bytes, field^.cursor)
+                erase_range(field, storage, begin, field^.cursor)
+                result.changed = true
+                field^.pending_length = 0
+                state^.event_handled = true
+            } else if key.code == .delete && field^.cursor < field^.length {
+                end := next_grapheme(bytes, field^.cursor)
+                erase_range(field, storage, field^.cursor, end)
+                result.changed = true
+                field^.pending_length = 0
+                state^.event_handled = true
+            } else if key.code == .enter {
+                result.submitted = true
+                field^.pending_length = 0
+                state^.event_handled = true
+            }
+        }
+    }
+    ensure_text_cursor_visible(
+        field,
+        storage[:field^.length],
+        bounds.width - 2 if bounds.width > 2 else 0,
+    )
+    paint_text_box(state, bounds, field, storage, focused, enabled)
+    return result
+}

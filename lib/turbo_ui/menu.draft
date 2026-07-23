@@ -1,0 +1,506 @@
+// Menus are explicit immediate-mode overlays. Menu_State remembers only which
+// top-level title is open and which row is highlighted; every title, item,
+// label, shortcut, and application value is resubmitted by the caller each
+// frame. The popup itself is painted after ordinary windows so a drop-down is
+// never clipped by, or hidden behind, the window which opened it.
+package turbo_ui
+
+// Menu_State belongs to the application. The first two fields persist between
+// frames. The remaining fields describe only the current menu-bar traversal;
+// menu_bar resets them before the first title and menu_bar_end completes any
+// left/right wrap requested by the open menu.
+pub Menu_State :: struct {
+    open_title: Widget_Id,
+    highlighted: usize,
+
+    first_title: Widget_Id,
+    first_popup: Widget_Id,
+    first_popup_bounds: Rect,
+    previous_title: Widget_Id,
+    previous_popup: Widget_Id,
+    previous_popup_bounds: Rect,
+    last_title: Widget_Id,
+    last_popup: Widget_Id,
+    last_popup_bounds: Rect,
+    switch_right: bool,
+    wrap_left: bool,
+}
+
+// Menu_Context is the balanced drop-down traversal. row includes separators,
+// while the enabled-row fields let keyboard movement skip non-actions without
+// retaining an item array. A one-frame delay in repainting an arrow movement
+// is intentional: semantic selection changes immediately, and the next normal
+// frame displays it without a second hidden layout pass.
+pub Menu_Context :: struct {
+    visible: bool,
+    popup: Popup_Context,
+    row: usize,
+    first_enabled: usize,
+    last_enabled: usize,
+    previous_enabled: usize,
+    found_enabled: bool,
+    found_highlight: bool,
+    moved: bool,
+    move: i8,
+    home: bool,
+    end: bool,
+}
+
+ascii_lower :: proc(byte: u8) -> u8 {
+    if byte >= cast[u8]('A') && byte <= cast[u8]('Z') {
+        return byte + (cast[u8]('a') - cast[u8]('A'))
+    }
+    return byte
+}
+
+open_menu_title :: proc(
+    state: ^State,
+    menu: ^Menu_State,
+    title_id, popup_id: Widget_Id,
+    popup_bounds: Rect,
+) {
+    if popup_open(state, popup_id, popup_bounds) {
+        menu^.open_title = title_id
+        menu^.highlighted = 0
+    }
+}
+
+// menu_bar starts one deterministic title traversal and paints its background.
+// Call menu_bar_end after the final title, even when no menu is open.
+pub menu_bar :: proc(
+    state: ^State,
+    menu: ^Menu_State,
+    bounds: Rect,
+) {
+    assert(state^.frame_open, "turbo_ui menu bar outside a frame")
+    if menu^.open_title != No_Widget && state^.popup_id == No_Widget {
+        menu^.open_title = No_Widget
+    }
+    menu^.first_title = No_Widget
+    menu^.first_popup = No_Widget
+    menu^.previous_title = No_Widget
+    menu^.previous_popup = No_Widget
+    menu^.last_title = No_Widget
+    menu^.last_popup = No_Widget
+    menu^.switch_right = false
+    menu^.wrap_left = false
+    fill_rect(state^.surface, surface_bounds(state^.surface), bounds, ' ', state^.theme.menu)
+}
+
+// menu_title opens on a primary press or Alt+access_key. While a drop-down is
+// open, moving over another title switches menus without first dismissing the
+// popup. Left/Right traverse titles and wrap in menu_bar_end. popup_bounds is
+// the complete bordered drop-down rectangle, normally immediately below title.
+pub menu_title :: proc(
+    state: ^State,
+    menu: ^Menu_State,
+    id, popup_id: Widget_Id,
+    bounds: Rect,
+    label_text: string,
+    access_key: u8,
+    popup_bounds: Rect,
+) -> bool {
+    assert(id != No_Widget && popup_id != No_Widget,
+        "turbo_ui menu IDs zero are reserved")
+    if menu^.first_title == No_Widget {
+        menu^.first_title = id
+        menu^.first_popup = popup_id
+        menu^.first_popup_bounds = popup_bounds
+    }
+
+    if menu^.switch_right {
+        open_menu_title(state, menu, id, popup_id, popup_bounds)
+        menu^.switch_right = false
+        state^.event_handled = true
+    }
+
+    open := menu^.open_title == id && state^.popup_id == popup_id
+    hovered := false
+    if state^.event.kind == .mouse {
+        hovered = point_in_rect(state^.event.mouse.position, bounds)
+    }
+    modal_blocks := state^.modal_window != No_Widget
+    if !modal_blocks && !state^.event_handled && state^.event.kind == .mouse &&
+        hovered {
+        mouse := state^.event.mouse
+        if mouse.action == .press && mouse.button == .primary {
+            if open {
+                popup_close(state)
+                menu^.open_title = No_Widget
+            } else {
+                open_menu_title(state, menu, id, popup_id, popup_bounds)
+            }
+            state^.event_handled = true
+        } else if mouse.action == .move && menu^.open_title != No_Widget && !open {
+            open_menu_title(state, menu, id, popup_id, popup_bounds)
+            state^.event_handled = true
+        }
+    }
+    if !modal_blocks && !state^.event_handled && state^.event.kind == .key {
+        key := state^.event.key
+        access := key.code == .character && key.alt &&
+            ascii_lower(key.byte_value) == ascii_lower(access_key)
+        if access {
+            if open {
+                popup_close(state)
+                menu^.open_title = No_Widget
+            } else {
+                open_menu_title(state, menu, id, popup_id, popup_bounds)
+            }
+            state^.event_handled = true
+        } else if open && key.code == .right {
+            menu^.switch_right = true
+        } else if open && key.code == .left {
+            if menu^.previous_title != No_Widget {
+                open_menu_title(
+                    state,
+                    menu,
+                    menu^.previous_title,
+                    menu^.previous_popup,
+                    menu^.previous_popup_bounds,
+                )
+                state^.event_handled = true
+            } else {
+                menu^.wrap_left = true
+            }
+        }
+    }
+
+    open = menu^.open_title == id && state^.popup_id == popup_id
+    style_value := state^.theme.menu
+    if open || hovered {
+        style_value = state^.theme.menu_selected
+    }
+    paint_label(state, bounds, label_text, style_value)
+
+    menu^.previous_title = id
+    menu^.previous_popup = popup_id
+    menu^.previous_popup_bounds = popup_bounds
+    menu^.last_title = id
+    menu^.last_popup = popup_id
+    menu^.last_popup_bounds = popup_bounds
+    return open
+}
+
+// menu_bar_end performs only wraparound which cannot be known until the last
+// title has been submitted. It must precede ordinary window painting.
+pub menu_bar_end :: proc(state: ^State, menu: ^Menu_State) {
+    if menu^.switch_right && menu^.first_title != No_Widget {
+        open_menu_title(
+            state,
+            menu,
+            menu^.first_title,
+            menu^.first_popup,
+            menu^.first_popup_bounds,
+        )
+        state^.event_handled = true
+    } else if menu^.wrap_left && menu^.last_title != No_Widget {
+        open_menu_title(
+            state,
+            menu,
+            menu^.last_title,
+            menu^.last_popup,
+            menu^.last_popup_bounds,
+        )
+        state^.event_handled = true
+    }
+    menu^.switch_right = false
+    menu^.wrap_left = false
+}
+
+// begin_menu opens the topmost drop-down and captures navigation keys. Its
+// caller submits rows with menu_action/menu_check/menu_radio/menu_separator,
+// then calls end_menu. The bounds must match the title's popup_bounds.
+pub begin_menu :: proc(
+    state: ^State,
+    menu: ^Menu_State,
+    title_id, popup_id: Widget_Id,
+    bounds: Rect,
+) -> Menu_Context {
+    result: Menu_Context
+    result.first_enabled = ~cast[usize](0)
+    result.last_enabled = ~cast[usize](0)
+    result.previous_enabled = ~cast[usize](0)
+    if menu^.open_title != title_id || state^.popup_id != popup_id {
+        return result
+    }
+    result.popup = begin_popup(state, popup_id, bounds)
+    if !result.popup.visible {
+        if state^.popup_id == No_Widget {
+            menu^.open_title = No_Widget
+        }
+        return result
+    }
+    result.visible = true
+    if !state^.event_handled && state^.event.kind == .key {
+        key := state^.event.key
+        if key.code == .down {
+            result.move = 1
+            state^.event_handled = true
+        } else if key.code == .up {
+            result.move = -1
+            state^.event_handled = true
+        } else if key.code == .home {
+            result.home = true
+            state^.event_handled = true
+        } else if key.code == .end {
+            result.end = true
+            state^.event_handled = true
+        }
+    }
+    return result
+}
+
+menu_row :: proc(
+    state: ^State,
+    menu: ^Menu_State,
+    menu_context: ^Menu_Context,
+    id: Widget_Id,
+    label_text, shortcut: string,
+    marker: rune,
+    enabled: bool,
+) -> bool {
+    assert(id != No_Widget, "turbo_ui menu item ID zero is reserved")
+    if !menu_context^.visible {
+        return false
+    }
+    index := menu_context^.row
+    menu_context^.row += 1
+    row_bounds := Rect{
+        column = menu_context^.popup.content.column,
+        row = menu_context^.popup.content.row + index,
+        width = menu_context^.popup.content.width,
+        height = 1,
+    }
+    if index >= menu_context^.popup.content.height {
+        return false
+    }
+
+    if enabled {
+        if !menu_context^.found_enabled {
+            menu_context^.first_enabled = index
+            menu_context^.found_enabled = true
+        }
+        menu_context^.last_enabled = index
+        if menu_context^.move == 1 && menu_context^.found_highlight &&
+            !menu_context^.moved {
+            menu^.highlighted = index
+            menu_context^.moved = true
+        }
+        if menu^.highlighted == index {
+            menu_context^.found_highlight = true
+            if menu_context^.move == -1 && !menu_context^.moved &&
+                menu_context^.previous_enabled != ~cast[usize](0) {
+                menu^.highlighted = menu_context^.previous_enabled
+                menu_context^.moved = true
+            }
+        }
+        menu_context^.previous_enabled = index
+    }
+
+    hovered := mouse_reaches_current_scope(state, row_bounds)
+    if hovered && enabled {
+        menu^.highlighted = index
+        state^.hot_id = id
+    }
+    selected := enabled && menu^.highlighted == index
+    activated := false
+    if enabled && !state^.event_handled && state^.event.kind == .mouse {
+        mouse := state^.event.mouse
+        if hovered && mouse.action == .press && mouse.button == .primary {
+            state^.active_id = id
+            state^.active_kind = .widget
+            state^.event_handled = true
+        } else if mouse.action == .release && mouse.button == .primary &&
+            state^.active_id == id && state^.active_kind == .widget {
+            activated = hovered
+            state^.active_id = No_Widget
+            state^.active_kind = .none
+            state^.event_handled = true
+        }
+    }
+    if enabled && selected && !state^.event_handled &&
+        state^.event.kind == .key && state^.event.key.code == .enter {
+        activated = true
+        state^.event_handled = true
+    }
+
+    style_value := state^.theme.menu
+    if !enabled {
+        style_value = state^.theme.menu_disabled
+    } else if selected || hovered {
+        style_value = state^.theme.menu_selected
+    }
+    fill_rect(state^.surface, state^.clip, row_bounds, ' ', style_value)
+    if marker != cast[rune](0) && row_bounds.width != 0 {
+        put_clipped(
+            state^.surface,
+            state^.clip,
+            Point{column = row_bounds.column, row = row_bounds.row},
+            marker,
+            style_value,
+        )
+    }
+    if row_bounds.width > 2 {
+        label_bounds := Rect{
+            column = row_bounds.column + 2,
+            row = row_bounds.row,
+            width = row_bounds.width - 2,
+            height = 1,
+        }
+        write_clipped(
+            state^.surface,
+            intersect(state^.clip, label_bounds),
+            Point{column = label_bounds.column, row = label_bounds.row},
+            label_text,
+            style_value,
+        )
+    }
+    if len(shortcut) != 0 && len(shortcut) + 1 < row_bounds.width {
+        shortcut_bounds := Rect{
+            column = rect_right(row_bounds) - len(shortcut),
+            row = row_bounds.row,
+            width = len(shortcut),
+            height = 1,
+        }
+        shortcut_style := state^.theme.menu_shortcut
+        if selected || hovered {
+            shortcut_style = state^.theme.menu_selected
+        }
+        write_clipped(
+            state^.surface,
+            intersect(state^.clip, shortcut_bounds),
+            Point{column = shortcut_bounds.column, row = shortcut_bounds.row},
+            shortcut,
+            shortcut_style,
+        )
+    }
+    return activated
+}
+
+// menu_action reports activation and closes the menu. It performs no callback;
+// the caller executes the operation in the surrounding direct control flow.
+pub menu_action :: proc(
+    state: ^State,
+    menu: ^Menu_State,
+    menu_context: ^Menu_Context,
+    id: Widget_Id,
+    label_text: string,
+    shortcut: string = "",
+    enabled: bool = true,
+) -> bool {
+    if !menu_row(
+        state, menu, menu_context, id, label_text, shortcut,
+        cast[rune](0), enabled,
+    ) {
+        return false
+    }
+    popup_close(state)
+    menu^.open_title = No_Widget
+    return true
+}
+
+// menu_check toggles one caller-owned boolean and closes after activation. Its
+// marker is derived every frame, so external changes appear immediately.
+pub menu_check :: proc(
+    state: ^State,
+    menu: ^Menu_State,
+    menu_context: ^Menu_Context,
+    id: Widget_Id,
+    label_text: string,
+    value: ^bool,
+    shortcut: string = "",
+    enabled: bool = true,
+) -> bool {
+    marker: rune
+    if value^ {
+        marker = '√'
+    }
+    if !menu_row(
+        state, menu, menu_context, id, label_text, shortcut, marker, enabled,
+    ) {
+        return false
+    }
+    value^ = !value^
+    popup_close(state)
+    menu^.open_title = No_Widget
+    return true
+}
+
+// menu_radio assigns one caller-owned choice and closes. The return value is a
+// value change, not mere activation; selecting the current choice returns false.
+pub menu_radio :: proc(
+    state: ^State,
+    menu: ^Menu_State,
+    menu_context: ^Menu_Context,
+    id: Widget_Id,
+    label_text: string,
+    value: ^usize,
+    choice: usize,
+    shortcut: string = "",
+    enabled: bool = true,
+) -> bool {
+    marker: rune
+    if value^ == choice {
+        marker = '•'
+    }
+    if !menu_row(
+        state, menu, menu_context, id, label_text, shortcut, marker, enabled,
+    ) {
+        return false
+    }
+    changed := value^ != choice
+    value^ = choice
+    popup_close(state)
+    menu^.open_title = No_Widget
+    return changed
+}
+
+// menu_separator consumes one row but no ID, focus, or action. The horizontal
+// rule is clipped to the popup content and naturally survives narrow terminals.
+pub menu_separator :: proc(state: ^State, menu_context: ^Menu_Context) {
+    if !menu_context^.visible {
+        return
+    }
+    index := menu_context^.row
+    menu_context^.row += 1
+    if index >= menu_context^.popup.content.height {
+        return
+    }
+    bounds := Rect{
+        column = menu_context^.popup.content.column,
+        row = menu_context^.popup.content.row + index,
+        width = menu_context^.popup.content.width,
+        height = 1,
+    }
+    fill_rect(state^.surface, state^.clip, bounds, '─', state^.theme.menu_disabled)
+}
+
+// end_menu completes deferred keyboard wrap/home/end selection and restores
+// the scope which was active before the popup overlay was painted.
+pub end_menu :: proc(
+    state: ^State,
+    menu: ^Menu_State,
+    menu_context: Menu_Context,
+) {
+    if !menu_context.visible {
+        return
+    }
+    if menu_context.found_enabled {
+        if menu_context.home {
+            menu^.highlighted = menu_context.first_enabled
+        } else if menu_context.end {
+            menu^.highlighted = menu_context.last_enabled
+        } else if menu_context.move == 1 && !menu_context.moved {
+            menu^.highlighted = menu_context.first_enabled
+        } else if menu_context.move == -1 && !menu_context.moved {
+            menu^.highlighted = menu_context.last_enabled
+        } else if !menu_context.found_highlight {
+            menu^.highlighted = menu_context.first_enabled
+        }
+    }
+    end_popup(state, menu_context.popup)
+    if state^.popup_id == No_Widget {
+        menu^.open_title = No_Widget
+    }
+}

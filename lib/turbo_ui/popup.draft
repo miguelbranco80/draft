@@ -1,0 +1,152 @@
+// Popups provide one explicit topmost interaction scope for menus, combo
+// lists, and other transient selectors. State owns only stable IDs and the
+// previous frame's geometry; item labels, choices, and application values are
+// borrowed by ordinary immediate-mode calls. A popup captures mouse and
+// keyboard input until it closes, but never owns or destroys application data.
+package turbo_ui
+
+// Popup_Context is the balanced begin/end token. content excludes the border;
+// previous fields restore the desktop or window scope after popup painting.
+pub Popup_Context :: struct {
+    visible: bool,
+    painted: bool,
+    content: Rect,
+    previous_clip: Rect,
+    previous_scope: Widget_Id,
+}
+
+// popup_open replaces any existing popup. The current interaction scope is
+// remembered as owner, so a combo belonging to an inactive window cannot leave
+// a stale capture behind. A modal dialog accepts only its own popups; desktop
+// menus therefore cannot open through a live modal dialog.
+pub popup_open :: proc(
+    state: ^State,
+    id: Widget_Id,
+    bounds: Rect,
+) -> bool {
+    assert(state^.frame_open, "turbo_ui popup opened outside a frame")
+    assert(id != No_Widget, "turbo_ui popup ID zero is reserved")
+    if state^.modal_window != No_Widget &&
+        state^.current_window != state^.modal_window {
+        return false
+    }
+    if state^.popup_id == id {
+        state^.popup_bounds = bounds
+        state^.popup_seen = true
+        return true
+    }
+    if state^.popup_id != No_Widget {
+        popup_close(state)
+    }
+    state^.popup_id = id
+    state^.popup_owner = state^.current_window
+    state^.popup_return_focus = state^.focused_id
+    state^.popup_bounds = bounds
+    state^.popup_seen = true
+    state^.input_scope = id
+    state^.target_window = id
+    state^.focused_id = No_Widget
+    return true
+}
+
+// popup_close releases capture and restores the focus that opened the popup.
+// It is idempotent, which keeps action, Escape, and disappearing-owner paths
+// simple and deterministic.
+pub popup_close :: proc(state: ^State) {
+    if state^.popup_id == No_Widget {
+        return
+    }
+    if state^.input_scope == state^.popup_id &&
+        state^.active_kind == .widget {
+        state^.active_id = No_Widget
+        state^.active_kind = .none
+    }
+    state^.popup_id = No_Widget
+    state^.popup_owner = No_Widget
+    state^.popup_bounds = Rect{}
+    state^.popup_seen = false
+    state^.focused_id = state^.popup_return_focus
+    state^.popup_return_focus = No_Widget
+    state^.input_scope = state^.active_window
+    if state^.modal_window != No_Widget {
+        state^.input_scope = state^.modal_window
+    }
+    state^.target_window = No_Widget
+}
+
+pub popup_is_open :: proc(state: ^State, id: Widget_Id) -> bool {
+    return state^.popup_id == id
+}
+
+// begin_popup closes on Escape or a primary press outside the stored frame.
+// Outside presses are consumed rather than replayed into the desktop, matching
+// ordinary menu/combo dismissal and preventing one physical click from also
+// activating the covered application control.
+pub begin_popup :: proc(
+    state: ^State,
+    id: Widget_Id,
+    bounds: Rect,
+) -> Popup_Context {
+    assert(state^.frame_open, "turbo_ui popup outside a frame")
+    assert(state^.current_window == No_Widget,
+        "turbo_ui popup must be painted after closing its owner window")
+    result := Popup_Context{painted = true}
+    if state^.popup_id != id {
+        return result
+    }
+    state^.popup_seen = true
+    state^.popup_bounds = clamp_rect(bounds, surface_bounds(state^.surface))
+
+    if !state^.event_handled && state^.event.kind == .key &&
+        state^.event.key.code == .escape {
+        state^.event_handled = true
+        popup_close(state)
+        return result
+    }
+    if !state^.event_handled && state^.event.kind == .mouse &&
+        state^.event.mouse.action == .press &&
+        state^.event.mouse.button == .primary &&
+        !point_in_rect(state^.event.mouse.position, state^.popup_bounds) {
+        state^.event_handled = true
+        popup_close(state)
+        return result
+    }
+
+    result.visible = true
+    result.previous_clip = state^.clip
+    result.previous_scope = state^.current_window
+    result.content = inset(state^.popup_bounds, 1)
+    state^.current_window = id
+    state^.clip = result.content
+    state^.input_scope = id
+    state^.target_window = id
+    result.painted = draw_shadow(
+        state^.surface,
+        surface_bounds(state^.surface),
+        state^.popup_bounds,
+        state^.theme.shadow,
+    ) && fill_rect(
+        state^.surface,
+        surface_bounds(state^.surface),
+        state^.popup_bounds,
+        ' ',
+        state^.theme.menu,
+    ) && draw_border(
+        state^.surface,
+        surface_bounds(state^.surface),
+        state^.popup_bounds,
+        .single,
+        state^.theme.border,
+    )
+    return result
+}
+
+pub end_popup :: proc(state: ^State, popup: Popup_Context) {
+    if !popup.visible {
+        return
+    }
+    assert(state^.current_window != No_Widget,
+        "turbo_ui popup context is not active")
+    state^.clip = popup.previous_clip
+    state^.current_window = popup.previous_scope
+}

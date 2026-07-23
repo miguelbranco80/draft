@@ -7,6 +7,15 @@ package turbo_ui
 
 import core/tui
 
+// Button_Role adds dialog keyboard policy without changing ownership or
+// requiring callbacks. A default button accepts an otherwise-unhandled Enter
+// anywhere in its active scope; a cancel button similarly accepts Escape.
+pub Button_Role :: enum u8 {
+    normal,
+    default_action,
+    cancel_action,
+}
+
 // control_style selects the visual state shared by button-like widgets.
 control_style :: proc(
     state: ^State,
@@ -55,6 +64,21 @@ paint_label :: proc(
     )
 }
 
+// label paints noninteractive text with the same clipping and theme policy as
+// controls. It registers no focus and never consumes the current event.
+pub label :: proc(
+    state: ^State,
+    bounds: Rect,
+    text: string,
+    enabled: bool = true,
+) -> bool {
+    style_value := state^.theme.text
+    if !enabled {
+        style_value = state^.theme.disabled
+    }
+    return paint_label(state, bounds, text, style_value)
+}
+
 // button is a focusable press/release or Enter/Space control. disabled buttons
 // still paint but do not register focus or consume the event.
 pub button :: proc(
@@ -63,43 +87,24 @@ pub button :: proc(
     bounds: Rect,
     label: string,
     enabled: bool = true,
+    role: Button_Role = .normal,
 ) -> bool {
     interaction: Interaction
     if enabled {
         interaction = interact(state, id, bounds)
+    }
+    activated := enabled && interaction.activated
+    if enabled && !activated && scope_accepts_keyboard(state) &&
+        !state^.event_handled && state^.event.kind == .key {
+        key := state^.event.key
+        if (role == .default_action && key.code == .enter) ||
+            (role == .cancel_action && key.code == .escape) {
+            activated = true
+            state^.event_handled = true
+        }
     }
     paint_label(state, bounds, label, control_style(state, interaction, enabled))
-    return enabled && interaction.activated
-}
-
-// menu_bar paints a noninteractive horizontal menu background. Individual
-// menu_item calls placed inside it own activation and focus.
-pub menu_bar :: proc(state: ^State, bounds: Rect) {
-    fill_rect(state^.surface, state^.clip, bounds, ' ', state^.theme.menu)
-}
-
-// menu_item is a compact button with menu colors. The caller decides whether
-// activation opens a menu, performs an action, or toggles application state.
-pub menu_item :: proc(
-    state: ^State,
-    id: Widget_Id,
-    bounds: Rect,
-    label: string,
-    enabled: bool = true,
-) -> bool {
-    interaction: Interaction
-    if enabled {
-        interaction = interact(state, id, bounds)
-    }
-    style_value := state^.theme.menu
-    if !enabled {
-        style_value = state^.theme.disabled
-    } else if interaction.hot || interaction.held ||
-        state^.focused_id == id {
-        style_value = state^.theme.menu_selected
-    }
-    paint_label(state, bounds, label, style_value)
-    return enabled && interaction.activated
+    return activated
 }
 
 // checkbox toggles one caller-owned boolean on activation. The textual mark is
@@ -152,6 +157,57 @@ pub checkbox :: proc(
     return false
 }
 
+// radio_button assigns one caller-owned choice on activation. Choices are
+// ordinary usize values so applications can use dense enum ordinals or their
+// own stable IDs without a generic wrapper or hidden group object.
+pub radio_button :: proc(
+    state: ^State,
+    id: Widget_Id,
+    bounds: Rect,
+    label_text: string,
+    value: ^usize,
+    choice: usize,
+    enabled: bool = true,
+) -> bool {
+    interaction: Interaction
+    if enabled {
+        interaction = interact(state, id, bounds)
+    }
+    style_value := control_style(state, interaction, enabled)
+    fill_rect(state^.surface, state^.clip, bounds, ' ', style_value)
+    marker := "( )"
+    if value^ == choice {
+        marker = "(•)"
+    }
+    write_clipped(
+        state^.surface,
+        intersect(state^.clip, bounds),
+        Point{column = bounds.column, row = bounds.row},
+        marker,
+        style_value,
+    )
+    if bounds.width > 4 {
+        label_bounds := Rect{
+            column = bounds.column + 4,
+            row = bounds.row,
+            width = bounds.width - 4,
+            height = 1,
+        }
+        write_clipped(
+            state^.surface,
+            intersect(state^.clip, label_bounds),
+            Point{column = label_bounds.column, row = label_bounds.row},
+            label_text,
+            style_value,
+        )
+    }
+    if enabled && interaction.activated && value^ != choice {
+        value^ = choice
+        return true
+    }
+    return false
+}
+
 // maximum_scroll returns the greatest valid first visible item. Keeping this
 // rule shared prevents list and scrollbar from disagreeing at the final page.
 maximum_scroll :: proc(total, visible: usize) -> usize {
@@ -175,7 +231,7 @@ pub list :: proc(
 ) -> bool {
     assert(id != No_Widget, "turbo_ui widget ID zero is reserved")
     assert(state^.frame_open, "turbo_ui list outside a frame")
-    register_focus(state, id)
+    registered := register_focus(state, id)
     old_selected := selected^
     if len(items) == 0 {
         selected^ = 0
@@ -202,7 +258,17 @@ pub list :: proc(
         }
         state^.event_handled = true
     }
-    if !state^.event_handled && state^.focused_id == id &&
+    if !state^.event_handled && reaches && state^.event.mouse.action == .wheel &&
+        len(items) != 0 {
+        if state^.event.mouse.wheel_delta < 0 && selected^ > 0 {
+            selected^ -= 1
+        } else if state^.event.mouse.wheel_delta > 0 &&
+            selected^ + 1 < len(items) {
+            selected^ += 1
+        }
+        state^.event_handled = true
+    }
+    if registered && !state^.event_handled && state^.focused_id == id &&
         state^.event.kind == .key && len(items) != 0 {
         old := selected^
         switch state^.event.key.code {

@@ -4,12 +4,13 @@
 // already-decoded event, invokes ordinary widget procedures in deterministic
 // draw order, and ends the frame before either borrow expires.
 //
-// State retains only interaction identity across frames: the hot, active, and
-// keyboard-focused widget/window IDs plus drag metadata. Persistent values such
-// as checkbox contents, list selection, window bounds, visibility, and z-order
-// remain in explicit caller-owned records. This keeps the library independently
-// reusable by the gallery, editor, and later applications without callbacks,
-// inheritance, a retained widget tree, or hidden allocation.
+// State retains only interaction identity across frames: hot/active/focused
+// IDs, the active/modal window, one popup, and direct-manipulation metadata.
+// Persistent values such as text storage, menu/combobox selection, checkbox
+// contents, window bounds, visibility, and z-order remain in explicit
+// caller-owned records. This keeps the library independently reusable by the
+// gallery, editor, and later applications without callbacks, inheritance, a
+// retained widget tree, or hidden allocation.
 //
 // The package depends only on core/tui for cells and core/unicode for clipped
 // grapheme painting. It performs no I/O. Relevant Draft specification: sections

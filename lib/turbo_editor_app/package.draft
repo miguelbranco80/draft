@@ -1,6 +1,6 @@
 // turbo_editor_app is the reusable full-screen application shell shared by the
 // standalone editor example and Turbo Draft. It owns editor buffers, terminal
-// resources, immediate-mode window state, and the user-facing event loop. An
+// resources, immediate-mode desktop/menu state, and the user-facing event loop. An
 // optional Host_Api supplies synchronous compiler operations, but this package
 // does not know whether those calls enter C++, another Draft package, or a test
 // fake. The caller retains the host handle for the complete run.
@@ -44,6 +44,15 @@ Window_Effects :: 8
 Window_Denials :: 9
 Window_Count :: 10
 
+Menu_File :: 520
+Menu_File_Popup :: 521
+Menu_Edit :: 522
+Menu_Edit_Popup :: 523
+Menu_Project :: 524
+Menu_Project_Popup :: 525
+Menu_Window :: 526
+Menu_Window_Popup :: 527
+
 Text_Window_First :: Window_Diagnostics
 Text_Window_Count :: 6
 Tooling_Text_Capacity :: 32768
@@ -59,6 +68,7 @@ Project_Root_Overflow_Label :: "<root path exceeds IDE display limit>"
 // independent zero-terminated pathname copies for file operations.
 App :: struct {
     ui: turbo_ui.State,
+    menus: turbo_ui.Menu_State,
     buffers: [Maximum_Buffers]turbo_editor.Buffer,
     names: [Maximum_Buffers]string,
     buffer_count: usize,
@@ -73,7 +83,7 @@ App :: struct {
     buffer_scroll: usize,
 
     search: [Search_Capacity]u8,
-    search_length: usize,
+    search_box: turbo_ui.Text_Box_State,
     status: string,
 
     host: draft_compiler_api.Host_Api,
@@ -93,22 +103,22 @@ App :: struct {
 }
 
 init_windows :: proc(app: ^App) {
-    app^.windows[Window_Files] = turbo_ui.window_init(
+    app^.windows[Window_Files] = turbo_ui.tool_window_init(
         400,
         turbo_ui.Rect{column = 2, row = 3, width = 28, height = 15},
         2,
     )
-    app^.windows[Window_Buffers] = turbo_ui.window_init(
+    app^.windows[Window_Buffers] = turbo_ui.tool_window_init(
         401,
         turbo_ui.Rect{column = 18, row = 5, width = 34, height = 13},
         3,
     )
-    app^.windows[Window_Search] = turbo_ui.window_init(
+    app^.windows[Window_Search] = turbo_ui.dialog_window_init(
         402,
         turbo_ui.Rect{column = 20, row = 7, width = 44, height = 7},
         10,
     )
-    app^.windows[Window_Quit] = turbo_ui.window_init(
+    app^.windows[Window_Quit] = turbo_ui.dialog_window_init(
         403,
         turbo_ui.Rect{column = 20, row = 7, width = 48, height = 8},
         11,
@@ -604,10 +614,47 @@ cycle_project_target :: proc(app: ^App) {
 }
 
 request_search :: proc(app: ^App) {
-    app^.windows[Window_Search].visible = true
-    app^.windows[Window_Quit].visible = false
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Quit].id,
+    )
+    turbo_ui.show_modal_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Search].id,
+    )
     app^.ui.focused_id = 500
     app^.status = "Find: type text, Enter searches, Esc cancels"
+}
+
+toggle_window :: proc(app: ^App, index: usize) {
+    assert(index < Window_Count, "Turbo Draft window index is invalid")
+    id := app^.windows[index].id
+    if app^.windows[index].visible {
+        turbo_ui.hide_window(&app^.ui, app^.windows[:], id)
+    } else {
+        turbo_ui.show_window(&app^.ui, app^.windows[:], id)
+    }
+}
+
+close_search :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Search].id,
+    )
+    app^.status = "Search cancelled"
+}
+
+cancel_quit :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Quit].id,
+    )
+    app^.quit_discard_mask = 0
+    app^.status = "Quit cancelled"
 }
 
 // continue_quit selects the next dirty buffer which has neither been saved nor
@@ -625,8 +672,16 @@ continue_quit :: proc(app: ^App) -> bool {
                 app^.status = "Could not restore the dirty buffer's project root"
                 return false
             }
-            app^.windows[Window_Quit].visible = true
-            app^.windows[Window_Search].visible = false
+            turbo_ui.hide_window(
+                &app^.ui,
+                app^.windows[:],
+                app^.windows[Window_Search].id,
+            )
+            turbo_ui.show_modal_window(
+                &app^.ui,
+                app^.windows[:],
+                app^.windows[Window_Quit].id,
+            )
             app^.ui.focused_id = 510
             app^.status = "Unsaved buffer requires an explicit choice"
             return false
@@ -647,66 +702,58 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
         return (event, false)
     }
     key := event.key
+    // Popups and modal dialogs get first refusal. This is essential for
+    // Escape dismissal, menu arrows, dialog defaults, and text-box Enter; the
+    // desktop shortcut layer must not reinterpret those keys as editor acts.
+    if app^.ui.popup_id != turbo_ui.No_Widget ||
+        app^.windows[Window_Search].visible ||
+        app^.windows[Window_Quit].visible {
+        return (event, false)
+    }
     if key.code == .escape {
-        if app^.windows[Window_Search].visible {
-            app^.windows[Window_Search].visible = false
-            app^.ui.focused_id = cast[turbo_ui.Widget_Id](600 + app^.active)
-            app^.status = "Search cancelled"
-            return (turbo_ui.no_event(), false)
-        }
-        if app^.windows[Window_Quit].visible {
-            app^.windows[Window_Quit].visible = false
-            app^.quit_discard_mask = 0
-            app^.ui.focused_id = cast[turbo_ui.Widget_Id](600 + app^.active)
-            app^.status = "Quit cancelled"
-            return (turbo_ui.no_event(), false)
-        }
         return (turbo_ui.no_event(), request_quit(app))
     }
-    if key.code == .f2 {
-        app^.windows[Window_Files].visible = !app^.windows[Window_Files].visible
+    if key.code == .f2 && !key.alt && !key.control {
+        toggle_window(app, Window_Files)
         return (turbo_ui.no_event(), false)
     }
-    if key.code == .f3 {
-        app^.windows[Window_Buffers].visible =
-            !app^.windows[Window_Buffers].visible
+    if key.code == .f3 && !key.alt && !key.control {
+        toggle_window(app, Window_Buffers)
         return (turbo_ui.no_event(), false)
     }
-    if key.code == .f5 {
+    if key.code == .f5 && !key.alt && !key.control {
         host_action(app, true)
         return (turbo_ui.no_event(), false)
     }
-    if key.code == .f6 {
-        app^.windows[Window_Project].visible =
-            !app^.windows[Window_Project].visible
+    if key.code == .f6 && key.control && !key.alt {
+        turbo_ui.activate_next_window(&app^.ui, app^.windows[:], key.shift)
         return (turbo_ui.no_event(), false)
     }
-    if key.code == .f7 {
-        app^.windows[Window_Declarations].visible =
-            !app^.windows[Window_Declarations].visible
+    if key.code == .f6 && !key.alt && !key.control {
+        toggle_window(app, Window_Project)
         return (turbo_ui.no_event(), false)
     }
-    if key.code == .f8 {
-        app^.windows[Window_References].visible =
-            !app^.windows[Window_References].visible
+    if key.code == .f7 && !key.alt && !key.control {
+        toggle_window(app, Window_Declarations)
         return (turbo_ui.no_event(), false)
     }
-    if key.code == .f9 {
-        app^.windows[Window_Effects].visible =
-            !app^.windows[Window_Effects].visible
+    if key.code == .f8 && !key.alt && !key.control {
+        toggle_window(app, Window_References)
         return (turbo_ui.no_event(), false)
     }
-    if key.code == .f10 {
-        app^.windows[Window_Denials].visible =
-            !app^.windows[Window_Denials].visible
+    if key.code == .f9 && !key.alt && !key.control {
+        toggle_window(app, Window_Effects)
         return (turbo_ui.no_event(), false)
     }
-    if key.code == .f11 {
-        app^.windows[Window_Diagnostics].visible =
-            !app^.windows[Window_Diagnostics].visible
+    if key.code == .f10 && !key.alt && !key.control {
+        toggle_window(app, Window_Denials)
         return (turbo_ui.no_event(), false)
     }
-    if key.code == .f12 {
+    if key.code == .f11 && !key.alt && !key.control {
+        toggle_window(app, Window_Diagnostics)
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .f12 && !key.alt && !key.control {
         if key.shift {
             cycle_project_target(app)
         } else {
@@ -720,63 +767,85 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
 paint_search :: proc(
     app: ^App,
     content: turbo_ui.Rect,
-    editor_theme: turbo_editor.Editor_Theme,
 ) {
-    focus := turbo_ui.focus_area(&app^.ui, 500, content)
-    if focus.activated {
-        app^.ui.focused_id = 500
-    }
-    if app^.ui.focused_id == 500 && !app^.ui.event_handled &&
-        app^.ui.event.kind == .key {
-        key := app^.ui.event.key
-        if key.code == .backspace && app^.search_length > 0 {
-            app^.search_length -= 1
-            app^.search[app^.search_length] = 0
-        } else if key.code == .character && !key.control &&
-            app^.search_length < len(app^.search) {
-            app^.search[app^.search_length] = key.byte_value
-            app^.search_length += 1
-        } else if key.code == .enter {
-            if turbo_editor.find(
-                active_buffer(app),
-                app^.search[:app^.search_length],
-            ) {
-                app^.status = "Match selected"
-            } else {
-                app^.status = "No match"
-            }
-            app^.windows[Window_Search].visible = false
-            app^.ui.focused_id = cast[turbo_ui.Widget_Id](600 + app^.active)
-        }
-        app^.ui.event_handled = true
-    }
     turbo_ui.write_clipped(
         app^.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row},
         "Find literal bytes:",
-        editor_theme.text,
+        app^.ui.theme.text,
     )
-    if content.height > 2 {
+    submitted := false
+    if content.height > 2 && content.width > 2 {
         query_bounds := turbo_ui.Rect{
             column = content.column + 1,
             row = content.row + 2,
             width = content.width - 2,
             height = 1,
         }
-        turbo_ui.fill_rect(
-            app^.ui.surface,
-            content,
+        result := turbo_ui.text_box(
+            &app^.ui,
+            500,
             query_bounds,
-            ' ',
-            editor_theme.selection,
+            &app^.search_box,
+            app^.search[:],
         )
-        turbo_ui.write_clipped_bytes(
-            app^.ui.surface,
-            query_bounds,
-            turbo_ui.Point{column = query_bounds.column, row = query_bounds.row},
-            app^.search[:app^.search_length],
-            editor_theme.selection,
+        submitted = result.submitted
+    }
+    if content.height > 3 && content.width > 2 {
+        buttons := turbo_ui.layout_begin(
+            turbo_ui.Rect{
+                column = content.column + 1,
+                row = content.row + 3,
+                width = content.width - 2,
+                height = 1,
+            },
+            .horizontal,
+            0,
+            1,
+        )
+        button_submitted := turbo_ui.button(
+            &app^.ui,
+            501,
+            turbo_ui.layout_next(&buttons, 8),
+            "Find",
+            true,
+            .default_action,
+        )
+        submitted = submitted || button_submitted
+        if turbo_ui.button(
+            &app^.ui,
+            502,
+            turbo_ui.layout_next(&buttons, 10),
+            "Cancel",
+            true,
+            .cancel_action,
+        ) {
+            close_search(app)
+        }
+    } else if turbo_ui.button(
+        &app^.ui,
+        502,
+        turbo_ui.Rect{},
+        "Cancel",
+        true,
+        .cancel_action,
+    ) {
+        // Preserve Escape dismissal while a tiny resize transient leaves no
+        // cells in which to paint the dialog buttons.
+        close_search(app)
+    }
+    if submitted {
+        query := turbo_ui.text_box_bytes(&app^.search_box, app^.search[:])
+        if turbo_editor.find(active_buffer(app), query) {
+            app^.status = "Match selected"
+        } else {
+            app^.status = "No match"
+        }
+        turbo_ui.hide_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Search].id,
         )
     }
 }
@@ -798,7 +867,17 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
         message,
         turbo_ui.turbo_theme().text,
     )
-    if content.height < 5 {
+    if content.height < 5 || content.width <= 2 {
+        if turbo_ui.button(
+            &app^.ui,
+            512,
+            turbo_ui.Rect{},
+            "Cancel",
+            true,
+            .cancel_action,
+        ) {
+            cancel_quit(app)
+        }
         return false
     }
     buttons := turbo_ui.layout_begin(
@@ -817,6 +896,8 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
         510,
         turbo_ui.layout_next(&buttons, save_width),
         save_label,
+        true,
+        .default_action,
     ) {
         // The conflict-specific label makes this the one explicit overwrite
         // path. Every ordinary Save refuses to replace a changed disk file.
@@ -829,10 +910,15 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
         app^.quit_discard_mask |= cast[u64](1) << cast[u64](app^.active)
         return continue_quit(app)
     }
-    if turbo_ui.button(&app^.ui, 512, turbo_ui.layout_next(&buttons, 8), "Cancel") {
-        app^.windows[Window_Quit].visible = false
-        app^.quit_discard_mask = 0
-        app^.status = "Quit cancelled"
+    if turbo_ui.button(
+        &app^.ui,
+        512,
+        turbo_ui.layout_next(&buttons, 8),
+        "Cancel",
+        true,
+        .cancel_action,
+    ) {
+        cancel_quit(app)
     }
     return false
 }
@@ -893,7 +979,7 @@ paint_project_root_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
             }
         }
     }
-    if !app^.ui.event_handled && app^.ui.focused_id == 760 &&
+    if !app^.ui.event_handled && turbo_ui.has_focus(&app^.ui, 760) &&
         app^.ui.event.kind == .key && app^.project_root_count != 0 {
         key := app^.ui.event.key
         if key.code == .up && app^.project_root_cursor > 0 {
@@ -1057,8 +1143,7 @@ paint_text_view :: proc(
     if app^.tooling_scroll[text_index] > maximum_scroll {
         app^.tooling_scroll[text_index] = maximum_scroll
     }
-    if !app^.ui.event_handled && app^.ui.event.kind == .mouse &&
-        turbo_ui.point_in_rect(app^.ui.event.mouse.position, text_bounds) &&
+    if !app^.ui.event_handled && app^.ui.event.kind == .mouse && focus.hot &&
         app^.ui.event.mouse.action == .wheel {
         if app^.ui.event.mouse.wheel_delta < 0 &&
             app^.tooling_scroll[text_index] > 0 {
@@ -1070,7 +1155,10 @@ paint_text_view :: proc(
         app^.ui.event_handled = true
     }
     if !app^.ui.event_handled && app^.ui.event.kind == .key &&
-        app^.ui.focused_id == cast[turbo_ui.Widget_Id](700 + text_index) {
+        turbo_ui.has_focus(
+            &app^.ui,
+            cast[turbo_ui.Widget_Id](700 + text_index),
+        ) {
         key := app^.ui.event.key
         if key.code == .up && app^.tooling_scroll[text_index] > 0 {
             app^.tooling_scroll[text_index] -= 1
@@ -1208,6 +1296,193 @@ paint_project_view :: proc(app: ^App, content: turbo_ui.Rect) {
     paint_text_view(app, Window_Project, graph)
 }
 
+save_active_buffer :: proc(app: ^App) {
+    if turbo_editor.save(active_buffer(app)) {
+        app^.status = "Saved"
+    } else if active_buffer(app)^.disk_conflict {
+        app^.status = "Disk conflict: Save refused; Esc offers overwrite/discard"
+    } else {
+        app^.status = "Save failed"
+    }
+}
+
+// paint_app_menu_bar is the title pass. The matching drop-down pass runs after
+// all desktop windows, allowing the shared popup layer to remain topmost.
+paint_app_menu_bar :: proc(app: ^App, surface: ^tui.Surface) {
+    turbo_ui.menu_bar(
+        &app^.ui,
+        &app^.menus,
+        turbo_ui.Rect{width = surface^.columns, height = 1},
+    )
+    turbo_ui.menu_title(
+        &app^.ui, &app^.menus,
+        Menu_File, Menu_File_Popup,
+        turbo_ui.Rect{column = 1, width = 8, height = 1},
+        "File", cast[u8]('f'),
+        turbo_ui.Rect{column = 1, row = 1, width = 27, height = 5},
+    )
+    turbo_ui.menu_title(
+        &app^.ui, &app^.menus,
+        Menu_Edit, Menu_Edit_Popup,
+        turbo_ui.Rect{column = 9, width = 8, height = 1},
+        "Edit", cast[u8]('e'),
+        turbo_ui.Rect{column = 9, row = 1, width = 27, height = 5},
+    )
+    turbo_ui.menu_title(
+        &app^.ui, &app^.menus,
+        Menu_Project, Menu_Project_Popup,
+        turbo_ui.Rect{column = 17, width = 11, height = 1},
+        "Project", cast[u8]('p'),
+        turbo_ui.Rect{column = 17, row = 1, width = 31, height = 9},
+    )
+    turbo_ui.menu_title(
+        &app^.ui, &app^.menus,
+        Menu_Window, Menu_Window_Popup,
+        turbo_ui.Rect{column = 28, width = 10, height = 1},
+        "Window", cast[u8]('w'),
+        turbo_ui.Rect{column = 28, row = 1, width = 35, height = 13},
+    )
+    turbo_ui.menu_bar_end(&app^.ui, &app^.menus)
+}
+
+menu_window_toggle :: proc(
+    app: ^App,
+    menu: ^turbo_ui.Menu_Context,
+    item_id: turbo_ui.Widget_Id,
+    index: usize,
+    label_text, shortcut: string,
+) {
+    if turbo_ui.menu_check(
+        &app^.ui,
+        &app^.menus,
+        menu,
+        item_id,
+        label_text,
+        &app^.windows[index].visible,
+        shortcut,
+    ) {
+        if app^.windows[index].visible {
+            turbo_ui.show_window(
+                &app^.ui,
+                app^.windows[:],
+                app^.windows[index].id,
+            )
+        } else {
+            turbo_ui.hide_window(
+                &app^.ui,
+                app^.windows[:],
+                app^.windows[index].id,
+            )
+        }
+    }
+}
+
+// paint_app_menus contains direct application policy for menu actions. The UI
+// returns activations and never retains callbacks, compiler handles, or Buffer
+// pointers. Returning true means the complete clean/discard quit policy ended.
+paint_app_menus :: proc(app: ^App) -> bool {
+    should_quit := false
+    file_menu := turbo_ui.begin_menu(
+        &app^.ui, &app^.menus,
+        Menu_File, Menu_File_Popup,
+        turbo_ui.Rect{column = 1, row = 1, width = 27, height = 5},
+    )
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &file_menu,
+        540, "Save", "Ctrl-S",
+    ) {
+        save_active_buffer(app)
+    }
+    turbo_ui.menu_separator(&app^.ui, &file_menu)
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &file_menu,
+        541, "Quit", "Esc",
+    ) {
+        should_quit = request_quit(app)
+    }
+    turbo_ui.end_menu(&app^.ui, &app^.menus, file_menu)
+
+    edit_menu := turbo_ui.begin_menu(
+        &app^.ui, &app^.menus,
+        Menu_Edit, Menu_Edit_Popup,
+        turbo_ui.Rect{column = 9, row = 1, width = 27, height = 5},
+    )
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &edit_menu,
+        542, "Find", "Ctrl-F",
+    ) {
+        request_search(app)
+    }
+    turbo_ui.menu_separator(&app^.ui, &edit_menu)
+    turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &edit_menu,
+        543, "Clipboard commands", "", false,
+    )
+    turbo_ui.end_menu(&app^.ui, &app^.menus, edit_menu)
+
+    project_menu := turbo_ui.begin_menu(
+        &app^.ui, &app^.menus,
+        Menu_Project, Menu_Project_Popup,
+        turbo_ui.Rect{column = 17, row = 1, width = 31, height = 9},
+    )
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &project_menu,
+        544, "Check", "", app^.host.check != nil,
+    ) {
+        refresh_host(app)
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &project_menu,
+        545, "Build", "", app^.host.build != nil,
+    ) {
+        host_action(app, false)
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &project_menu,
+        546, "Build and run", "F5", app^.host.build != nil,
+    ) {
+        host_action(app, true)
+    }
+    turbo_ui.menu_separator(&app^.ui, &project_menu)
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &project_menu,
+        547, "Next root", "F12", app^.host.select_root != nil,
+    ) {
+        cycle_project_root(app)
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &project_menu,
+        548, "Next target", "Shift-F12", app^.host.select_target != nil,
+    ) {
+        cycle_project_target(app)
+    }
+    turbo_ui.end_menu(&app^.ui, &app^.menus, project_menu)
+
+    window_menu := turbo_ui.begin_menu(
+        &app^.ui, &app^.menus,
+        Menu_Window, Menu_Window_Popup,
+        turbo_ui.Rect{column = 28, row = 1, width = 35, height = 13},
+    )
+    menu_window_toggle(app, &window_menu, 550, Window_Files, "Files", "F2")
+    menu_window_toggle(app, &window_menu, 551, Window_Buffers, "Buffers", "F3")
+    turbo_ui.menu_separator(&app^.ui, &window_menu)
+    menu_window_toggle(app, &window_menu, 552, Window_Project, "Packages", "F6")
+    menu_window_toggle(app, &window_menu, 553, Window_Declarations, "Declarations", "F7")
+    menu_window_toggle(app, &window_menu, 554, Window_References, "References", "F8")
+    menu_window_toggle(app, &window_menu, 555, Window_Effects, "Effects", "F9")
+    menu_window_toggle(app, &window_menu, 556, Window_Denials, "Denials", "F10")
+    menu_window_toggle(app, &window_menu, 557, Window_Diagnostics, "Diagnostics", "F11")
+    turbo_ui.menu_separator(&app^.ui, &window_menu)
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &window_menu,
+        558, "Next window", "Ctrl-F6",
+    ) {
+        turbo_ui.activate_next_window(&app^.ui, app^.windows[:])
+    }
+    turbo_ui.end_menu(&app^.ui, &app^.menus, window_menu)
+    return should_quit
+}
+
 // paint_app performs one full desktop traversal and returns true only when an
 // explicit clean/discard/save-and-quit path has completed.
 paint_app :: proc(
@@ -1222,92 +1497,26 @@ paint_app :: proc(
     theme := turbo_ui.turbo_theme()
     editor_theme := turbo_editor.turbo_editor_theme()
     tui.clear(surface, theme.desktop)
+    desktop := turbo_ui.Rect{row = 1, width = surface^.columns}
+    if surface^.rows > 2 {
+        desktop.height = surface^.rows - 2
+    }
+    modal := turbo_ui.No_Widget
+    if app^.windows[Window_Quit].visible {
+        modal = app^.windows[Window_Quit].id
+    } else if app^.windows[Window_Search].visible {
+        modal = app^.windows[Window_Search].id
+    }
     turbo_ui.begin_window_frame(
         &app^.ui,
         surface,
         event,
         theme,
         app^.windows[:],
+        desktop,
+        modal,
     )
-    if app^.windows[Window_Quit].visible {
-        app^.ui.target_window = app^.windows[Window_Quit].id
-    } else if app^.windows[Window_Search].visible {
-        app^.ui.target_window = app^.windows[Window_Search].id
-    }
-
-    turbo_ui.menu_bar(&app^.ui, turbo_ui.Rect{width = surface^.columns, height = 1})
-    if turbo_ui.menu_item(
-        &app^.ui,
-        520,
-        turbo_ui.Rect{column = 1, width = 8, height = 1},
-        "Save",
-    ) {
-        if turbo_editor.save(active_buffer(app)) {
-            app^.status = "Saved"
-        } else if active_buffer(app)^.disk_conflict {
-            app^.status = "Disk conflict: Save refused; Esc offers overwrite/discard"
-        } else {
-            app^.status = "Save failed"
-        }
-    }
-    if turbo_ui.menu_item(
-        &app^.ui,
-        521,
-        turbo_ui.Rect{column = 10, width = 8, height = 1},
-        "Files",
-    ) {
-        app^.windows[Window_Files].visible = !app^.windows[Window_Files].visible
-    }
-    if turbo_ui.menu_item(
-        &app^.ui,
-        522,
-        turbo_ui.Rect{column = 19, width = 10, height = 1},
-        "Buffers",
-    ) {
-        app^.windows[Window_Buffers].visible = !app^.windows[Window_Buffers].visible
-    }
-    if turbo_ui.menu_item(
-        &app^.ui,
-        523,
-        turbo_ui.Rect{column = 30, width = 8, height = 1},
-        "Find",
-    ) {
-        request_search(app)
-    }
-    if turbo_ui.menu_item(
-        &app^.ui,
-        524,
-        turbo_ui.Rect{column = 39, width = 9, height = 1},
-        "Build",
-    ) {
-        host_action(app, false)
-    }
-    if turbo_ui.menu_item(
-        &app^.ui,
-        525,
-        turbo_ui.Rect{column = 49, width = 7, height = 1},
-        "Run",
-    ) {
-        host_action(app, true)
-    }
-    if turbo_ui.menu_item(
-        &app^.ui,
-        526,
-        turbo_ui.Rect{column = 57, width = 9, height = 1},
-        "Project",
-    ) {
-        app^.windows[Window_Project].visible =
-            !app^.windows[Window_Project].visible
-    }
-    if turbo_ui.menu_item(
-        &app^.ui,
-        527,
-        turbo_ui.Rect{column = 67, width = 8, height = 1},
-        "Errors",
-    ) {
-        app^.windows[Window_Diagnostics].visible =
-            !app^.windows[Window_Diagnostics].visible
-    }
+    paint_app_menu_bar(app, surface)
 
     editor_bounds := turbo_ui.Rect{row = 1, width = surface^.columns}
     if surface^.rows > 2 {
@@ -1322,13 +1531,7 @@ paint_app :: proc(
         editor_theme,
     )
     if edit_result.save_requested {
-        if turbo_editor.save(active_buffer(app)) {
-            app^.status = "Saved"
-        } else if active_buffer(app)^.disk_conflict {
-            app^.status = "Disk conflict: Save refused; Esc offers overwrite/discard"
-        } else {
-            app^.status = "Save failed"
-        }
+        save_active_buffer(app)
     }
     if edit_result.search_requested {
         request_search(app)
@@ -1363,7 +1566,12 @@ paint_app :: proc(
         } else if index == Window_Denials {
             title = "Denials (F10)"
         }
-        window_context := turbo_ui.begin_window(&app^.ui, window, title)
+        window_context: turbo_ui.Window_Context
+        if index == Window_Search || index == Window_Quit {
+            window_context = turbo_ui.dialog_begin(&app^.ui, window, title)
+        } else {
+            window_context = turbo_ui.begin_window(&app^.ui, window, title)
+        }
         if window_context.visible {
             switch index {
             case Window_Files:
@@ -1383,7 +1591,7 @@ paint_app :: proc(
                     &app^.buffer_scroll,
                 )
             case Window_Search:
-                paint_search(app, window_context.content, editor_theme)
+                paint_search(app, window_context.content)
             case Window_Quit:
                 should_quit = paint_quit(app, window_context.content)
             case Window_Diagnostics:
@@ -1402,7 +1610,18 @@ paint_app :: proc(
             }
         }
         turbo_ui.end_window(&app^.ui, window_context)
+        if window_context.close_requested {
+            if index == Window_Search {
+                close_search(app)
+            } else if index == Window_Quit {
+                cancel_quit(app)
+            } else {
+                turbo_ui.hide_window(&app^.ui, app^.windows[:], window^.id)
+            }
+        }
     }
+
+    should_quit = should_quit || paint_app_menus(app)
 
     if surface^.rows != 0 {
         turbo_ui.status_bar(

@@ -27,13 +27,17 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
 - [x] Add immediate-mode frame state: hot, active, and keyboard-focused IDs.
   Use ordinary procedures over a caller-owned `tui.Surface`; retain no widget
   objects, callback tree, application pointers, or hidden event loop.
-- [x] Add rows, columns, padding and splitters, followed by menus, buttons,
-  checkboxes, lists, scrollbars, dialogs, and status bars.
-- [x] Add draggable/resizable overlapping windows. The caller owns persistent
-  window bounds, visibility and z-order; the library mutates explicit state
-  passed to it and owns only transient interaction state.
-- [x] Test geometry, clipping, focus traversal, activation, dragging, resizing,
-  and cell output using synthetic events without opening a terminal.
+- [x] Add rows, columns, padding and splitters; buttons with default/cancel
+  roles; labels, checkboxes, radio buttons, UTF-8 text boxes, selection combo
+  boxes, lists, scrollbars, dialogs, and status bars.
+- [x] Add real menu overlays with Alt access, arrow navigation, actions,
+  checked/radio/disabled rows, separators, and shortcut labels.
+- [x] Add persistent active-window/focus routing, normal/tool/dialog capability
+  sets, real modal capture, a separate popup layer, close requests, reversible
+  zoom, visible mouse resize, and keyboard move/size.
+- [x] Test geometry, clipping, focus traversal, values, text editing, menus,
+  popups, modality, close/zoom/resize, and cell output using synthetic events
+  without opening a terminal.
 
 ## 2. Complete terminal input and the gallery
 
