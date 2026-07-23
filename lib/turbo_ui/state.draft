@@ -72,6 +72,13 @@ pub State :: struct {
     drag_start: Point,
     drag_start_rect: Rect,
 
+    // scrollbar_grab_offset is the row within the current proportional thumb
+    // where a drag began. It is meaningful only while active_kind is
+    // scrollbar. Retaining this one scalar makes dragging preserve the point
+    // under the mouse instead of making the thumb jump to center on first
+    // movement.
+    scrollbar_grab_offset: usize,
+
     // repaint_requested is frame output, not persistent application state.
     // A control sets it when interaction can only be resolved after its row or
     // focus traversal has already painted. The application then performs one

@@ -133,21 +133,22 @@ test_value_widgets :: proc(test: ^testing.Test) {
     testing.expect(test, checked)
 
     items := [5]string{"zero", "one", "two", "three", "four"}
-    selected: usize
-    scroll: usize
+    list_state: List_State
     state.focused_id = 21
     begin_frame(&state, &surface, key_event(Key_Event{code = .page_down}), theme)
-    testing.expect(test, list(
+    list_result := list(
         &state,
         21,
+        22,
         Rect{column = 1, row = 3, width = 12, height = 2},
         items[:],
-        &selected,
-        &scroll,
-    ))
+        &list_state,
+    )
+    testing.expect(test, list_result.selection_changed)
     end_frame(&state)
-    testing.expect(test, selected == 2 && scroll == 1)
+    testing.expect(test, list_state.cursor == 2 && list_state.offset == 1)
 
+    scroll: usize
     begin_frame(&state, &surface, mouse_event(Mouse_Event{
         position = Point{column = 15, row = 6},
         action = .wheel,
@@ -155,14 +156,14 @@ test_value_widgets :: proc(test: ^testing.Test) {
     }), theme)
     scrollbar_vertical(
         &state,
-        22,
+        23,
         Rect{column = 15, row = 3, width = 1, height = 4},
         10,
         4,
         &scroll,
     )
     end_frame(&state)
-    testing.expect(test, scroll == 2)
+    testing.expect(test, scroll == 3)
 
     split: usize = 5
     begin_frame(&state, &surface, mouse_event(Mouse_Event{
@@ -173,7 +174,7 @@ test_value_widgets :: proc(test: ^testing.Test) {
     }), theme)
     splitter(
         &state,
-        23,
+        24,
         Rect{column = 0, row = 8, width = 20, height = 2},
         .horizontal,
         &split,
@@ -188,7 +189,7 @@ test_value_widgets :: proc(test: ^testing.Test) {
     }), theme)
     testing.expect(test, splitter(
         &state,
-        23,
+        24,
         Rect{column = 0, row = 8, width = 20, height = 2},
         .horizontal,
         &split,
@@ -198,6 +199,124 @@ test_value_widgets :: proc(test: ^testing.Test) {
     end_frame(&state)
     testing.expect(test, split == 9)
     tui.surface_destroy(&surface)
+}
+
+// test_collection_viewports fixes the behavior which distinguishes the richer
+// collection layer from a position marker: proportional thumb size, page
+// regions, grab-relative dragging, viewport-only wheel movement, explicit row
+// activation, and shared read-only text scrolling.
+test_collection_viewports :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 40, 14)
+    defer tui.surface_destroy(&surface)
+    state: State
+    theme := turbo_theme()
+    scrollbar_bounds := Rect{column = 30, row = 1, width = 1, height = 10}
+
+    geometry := scrollbar_geometry(scrollbar_bounds, 40, 10, 15)
+    testing.expect(test, geometry.maximum == 30)
+    testing.expect(test, geometry.track.row == 2 && geometry.track.height == 8)
+    testing.expect(test, geometry.thumb.row == 5 && geometry.thumb.height == 2)
+
+    // A track press below the thumb advances exactly one visible page.
+    offset: usize
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 30, row = 7},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    testing.expect(test, scrollbar_vertical(
+        &state, 30, scrollbar_bounds, 40, 10, &offset,
+    ))
+    end_frame(&state)
+    testing.expect(test, offset == 10)
+    (up, up_valid) := tui.cell_at(&surface, 30, 1)
+    (down, down_valid) := tui.cell_at(&surface, 30, 10)
+    testing.expect(test, up_valid && up.value == '▲')
+    testing.expect(test, down_valid && down.value == '▼')
+
+    // Press the lower half of a two-row thumb, then move it. Preserving the
+    // one-row grab offset yields logical offset 25 rather than jumping as if
+    // the pointer always grabbed the leading cell.
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 30, row = 5},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    scrollbar_vertical(&state, 30, scrollbar_bounds, 40, 10, &offset)
+    end_frame(&state)
+    testing.expect(test, state.scrollbar_grab_offset == 1)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 30, row = 8},
+        action = .move,
+        primary_down = true,
+    }), theme)
+    scrollbar_vertical(&state, 30, scrollbar_bounds, 40, 10, &offset)
+    end_frame(&state)
+    testing.expect(test, offset == 25)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 30, row = 8},
+        action = .release,
+        button = .primary,
+    }), theme)
+    scrollbar_vertical(&state, 30, scrollbar_bounds, 40, 10, &offset)
+    end_frame(&state)
+
+    items := [10]string{
+        "zero", "one", "two", "three", "four",
+        "five", "six", "seven", "eight", "nine",
+    }
+    model := List_State{cursor = 4, offset = 3}
+    list_bounds := Rect{column = 1, row = 1, width = 16, height = 3}
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 2},
+        action = .wheel,
+        wheel_delta = 1,
+    }), theme)
+    list(&state, 31, 32, list_bounds, items[:], &model)
+    end_frame(&state)
+    testing.expect(test, model.cursor == 4 && model.offset == 6)
+
+    // Click activation is completed on release over the row selected by the
+    // corresponding press; the press alone only changes selection.
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 1},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    pressed := list(
+        &state, 31, 32, list_bounds, items[:], &model, .click_and_enter,
+    )
+    end_frame(&state)
+    testing.expect(test, !pressed.activated && model.cursor == 6)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 1},
+        action = .release,
+        button = .primary,
+    }), theme)
+    released := list(
+        &state, 31, 32, list_bounds, items[:], &model, .click_and_enter,
+    )
+    end_frame(&state)
+    testing.expect(test, released.activated && released.activated_index == 6)
+
+    text := [9]u8{97, 10, 98, 10, 99, 10, 100, 10, 101}
+    text_model: Text_View_State
+    state.focused_id = 33
+    begin_frame(&state, &surface, key_event(Key_Event{code = .page_down}), theme)
+    testing.expect(test, text_view_bytes(
+        &state,
+        33,
+        34,
+        Rect{column = 18, row = 1, width = 10, height = 2},
+        text[:],
+        &text_model,
+    ))
+    end_frame(&state)
+    testing.expect(test, text_model.offset == 2)
 }
 
 // test_window_order_drag_and_resize fixes z selection, explicit capture, and

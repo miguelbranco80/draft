@@ -1,0 +1,255 @@
+// Scroll controls translate one caller-owned logical offset into terminal
+// geometry. The module owns no content, timer, repetition policy, or retained
+// widget object. It computes proportional thumb geometry with wide arithmetic,
+// handles arrows, page regions, wheel input, and grab-relative dragging, then
+// paints through the current turbo_ui frame. Lists and text viewports share
+// these exact rules so their last page and terminal behavior cannot diverge.
+package turbo_ui
+
+// Scrollbar_Geometry is the complete frame-local vertical decomposition. All
+// rectangles are half-open Surface coordinates. maximum is the greatest legal
+// logical offset. A track may be empty in a one- or two-row transient, and a
+// thumb is empty when no track exists.
+Scrollbar_Geometry :: struct {
+    up: Rect,
+    down: Rect,
+    track: Rect,
+    thumb: Rect,
+    maximum: usize,
+}
+
+Scroll_Wheel_Rows :: 3
+
+// maximum_scroll returns the greatest valid first visible item. total and
+// visible are logical row counts rather than terminal coordinates.
+maximum_scroll :: proc(total, visible: usize) -> usize {
+    if total <= visible {
+        return 0
+    }
+    return total - visible
+}
+
+// scroll_backward and scroll_forward perform saturating logical movement.
+// They deliberately accept the already-derived maximum so every input path
+// uses the same clamped domain.
+scroll_backward :: proc(offset: ^usize, amount: usize) {
+    if amount > offset^ {
+        offset^ = 0
+    } else {
+        offset^ -= amount
+    }
+}
+
+scroll_forward :: proc(offset: ^usize, maximum, amount: usize) {
+    if offset^ >= maximum || amount >= maximum - offset^ {
+        offset^ = maximum
+    } else {
+        offset^ += amount
+    }
+}
+
+// proportional_position maps one bounded logical value into a bounded cell
+// extent without overflowing usize when a caller describes a very large data
+// set. The result is at most extent.
+proportional_position :: proc(value, maximum, extent: usize) -> usize {
+    if maximum == 0 || extent == 0 {
+        return 0
+    }
+    numerator := cast[u128](value) * cast[u128](extent)
+    return cast[usize](numerator / cast[u128](maximum))
+}
+
+// scrollbar_geometry reserves arrow cells when at least two rows exist, then
+// gives the remaining track a thumb proportional to visible/total. A nonempty
+// scrollable track always retains a one-row thumb. An unscrollable viewport
+// fills the complete track, making the disabled state visually stable.
+scrollbar_geometry :: proc(
+    bounds: Rect,
+    total, visible, offset: usize,
+) -> Scrollbar_Geometry {
+    result := Scrollbar_Geometry{
+        maximum = maximum_scroll(total, visible),
+    }
+    if bounds.width == 0 || bounds.height == 0 {
+        return result
+    }
+    if bounds.height == 1 {
+        result.track = bounds
+    } else {
+        result.up = Rect{
+            column = bounds.column,
+            row = bounds.row,
+            width = bounds.width,
+            height = 1,
+        }
+        result.down = Rect{
+            column = bounds.column,
+            row = rect_bottom(bounds) - 1,
+            width = bounds.width,
+            height = 1,
+        }
+        if bounds.height > 2 {
+            result.track = Rect{
+                column = bounds.column,
+                row = bounds.row + 1,
+                width = bounds.width,
+                height = bounds.height - 2,
+            }
+        }
+    }
+    if result.track.height == 0 {
+        return result
+    }
+
+    thumb_height := result.track.height
+    if result.maximum != 0 {
+        thumb_height = 1
+        if total != 0 && visible != 0 {
+            scaled := cast[u128](result.track.height) * cast[u128](visible)
+            thumb_height = cast[usize](scaled / cast[u128](total))
+            if thumb_height == 0 {
+                thumb_height = 1
+            }
+            if thumb_height > result.track.height {
+                thumb_height = result.track.height
+            }
+        }
+    }
+    travel := result.track.height - thumb_height
+    clamped_offset := offset
+    if clamped_offset > result.maximum {
+        clamped_offset = result.maximum
+    }
+    result.thumb = Rect{
+        column = result.track.column,
+        row = result.track.row + proportional_position(
+            clamped_offset,
+            result.maximum,
+            travel,
+        ),
+        width = result.track.width,
+        height = thumb_height,
+    }
+    return result
+}
+
+// scrollbar_vertical mutates offset inside [0, maximum_scroll]. Arrow presses
+// move one row, track presses move one page, the wheel moves three rows, and a
+// thumb drag preserves its original grab row. Pressing an unscrollable control
+// consumes no event. The return value reports a logical offset change.
+pub scrollbar_vertical :: proc(
+    state: ^State,
+    id: Widget_Id,
+    bounds: Rect,
+    total, visible: usize,
+    offset: ^usize,
+) -> bool {
+    assert(state^.frame_open, "turbo_ui scrollbar outside a frame")
+    assert(id != No_Widget, "turbo_ui widget ID zero is reserved")
+    geometry := scrollbar_geometry(bounds, total, visible, offset^)
+    if offset^ > geometry.maximum {
+        offset^ = geometry.maximum
+    }
+    old := offset^
+    reaches := mouse_reaches_current_scope(state, bounds)
+    if reaches {
+        state^.hot_id = id
+    }
+
+    if !state^.event_handled && reaches && geometry.maximum != 0 &&
+        state^.event.kind == .mouse {
+        mouse := state^.event.mouse
+        if mouse.action == .wheel {
+            if mouse.wheel_delta < 0 {
+                scroll_backward(offset, Scroll_Wheel_Rows)
+            } else if mouse.wheel_delta > 0 {
+                scroll_forward(offset, geometry.maximum, Scroll_Wheel_Rows)
+            }
+            state^.event_handled = true
+        } else if mouse.action == .press && mouse.button == .primary {
+            page := visible
+            if page == 0 {
+                page = 1
+            }
+            if point_in_rect(mouse.position, geometry.up) {
+                scroll_backward(offset, 1)
+            } else if point_in_rect(mouse.position, geometry.down) {
+                scroll_forward(offset, geometry.maximum, 1)
+            } else if point_in_rect(mouse.position, geometry.thumb) {
+                state^.active_id = id
+                state^.active_kind = .scrollbar
+                state^.scrollbar_grab_offset =
+                    mouse.position.row - geometry.thumb.row
+            } else if point_in_rect(mouse.position, geometry.track) {
+                if mouse.position.row < geometry.thumb.row {
+                    scroll_backward(offset, page)
+                } else {
+                    scroll_forward(offset, geometry.maximum, page)
+                }
+            }
+            state^.event_handled = true
+        }
+    }
+
+    dragging := state^.active_id == id && state^.active_kind == .scrollbar &&
+        state^.event.kind == .mouse
+    if dragging && state^.event.mouse.action == .move &&
+        state^.event.mouse.primary_down && geometry.track.height != 0 {
+        travel := geometry.track.height - geometry.thumb.height
+        desired := geometry.track.row
+        if state^.event.mouse.position.row > state^.scrollbar_grab_offset {
+            desired = state^.event.mouse.position.row -
+                state^.scrollbar_grab_offset
+        }
+        if desired < geometry.track.row {
+            desired = geometry.track.row
+        }
+        maximum_row := geometry.track.row + travel
+        if desired > maximum_row {
+            desired = maximum_row
+        }
+        relative := desired - geometry.track.row
+        if travel == 0 {
+            offset^ = 0
+        } else {
+            numerator := cast[u128](relative) * cast[u128](geometry.maximum)
+            // Half-up rounding makes both end points exact while avoiding the
+            // visible backward bias of truncation on short terminal tracks.
+            numerator += cast[u128](travel / 2)
+            offset^ = cast[usize](numerator / cast[u128](travel))
+        }
+        state^.event_handled = true
+    }
+    if dragging && state^.event.mouse.action == .release &&
+        state^.event.mouse.button == .primary {
+        state^.active_id = No_Widget
+        state^.active_kind = .none
+        state^.scrollbar_grab_offset = 0
+        state^.event_handled = true
+    }
+
+    // Recompute after interaction so the thumb in this frame represents the
+    // newly published offset rather than lagging by one input event.
+    geometry = scrollbar_geometry(bounds, total, visible, offset^)
+    fill_rect(state^.surface, state^.clip, bounds, '░', state^.theme.disabled)
+    arrow_style := state^.theme.text
+    if geometry.maximum == 0 {
+        arrow_style = state^.theme.disabled
+    }
+    if !rect_empty(geometry.up) {
+        fill_rect(state^.surface, state^.clip, geometry.up, '▲', arrow_style)
+    }
+    if !rect_empty(geometry.down) {
+        fill_rect(state^.surface, state^.clip, geometry.down, '▼', arrow_style)
+    }
+    if !rect_empty(geometry.thumb) {
+        fill_rect(
+            state^.surface,
+            state^.clip,
+            geometry.thumb,
+            '█',
+            state^.theme.selected,
+        )
+    }
+    return offset^ != old
+}

@@ -43,8 +43,7 @@ Gallery_State :: struct {
     combo_selection: usize,
     text_box: turbo_ui.Text_Box_State,
     text: [Text_Capacity]u8,
-    selected: usize,
-    scroll: usize,
+    files: turbo_ui.List_State,
     split: usize,
     clicks: usize,
 }
@@ -150,8 +149,9 @@ paint_controls :: proc(
     )
 }
 
-// paint_files couples one list and one explicit scrollbar through caller-owned
-// selected/scroll values. The borrowed literals remain valid for the call.
+// paint_files demonstrates the complete compound list: caller-owned cursor and
+// viewport state, keyboard selection, and the integrated proportional
+// scrollbar. The borrowed literals remain valid only for this frame.
 paint_files :: proc(
     gallery: ^Gallery_State,
     content: turbo_ui.Rect,
@@ -170,32 +170,13 @@ paint_files :: proc(
     if content.width == 0 {
         return
     }
-    list_width := content.width - 1
     turbo_ui.list(
         &gallery^.ui,
         210,
-        turbo_ui.Rect{
-            column = content.column,
-            row = content.row,
-            width = list_width,
-            height = content.height,
-        },
-        files[:],
-        &gallery^.selected,
-        &gallery^.scroll,
-    )
-    turbo_ui.scrollbar_vertical(
-        &gallery^.ui,
         211,
-        turbo_ui.Rect{
-            column = content.column + list_width,
-            row = content.row,
-            width = 1,
-            height = content.height,
-        },
-        len(files),
-        content.height,
-        &gallery^.scroll,
+        content,
+        files[:],
+        &gallery^.files,
     )
 }
 

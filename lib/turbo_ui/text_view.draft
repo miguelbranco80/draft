@@ -1,0 +1,149 @@
+// Text viewports provide reusable read-only line scrolling over caller-owned
+// UTF-8 bytes. They allocate no line table: newline bytes are safe structural
+// delimiters inside valid UTF-8, so each frame counts and scans deterministically.
+// Keyboard, wheel, focus, and proportional-scrollbar behavior is shared with
+// lists through the scroll module. The caller owns the bytes and Text_View_State.
+package turbo_ui
+
+// Text_View_State retains only the first visible logical line. It owns no text
+// and remains valid when the caller replaces the byte buffer; the next call
+// clamps offset against the new line count.
+pub Text_View_State :: struct {
+    offset: usize,
+}
+
+text_view_line_count :: proc(bytes: []u8) -> usize {
+    count: usize = 1
+    for byte in bytes {
+        if byte == 10 {
+            count += 1
+        }
+    }
+    return count
+}
+
+// text_view_bytes paints one line per terminal row and returns whether the
+// logical offset changed. body_id and scrollbar_id are distinct stable IDs.
+// The final column remains reserved for the scrollbar even when all lines fit,
+// preventing resize-induced text jitter. Invalid UTF-8 follows
+// write_clipped_bytes' explicit false result internally; compiler/tooling text
+// supplied here is expected to have already validated source encoding.
+pub text_view_bytes :: proc(
+    state: ^State,
+    body_id, scrollbar_id: Widget_Id,
+    bounds: Rect,
+    bytes: []u8,
+    model: ^Text_View_State,
+) -> bool {
+    assert(state^.frame_open, "turbo_ui text view outside a frame")
+    assert(body_id != No_Widget && scrollbar_id != No_Widget,
+        "turbo_ui text view IDs must be nonzero")
+    assert(body_id != scrollbar_id,
+        "turbo_ui text view IDs must be distinct")
+    old := model^.offset
+    text_bounds := bounds
+    scrollbar_bounds: Rect
+    if text_bounds.width > 1 {
+        text_bounds.width -= 1
+        scrollbar_bounds = Rect{
+            column = text_bounds.column + text_bounds.width,
+            row = bounds.row,
+            width = 1,
+            height = bounds.height,
+        }
+    }
+    total := text_view_line_count(bytes)
+    maximum := maximum_scroll(total, text_bounds.height)
+    if model^.offset > maximum {
+        model^.offset = maximum
+    }
+
+    interaction := focus_area(state, body_id, text_bounds)
+    if !state^.event_handled && interaction.hot &&
+        state^.event.kind == .mouse &&
+        state^.event.mouse.action == .wheel && maximum != 0 {
+        if state^.event.mouse.wheel_delta < 0 {
+            scroll_backward(&model^.offset, Scroll_Wheel_Rows)
+        } else if state^.event.mouse.wheel_delta > 0 {
+            scroll_forward(&model^.offset, maximum, Scroll_Wheel_Rows)
+        }
+        state^.event_handled = true
+    }
+    if !state^.event_handled && has_focus(state, body_id) &&
+        state^.event.kind == .key {
+        key := state^.event.key
+        if key.code == .up {
+            scroll_backward(&model^.offset, 1)
+            state^.event_handled = true
+        } else if key.code == .down {
+            scroll_forward(&model^.offset, maximum, 1)
+            state^.event_handled = true
+        } else if key.code == .page_up {
+            amount := text_bounds.height
+            if amount == 0 {
+                amount = 1
+            }
+            scroll_backward(&model^.offset, amount)
+            state^.event_handled = true
+        } else if key.code == .page_down {
+            amount := text_bounds.height
+            if amount == 0 {
+                amount = 1
+            }
+            scroll_forward(&model^.offset, maximum, amount)
+            state^.event_handled = true
+        } else if key.code == .home {
+            model^.offset = 0
+            state^.event_handled = true
+        } else if key.code == .end {
+            model^.offset = maximum
+            state^.event_handled = true
+        }
+    }
+    if !rect_empty(scrollbar_bounds) {
+        if mouse_reaches_current_scope(state, bounds) &&
+            state^.event.kind == .mouse &&
+            state^.event.mouse.action == .press &&
+            state^.event.mouse.button == .primary {
+            state^.focused_id = body_id
+        }
+        scrollbar_vertical(
+            state,
+            scrollbar_id,
+            scrollbar_bounds,
+            total,
+            text_bounds.height,
+            &model^.offset,
+        )
+    }
+
+    fill_rect(state^.surface, state^.clip, text_bounds, ' ', state^.theme.window)
+    line_index: usize
+    begin: usize
+    row: usize
+    for begin <= len(bytes) && row < text_bounds.height {
+        end := begin
+        for end < len(bytes) && bytes[end] != 10 {
+            end += 1
+        }
+        if line_index >= model^.offset {
+            write_clipped_bytes(
+                state^.surface,
+                intersect(state^.clip, text_bounds),
+                Point{
+                    column = text_bounds.column,
+                    row = text_bounds.row + row,
+                },
+                bytes[begin:end],
+                state^.theme.text,
+            )
+            row += 1
+        }
+        line_index += 1
+        if end == len(bytes) {
+            break
+        }
+        begin = end + 1
+    }
+    return model^.offset != old
+}

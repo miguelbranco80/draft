@@ -81,10 +81,8 @@ App :: struct {
     buffer_has_root: [Maximum_Buffers]bool,
 
     windows: [Window_Count]turbo_ui.Window_State,
-    file_selection: usize,
-    file_scroll: usize,
-    buffer_selection: usize,
-    buffer_scroll: usize,
+    files: turbo_ui.List_State,
+    buffers_list: turbo_ui.List_State,
 
     search: [Search_Capacity]u8,
     search_box: turbo_ui.Text_Box_State,
@@ -100,12 +98,11 @@ App :: struct {
     diagnostic_count: u32,
     tooling_text: [Text_Window_Count][Tooling_Text_Capacity]u8,
     tooling_length: [Text_Window_Count]usize,
-    tooling_scroll: [Text_Window_Count]usize,
+    tooling_views: [Text_Window_Count]turbo_ui.Text_View_State,
     project_root_names: [Maximum_Project_Roots][Project_Root_Name_Capacity]u8,
     project_root_length: [Maximum_Project_Roots]usize,
     project_root_count: usize,
-    project_root_cursor: usize,
-    project_root_scroll: usize,
+    project_roots: turbo_ui.List_State,
     // Project source rows are compiler-discovered ordinary workspace files.
     // Each label/path owner is independent because C ABI copy operations
     // return variable-length bytes that cannot borrow compiler storage.
@@ -287,7 +284,7 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
         }
     }
     app^.active = index
-    app^.buffer_selection = index
+    app^.buffers_list.cursor = index
     editor_focus := cast[turbo_ui.Widget_Id](600 + app^.active)
     app^.windows[Window_Editor].focus_id = editor_focus
     turbo_ui.show_window(
@@ -349,9 +346,9 @@ refresh_project_sources :: proc(app: ^App) {
         )
         app^.project_source_count += 1
     }
-    if app^.file_selection >= app^.project_source_count {
-        app^.file_selection = 0
-        app^.file_scroll = 0
+    if app^.files.cursor >= app^.project_source_count {
+        app^.files.cursor = 0
+        app^.files.offset = 0
     }
 }
 
@@ -464,9 +461,9 @@ refresh_project_roots :: proc(app: ^App) {
     app^.project_root_count = count
     selected := app^.host.selected_root(app^.host.user)
     if selected < count {
-        app^.project_root_cursor = selected
+        app^.project_roots.cursor = selected
     } else {
-        app^.project_root_cursor = 0
+        app^.project_roots.cursor = 0
     }
     for index: usize = 0; index < count; index += 1 {
         required := app^.host.copy_root_name(
@@ -498,7 +495,7 @@ bind_active_buffer_to_host_root :: proc(app: ^App) {
 refresh_tooling_text :: proc(app: ^App) {
     for index: usize = 0; index < Text_Window_Count; index += 1 {
         app^.tooling_length[index] = 0
-        app^.tooling_scroll[index] = 0
+        app^.tooling_views[index].offset = 0
     }
     if app^.host.copy_diagnostics != nil {
         required := app^.host.copy_diagnostics(
@@ -705,7 +702,7 @@ open_project_source :: proc(app: ^App, source_index: usize) -> bool {
     path := memory.owned_string_bytes(&app^.project_source_paths[source_index])
     for index: usize = 0; index < app^.buffer_count; index += 1 {
         if byte_views_equal(turbo_editor.path_bytes(&app^.buffers[index]), path) {
-            app^.file_selection = source_index
+            app^.files.cursor = source_index
             return activate_buffer(app, index)
         }
     }
@@ -713,8 +710,8 @@ open_project_source :: proc(app: ^App, source_index: usize) -> bool {
         return false
     }
     app^.active = app^.buffer_count - 1
-    app^.buffer_selection = app^.active
-    app^.file_selection = source_index
+    app^.buffers_list.cursor = app^.active
+    app^.files.cursor = source_index
     bind_active_buffer_to_host_root(app)
     return activate_buffer(app, app^.active)
 }
@@ -742,7 +739,7 @@ open_selected_host_source :: proc(app: ^App) -> bool {
         if byte_views_equal(turbo_editor.path_bytes(&app^.buffers[index]), path) {
             source_index := project_source_index(app, path)
             if source_index < app^.project_source_count {
-                app^.file_selection = source_index
+                app^.files.cursor = source_index
             }
             app^.buffer_root[index] = selected_root
             app^.buffer_has_root[index] = true
@@ -753,10 +750,10 @@ open_selected_host_source :: proc(app: ^App) -> bool {
         return false
     }
     app^.active = app^.buffer_count - 1
-    app^.buffer_selection = app^.active
+    app^.buffers_list.cursor = app^.active
     source_index := project_source_index(app, path)
     if source_index < app^.project_source_count {
-        app^.file_selection = source_index
+        app^.files.cursor = source_index
     }
     app^.buffer_root[app^.active] = selected_root
     app^.buffer_has_root[app^.active] = true
@@ -780,7 +777,7 @@ select_project_root :: proc(app: ^App, selected: usize) -> bool {
     refresh_project_sources(app)
     if open_selected_host_source(app) {
         if selected < app^.project_root_count {
-            app^.project_root_cursor = selected
+            app^.project_roots.cursor = selected
         }
         return true
     }
@@ -917,10 +914,8 @@ open_workspace_now :: proc(app: ^App) -> bool {
     close_workspace_dialogs(app)
     destroy_app(app)
     app^.active = 0
-    app^.file_selection = 0
-    app^.file_scroll = 0
-    app^.buffer_selection = 0
-    app^.buffer_scroll = 0
+    app^.files = turbo_ui.List_State{}
+    app^.buffers_list = turbo_ui.List_State{}
     refresh_project_roots(app)
     refresh_project_sources(app)
     if !open_selected_host_source(app) {
@@ -1504,116 +1499,27 @@ paint_path_list :: proc(
     content: turbo_ui.Rect,
     id: turbo_ui.Widget_Id,
     kind: Path_List_Kind,
-    selected: ^usize,
-    scroll: ^usize,
 ) {
     count := path_list_count(app, kind)
     if content.width == 0 || content.height == 0 {
         return
     }
-    text_bounds := content
-    if text_bounds.width > 1 {
-        text_bounds.width -= 1
+    model := &app^.files
+    if kind == .open_buffers {
+        model = &app^.buffers_list
     }
-    if count == 0 {
-        selected^ = 0
-        scroll^ = 0
-    } else if selected^ >= count {
-        selected^ = count - 1
-    }
-
-    activate := false
-    moved := false
-    interaction := turbo_ui.focus_area(&app^.ui, id, text_bounds)
-    if interaction.activated && app^.ui.event.kind == .mouse && count != 0 {
-        row := app^.ui.event.mouse.position.row - text_bounds.row
-        index := scroll^ + row
-        if index < count {
-            selected^ = index
-            activate = true
-        }
-    }
-    if !app^.ui.event_handled && turbo_ui.has_focus(&app^.ui, id) &&
-        app^.ui.event.kind == .key && count != 0 {
-        key := app^.ui.event.key
-        if key.code == .up && selected^ > 0 {
-            selected^ -= 1
-            moved = true
-        } else if key.code == .down && selected^ + 1 < count {
-            selected^ += 1
-            moved = true
-        } else if key.code == .home {
-            selected^ = 0
-            moved = true
-        } else if key.code == .end {
-            selected^ = count - 1
-            moved = true
-        } else if key.code == .page_up {
-            if selected^ > text_bounds.height {
-                selected^ -= text_bounds.height
-            } else {
-                selected^ = 0
-            }
-            moved = true
-        } else if key.code == .page_down {
-            selected^ += text_bounds.height
-            if selected^ >= count {
-                selected^ = count - 1
-            }
-            moved = true
-        } else if key.code == .enter {
-            activate = true
-            app^.ui.event_handled = true
-        }
-        if moved {
-            app^.ui.event_handled = true
-        }
-    }
-
-    if selected^ < scroll^ {
-        scroll^ = selected^
-    } else if text_bounds.height != 0 &&
-        selected^ >= scroll^ + text_bounds.height {
-        scroll^ = selected^ - text_bounds.height + 1
-    }
-    maximum_scroll: usize
-    if count > text_bounds.height {
-        maximum_scroll = count - text_bounds.height
-    }
-    if scroll^ > maximum_scroll {
-        scroll^ = maximum_scroll
-    }
-
-    turbo_ui.fill_rect(
-        app^.ui.surface,
-        app^.ui.clip,
-        text_bounds,
-        ' ',
-        app^.ui.theme.window,
+    view := turbo_ui.list_view(
+        &app^.ui,
+        id,
+        id + 1,
+        content,
+        count,
+        model,
+        .click_and_enter,
     )
     active_path := turbo_editor.path_bytes(active_buffer(app))
-    for row: usize = 0; row < text_bounds.height; row += 1 {
-        index := scroll^ + row
-        if index >= count {
-            break
-        }
-        row_bounds := turbo_ui.Rect{
-            column = text_bounds.column,
-            row = text_bounds.row + row,
-            width = text_bounds.width,
-            height = 1,
-        }
-        style := app^.ui.theme.text
-        if index == selected^ {
-            style = app^.ui.theme.selected
-            turbo_ui.fill_rect(
-                app^.ui.surface,
-                app^.ui.clip,
-                row_bounds,
-                ' ',
-                style,
-            )
-        }
+    for index := view.first; index < view.end; index += 1 {
+        row := turbo_ui.list_row_begin(&app^.ui, view, index)
         marker := "  "
         if kind == .open_buffers && app^.buffers[index].dirty {
             marker = "* "
@@ -1627,16 +1533,16 @@ paint_path_list :: proc(
         }
         turbo_ui.write_clipped(
             app^.ui.surface,
-            turbo_ui.intersect(app^.ui.clip, row_bounds),
-            turbo_ui.Point{column = row_bounds.column, row = row_bounds.row},
+            turbo_ui.intersect(app^.ui.clip, row.bounds),
+            turbo_ui.Point{column = row.bounds.column, row = row.bounds.row},
             marker,
-            style,
+            row.style,
         )
-        if row_bounds.width > 2 {
+        if row.bounds.width > 2 {
             label_bounds := turbo_ui.Rect{
-                column = row_bounds.column + 2,
-                row = row_bounds.row,
-                width = row_bounds.width - 2,
+                column = row.bounds.column + 2,
+                row = row.bounds.row,
+                width = row.bounds.width - 2,
                 height = 1,
             }
             turbo_ui.write_clipped_bytes(
@@ -1647,29 +1553,12 @@ paint_path_list :: proc(
                     row = label_bounds.row,
                 },
                 path_list_text(app, kind, index),
-                style,
+                row.style,
             )
         }
     }
-    if content.width > text_bounds.width {
-        if turbo_ui.scrollbar_vertical(
-            &app^.ui,
-            id + 1,
-            turbo_ui.Rect{
-                column = content.column + content.width - 1,
-                row = content.row,
-                width = 1,
-                height = content.height,
-            },
-            count,
-            text_bounds.height,
-            scroll,
-        ) && count != 0 {
-            selected^ = scroll^
-        }
-    }
-    if activate && selected^ < count {
-        if activate_path_row(app, kind, selected^) {
+    if view.activated && view.activated_index < count {
+        if activate_path_row(app, kind, view.activated_index) {
             if kind == .project_sources && app^.host.source_count != nil {
                 app^.status = "Project source opened"
             } else {
@@ -1695,114 +1584,37 @@ paint_project_root_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
     if bounds.width == 0 || bounds.height == 0 {
         return
     }
-    text_bounds := bounds
-    if text_bounds.width > 1 {
-        text_bounds.width -= 1
-    }
-    focus := turbo_ui.focus_area(&app^.ui, 760, text_bounds)
-    if focus.activated && app^.ui.event.kind == .mouse &&
-        app^.project_root_count != 0 {
-        row := app^.ui.event.mouse.position.row - text_bounds.row
-        selected := app^.project_root_scroll + row
-        if selected < app^.project_root_count {
-            app^.project_root_cursor = selected
-            if select_project_root(app, selected) {
-                app^.status = "Active project root changed"
-            } else {
-                app^.status = "Could not activate the selected project root"
-            }
-        }
-    }
-    if !app^.ui.event_handled && turbo_ui.has_focus(&app^.ui, 760) &&
-        app^.ui.event.kind == .key && app^.project_root_count != 0 {
-        key := app^.ui.event.key
-        if key.code == .up && app^.project_root_cursor > 0 {
-            app^.project_root_cursor -= 1
-            app^.ui.event_handled = true
-        } else if key.code == .down &&
-            app^.project_root_cursor + 1 < app^.project_root_count {
-            app^.project_root_cursor += 1
-            app^.ui.event_handled = true
-        } else if key.code == .home {
-            app^.project_root_cursor = 0
-            app^.ui.event_handled = true
-        } else if key.code == .end {
-            app^.project_root_cursor = app^.project_root_count - 1
-            app^.ui.event_handled = true
-        } else if key.code == .enter {
-            if select_project_root(app, app^.project_root_cursor) {
-                app^.status = "Active project root changed"
-            } else {
-                app^.status = "Could not activate the selected project root"
-            }
-            app^.ui.event_handled = true
-        }
-    }
-
-    maximum_scroll: usize
-    if app^.project_root_count > text_bounds.height {
-        maximum_scroll = app^.project_root_count - text_bounds.height
-    }
-    if app^.project_root_cursor < app^.project_root_scroll {
-        app^.project_root_scroll = app^.project_root_cursor
-    } else if text_bounds.height != 0 &&
-        app^.project_root_cursor >= app^.project_root_scroll + text_bounds.height {
-        app^.project_root_scroll =
-            app^.project_root_cursor - text_bounds.height + 1
-    }
-    if app^.project_root_scroll > maximum_scroll {
-        app^.project_root_scroll = maximum_scroll
-    }
-
-    turbo_ui.fill_rect(
-        app^.ui.surface,
-        app^.ui.clip,
-        text_bounds,
-        ' ',
-        app^.ui.theme.window,
+    view := turbo_ui.list_view(
+        &app^.ui,
+        760,
+        761,
+        bounds,
+        app^.project_root_count,
+        &app^.project_roots,
+        .click_and_enter,
     )
     active := app^.project_root_count
     if app^.host.selected_root != nil {
         active = app^.host.selected_root(app^.host.user)
     }
-    for row: usize = 0; row < text_bounds.height; row += 1 {
-        index := app^.project_root_scroll + row
-        if index >= app^.project_root_count {
-            break
-        }
-        row_bounds := turbo_ui.Rect{
-            column = text_bounds.column,
-            row = text_bounds.row + row,
-            width = text_bounds.width,
-            height = 1,
-        }
-        style := app^.ui.theme.text
-        if index == app^.project_root_cursor {
-            style = app^.ui.theme.selected
-            turbo_ui.fill_rect(
-                app^.ui.surface,
-                app^.ui.clip,
-                row_bounds,
-                ' ',
-                style,
-            )
-        }
+    for index := view.first; index < view.end; index += 1 {
+        row := turbo_ui.list_row_begin(&app^.ui, view, index)
         marker := "  "
         if index == active {
             marker = "* "
         }
         turbo_ui.write_clipped(
             app^.ui.surface,
-            turbo_ui.intersect(app^.ui.clip, row_bounds),
-            turbo_ui.Point{column = row_bounds.column, row = row_bounds.row},
+            turbo_ui.intersect(app^.ui.clip, row.bounds),
+            turbo_ui.Point{column = row.bounds.column, row = row.bounds.row},
             marker,
-            style,
+            row.style,
         )
-        if row_bounds.width > 2 {
+        if row.bounds.width > 2 {
             label_bounds := turbo_ui.Rect{
-                column = row_bounds.column + 2,
-                row = row_bounds.row,
-                width = row_bounds.width - 2,
+                column = row.bounds.column + 2,
+                row = row.bounds.row,
+                width = row.bounds.width - 2,
                 height = 1,
             }
             turbo_ui.write_clipped_bytes(
@@ -1810,44 +1622,22 @@ paint_project_root_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
                 turbo_ui.intersect(app^.ui.clip, label_bounds),
                 turbo_ui.Point{column = label_bounds.column, row = label_bounds.row},
                 project_root_name(app, index),
-                style,
+                row.style,
             )
         }
     }
-    if bounds.width > text_bounds.width {
-        turbo_ui.scrollbar_vertical(
-            &app^.ui,
-            761,
-            turbo_ui.Rect{
-                column = bounds.column + bounds.width - 1,
-                row = bounds.row,
-                width = 1,
-                height = bounds.height,
-            },
-            app^.project_root_count,
-            text_bounds.height,
-            &app^.project_root_scroll,
-        )
-    }
-}
-
-text_line_count :: proc(bytes: []u8) -> usize {
-    if len(bytes) == 0 {
-        return 1
-    }
-    count: usize = 1
-    for byte in bytes {
-        if byte == 10 {
-            count += 1
+    if view.activated {
+        if select_project_root(app, view.activated_index) {
+            app^.status = "Active project root changed"
+        } else {
+            app^.status = "Could not activate the selected project root"
         }
     }
-    return count
 }
 
-// paint_text_view displays one compiler-owned textual projection from the copy
-// retained in App. Lines are selected by byte scanning because newlines are
-// ASCII and cannot occur inside a UTF-8 continuation sequence. The scrollbar
-// and keyboard focus operate in line units and allocate no per-frame storage.
+// paint_text_view delegates the shared line-scanning, focus, keyboard, wheel,
+// and proportional-scrollbar policy to turbo_ui. App retains only the copied
+// compiler bytes and one explicit viewport state per semantic window.
 paint_text_view :: proc(
     app: ^App,
     window_index: usize,
@@ -1857,115 +1647,14 @@ paint_text_view :: proc(
         "tooling window index is invalid")
     text_index := window_index - Text_Window_First
     bytes := app^.tooling_text[text_index][:app^.tooling_length[text_index]]
-    total_lines := text_line_count(bytes)
-    text_bounds := content
-    if text_bounds.width > 1 {
-        text_bounds.width -= 1
-    }
-    focus := turbo_ui.focus_area(
+    turbo_ui.text_view_bytes(
         &app^.ui,
         cast[turbo_ui.Widget_Id](700 + text_index),
-        text_bounds,
+        cast[turbo_ui.Widget_Id](720 + text_index),
+        content,
+        bytes,
+        &app^.tooling_views[text_index],
     )
-    if focus.activated {
-        app^.ui.focused_id = cast[turbo_ui.Widget_Id](700 + text_index)
-    }
-    maximum_scroll: usize
-    if total_lines > text_bounds.height {
-        maximum_scroll = total_lines - text_bounds.height
-    }
-    if app^.tooling_scroll[text_index] > maximum_scroll {
-        app^.tooling_scroll[text_index] = maximum_scroll
-    }
-    if !app^.ui.event_handled && app^.ui.event.kind == .mouse && focus.hot &&
-        app^.ui.event.mouse.action == .wheel {
-        if app^.ui.event.mouse.wheel_delta < 0 &&
-            app^.tooling_scroll[text_index] > 0 {
-            app^.tooling_scroll[text_index] -= 1
-        } else if app^.ui.event.mouse.wheel_delta > 0 &&
-            app^.tooling_scroll[text_index] < maximum_scroll {
-            app^.tooling_scroll[text_index] += 1
-        }
-        app^.ui.event_handled = true
-    }
-    if !app^.ui.event_handled && app^.ui.event.kind == .key &&
-        turbo_ui.has_focus(
-            &app^.ui,
-            cast[turbo_ui.Widget_Id](700 + text_index),
-        ) {
-        key := app^.ui.event.key
-        if key.code == .up && app^.tooling_scroll[text_index] > 0 {
-            app^.tooling_scroll[text_index] -= 1
-            app^.ui.event_handled = true
-        } else if key.code == .down &&
-            app^.tooling_scroll[text_index] < maximum_scroll {
-            app^.tooling_scroll[text_index] += 1
-            app^.ui.event_handled = true
-        } else if key.code == .page_up {
-            amount := text_bounds.height
-            if amount > app^.tooling_scroll[text_index] {
-                amount = app^.tooling_scroll[text_index]
-            }
-            app^.tooling_scroll[text_index] -= amount
-            app^.ui.event_handled = true
-        } else if key.code == .page_down {
-            amount := text_bounds.height
-            if amount > maximum_scroll - app^.tooling_scroll[text_index] {
-                amount = maximum_scroll - app^.tooling_scroll[text_index]
-            }
-            app^.tooling_scroll[text_index] += amount
-            app^.ui.event_handled = true
-        } else if key.code == .home {
-            app^.tooling_scroll[text_index] = 0
-            app^.ui.event_handled = true
-        } else if key.code == .end {
-            app^.tooling_scroll[text_index] = maximum_scroll
-            app^.ui.event_handled = true
-        }
-    }
-
-    line_index: usize
-    begin: usize
-    row: usize
-    for begin <= len(bytes) && row < text_bounds.height {
-        end := begin
-        for end < len(bytes) && bytes[end] != 10 {
-            end += 1
-        }
-        if line_index >= app^.tooling_scroll[text_index] {
-            turbo_ui.write_clipped_bytes(
-                app^.ui.surface,
-                text_bounds,
-                turbo_ui.Point{
-                    column = text_bounds.column,
-                    row = text_bounds.row + row,
-                },
-                bytes[begin:end],
-                app^.ui.theme.text,
-            )
-            row += 1
-        }
-        line_index += 1
-        if end == len(bytes) {
-            break
-        }
-        begin = end + 1
-    }
-    if content.width > text_bounds.width {
-        turbo_ui.scrollbar_vertical(
-            &app^.ui,
-            cast[turbo_ui.Widget_Id](720 + text_index),
-            turbo_ui.Rect{
-                column = content.column + content.width - 1,
-                row = content.row,
-                width = 1,
-                height = content.height,
-            },
-            total_lines,
-            text_bounds.height,
-            &app^.tooling_scroll[text_index],
-        )
-    }
 }
 
 // paint_project_view combines the selectable program-root table with the
@@ -2404,8 +2093,6 @@ paint_app :: proc(
                     window_context.content,
                     530,
                     .project_sources,
-                    &app^.file_selection,
-                    &app^.file_scroll,
                 )
             case Window_Buffers:
                 paint_path_list(
@@ -2413,8 +2100,6 @@ paint_app :: proc(
                     window_context.content,
                     532,
                     .open_buffers,
-                    &app^.buffer_selection,
-                    &app^.buffer_scroll,
                 )
             case Window_Search:
                 paint_search(app, window_context.content)

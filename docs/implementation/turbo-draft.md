@@ -151,6 +151,13 @@ non-tileable tool panes, so Tile/Cascade arrange the document together with
 visible semantic windows without moving those browsers. Opening a buffer
 reopens and focuses the document window if it was closed.
 
+Files, Buffers, executable roots, and read-only semantic sections share
+`lib/turbo_ui`'s collection viewport policy. Applications retain cursor and
+offset only; the reusable layer owns keyboard movement, distinct activation,
+wheel scrolling, proportional scrollbar geometry, and visible-row mapping.
+Rich rows paint markers and byte labels directly after `list_view`, so reuse
+does not require callbacks, label allocation, or a retained item model.
+
 `lib/turbo_ui` distinguishes ordinary zoomable windows,
 non-zooming tool windows, fixed-size dialogs, and topmost popup scopes through
 plain capability records and balanced immediate-mode calls. Close is a request

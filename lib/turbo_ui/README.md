@@ -91,7 +91,8 @@ Controls are ordinary procedure calls over caller-owned values:
 - `label`, `button`, `checkbox`, and `radio_button`;
 - `text_box`, a bounded single-line UTF-8 editor over caller storage;
 - `combo_box` plus its topmost `combo_box_popup` pass;
-- `list`, `scrollbar_vertical`, and draggable `splitter`;
+- compound lists with custom immediate-mode rows, read-only text viewports,
+  proportional scrollbars, and draggable splitters;
 - `status_bar`; and
 - `dialog_begin`, which applies dialog content styling to a normal window
   transaction.
@@ -102,6 +103,16 @@ valid UTF-8 while accepting byte-stream terminal input, move/delete by
 grapheme, scroll horizontally, and report `changed`, `submitted`, and `full`.
 Combo boxes keep their item slice borrowed and separate the owner-window field
 pass from the popup pass so choices remain above every window.
+
+`List_State` owns only cursor and viewport offset. `list_view` handles keyboard,
+mouse, activation and its integrated scrollbar, then returns the visible model
+range. Simple `[]string` clients use `list`; richer clients call
+`list_row_begin` and paint markers, byte labels, indentation or columns into the
+returned row. Wheel and scrollbar movement change only the viewport; keyboard
+selection is what keeps the cursor visible. `Text_View_State` and
+`text_view_bytes` provide the same scrolling behavior for allocation-free
+read-only line views. Vertical scrollbars have arrow cells, a proportional
+thumb, page regions, and grab-relative dragging.
 
 Every live control and window has a stable, nonzero `Widget_Id`. IDs are the
 only link between frames; no widget objects, callback tree, or application
