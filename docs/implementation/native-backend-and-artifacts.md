@@ -18,18 +18,19 @@ a compiler/toolchain error; LLVM never supplies missing language or ABI facts.
 
 The direct-construction replacement now has its final ownership boundary: one
 task-local builder creates nominal types, reachable globals, ordinary-ABI MIR,
-atomics, inline assembly, and runtime aggregate values in an LLVM context. It
-uses fixed entry-block scratch storage for variants, unions, and bit-field
-structs whose language layout cannot be represented by structural LLVM SSA.
-The builder may print the already-built module for inspection and passes that
-same mutable module to verification/optimization/native emission. A
+atomics, inline assembly, runtime aggregate values, exact selected-member
+constant bytes, and typed nested string/procedure relocations in an LLVM
+context. It uses fixed entry-block scratch storage for variants, unions, and
+bit-field structs whose language layout cannot be represented by structural
+LLVM SSA. The builder may print the already-built module for inspection and
+passes that same mutable module to verification/optimization/native emission. A
 checked-source-to-object regression proves this path has no input-preparation or
 IR-parsing phase. Production package tasks still use the complete textual
-emitter until runtime checks, relocation-bearing and selected-member constants,
-the full C ABI, debug metadata, and every remaining MIR operation reach parity;
-there is no partial production fallback. The external textual entry remains
-useful as the explicit Clang/LLVM qualification oracle rather than as the
-intended package-construction architecture.
+emitter until runtime checks and support, the full C ABI, debug metadata, and
+every remaining MIR operation reach parity; there is no partial production
+fallback. The external textual entry remains useful as the explicit Clang/LLVM
+qualification oracle rather than as the intended package-construction
+architecture.
 
 The adapter exposes no LLVM reference outside its module. Its process-global
 AArch64 and X86 registries are initialized once, while contexts, modules, target machines,

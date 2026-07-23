@@ -71,6 +71,17 @@ struct BuilderOwner {
   BuilderOwner() = default;
 };
 
+// One linker relocation leaf inside an otherwise byte-exact Draft aggregate.
+// offset and size use the enclosing semantic layout, while value owns the LLVM
+// typed constant whose address relocation must survive object emission. These
+// rows are transient during construction of one initializer-specific packed
+// LLVM value and never escape the package task.
+struct RelocatableConstantField {
+  std::uint64_t offset = 0;
+  std::uint64_t size = 0;
+  LLVMValueRef value = nullptr;
+};
+
 // DirectPhaseTimer avoids steady-clock reads unless --timings=all requested the
 // package task's nested backend rows. finish is idempotent so failure paths can
 // publish the exact completed prefix without introducing a scope framework.
@@ -439,6 +450,22 @@ private:
           value.kind != TypeKind::Union) {
         continue;
       }
+      if (value.kind == TypeKind::Variant || value.kind == TypeKind::Union ||
+          struct_has_bit_fields(id)) {
+        if (!value.layout.known) {
+          error(value.declaration,
+                "opaque aggregate runtime type has no complete layout");
+          continue;
+        }
+        // LLVM's C API names identified structs but cannot name an array type.
+        // These Draft forms are intentionally byte storage rather than an LLVM
+        // structural aggregate, so use the exact array directly. Opaque
+        // pointers make a nominal alias unnecessary even for recursive source
+        // types, and this matches the complete textual backend representation.
+        llvm_types_[index] = LLVMArrayType2(
+            LLVMInt8TypeInContext(context_.value), value.layout.size);
+        continue;
+      }
       const std::string name = "draft.type." + std::to_string(index);
       llvm_types_[index] = LLVMStructCreateNamed(context_.value, name.c_str());
     }
@@ -451,15 +478,12 @@ private:
       LLVMTypeRef nominal = llvm_types_[index];
       if (nominal == nullptr)
         continue;
-      if (!value.layout.known) {
-        error(value.declaration, "nominal runtime type has no complete layout");
-        continue;
-      }
       if (value.kind == TypeKind::Variant || value.kind == TypeKind::Union ||
           struct_has_bit_fields(id)) {
-        LLVMTypeRef storage = LLVMArrayType2(
-            LLVMInt8TypeInContext(context_.value), value.layout.size);
-        LLVMStructSetBody(nominal, &storage, 1, 1);
+        continue;
+      }
+      if (!value.layout.known) {
+        error(value.declaration, "nominal runtime type has no complete layout");
         continue;
       }
 
@@ -700,6 +724,20 @@ private:
   // Creates or returns one global declaration. Definitions are selected by the
   // artifact reachability product and initialized later by emit_globals;
   // foreign/imported references use the same SymbolId slot but remain external.
+  void configure_global(LLVMValueRef global, SymbolId symbol_id,
+                        bool definition) {
+    const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
+    LLVMSetThreadLocal(global, symbol.flags.is_thread_local ? 1 : 0);
+    // Exact foreign linker names belong to another provider and retain default
+    // visibility. Package-qualified definitions and imported declarations are
+    // hidden so only explicit C exports cross the final artifact boundary.
+    if (!native_symbol_name(symbol_id).has_value()) {
+      LLVMSetVisibility(global, LLVMHiddenVisibility);
+    }
+    if (!definition)
+      LLVMSetLinkage(global, LLVMExternalLinkage);
+  }
+
   [[nodiscard]] LLVMValueRef global_for_symbol(SymbolId symbol_id,
                                                bool definition) {
     if (!symbol_id.is_valid() || symbol_id.value >= global_values_.size()) {
@@ -720,15 +758,7 @@ private:
       global =
           LLVMAddGlobal(module_.value, llvm_type(symbol.type), name.c_str());
     }
-    LLVMSetThreadLocal(global, symbol.flags.is_thread_local ? 1 : 0);
-    // Exact foreign linker names belong to another provider and retain default
-    // visibility. Package-qualified definitions and imported declarations are
-    // hidden so only explicit C exports cross the final artifact boundary.
-    if (!native_symbol_name(symbol_id).has_value()) {
-      LLVMSetVisibility(global, LLVMHiddenVisibility);
-    }
-    if (!definition)
-      LLVMSetLinkage(global, LLVMExternalLinkage);
+    configure_global(global, symbol_id, definition);
     global_values_[symbol_id.value] = global;
     return global;
   }
@@ -800,6 +830,530 @@ private:
     return LLVMConstStructInContext(context_.value, members, 2, 0);
   }
 
+  [[nodiscard]] bool target_uses_little_endian() const {
+    return target_.facts.byte_order == "little";
+  }
+
+  [[nodiscard]] bool scalar_uses_little_endian(TypeId type_id) const {
+    const Type &storage = type(runtime_scalar_id(type_id));
+    if (storage.kind == TypeKind::EndianScalar) {
+      return storage.scalar_byte_order != ScalarByteOrder::Big;
+    }
+    return target_uses_little_endian();
+  }
+
+  [[nodiscard]] std::optional<IeeeBinaryFormat>
+  ieee_format(TypeId type_id) const {
+    Type value = type(runtime_scalar_id(type_id));
+    if (value.kind == TypeKind::EndianScalar && value.element.is_valid()) {
+      value = type(value.element);
+    }
+    return value.kind == TypeKind::Float
+               ? ieee_format_for_width(value.bit_width)
+               : std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<BigInteger>
+  enum_label_integer(const ConstantValue &value, TypeId type_id) const {
+    if (value.kind != ConstantKind::EnumLabel)
+      return std::nullopt;
+    const TypeId enum_type = runtime_scalar_id(type_id);
+    for (const AggregateMember &member :
+         semantic_.aggregate_members_for_read()) {
+      if (!member.owner.is_valid() ||
+          semantic_.symbols.symbol(member.owner).type != enum_type ||
+          semantic_.symbols.symbol(member.member).name != value.text) {
+        continue;
+      }
+      for (const EnumMemberValue &entry :
+           semantic_.enum_member_values_for_read()) {
+        if (entry.member == member.member)
+          return entry.value;
+      }
+    }
+    return std::nullopt;
+  }
+
+  // Encodes one integer-like constant into the exact bytes owned by its Draft
+  // storage type. Semantic conversion has already established the finite-width
+  // value; this operation only makes the selected scalar byte order explicit.
+  [[nodiscard]] bool write_integer_bytes(const BigInteger &value,
+                                         TypeId type_id,
+                                         std::vector<std::uint8_t> &bytes,
+                                         std::uint64_t offset,
+                                         SourceRange range) {
+    const Type &storage = type(runtime_scalar_id(type_id));
+    const std::uint32_t bits = integer_bits(type_id);
+    const std::uint64_t size = storage.layout.size;
+    if (bits == 0 || size == 0 || offset > bytes.size() ||
+        size > bytes.size() - offset) {
+      error(range, "integer constant does not fit aggregate byte storage");
+      return false;
+    }
+
+    const BigInteger modulus = BigInteger::from_u64(1).shifted_left(bits);
+    BigInteger encoded = value;
+    if (encoded.is_negative())
+      encoded = encoded.added(modulus);
+    BigInteger quotient;
+    BigInteger remainder;
+    if (!encoded.divide(modulus, quotient, remainder)) {
+      error(range, "could not encode integer constant bytes");
+      return false;
+    }
+    encoded = std::move(remainder);
+
+    const bool little = scalar_uses_little_endian(type_id);
+    for (std::uint64_t byte_index = 0; byte_index < size; ++byte_index) {
+      const std::optional<std::uint64_t> byte =
+          encoded.shifted_right(static_cast<std::size_t>(byte_index * 8U))
+              .bitwise_and(BigInteger::from_u64(0xffU))
+              .to_u64();
+      if (!byte.has_value()) {
+        error(range, "could not encode integer constant byte");
+        return false;
+      }
+      const std::uint64_t destination =
+          little ? offset + byte_index : offset + size - byte_index - 1U;
+      bytes[static_cast<std::size_t>(destination)] =
+          static_cast<std::uint8_t>(*byte);
+    }
+    return true;
+  }
+
+  [[nodiscard]] std::optional<BigInteger>
+  bit_field_constant_integer(const ConstantValue &value, TypeId type_id) const {
+    if (value.kind == ConstantKind::Bool) {
+      return BigInteger::from_u64(value.boolean ? 1U : 0U);
+    }
+    if (value.kind == ConstantKind::Integer)
+      return value.integer;
+    if (value.kind == ConstantKind::Nil ||
+        value.kind == ConstantKind::Unavailable) {
+      return BigInteger::from_u64(0);
+    }
+    return enum_label_integer(value, type_id);
+  }
+
+  // Draft bit zero is the low bit of the first storage byte on every target.
+  // Write one bit at a time so adjacent fields and cross-byte fields share the
+  // same checked layout rule as runtime read-modify-write lowering.
+  [[nodiscard]] bool write_bit_field_constant(
+      const ConstantValue &value, TypeId type_id,
+      std::vector<std::uint8_t> &bytes, std::uint64_t storage_offset,
+      std::uint64_t bit_offset, std::uint32_t bit_width, SourceRange range) {
+    const std::optional<BigInteger> source =
+        bit_field_constant_integer(value, type_id);
+    if (!source.has_value() || bit_width == 0) {
+      error(range, "bit-field constant is not an integer-like value");
+      return false;
+    }
+    const BigInteger modulus = BigInteger::from_u64(1).shifted_left(bit_width);
+    BigInteger quotient;
+    BigInteger remainder;
+    if (!source->divide(modulus, quotient, remainder)) {
+      error(range, "could not encode bit-field constant");
+      return false;
+    }
+    if (remainder.is_negative())
+      remainder = remainder.added(modulus);
+    const BigInteger encoded = std::move(remainder);
+
+    for (std::uint32_t index = 0; index < bit_width; ++index) {
+      const std::uint64_t absolute = bit_offset + index;
+      const std::uint64_t byte_offset = storage_offset + absolute / 8U;
+      if (byte_offset >= bytes.size()) {
+        error(range, "bit-field constant exceeds aggregate byte storage");
+        return false;
+      }
+      const std::optional<std::uint64_t> bit =
+          encoded.shifted_right(index)
+              .bitwise_and(BigInteger::from_u64(1))
+              .to_u64();
+      if (!bit.has_value()) {
+        error(range, "could not encode bit-field constant bit");
+        return false;
+      }
+      const std::uint8_t mask =
+          static_cast<std::uint8_t>(1U << static_cast<unsigned>(absolute % 8U));
+      std::uint8_t &destination = bytes[static_cast<std::size_t>(byte_offset)];
+      destination = *bit == 0 ? static_cast<std::uint8_t>(destination & ~mask)
+                              : static_cast<std::uint8_t>(destination | mask);
+    }
+    return true;
+  }
+
+  [[nodiscard]] bool write_float_bytes(const ConstantValue &value,
+                                       TypeId type_id,
+                                       std::vector<std::uint8_t> &bytes,
+                                       std::uint64_t offset,
+                                       SourceRange range) {
+    const Type &storage = type(runtime_scalar_id(type_id));
+    const std::optional<IeeeBinaryFormat> format = ieee_format(type_id);
+    const std::uint32_t bit_width =
+        format.has_value() ? 1U + format->exponent_bits + format->fraction_bits
+                           : 0;
+    const std::optional<std::uint64_t> bits =
+        value.float_bit_width != 0 && value.float_bit_width == bit_width
+            ? std::optional<std::uint64_t>(value.float_bits)
+            : (format.has_value() ? round_ieee_bits(value.floating, *format)
+                                  : std::nullopt);
+    if (!bits.has_value()) {
+      error(range, "floating constant has no aggregate byte encoding");
+      return false;
+    }
+    const std::uint64_t size = storage.layout.size;
+    if (offset > bytes.size() || size > bytes.size() - offset) {
+      error(range, "floating constant does not fit aggregate byte storage");
+      return false;
+    }
+    const bool little = scalar_uses_little_endian(type_id);
+    for (std::uint64_t byte_index = 0; byte_index < size; ++byte_index) {
+      const std::uint64_t destination =
+          little ? offset + byte_index : offset + size - byte_index - 1U;
+      bytes[static_cast<std::size_t>(destination)] =
+          static_cast<std::uint8_t>((*bits >> (byte_index * 8U)) & 0xffU);
+    }
+    return true;
+  }
+
+  // Flattens a relocation-free constant according to semantic byte offsets.
+  // This is used only for language forms whose canonical LLVM value is opaque
+  // bytes. Strings and procedure values deliberately fail here; their linker
+  // relocations require typed initializer fields and are handled separately.
+  [[nodiscard]] bool write_constant_bytes(const ConstantValue &value,
+                                          TypeId type_id,
+                                          std::vector<std::uint8_t> &bytes,
+                                          std::uint64_t offset,
+                                          SourceRange range) {
+    while (type(type_id).kind == TypeKind::Distinct)
+      type_id = type(type_id).element;
+    const Type &storage = type(type_id);
+    if (!storage.layout.known || offset > bytes.size() ||
+        storage.layout.size > bytes.size() - offset) {
+      error(range, "constant does not fit aggregate byte storage");
+      return false;
+    }
+
+    if (value.kind == ConstantKind::Nil ||
+        value.kind == ConstantKind::Unavailable) {
+      return true;
+    }
+    if (value.kind == ConstantKind::Bool && storage.kind == TypeKind::Bool) {
+      bytes[static_cast<std::size_t>(offset)] = value.boolean ? 1U : 0U;
+      return true;
+    }
+    if (value.kind == ConstantKind::Integer && integer_kind(storage.kind)) {
+      return write_integer_bytes(value.integer, type_id, bytes, offset, range);
+    }
+    if (value.kind == ConstantKind::EnumLabel &&
+        storage.kind == TypeKind::Enum) {
+      const std::optional<BigInteger> integer =
+          enum_label_integer(value, type_id);
+      if (!integer.has_value()) {
+        error(range, "enum constant has no selected member value");
+        return false;
+      }
+      return write_integer_bytes(*integer, type_id, bytes, offset, range);
+    }
+    if (value.kind == ConstantKind::Float &&
+        (storage.kind == TypeKind::Float ||
+         storage.kind == TypeKind::EndianScalar)) {
+      return write_float_bytes(value, type_id, bytes, offset, range);
+    }
+    if (value.kind == ConstantKind::String ||
+        value.kind == ConstantKind::Procedure) {
+      error(range, "relocation reached byte-only constant encoding");
+      return false;
+    }
+    if (value.kind != ConstantKind::Aggregate) {
+      error(range, "constant kind has no aggregate byte encoding");
+      return false;
+    }
+
+    if (storage.kind == TypeKind::Array || storage.kind == TypeKind::Simd) {
+      if (value.elements.size() != storage.element_count) {
+        error(range, "constant array has the wrong element count");
+        return false;
+      }
+      const std::uint64_t stride = type(storage.element).layout.size;
+      for (std::size_t index = 0; index < value.elements.size(); ++index) {
+        if (!write_constant_bytes(
+                value.elements[index], storage.element, bytes,
+                offset + static_cast<std::uint64_t>(index) * stride, range)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (storage.kind == TypeKind::Tuple || storage.kind == TypeKind::Struct) {
+      if (value.elements.size() != storage.members.size()) {
+        error(range, "constant aggregate has the wrong member count");
+        return false;
+      }
+      for (std::size_t index = 0; index < value.elements.size(); ++index) {
+        const std::uint64_t member_offset =
+            index < storage.member_offsets.size()
+                ? storage.member_offsets[index]
+                : 0;
+        if (storage.kind == TypeKind::Struct &&
+            index < storage.member_layouts.size() &&
+            storage.member_layouts[index].kind == FieldLayoutKind::BitField) {
+          const std::uint64_t member_bit_offset =
+              index < storage.member_bit_offsets.size()
+                  ? storage.member_bit_offsets[index]
+                  : member_offset * 8U;
+          if (!write_bit_field_constant(
+                  value.elements[index], storage.members[index], bytes, offset,
+                  member_bit_offset, storage.member_layouts[index].bit_width,
+                  range)) {
+            return false;
+          }
+          continue;
+        }
+        if (!write_constant_bytes(value.elements[index], storage.members[index],
+                                  bytes, offset + member_offset, range)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (storage.kind == TypeKind::Union || storage.kind == TypeKind::Variant) {
+      if (value.member_index >= storage.members.size()) {
+        error(range,
+              "constant variant or union has an invalid selected member");
+        return false;
+      }
+      if (storage.kind == TypeKind::Variant &&
+          !write_integer_bytes(BigInteger::from_u64(value.member_index),
+                               storage.element, bytes, offset, range)) {
+        return false;
+      }
+      if (value.elements.empty())
+        return true;
+      if (value.elements.size() != 1) {
+        error(range,
+              "constant variant or union has more than one selected value");
+        return false;
+      }
+      const std::uint64_t payload_offset =
+          value.member_index < storage.member_offsets.size()
+              ? storage.member_offsets[value.member_index]
+              : 0;
+      return write_constant_bytes(value.elements.front(),
+                                  storage.members[value.member_index], bytes,
+                                  offset + payload_offset, range);
+    }
+
+    error(range, "constant type has no aggregate byte encoding");
+    return false;
+  }
+
+  [[nodiscard]] LLVMValueRef
+  byte_array_constant(const std::vector<std::uint8_t> &bytes) {
+    LLVMTypeRef byte_type = LLVMInt8TypeInContext(context_.value);
+    std::vector<LLVMValueRef> elements;
+    elements.reserve(bytes.size());
+    for (std::uint8_t byte : bytes) {
+      elements.push_back(LLVMConstInt(byte_type, byte, 0));
+    }
+    return LLVMConstArray2(byte_type, elements.data(), elements.size());
+  }
+
+  [[nodiscard]] bool contains_relocation(const ConstantValue &value) const {
+    if (value.kind == ConstantKind::String ||
+        value.kind == ConstantKind::Procedure) {
+      return true;
+    }
+    for (const ConstantValue &element : value.elements) {
+      if (contains_relocation(element))
+        return true;
+    }
+    return false;
+  }
+
+  [[nodiscard]] bool
+  requires_relocatable_aggregate_storage(const ConstantValue &value,
+                                         TypeId type_id) const {
+    while (type(type_id).kind == TypeKind::Distinct)
+      type_id = type(type_id).element;
+    const TypeKind kind = type(type_id).kind;
+    const bool aggregate = kind == TypeKind::Array || kind == TypeKind::Tuple ||
+                           kind == TypeKind::Struct ||
+                           kind == TypeKind::Variant || kind == TypeKind::Union;
+    return aggregate && contains_relocation(value);
+  }
+
+  // Separates an aggregate into ordinary byte segments and typed relocation
+  // leaves. The semantic layout remains authoritative: LLVM receives no
+  // opportunity to add padding around a string or procedure pointer field.
+  [[nodiscard]] bool collect_relocatable_constant_fields(
+      const ConstantValue &value, TypeId type_id,
+      std::vector<std::uint8_t> &bytes, std::uint64_t offset, SourceRange range,
+      std::vector<RelocatableConstantField> &fields) {
+    while (type(type_id).kind == TypeKind::Distinct)
+      type_id = type(type_id).element;
+    const Type &storage = type(type_id);
+    if (!storage.layout.known || offset > bytes.size() ||
+        storage.layout.size > bytes.size() - offset) {
+      error(range, "relocatable constant does not fit aggregate storage");
+      return false;
+    }
+
+    if (!contains_relocation(value)) {
+      return write_constant_bytes(value, type_id, bytes, offset, range);
+    }
+    if (value.kind == ConstantKind::String ||
+        value.kind == ConstantKind::Procedure) {
+      LLVMValueRef operand = constant_operand(value, type_id, range);
+      fields.push_back(
+          RelocatableConstantField{offset, storage.layout.size, operand});
+      return true;
+    }
+    if (value.kind != ConstantKind::Aggregate) {
+      error(range, "relocatable constant has no aggregate representation");
+      return false;
+    }
+
+    if (storage.kind == TypeKind::Array || storage.kind == TypeKind::Simd) {
+      if (value.elements.size() != storage.element_count ||
+          !type(storage.element).layout.known) {
+        error(range, "relocatable array constant has the wrong shape");
+        return false;
+      }
+      const std::uint64_t stride = type(storage.element).layout.size;
+      for (std::size_t index = 0; index < value.elements.size(); ++index) {
+        if (!collect_relocatable_constant_fields(
+                value.elements[index], storage.element, bytes,
+                offset + static_cast<std::uint64_t>(index) * stride, range,
+                fields)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (storage.kind == TypeKind::Tuple || storage.kind == TypeKind::Struct) {
+      if (value.elements.size() != storage.members.size()) {
+        error(range, "relocatable product constant has the wrong shape");
+        return false;
+      }
+      for (std::size_t index = 0; index < value.elements.size(); ++index) {
+        if (!type(storage.members[index]).layout.known) {
+          error(range, "relocatable product member has no physical layout");
+          return false;
+        }
+        const std::uint64_t member_offset =
+            index < storage.member_offsets.size()
+                ? storage.member_offsets[index]
+                : 0;
+        if (storage.kind == TypeKind::Struct &&
+            index < storage.member_layouts.size() &&
+            storage.member_layouts[index].kind == FieldLayoutKind::BitField) {
+          if (contains_relocation(value.elements[index])) {
+            error(range, "bit-field constant cannot contain a relocation");
+            return false;
+          }
+          const std::uint64_t member_bit_offset =
+              index < storage.member_bit_offsets.size()
+                  ? storage.member_bit_offsets[index]
+                  : member_offset * 8U;
+          if (!write_bit_field_constant(
+                  value.elements[index], storage.members[index], bytes, offset,
+                  member_bit_offset, storage.member_layouts[index].bit_width,
+                  range)) {
+            return false;
+          }
+          continue;
+        }
+        if (!collect_relocatable_constant_fields(
+                value.elements[index], storage.members[index], bytes,
+                offset + member_offset, range, fields)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (storage.kind == TypeKind::Variant || storage.kind == TypeKind::Union) {
+      if (value.member_index >= storage.members.size() ||
+          value.elements.size() != 1) {
+        error(range,
+              "relocatable variant or union constant has an invalid selected "
+              "value");
+        return false;
+      }
+      if (storage.kind == TypeKind::Variant &&
+          !write_integer_bytes(BigInteger::from_u64(value.member_index),
+                               storage.element, bytes, offset, range)) {
+        return false;
+      }
+      const std::uint64_t payload_offset =
+          value.member_index < storage.member_offsets.size()
+              ? storage.member_offsets[value.member_index]
+              : 0;
+      return collect_relocatable_constant_fields(
+          value.elements.front(), storage.members[value.member_index], bytes,
+          offset + payload_offset, range, fields);
+    }
+
+    error(range, "relocatable constant has an unsupported aggregate type");
+    return false;
+  }
+
+  [[nodiscard]] LLVMValueRef
+  relocatable_aggregate_constant(const ConstantValue &value, TypeId type_id,
+                                 SourceRange range) {
+    while (type(type_id).kind == TypeKind::Distinct)
+      type_id = type(type_id).element;
+    const Type &storage = type(type_id);
+    if (!storage.layout.known) {
+      error(range, "relocatable aggregate constant has no physical layout");
+      return nullptr;
+    }
+
+    std::vector<std::uint8_t> bytes(
+        static_cast<std::size_t>(storage.layout.size), 0);
+    std::vector<RelocatableConstantField> fields;
+    if (!collect_relocatable_constant_fields(value, type_id, bytes, 0, range,
+                                             fields)) {
+      return nullptr;
+    }
+    std::sort(fields.begin(), fields.end(),
+              [](const RelocatableConstantField &left,
+                 const RelocatableConstantField &right) {
+                return left.offset < right.offset;
+              });
+
+    std::vector<LLVMValueRef> components;
+    std::uint64_t cursor = 0;
+    auto append_bytes = [&](std::uint64_t begin, std::uint64_t end) {
+      if (begin == end)
+        return;
+      std::vector<std::uint8_t> segment(
+          bytes.begin() + static_cast<std::ptrdiff_t>(begin),
+          bytes.begin() + static_cast<std::ptrdiff_t>(end));
+      components.push_back(byte_array_constant(segment));
+    };
+    for (const RelocatableConstantField &field : fields) {
+      if (field.value == nullptr || field.offset < cursor ||
+          field.offset > storage.layout.size ||
+          field.size > storage.layout.size - field.offset) {
+        error(range, "relocatable aggregate fields overlap or exceed storage");
+        return nullptr;
+      }
+      append_bytes(cursor, field.offset);
+      components.push_back(field.value);
+      cursor = field.offset + field.size;
+    }
+    append_bytes(cursor, storage.layout.size);
+    if (fields.empty()) {
+      error(range, "relocatable aggregate contains no relocation fields");
+      return nullptr;
+    }
+    return LLVMConstStructInContext(context_.value, components.data(),
+                                    static_cast<unsigned>(components.size()),
+                                    1);
+  }
+
   [[nodiscard]] LLVMValueRef aggregate_constant(const ConstantValue &value,
                                                 TypeId type_id,
                                                 SourceRange range) {
@@ -808,10 +1362,12 @@ private:
     if (aggregate.kind == TypeKind::Variant ||
         aggregate.kind == TypeKind::Union ||
         struct_has_bit_fields(storage_id)) {
-      error(range,
-            "selected-member and bit-field aggregate constants are not yet "
-            "implemented directly");
-      return LLVMConstNull(llvm_type(type_id));
+      std::vector<std::uint8_t> bytes(
+          static_cast<std::size_t>(aggregate.layout.size), 0);
+      if (!write_constant_bytes(value, storage_id, bytes, 0, range)) {
+        return LLVMConstNull(llvm_type(type_id));
+      }
+      return byte_array_constant(bytes);
     }
 
     const bool homogeneous =
@@ -933,15 +1489,36 @@ private:
           !symbol.type.is_valid()) {
         continue;
       }
-      LLVMValueRef global = global_for_symbol(symbol_id, true);
+      const ConstantValue *initializer = global_initializers_.find(symbol_id);
+      const bool relocatable =
+          initializer != nullptr &&
+          requires_relocatable_aggregate_storage(*initializer, symbol.type);
+      LLVMValueRef initializer_value =
+          relocatable ? relocatable_aggregate_constant(
+                            *initializer, symbol.type, symbol.name_range)
+                      : (initializer == nullptr
+                             ? LLVMConstNull(llvm_type(symbol.type))
+                             : constant_operand(*initializer, symbol.type,
+                                                symbol.name_range));
+      if (initializer_value == nullptr)
+        continue;
+
+      // A relocation-bearing aggregate needs an initializer-specific packed
+      // storage type. LLVM opaque pointers let every later Draft load continue
+      // naming the canonical logical type despite this global allocation type.
+      LLVMValueRef global = nullptr;
+      if (relocatable) {
+        const std::string name = symbol_name(symbol_id);
+        global = LLVMAddGlobal(module_.value, LLVMTypeOf(initializer_value),
+                               name.c_str());
+        configure_global(global, symbol_id, true);
+        global_values_[symbol_id.value] = global;
+      } else {
+        global = global_for_symbol(symbol_id, true);
+      }
       if (global == nullptr)
         continue;
-      const ConstantValue *initializer = global_initializers_.find(symbol_id);
-      LLVMSetInitializer(
-          global,
-          initializer == nullptr
-              ? LLVMConstNull(llvm_type(symbol.type))
-              : constant_operand(*initializer, symbol.type, symbol.name_range));
+      LLVMSetInitializer(global, initializer_value);
       LLVMSetAlignment(global, type(symbol.type).layout.alignment);
     }
   }
@@ -985,6 +1562,26 @@ private:
   [[nodiscard]] LLVMValueRef constant_value(const MirInstruction &instruction) {
     if (instruction.constant.kind == ConstantKind::EnumLabel) {
       return enum_constant(instruction.symbol, llvm_type(instruction.type));
+    }
+    if (requires_relocatable_aggregate_storage(instruction.constant,
+                                               instruction.type)) {
+      LLVMValueRef initializer = relocatable_aggregate_constant(
+          instruction.constant, instruction.type, instruction.range);
+      if (initializer == nullptr)
+        return LLVMConstNull(llvm_type(instruction.type));
+      const std::string name =
+          ".draft.constant." + std::to_string(next_relocatable_constant_++);
+      LLVMValueRef global =
+          LLVMAddGlobal(module_.value, LLVMTypeOf(initializer), name.c_str());
+      LLVMSetInitializer(global, initializer);
+      LLVMSetLinkage(global, LLVMPrivateLinkage);
+      LLVMSetGlobalConstant(global, 1);
+      LLVMSetUnnamedAddress(global, LLVMGlobalUnnamedAddr);
+      LLVMSetAlignment(global, type(instruction.type).layout.alignment);
+      LLVMValueRef loaded = LLVMBuildLoad2(
+          builder_.value, llvm_type(instruction.type), global, "");
+      LLVMSetAlignment(loaded, type(instruction.type).layout.alignment);
+      return loaded;
     }
     return constant_operand(instruction.constant, instruction.type,
                             instruction.range);
@@ -1952,6 +2549,7 @@ private:
   std::vector<LLVMValueRef> functions_;
   std::vector<LLVMValueRef> global_values_;
   std::size_t next_string_constant_ = 0;
+  std::size_t next_relocatable_constant_ = 0;
   std::size_t next_auxiliary_block_ = 0;
 };
 

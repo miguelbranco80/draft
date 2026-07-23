@@ -70,6 +70,22 @@ Outcome :: variant {
     value: i64,
 }
 
+Text_Outcome :: variant {
+    empty,
+    value: string,
+}
+
+Callback_Outcome :: variant {
+    empty,
+    value: proc(value: i64) -> i64,
+}
+
+Relocation_Box :: struct {
+    marker: u8,
+    text: Text_Outcome,
+    callback: Callback_Outcome,
+}
+
 Overlay :: union {
     byte: u8,
     word: u64,
@@ -85,9 +101,29 @@ base: i64 = 40
 label: string = "draft"
 table: [3]i64 = [3]i64{1, 4, 9}
 origin: Pair = Pair{left = 3, right = 7}
+global_outcome: Outcome = .value(42)
+global_overlay: Overlay = Overlay{word = 0x1020304050607080}
+global_bits: Bit_Header = Bit_Header{
+    kind = 5,
+    delta = -7,
+    active = true,
+}
+global_text_outcome: Text_Outcome = .value("global")
 
 increment :: proc(value: i64) -> i64 {
     return value + 1
+}
+
+Compile_Time_Box :: Relocation_Box{
+    marker = 9,
+    text = .value("local"),
+    callback = .value(increment),
+}
+
+global_relocation_box: Relocation_Box = Relocation_Box{
+    marker = 7,
+    text = .value("nested"),
+    callback = .value(increment),
 }
 
 answer :: proc() -> i64 {
@@ -128,6 +164,10 @@ overlay_word :: proc(value: u64) -> u64 {
 bit_total :: proc(kind: u8, delta: i16, active: bool) -> i16 {
     header := Bit_Header{kind = kind, delta = delta, active = active}
     return cast[i16](header.kind) + header.delta
+}
+
+compile_time_box :: proc() -> Relocation_Box {
+    return Compile_Time_Box
 }
 )draft");
   file.syntax.emplace(
