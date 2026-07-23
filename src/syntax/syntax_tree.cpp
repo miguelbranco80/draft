@@ -55,7 +55,9 @@ void SyntaxTree::set_root(NodeId root) {
 
 void SyntaxTree::rebase_file(FileId file) {
   assert(file.is_valid());
-  const FileId previous = file_;
+  // The old ID is read only by executable assertions. Keep the value present
+  // in NDEBUG builds so the release configuration remains warning-clean.
+  [[maybe_unused]] const FileId previous = file_;
 
   // Tokens are the primary lexical ranges. Parser-created node ranges are
   // derived from them, including zero-width recovery nodes, so both arenas
