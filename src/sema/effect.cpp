@@ -14,6 +14,7 @@
 #include <queue>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -59,6 +60,151 @@ void add_effect(std::vector<SemanticEffect> &effects, SemanticEffect effect) {
     effects.push_back(std::move(effect));
   }
 }
+
+// EffectId is the closure-local identity of one complete SemanticEffect value.
+// It never leaves EffectCollector: public interfaces and denial products retain
+// the semantic value, while the fixed point moves only this four-byte index.
+// IDs are assigned in canonical discovery/composition order and therefore make
+// insertion order independent from unordered-map bucket iteration.
+struct EffectId {
+  std::uint32_t value = std::numeric_limits<std::uint32_t>::max();
+};
+
+void combine_effect_hash(std::size_t &seed, std::size_t value) {
+  // This mixer is used only for process-local lookup. Semantic equality below
+  // remains authoritative, and neither the hash nor bucket order enters a
+  // diagnostic, interface, content identity, or emitted artifact.
+  seed ^= value + static_cast<std::size_t>(0x9e3779b9U) +
+      (seed << 6U) + (seed >> 2U);
+}
+
+void hash_string_path(
+    std::size_t &seed, const std::vector<std::string> &path) {
+  combine_effect_hash(seed, path.size());
+  for (const std::string &element : path) {
+    combine_effect_hash(seed, std::hash<std::string>{}(element));
+  }
+}
+
+[[nodiscard]] std::size_t hash_semantic_effect(const SemanticEffect &effect);
+
+void hash_procedure_value(
+    std::size_t &seed, const ProcedureValueSummary &value) {
+  combine_effect_hash(seed, value.targets.size());
+  for (SymbolId target : value.targets) {
+    combine_effect_hash(seed, target.value);
+  }
+  combine_effect_hash(seed, value.flow_slots.size());
+  for (const ProcedureFlowSlot &slot : value.flow_slots) {
+    combine_effect_hash(seed, slot.parameter);
+    hash_string_path(seed, slot.path);
+    combine_effect_hash(seed, slot.context ? 1U : 0U);
+  }
+  combine_effect_hash(seed, value.contract_effects.size());
+  for (const SemanticEffect &effect : value.contract_effects) {
+    combine_effect_hash(seed, hash_semantic_effect(effect));
+  }
+  combine_effect_hash(seed, value.unknown ? 1U : 0U);
+}
+
+void hash_arguments(
+    std::size_t &seed,
+    const std::vector<ProcedureArgumentSummary> &arguments) {
+  combine_effect_hash(seed, arguments.size());
+  for (const ProcedureArgumentSummary &argument : arguments) {
+    combine_effect_hash(seed, argument.fields.size());
+    for (const ProcedureFieldValueSummary &field : argument.fields) {
+      hash_string_path(seed, field.path);
+      hash_procedure_value(seed, field.value);
+    }
+  }
+}
+
+[[nodiscard]] std::size_t hash_semantic_effect(
+    const SemanticEffect &effect) {
+  std::size_t seed = static_cast<std::size_t>(effect.kind);
+  combine_effect_hash(seed, effect.symbol.value);
+  combine_effect_hash(seed, std::hash<std::string>{}(effect.text));
+  combine_effect_hash(
+      seed, std::hash<std::string>{}(effect.root_identity));
+  combine_effect_hash(
+      seed, std::hash<std::string>{}(effect.root_relative_path));
+  combine_effect_hash(seed, std::hash<std::string>{}(effect.declaration));
+  combine_effect_hash(seed, effect.flow_parameter);
+  hash_string_path(seed, effect.flow_path);
+  combine_effect_hash(seed, effect.flow_context ? 1U : 0U);
+  hash_arguments(seed, effect.flow_arguments);
+  return seed;
+}
+
+struct SemanticEffectHash {
+  [[nodiscard]] std::size_t operator()(
+      const SemanticEffect &effect) const {
+    return hash_semantic_effect(effect);
+  }
+};
+
+// EffectInterner owns exactly one copy of every complete effect value used by
+// one package closure. The unordered map is lookup-only; by_id_ is the sole
+// ordered traversal. References to node keys survive rehash, so by_id_ remains
+// valid while later callback substitution interns additional effects.
+class EffectInterner {
+public:
+  void reserve(std::size_t count) {
+    ids_.reserve(count);
+    by_id_.reserve(count);
+  }
+
+  [[nodiscard]] EffectId intern(const SemanticEffect &effect) {
+    const auto existing = ids_.find(effect);
+    if (existing != ids_.end()) return existing->second;
+    assert(by_id_.size() < std::numeric_limits<std::uint32_t>::max());
+    const EffectId id{static_cast<std::uint32_t>(by_id_.size())};
+    const auto inserted = ids_.emplace(effect, id);
+    assert(inserted.second);
+    by_id_.push_back(&inserted.first->first);
+    return id;
+  }
+
+  [[nodiscard]] EffectId intern(SemanticEffect &&effect) {
+    const auto existing = ids_.find(effect);
+    if (existing != ids_.end()) return existing->second;
+    assert(by_id_.size() < std::numeric_limits<std::uint32_t>::max());
+    const EffectId id{static_cast<std::uint32_t>(by_id_.size())};
+    const auto inserted = ids_.emplace(std::move(effect), id);
+    assert(inserted.second);
+    by_id_.push_back(&inserted.first->first);
+    return id;
+  }
+
+  [[nodiscard]] const SemanticEffect &effect(EffectId id) const {
+    assert(id.value < by_id_.size());
+    return *by_id_[id.value];
+  }
+
+private:
+  std::unordered_map<SemanticEffect, EffectId, SemanticEffectHash> ids_;
+  std::vector<const SemanticEffect *> by_id_;
+};
+
+// CompactEffectSet couples deterministic first-insertion order with constant-
+// time membership. The bit vector grows only when a newly interned ID reaches
+// this particular procedure/call-site row; union copies integers rather than
+// recursive SemanticEffect values.
+struct CompactEffectSet {
+  [[nodiscard]] bool add(EffectId id) {
+    const std::size_t word = id.value / 64U;
+    const std::uint64_t mask = std::uint64_t{1} << (id.value % 64U);
+    if (word >= membership.size()) membership.resize(word + 1U, 0);
+    if ((membership[word] & mask) != 0) return false;
+    membership[word] |= mask;
+    ordered.push_back(id);
+    return true;
+  }
+
+  std::vector<EffectId> ordered;
+  std::vector<std::uint64_t> membership;
+};
 
 void add_call(std::vector<SymbolId> &calls, SymbolId call) {
   if (std::find(calls.begin(), calls.end(), call) == calls.end()) {
@@ -403,14 +549,25 @@ public:
       close_source_flow(source_procedures, true);
     }
 
+    std::size_t direct_effect_count = 0;
+    for (const DirectProcedureEffectSummary &source : direct_.procedures) {
+      direct_effect_count += source.direct_effects.size();
+    }
+    effect_interner_.reserve(direct_effect_count);
     closed_.procedures.reserve(direct_.procedures.size());
+    closed_effects_.reserve(direct_.procedures.size());
     for (const DirectProcedureEffectSummary &source : direct_.procedures) {
       ProcedureEffectSummary summary;
       summary.procedure = source.procedure;
       summary.return_values = source.return_values;
       summary.field_writes = source.field_writes;
-      summary.effects = source.direct_effects;
       closed_.procedures.push_back(std::move(summary));
+      CompactEffectSet effects;
+      for (const SemanticEffect &effect : source.direct_effects) {
+        [[maybe_unused]] const bool added =
+            effects.add(effect_interner_.intern(effect));
+      }
+      closed_effects_.push_back(std::move(effects));
     }
 
     // The direct summary graph is now immutable. Collapse legal recursive
@@ -434,19 +591,18 @@ public:
       do {
         changed = false;
         for (std::size_t procedure_index : component.procedure_indices) {
-          ProcedureEffectSummary &summary =
-              closed_.procedures[procedure_index];
+          CompactEffectSet &effects = closed_effects_[procedure_index];
           const DirectProcedureEffectSummary &source =
               direct_.procedures[procedure_index];
           for (const ProcedureInvocationSummary &invocation :
                source.direct_invocations) {
             changed = compose_named_call(
-                summary, invocation.callee, invocation.arguments) || changed;
+                effects, invocation.callee, invocation.arguments) || changed;
           }
           for (const ProcedureFlowInvocationSummary &invocation :
                source.direct_flow_calls) {
             changed = compose_value_call(
-                summary, invocation.callee, invocation.arguments) || changed;
+                effects, invocation.callee, invocation.arguments) || changed;
           }
         }
       } while (changed);
@@ -464,22 +620,35 @@ public:
     for (const DirectProcedureEffectSummary &summary : direct_.procedures) {
       for (const ProcedureInvocationSummary &invocation :
            summary.direct_invocations) {
-        ProcedureEffectSummary site;
+        CompactEffectSet site;
         [[maybe_unused]] const bool added = compose_named_call(
             site, invocation.callee, invocation.arguments);
         closed_.call_sites.push_back(
-            {summary.procedure, invocation.expression, std::move(site.effects)});
+            {summary.procedure,
+             invocation.expression,
+             materialize_effects(site)});
       }
       for (const ProcedureFlowInvocationSummary &invocation :
            summary.direct_flow_calls) {
-        ProcedureEffectSummary site;
+        CompactEffectSet site;
         [[maybe_unused]] const bool added = compose_value_call(
             site, invocation.callee, invocation.arguments);
         closed_.call_sites.push_back(
-            {summary.procedure, invocation.expression, std::move(site.effects)});
+            {summary.procedure,
+             invocation.expression,
+             materialize_effects(site)});
       }
     }
     call_site_timing.finish();
+
+    // SemanticEffect remains the public/compiler-interface representation.
+    // Materialize it once, after all fixed-point and call-site composition has
+    // finished moving IDs and membership bits.
+    assert(closed_.procedures.size() == closed_effects_.size());
+    for (std::size_t index = 0; index < closed_.procedures.size(); ++index) {
+      closed_.procedures[index].effects =
+          materialize_effects(closed_effects_[index]);
+    }
     return std::move(closed_);
   }
 
@@ -516,8 +685,7 @@ private:
     // substitutes the actual callback just like a Draft procedure does.
     for (const NativeBinding &binding : package_.native_bindings) {
       if (binding.kind != NativeBindingKind::ForeignImport) continue;
-      ProcedureEffectSummary composed;
-      composed.procedure = binding.symbol;
+      CompactEffectSet composed;
       const Symbol &symbol = package_.symbols.symbol(binding.symbol);
       std::vector<ProcedureArgumentSummary> arguments;
       if (symbol.type.is_valid()) {
@@ -543,7 +711,7 @@ private:
           compose_native_call(composed, binding.symbol, binding, arguments);
       DirectProcedureEffectSummary direct;
       direct.procedure = binding.symbol;
-      direct.direct_effects = std::move(composed.effects);
+      direct.direct_effects = materialize_effects(composed);
       direct_.procedures.push_back(std::move(direct));
     }
 
@@ -1836,19 +2004,33 @@ private:
     current_->direct_flow_calls.push_back(std::move(invocation));
   }
 
-  [[nodiscard]] bool add_composed_effect(
-      ProcedureEffectSummary &destination, const SemanticEffect &effect) {
-    const std::size_t before = destination.effects.size();
-    add_effect(destination.effects, effect);
-    return destination.effects.size() != before;
+  [[nodiscard]] std::vector<SemanticEffect> materialize_effects(
+      const CompactEffectSet &source) const {
+    std::vector<SemanticEffect> effects;
+    effects.reserve(source.ordered.size());
+    for (EffectId id : source.ordered) {
+      effects.push_back(effect_interner_.effect(id));
+    }
+    return effects;
   }
 
-  [[nodiscard]] bool compose_effect(
-      ProcedureEffectSummary &destination,
-      const SemanticEffect &effect,
+  [[nodiscard]] bool add_composed_effect(
+      CompactEffectSet &destination, const SemanticEffect &effect) {
+    return destination.add(effect_interner_.intern(effect));
+  }
+
+  [[nodiscard]] bool add_composed_effect(
+      CompactEffectSet &destination, SemanticEffect &&effect) {
+    return destination.add(effect_interner_.intern(std::move(effect)));
+  }
+
+  [[nodiscard]] bool compose_interned_effect(
+      CompactEffectSet &destination,
+      EffectId effect_id,
       const std::vector<ProcedureArgumentSummary> &arguments) {
+    const SemanticEffect &effect = effect_interner_.effect(effect_id);
     if (effect.kind != EffectKind::FlowCall) {
-      return add_composed_effect(destination, effect);
+      return destination.add(effect_id);
     }
     const std::vector<ProcedureArgumentSummary> nested_arguments =
         substitute_arguments(effect.flow_arguments, arguments);
@@ -1879,16 +2061,25 @@ private:
     }
     return add_composed_effect(
         destination,
-        {EffectKind::UnknownCall,
-         {},
-         "typed callback path is absent at call site",
-         {},
-         {},
-         {}});
+        SemanticEffect{
+            EffectKind::UnknownCall,
+            {},
+            "typed callback path is absent at call site",
+            {},
+            {},
+            {}});
+  }
+
+  [[nodiscard]] bool compose_effect(
+      CompactEffectSet &destination,
+      const SemanticEffect &effect,
+      const std::vector<ProcedureArgumentSummary> &arguments) {
+    const EffectId effect_id = effect_interner_.intern(effect);
+    return compose_interned_effect(destination, effect_id, arguments);
   }
 
   [[nodiscard]] bool compose_imported_call(
-      ProcedureEffectSummary &destination,
+      CompactEffectSet &destination,
       SymbolId callee,
       const ImportedProcedureContractStatus *imported,
       const std::vector<ProcedureArgumentSummary> &arguments) {
@@ -1913,7 +2104,7 @@ private:
   }
 
   [[nodiscard]] bool compose_native_call(
-      ProcedureEffectSummary &destination,
+      CompactEffectSet &destination,
       SymbolId callee,
       const NativeBinding &binding,
       const std::vector<ProcedureArgumentSummary> &arguments) {
@@ -1993,7 +2184,7 @@ private:
   }
 
   [[nodiscard]] bool compose_named_call(
-      ProcedureEffectSummary &destination,
+      CompactEffectSet &destination,
       SymbolId callee,
       const std::vector<ProcedureArgumentSummary> &arguments) {
     bool changed = add_composed_effect(
@@ -2022,12 +2213,13 @@ private:
            {}}) || changed;
     }
     composition_stack_.push_back({callee, arguments});
-    if (const ProcedureEffectSummary *summary = closed_summary(callee)) {
-      // Copy the row before adding to destination: recursive calls may make
-      // summary and destination the same vector.
-      const std::vector<SemanticEffect> effects = summary->effects;
-      for (const SemanticEffect &effect : effects) {
-        changed = compose_effect(destination, effect, arguments) || changed;
+    if (const CompactEffectSet *summary = closed_summary(callee)) {
+      // Copy four-byte IDs before adding to destination: a recursive call may
+      // make summary and destination the same growing vector.
+      const std::vector<EffectId> effects = summary->ordered;
+      for (EffectId effect : effects) {
+        changed = compose_interned_effect(
+            destination, effect, arguments) || changed;
       }
     } else if (imported_symbol(callee) != nullptr) {
       changed = compose_imported_call(
@@ -2050,7 +2242,7 @@ private:
   }
 
   [[nodiscard]] bool compose_value_call(
-      ProcedureEffectSummary &destination,
+      CompactEffectSet &destination,
       const ProcedureValueSummary &value,
       const std::vector<ProcedureArgumentSummary> &arguments) {
     bool changed = false;
@@ -2330,11 +2522,11 @@ private:
         : nullptr;
   }
 
-  [[nodiscard]] const ProcedureEffectSummary *closed_summary(
+  [[nodiscard]] const CompactEffectSet *closed_summary(
       SymbolId symbol) const {
     const std::size_t row = direct_row(symbol);
-    return row < closed_.procedures.size()
-        ? &closed_.procedures[row]
+    return row < closed_effects_.size()
+        ? &closed_effects_[row]
         : nullptr;
   }
 
@@ -2353,6 +2545,11 @@ private:
       pointer_procedure_paths_ = nullptr;
   mutable std::vector<std::vector<std::string>> procedure_path_scratch_;
   EffectSummaryResult closed_;
+  // Parallel to closed_.procedures during closure. SemanticEffect values are
+  // interned once; rows move compact IDs plus membership bits until the final
+  // public summaries are materialized.
+  EffectInterner effect_interner_;
+  std::vector<CompactEffectSet> closed_effects_;
   // Source rows are a prefix of direct_.procedures. local_returns_complete_
   // changes only after concrete target/edge discovery reaches its fixed point;
   // it turns any remaining absent local return path into a final unknown fact.

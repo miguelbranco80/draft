@@ -130,7 +130,10 @@ each completed TypeId. Direct workers borrow this context instead of rebuilding
 package-sized lookup data. Flow closure makes one mutable summary-table copy;
 non-recursive transfers run once, and later HIR rediscovery is limited to rows
 that actually consumed a local returned-procedure or pointer-write contract.
-Only recursive flow SCCs iterate internally.
+Only recursive flow SCCs iterate internally. Transitive effect closure interns
+each complete semantic effect once and propagates insertion-ordered 32-bit IDs
+through membership bit sets; full strings, paths, and nested callback summaries
+are materialized only at the public closed-summary boundary.
 
 Detailed command timing observes this boundary without entering semantic data.
 The interface graph reports aggregate ready-wave selection, task preparation,

@@ -635,6 +635,16 @@ smallest member as the deterministic tie-break. Exact call-site summaries are
 derived only after every component is closed and are the summaries consumed by
 lexical denial checking.
 
+Complete `SemanticEffect` values are interned once per package closure in their
+canonical first-discovery order. Procedure and call-site rows carry ordered
+32-bit effect IDs plus a membership bit set while the fixed point runs. A call
+therefore copies IDs and unions bits rather than repeatedly copying and deeply
+comparing effect strings, package paths, typed callback paths, and nested
+argument contracts. The public semantic vectors are materialized once after
+closure, preserving the exact prior order and interface representation. Hash
+table bucket order is never traversed and cannot affect semantic identity or
+output.
+
 Direct and closed procedure contracts have distinct immutable payload types.
 Each direct row is discovered independently against the same bottom source-row
 domain and immutable native/imported terminal contracts; no earlier source body

@@ -303,7 +303,9 @@ struct ProcedureEffectAnalysis {
 // One closed procedure contract. Return and write rows are copied from the
 // corresponding direct summary because public interfaces consume the complete
 // procedure contract from this one terminal result. effects begins with direct
-// effects and adds transitive rows in deterministic SCC closure order.
+// effects and adds transitive rows in deterministic SCC closure order. Closure
+// internally interns complete effects and moves compact IDs/bit sets; this
+// public semantic representation is materialized once after the fixed point.
 struct ProcedureEffectSummary {
   SymbolId procedure;
   std::vector<ProcedureFieldValueSummary> return_values;
