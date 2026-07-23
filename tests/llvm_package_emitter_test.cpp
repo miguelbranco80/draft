@@ -60,8 +60,74 @@ struct DirectFixture {
   file.source = sources.add_source("package.draft",
                                    R"draft(package direct
 
+Pair :: struct {
+    left: i64,
+    right: i64,
+}
+
+Outcome :: variant {
+    empty,
+    value: i64,
+}
+
+Overlay :: union {
+    byte: u8,
+    word: u64,
+}
+
+Bit_Header :: struct {
+    bits(3) kind: u8,
+    bits(6) delta: i16,
+    bits(1) active: bool,
+}
+
+base: i64 = 40
+label: string = "draft"
+table: [3]i64 = [3]i64{1, 4, 9}
+origin: Pair = Pair{left = 3, right = 7}
+
 increment :: proc(value: i64) -> i64 {
     return value + 1
+}
+
+answer :: proc() -> i64 {
+    return base + 2
+}
+
+label_length :: proc() -> usize {
+    return len(label)
+}
+
+pair_sum :: proc(left, right: i64) -> i64 {
+    pair := Pair{left = left, right = right}
+    return pair.left + pair.right
+}
+
+narrow :: proc(value: i64) -> u8 {
+    return cast[u8](value)
+}
+
+make_outcome :: proc(value: i64) -> Outcome {
+    return .value(value)
+}
+
+read_outcome :: proc(outcome: Outcome) -> i64 {
+    switch outcome {
+    case .value(payload):
+        return payload
+    case .empty:
+        return 0
+    }
+}
+
+overlay_word :: proc(value: u64) -> u64 {
+    overlay := Overlay{word = value}
+    return overlay.word
+}
+
+bit_total :: proc(kind: u8, delta: i16, active: bool) -> i16 {
+    header := Bit_Header{kind = kind, delta = delta, active = active}
+    return cast[i16](header.kind) + header.delta
 }
 )draft");
   file.syntax.emplace(
@@ -86,6 +152,14 @@ increment :: proc(value: i64) -> i64 {
     procedures.push_back(&procedure);
   }
   std::vector<draft::SymbolId> globals;
+  for (draft::SymbolId symbol :
+       bodies.package.symbols.symbols_in_scope(bodies.package.package_scope)) {
+    const draft::Symbol &candidate = bodies.package.symbols.symbol(symbol);
+    if (candidate.kind == draft::SymbolKind::Variable &&
+        !candidate.flags.foreign) {
+      globals.push_back(symbol);
+    }
+  }
   draft::LlvmPackageEmissionOptions options;
   options.module.package = {"workspace", "direct"};
   options.retain_llvm_text = true;
@@ -111,6 +185,12 @@ void test_direct_scalar_package_emits_native_object(TestState &state) {
   EXPECT(state, first.diagnostics.empty());
   EXPECT(state, first.emitted.llvm_text.find("increment") != std::string::npos);
   EXPECT(state, first.emitted.llvm_text.find("add i64") != std::string::npos);
+  EXPECT(state, first.emitted.llvm_text.find("answer") != std::string::npos);
+  EXPECT(state,
+         first.emitted.llvm_text.find("pair_5Fsum") != std::string::npos);
+  EXPECT(state, first.emitted.llvm_text.find("narrow") != std::string::npos);
+  EXPECT(state,
+         first.emitted.llvm_text.find(".draft.string.0") != std::string::npos);
   EXPECT(state, first.emitted.native.ok);
   EXPECT(state, !first.emitted.native.bytes.empty());
   EXPECT(state,

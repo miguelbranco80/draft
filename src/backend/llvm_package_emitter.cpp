@@ -134,15 +134,15 @@ public:
                        std::span<const MirProcedure *const> procedures,
                        DiagnosticSink &diagnostics)
       : target_(target), options_(options), semantic_(semantic), abi_(abi),
-        globals_(globals), procedures_(procedures), diagnostics_(diagnostics),
+        global_initializers_(global_initializers), globals_(globals),
+        procedures_(procedures), diagnostics_(diagnostics),
         llvm_types_(semantic.types.size(), nullptr),
         functions_(semantic.symbols.symbol_count(), nullptr),
         global_values_(semantic.symbols.symbol_count(), nullptr) {
-    // Debug locations and global initializers join this same builder as their
-    // direct lowering lands. Keep them in the public package boundary now, but
-    // do not retain inert references in the scalar-procedure foundation.
+    // Debug locations join this same builder as their direct lowering lands.
+    // Keep SourceManager in the public package boundary now, but do not retain
+    // an inert reference before metadata construction uses it.
     (void)sources;
-    (void)global_initializers;
   }
 
   [[nodiscard]] LlvmPackageEmissionResult run() {
@@ -193,6 +193,7 @@ public:
     create_nominal_type_identities();
     define_nominal_type_bodies();
     declare_procedures();
+    emit_globals();
     emit_procedures();
     construction_timing.finish();
     if (diagnostics_.error_count() != initial_errors_)
@@ -256,6 +257,25 @@ private:
     return type(runtime_scalar_id(id)).kind;
   }
 
+  [[nodiscard]] bool integer_kind(TypeKind kind) const {
+    return kind == TypeKind::Bool || kind == TypeKind::BooleanStorage ||
+           kind == TypeKind::SignedInteger ||
+           kind == TypeKind::UnsignedInteger || kind == TypeKind::Rune ||
+           kind == TypeKind::EndianScalar || kind == TypeKind::Enum;
+  }
+
+  [[nodiscard]] std::uint32_t integer_bits(TypeId id) const {
+    const Type &value = type(id);
+    if (value.kind == TypeKind::Bool)
+      return 1;
+    if (value.kind == TypeKind::Enum) {
+      return static_cast<std::uint32_t>(value.layout.size * 8U);
+    }
+    if (value.kind == TypeKind::Distinct)
+      return integer_bits(value.element);
+    return value.bit_width;
+  }
+
   [[nodiscard]] bool signed_integer(TypeId id) const {
     const Type &value = type(runtime_scalar_id(id));
     if (value.kind == TypeKind::Enum && value.element.is_valid()) {
@@ -263,6 +283,40 @@ private:
     }
     return value.kind == TypeKind::SignedInteger ||
            value.kind == TypeKind::Rune;
+  }
+
+  [[nodiscard]] LLVMAtomicOrdering atomic_order(AtomicMemoryOrder order) const {
+    switch (order) {
+    case AtomicMemoryOrder::Relaxed:
+      return LLVMAtomicOrderingMonotonic;
+    case AtomicMemoryOrder::Acquire:
+      return LLVMAtomicOrderingAcquire;
+    case AtomicMemoryOrder::Release:
+      return LLVMAtomicOrderingRelease;
+    case AtomicMemoryOrder::AcquireRelease:
+      return LLVMAtomicOrderingAcquireRelease;
+    case AtomicMemoryOrder::SequentiallyConsistent:
+      return LLVMAtomicOrderingSequentiallyConsistent;
+    }
+    return LLVMAtomicOrderingSequentiallyConsistent;
+  }
+
+  [[nodiscard]] LLVMAtomicRMWBinOp
+  atomic_rmw_operation(HirOperation operation) const {
+    switch (operation) {
+    case HirOperation::Add:
+      return LLVMAtomicRMWBinOpAdd;
+    case HirOperation::Subtract:
+      return LLVMAtomicRMWBinOpSub;
+    case HirOperation::BitwiseAnd:
+      return LLVMAtomicRMWBinOpAnd;
+    case HirOperation::BitwiseOr:
+      return LLVMAtomicRMWBinOpOr;
+    case HirOperation::BitwiseXor:
+      return LLVMAtomicRMWBinOpXor;
+    default:
+      return LLVMAtomicRMWBinOpXchg;
+    }
   }
 
   [[nodiscard]] bool struct_has_bit_fields(TypeId id) const {
@@ -273,6 +327,69 @@ private:
                        [](const FieldLayout &layout) {
                          return layout.kind == FieldLayoutKind::BitField;
                        });
+  }
+
+  [[nodiscard]] bool memory_aggregate_kind(TypeKind kind) const {
+    return kind == TypeKind::String || kind == TypeKind::Slice ||
+           kind == TypeKind::Array || kind == TypeKind::Tuple ||
+           kind == TypeKind::Struct || kind == TypeKind::Variant ||
+           kind == TypeKind::Union;
+  }
+
+  [[nodiscard]] std::size_t aggregate_index(TypeId aggregate_type,
+                                            std::uint64_t offset) const {
+    const Type &aggregate = type(runtime_scalar_id(aggregate_type));
+    if (aggregate.kind == TypeKind::Array) {
+      const std::uint64_t stride = type(aggregate.element).layout.size;
+      return stride == 0 ? 0 : static_cast<std::size_t>(offset / stride);
+    }
+    if (aggregate.kind == TypeKind::Tuple) {
+      for (std::size_t index = 0; index < aggregate.member_offsets.size();
+           ++index) {
+        if (aggregate.member_offsets[index] == offset)
+          return index;
+      }
+      return 0;
+    }
+
+    // Named structs use explicit padding fields inside a packed LLVM body.
+    // Count those physical fields while walking the already-computed Draft
+    // offsets; source member indices alone would select the wrong later field.
+    std::size_t physical_index = 0;
+    std::uint64_t cursor = 0;
+    for (std::size_t index = 0; index < aggregate.member_offsets.size();
+         ++index) {
+      const std::uint64_t member_offset = aggregate.member_offsets[index];
+      if (member_offset > cursor)
+        ++physical_index;
+      if (member_offset == offset)
+        return physical_index;
+      ++physical_index;
+      if (index < aggregate.members.size()) {
+        cursor = member_offset + type(aggregate.members[index]).layout.size;
+      }
+    }
+    return 0;
+  }
+
+  [[nodiscard]] std::optional<TypeId>
+  aggregate_scratch_type(const MirProcedure &procedure,
+                         const MirInstruction &instruction) const {
+    TypeId candidate;
+    if (instruction.kind == MirInstructionKind::Aggregate) {
+      candidate = instruction.type;
+    } else if (instruction.kind == MirInstructionKind::ExtractMember &&
+               !instruction.operands.empty()) {
+      candidate = procedure.value(instruction.operands.front()).type;
+    }
+    if (!candidate.is_valid())
+      return std::nullopt;
+    const TypeKind kind = runtime_scalar_kind(candidate);
+    if (kind != TypeKind::Variant && kind != TypeKind::Union &&
+        !struct_has_bit_fields(candidate)) {
+      return std::nullopt;
+    }
+    return candidate;
   }
 
   [[nodiscard]] bool
@@ -565,6 +682,270 @@ private:
     return function;
   }
 
+  [[nodiscard]] LLVMValueRef
+  intrinsic_declaration(std::string_view name,
+                        std::span<LLVMTypeRef> overloaded_types = {}) {
+    const unsigned id = LLVMLookupIntrinsicID(name.data(), name.size());
+    if (id == 0) {
+      error(SourceRange::invalid(),
+            "linked LLVM has no intrinsic '" + std::string(name) + "'");
+      return nullptr;
+    }
+    return LLVMGetIntrinsicDeclaration(
+        module_.value, id,
+        overloaded_types.empty() ? nullptr : overloaded_types.data(),
+        overloaded_types.size());
+  }
+
+  // Creates or returns one global declaration. Definitions are selected by the
+  // artifact reachability product and initialized later by emit_globals;
+  // foreign/imported references use the same SymbolId slot but remain external.
+  [[nodiscard]] LLVMValueRef global_for_symbol(SymbolId symbol_id,
+                                               bool definition) {
+    if (!symbol_id.is_valid() || symbol_id.value >= global_values_.size()) {
+      error(SourceRange::invalid(), "invalid global symbol reached LLVM");
+      return nullptr;
+    }
+    if (global_values_[symbol_id.value] != nullptr) {
+      return global_values_[symbol_id.value];
+    }
+    const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
+    if (symbol.kind != SymbolKind::Variable || !symbol.type.is_valid()) {
+      error(symbol.name_range, "non-variable symbol used as a global");
+      return nullptr;
+    }
+    const std::string name = symbol_name(symbol_id);
+    LLVMValueRef global = LLVMGetNamedGlobal(module_.value, name.c_str());
+    if (global == nullptr) {
+      global =
+          LLVMAddGlobal(module_.value, llvm_type(symbol.type), name.c_str());
+    }
+    LLVMSetThreadLocal(global, symbol.flags.is_thread_local ? 1 : 0);
+    // Exact foreign linker names belong to another provider and retain default
+    // visibility. Package-qualified definitions and imported declarations are
+    // hidden so only explicit C exports cross the final artifact boundary.
+    if (!native_symbol_name(symbol_id).has_value()) {
+      LLVMSetVisibility(global, LLVMHiddenVisibility);
+    }
+    if (!definition)
+      LLVMSetLinkage(global, LLVMExternalLinkage);
+    global_values_[symbol_id.value] = global;
+    return global;
+  }
+
+  [[nodiscard]] LLVMValueRef procedure_constant(const ConstantValue &value,
+                                                TypeId type_id,
+                                                SourceRange range) {
+    if (value.symbol_index != std::numeric_limits<std::uint32_t>::max() &&
+        value.symbol_index < semantic_.symbols.symbol_count()) {
+      const SymbolId symbol{value.symbol_index};
+      if (semantic_.symbols.symbol(symbol).kind == SymbolKind::Procedure) {
+        return function_for_symbol(symbol);
+      }
+    }
+    for (const ImportedSymbol &imported :
+         semantic_.imported_symbols_for_read()) {
+      if (imported.root_identity == value.root_identity &&
+          imported.root_relative_path == value.root_relative_path &&
+          imported.public_name == value.text &&
+          semantic_.symbols.symbol(imported.proxy).kind ==
+              SymbolKind::Procedure) {
+        return function_for_symbol(imported.proxy);
+      }
+    }
+    if (value.root_identity == options_.module.package.root_identity &&
+        value.root_relative_path ==
+            options_.module.package.root_relative_path) {
+      const std::optional<SymbolId> local =
+          semantic_.symbols.lookup_direct(semantic_.package_scope, value.text);
+      if (local.has_value() &&
+          semantic_.symbols.symbol(*local).kind == SymbolKind::Procedure) {
+        return function_for_symbol(*local);
+      }
+    }
+    if (value.root_identity.empty() || value.text.empty()) {
+      error(range, "procedure constant has no resolvable identity");
+      return LLVMConstNull(llvm_type(type_id));
+    }
+
+    const std::string name = package_symbol_name(
+        {value.root_identity, value.root_relative_path}, value.text);
+    LLVMValueRef function = LLVMGetNamedFunction(module_.value, name.c_str());
+    if (function == nullptr) {
+      function =
+          LLVMAddFunction(module_.value, name.c_str(), function_type(type_id));
+      LLVMSetVisibility(function, LLVMHiddenVisibility);
+    }
+    return function;
+  }
+
+  // Materializes one immutable byte sequence. A fresh row per source constant
+  // preserves deterministic occurrence identity and avoids a string hash table;
+  // LLVM may merge equal private constants later when optimization permits it.
+  [[nodiscard]] LLVMValueRef string_constant(std::string_view text) {
+    LLVMValueRef bytes =
+        LLVMConstStringInContext2(context_.value, text.data(), text.size(), 1);
+    LLVMValueRef global = LLVMAddGlobal(
+        module_.value, LLVMTypeOf(bytes),
+        (".draft.string." + std::to_string(next_string_constant_++)).c_str());
+    LLVMSetInitializer(global, bytes);
+    LLVMSetLinkage(global, LLVMPrivateLinkage);
+    LLVMSetGlobalConstant(global, 1);
+    LLVMSetUnnamedAddress(global, LLVMGlobalUnnamedAddr);
+    LLVMSetAlignment(global, 1);
+
+    LLVMValueRef members[]{
+        global,
+        LLVMConstInt(LLVMInt64TypeInContext(context_.value), text.size(), 0)};
+    return LLVMConstStructInContext(context_.value, members, 2, 0);
+  }
+
+  [[nodiscard]] LLVMValueRef aggregate_constant(const ConstantValue &value,
+                                                TypeId type_id,
+                                                SourceRange range) {
+    const TypeId storage_id = runtime_scalar_id(type_id);
+    const Type &aggregate = type(storage_id);
+    if (aggregate.kind == TypeKind::Variant ||
+        aggregate.kind == TypeKind::Union ||
+        struct_has_bit_fields(storage_id)) {
+      error(range,
+            "selected-member and bit-field aggregate constants are not yet "
+            "implemented directly");
+      return LLVMConstNull(llvm_type(type_id));
+    }
+
+    const bool homogeneous =
+        aggregate.kind == TypeKind::Array || aggregate.kind == TypeKind::Simd;
+    const bool product =
+        aggregate.kind == TypeKind::Tuple || aggregate.kind == TypeKind::Struct;
+    const std::size_t expected =
+        homogeneous ? static_cast<std::size_t>(aggregate.element_count)
+                    : aggregate.members.size();
+    if ((!homogeneous && !product) || value.elements.size() != expected) {
+      error(range, "aggregate constant does not match its runtime type");
+      return LLVMConstNull(llvm_type(type_id));
+    }
+
+    std::vector<LLVMValueRef> elements;
+    elements.reserve(value.elements.size() + aggregate.members.size());
+    std::uint64_t cursor = 0;
+    for (std::size_t index = 0; index < value.elements.size(); ++index) {
+      const TypeId element_type =
+          homogeneous ? aggregate.element : aggregate.members[index];
+      if (aggregate.kind == TypeKind::Struct) {
+        const std::uint64_t offset = index < aggregate.member_offsets.size()
+                                         ? aggregate.member_offsets[index]
+                                         : cursor;
+        if (offset > cursor) {
+          elements.push_back(LLVMConstNull(LLVMArrayType2(
+              LLVMInt8TypeInContext(context_.value), offset - cursor)));
+        }
+        cursor = offset + type(element_type).layout.size;
+      }
+      elements.push_back(
+          constant_operand(value.elements[index], element_type, range));
+    }
+    if (aggregate.kind == TypeKind::Struct && aggregate.layout.size > cursor) {
+      elements.push_back(
+          LLVMConstNull(LLVMArrayType2(LLVMInt8TypeInContext(context_.value),
+                                       aggregate.layout.size - cursor)));
+    }
+
+    if (aggregate.kind == TypeKind::Array) {
+      return LLVMConstArray2(llvm_type(aggregate.element), elements.data(),
+                             elements.size());
+    }
+    if (aggregate.kind == TypeKind::Simd) {
+      return LLVMConstVector(elements.data(),
+                             static_cast<unsigned>(elements.size()));
+    }
+    if (aggregate.kind == TypeKind::Tuple) {
+      return LLVMConstStructInContext(
+          context_.value, elements.empty() ? nullptr : elements.data(),
+          static_cast<unsigned>(elements.size()), 0);
+    }
+    return LLVMConstNamedStruct(llvm_type(storage_id),
+                                elements.empty() ? nullptr : elements.data(),
+                                static_cast<unsigned>(elements.size()));
+  }
+
+  [[nodiscard]] LLVMValueRef constant_operand(const ConstantValue &value,
+                                              TypeId type_id,
+                                              SourceRange range) {
+    LLVMTypeRef value_type = llvm_type(type_id);
+    switch (value.kind) {
+    case ConstantKind::Unavailable:
+    case ConstantKind::Nil:
+      return LLVMConstNull(value_type);
+    case ConstantKind::Bool:
+      return LLVMConstInt(value_type, value.boolean ? 1 : 0, 0);
+    case ConstantKind::Integer:
+      return integer_constant(value_type, value.integer);
+    case ConstantKind::Float: {
+      Type storage = type(runtime_scalar_id(type_id));
+      Type float_type = storage;
+      if (storage.kind == TypeKind::EndianScalar &&
+          storage.element.is_valid()) {
+        float_type = type(storage.element);
+      }
+      const std::optional<IeeeBinaryFormat> format =
+          float_type.kind == TypeKind::Float
+              ? ieee_format_for_width(float_type.bit_width)
+              : std::nullopt;
+      const std::optional<std::uint64_t> bits =
+          format.has_value()
+              ? (value.float_bit_width == float_type.bit_width
+                     ? std::optional<std::uint64_t>(value.float_bits)
+                     : round_ieee_bits(value.floating, *format))
+              : std::nullopt;
+      if (!bits.has_value()) {
+        error(range, "floating constant has no supported IEEE format");
+        return LLVMConstNull(value_type);
+      }
+      LLVMValueRef integer = LLVMConstInt(
+          LLVMIntTypeInContext(context_.value, float_type.bit_width), *bits, 0);
+      return storage.kind == TypeKind::EndianScalar
+                 ? integer
+                 : LLVMConstBitCast(integer, value_type);
+    }
+    case ConstantKind::String:
+      return string_constant(value.text);
+    case ConstantKind::Aggregate:
+      return aggregate_constant(value, type_id, range);
+    case ConstantKind::Procedure:
+      return procedure_constant(value, type_id, range);
+    case ConstantKind::EnumLabel:
+      return LLVMConstNull(value_type);
+    case ConstantKind::Target:
+      error(range, "target pseudo-value reached runtime emission");
+      return LLVMConstNull(value_type);
+    case ConstantKind::Type:
+      error(range, "compile-time type value reached runtime emission");
+      return LLVMConstNull(value_type);
+    }
+    return LLVMConstNull(value_type);
+  }
+
+  void emit_globals() {
+    for (SymbolId symbol_id : globals_) {
+      const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
+      if (symbol.kind != SymbolKind::Variable || symbol.flags.foreign ||
+          !symbol.type.is_valid()) {
+        continue;
+      }
+      LLVMValueRef global = global_for_symbol(symbol_id, true);
+      if (global == nullptr)
+        continue;
+      const ConstantValue *initializer = global_initializers_.find(symbol_id);
+      LLVMSetInitializer(
+          global,
+          initializer == nullptr
+              ? LLVMConstNull(llvm_type(symbol.type))
+              : constant_operand(*initializer, symbol.type, symbol.name_range));
+      LLVMSetAlignment(global, type(symbol.type).layout.alignment);
+    }
+  }
+
   void declare_procedures() {
     for (const MirProcedure *procedure : procedures_) {
       if (procedure != nullptr && procedure->valid) {
@@ -602,48 +983,11 @@ private:
   }
 
   [[nodiscard]] LLVMValueRef constant_value(const MirInstruction &instruction) {
-    LLVMTypeRef value_type = llvm_type(instruction.type);
-    const ConstantValue &value = instruction.constant;
-    switch (value.kind) {
-    case ConstantKind::Nil:
-      return LLVMConstNull(value_type);
-    case ConstantKind::Bool:
-      return LLVMConstInt(value_type, value.boolean ? 1 : 0, 0);
-    case ConstantKind::Integer:
-      return integer_constant(value_type, value.integer);
-    case ConstantKind::EnumLabel:
-      return enum_constant(instruction.symbol, value_type);
-    case ConstantKind::Float: {
-      const Type &storage = type(runtime_scalar_id(instruction.type));
-      const std::optional<IeeeBinaryFormat> format =
-          storage.kind == TypeKind::Float
-              ? ieee_format_for_width(storage.bit_width)
-              : std::nullopt;
-      const std::optional<std::uint64_t> bits =
-          format.has_value()
-              ? (value.float_bit_width == storage.bit_width
-                     ? std::optional<std::uint64_t>(value.float_bits)
-                     : round_ieee_bits(value.floating, *format))
-              : std::nullopt;
-      if (!bits.has_value()) {
-        error(instruction.range,
-              "floating constant has no supported IEEE format");
-        return LLVMConstNull(value_type);
-      }
-      LLVMValueRef integer = LLVMConstInt(
-          LLVMIntTypeInContext(context_.value, storage.bit_width), *bits, 0);
-      return LLVMConstBitCast(integer, value_type);
+    if (instruction.constant.kind == ConstantKind::EnumLabel) {
+      return enum_constant(instruction.symbol, llvm_type(instruction.type));
     }
-    case ConstantKind::Unavailable:
-    case ConstantKind::String:
-    case ConstantKind::Aggregate:
-    case ConstantKind::Procedure:
-    case ConstantKind::Type:
-    case ConstantKind::Target:
-      error(instruction.range, "constant kind is not yet implemented directly");
-      return LLVMConstNull(value_type);
-    }
-    return LLVMConstNull(value_type);
+    return constant_operand(instruction.constant, instruction.type,
+                            instruction.range);
   }
 
   [[nodiscard]] LLVMValueRef
@@ -787,11 +1131,214 @@ private:
     return LLVMGetPoison(llvm_type(instruction.type));
   }
 
+  [[nodiscard]] LLVMValueRef
+  emit_convert(const MirProcedure &procedure, const MirInstruction &instruction,
+               const std::vector<LLVMValueRef> &values) {
+    const MirValueId source_id = instruction.operands.front();
+    const TypeId source_type = procedure.value(source_id).type;
+    const TypeKind source_kind = runtime_scalar_kind(source_type);
+    const TypeKind target_kind = runtime_scalar_kind(instruction.type);
+    LLVMValueRef source = value_operand(values, source_id, instruction.range);
+    LLVMTypeRef source_llvm = llvm_type(source_type);
+    LLVMTypeRef target_llvm = llvm_type(instruction.type);
+
+    // bool is an i1 computation value while b8/b16/b32/b64 retain every stored
+    // bit. Converting storage to bool must test for zero rather than truncate.
+    if (source_kind == TypeKind::Bool &&
+        target_kind == TypeKind::BooleanStorage) {
+      return LLVMBuildZExt(builder_.value, source, target_llvm, "");
+    }
+    if (source_kind == TypeKind::BooleanStorage &&
+        target_kind == TypeKind::Bool) {
+      return LLVMBuildICmp(builder_.value, LLVMIntNE, source,
+                           LLVMConstNull(source_llvm), "");
+    }
+    if (source_llvm == target_llvm)
+      return source;
+
+    if (integer_kind(source_kind) && integer_kind(target_kind)) {
+      const std::uint32_t source_width = integer_bits(source_type);
+      const std::uint32_t target_width = integer_bits(instruction.type);
+      if (source_width > target_width) {
+        return LLVMBuildTrunc(builder_.value, source, target_llvm, "");
+      }
+      return signed_integer(source_type)
+                 ? LLVMBuildSExt(builder_.value, source, target_llvm, "")
+                 : LLVMBuildZExt(builder_.value, source, target_llvm, "");
+    }
+    if (integer_kind(source_kind) && target_kind == TypeKind::Float) {
+      return signed_integer(source_type)
+                 ? LLVMBuildSIToFP(builder_.value, source, target_llvm, "")
+                 : LLVMBuildUIToFP(builder_.value, source, target_llvm, "");
+    }
+    if (source_kind == TypeKind::Float && integer_kind(target_kind)) {
+      return signed_integer(instruction.type)
+                 ? LLVMBuildFPToSI(builder_.value, source, target_llvm, "")
+                 : LLVMBuildFPToUI(builder_.value, source, target_llvm, "");
+    }
+    if (source_kind == TypeKind::Float && target_kind == TypeKind::Float) {
+      return type(source_type).bit_width > type(instruction.type).bit_width
+                 ? LLVMBuildFPTrunc(builder_.value, source, target_llvm, "")
+                 : LLVMBuildFPExt(builder_.value, source, target_llvm, "");
+    }
+    if (LLVMGetTypeKind(source_llvm) == LLVMPointerTypeKind &&
+        integer_kind(target_kind)) {
+      return LLVMBuildPtrToInt(builder_.value, source, target_llvm, "");
+    }
+    if (integer_kind(source_kind) &&
+        LLVMGetTypeKind(target_llvm) == LLVMPointerTypeKind) {
+      return LLVMBuildIntToPtr(builder_.value, source, target_llvm, "");
+    }
+
+    error(instruction.range, "unsupported cast in direct LLVM emission");
+    return source;
+  }
+
+  [[nodiscard]] LLVMValueRef
+  emit_bit_field_load(const MirInstruction &instruction,
+                      const std::vector<LLVMValueRef> &values) {
+    const std::uint32_t covered_bits =
+        ((instruction.bit_offset + instruction.bit_width + 7U) / 8U) * 8U;
+    const std::uint32_t byte_count = covered_bits / 8U;
+    LLVMTypeRef covered_type =
+        LLVMIntTypeInContext(context_.value, covered_bits);
+    LLVMValueRef base =
+        value_operand(values, instruction.operands.front(), instruction.range);
+    LLVMValueRef assembled = nullptr;
+    for (std::uint32_t byte = 0; byte < byte_count; ++byte) {
+      LLVMValueRef address = base;
+      if (byte != 0) {
+        LLVMValueRef offset =
+            LLVMConstInt(LLVMInt64TypeInContext(context_.value), byte, 0);
+        address =
+            LLVMBuildGEP2(builder_.value, LLVMInt8TypeInContext(context_.value),
+                          base, &offset, 1, "");
+      }
+      LLVMValueRef loaded = LLVMBuildLoad2(
+          builder_.value, LLVMInt8TypeInContext(context_.value), address, "");
+      LLVMSetAlignment(loaded, 1);
+      LLVMValueRef part =
+          covered_bits == 8
+              ? loaded
+              : LLVMBuildZExt(builder_.value, loaded, covered_type, "");
+      if (byte != 0) {
+        part = LLVMBuildShl(builder_.value, part,
+                            LLVMConstInt(covered_type, byte * 8U, 0), "");
+      }
+      assembled = assembled == nullptr
+                      ? part
+                      : LLVMBuildOr(builder_.value, assembled, part, "");
+    }
+    if (instruction.bit_offset != 0) {
+      assembled = LLVMBuildLShr(
+          builder_.value, assembled,
+          LLVMConstInt(covered_type, instruction.bit_offset, 0), "");
+    }
+    LLVMTypeRef field_type =
+        LLVMIntTypeInContext(context_.value, instruction.bit_width);
+    if (covered_bits != instruction.bit_width) {
+      assembled = LLVMBuildTrunc(builder_.value, assembled, field_type, "");
+    }
+    const std::uint32_t logical_bits = integer_bits(instruction.type);
+    if (instruction.bit_width < logical_bits) {
+      LLVMTypeRef logical_type = llvm_type(instruction.type);
+      assembled =
+          signed_integer(instruction.type)
+              ? LLVMBuildSExt(builder_.value, assembled, logical_type, "")
+              : LLVMBuildZExt(builder_.value, assembled, logical_type, "");
+    }
+    return assembled;
+  }
+
+  void emit_bit_field_store_at(LLVMValueRef base, MirValueId value_id,
+                               std::uint32_t bit_offset,
+                               std::uint32_t bit_width, SourceRange range,
+                               const MirProcedure &procedure,
+                               const std::vector<LLVMValueRef> &values) {
+    const TypeId value_type = procedure.value(value_id).type;
+    const std::uint32_t logical_bits = integer_bits(value_type);
+    LLVMValueRef field = value_operand(values, value_id, range);
+    LLVMTypeRef field_type = LLVMIntTypeInContext(context_.value, bit_width);
+    if (logical_bits != bit_width) {
+      field = LLVMBuildTrunc(builder_.value, field, field_type, "");
+    }
+
+    const std::uint32_t covered_bits =
+        ((bit_offset + bit_width + 7U) / 8U) * 8U;
+    LLVMTypeRef covered_type =
+        LLVMIntTypeInContext(context_.value, covered_bits);
+    LLVMValueRef packed =
+        bit_width == covered_bits
+            ? field
+            : LLVMBuildZExt(builder_.value, field, covered_type, "");
+    if (bit_offset != 0) {
+      packed = LLVMBuildShl(builder_.value, packed,
+                            LLVMConstInt(covered_type, bit_offset, 0), "");
+    }
+
+    const std::uint32_t byte_count = covered_bits / 8U;
+    const std::uint32_t first_bit = bit_offset;
+    const std::uint32_t final_bit = first_bit + bit_width;
+    LLVMTypeRef byte_type = LLVMInt8TypeInContext(context_.value);
+    for (std::uint32_t byte = 0; byte < byte_count; ++byte) {
+      LLVMValueRef address = base;
+      if (byte != 0) {
+        LLVMValueRef offset =
+            LLVMConstInt(LLVMInt64TypeInContext(context_.value), byte, 0);
+        address =
+            LLVMBuildGEP2(builder_.value, byte_type, base, &offset, 1, "");
+      }
+      LLVMValueRef replacement = packed;
+      if (byte != 0) {
+        replacement =
+            LLVMBuildLShr(builder_.value, packed,
+                          LLVMConstInt(covered_type, byte * 8U, 0), "");
+      }
+      if (covered_bits != 8) {
+        replacement =
+            LLVMBuildTrunc(builder_.value, replacement, byte_type, "");
+      }
+
+      const std::uint32_t byte_begin = byte * 8U;
+      const std::uint32_t owned_begin = std::max(first_bit, byte_begin);
+      const std::uint32_t owned_end = std::min(final_bit, byte_begin + 8U);
+      std::uint32_t mask = 0;
+      for (std::uint32_t bit = owned_begin; bit < owned_end; ++bit) {
+        mask |= 1U << (bit - byte_begin);
+      }
+      if (mask != 0xffU) {
+        LLVMValueRef old =
+            LLVMBuildLoad2(builder_.value, byte_type, address, "");
+        LLVMSetAlignment(old, 1);
+        LLVMValueRef stable = LLVMBuildFreeze(builder_.value, old, "");
+        LLVMValueRef retained =
+            LLVMBuildAnd(builder_.value, stable,
+                         LLVMConstInt(byte_type, 0xffU & ~mask, 0), "");
+        LLVMValueRef selected = LLVMBuildAnd(
+            builder_.value, replacement, LLVMConstInt(byte_type, mask, 0), "");
+        replacement = LLVMBuildOr(builder_.value, retained, selected, "");
+      }
+      LLVMValueRef store = LLVMBuildStore(builder_.value, replacement, address);
+      LLVMSetAlignment(store, 1);
+    }
+  }
+
+  void emit_bit_field_store(const MirProcedure &procedure,
+                            const MirInstruction &instruction,
+                            const std::vector<LLVMValueRef> &values) {
+    emit_bit_field_store_at(
+        value_operand(values, instruction.operands.front(), instruction.range),
+        instruction.operands[1], instruction.bit_offset, instruction.bit_width,
+        instruction.range, procedure, values);
+  }
+
   void emit_instruction(const MirProcedure &procedure,
+                        std::size_t instruction_index,
                         const MirInstruction &instruction,
                         std::vector<LLVMValueRef> &values,
                         LLVMValueRef context_parameter,
-                        const std::vector<LLVMValueRef> &locals) {
+                        const std::vector<LLVMValueRef> &locals,
+                        const std::vector<LLVMValueRef> &aggregate_scratch) {
     LLVMValueRef result = nullptr;
     switch (instruction.kind) {
     case MirInstructionKind::Constant:
@@ -812,13 +1359,7 @@ private:
       }
       break;
     case MirInstructionKind::GlobalAddress:
-      if (instruction.symbol.is_valid() &&
-          instruction.symbol.value < global_values_.size()) {
-        result = global_values_[instruction.symbol.value];
-      }
-      if (result == nullptr) {
-        error(instruction.range, "global address has no direct LLVM global");
-      }
+      result = global_for_symbol(instruction.symbol, false);
       break;
     case MirInstructionKind::ProcedureReference:
       result = function_for_symbol(instruction.symbol);
@@ -830,20 +1371,155 @@ private:
           "");
       LLVMSetAlignment(result, instruction.alignment);
       break;
+    case MirInstructionKind::LoadBitField:
+      result = emit_bit_field_load(instruction, values);
+      break;
     case MirInstructionKind::Store: {
+      const MirValueId value_id = instruction.operands[1];
+      const MirValue &value = procedure.value(value_id);
+      const MirInstruction &definition =
+          procedure.instruction(value.definition);
+      const Type &storage = type(runtime_scalar_id(value.type));
+      if (definition.kind == MirInstructionKind::Zero &&
+          memory_aggregate_kind(storage.kind)) {
+        (void)LLVMBuildMemSet(
+            builder_.value,
+            value_operand(values, instruction.operands[0], instruction.range),
+            LLVMConstInt(LLVMInt8TypeInContext(context_.value), 0, 0),
+            LLVMConstInt(LLVMInt64TypeInContext(context_.value),
+                         storage.layout.size, 0),
+            instruction.alignment);
+        break;
+      }
       LLVMValueRef store = LLVMBuildStore(
-          builder_.value,
-          value_operand(values, instruction.operands[1], instruction.range),
+          builder_.value, value_operand(values, value_id, instruction.range),
           value_operand(values, instruction.operands[0], instruction.range));
       LLVMSetAlignment(store, instruction.alignment);
       break;
     }
+    case MirInstructionKind::StoreBitField:
+      emit_bit_field_store(procedure, instruction, values);
+      break;
+    case MirInstructionKind::AtomicLoad:
+      result = LLVMBuildLoad2(
+          builder_.value, llvm_type(instruction.type),
+          value_operand(values, instruction.operands[0], instruction.range),
+          "");
+      LLVMSetOrdering(result, atomic_order(instruction.atomic_order));
+      LLVMSetAlignment(result, type(instruction.type).layout.alignment);
+      break;
+    case MirInstructionKind::AtomicStore: {
+      const MirValueId value_id = instruction.operands[1];
+      LLVMValueRef store = LLVMBuildStore(
+          builder_.value, value_operand(values, value_id, instruction.range),
+          value_operand(values, instruction.operands[0], instruction.range));
+      LLVMSetOrdering(store, atomic_order(instruction.atomic_order));
+      LLVMSetAlignment(store,
+                       type(procedure.value(value_id).type).layout.alignment);
+      break;
+    }
+    case MirInstructionKind::AtomicExchange:
+      result = LLVMBuildAtomicRMW(
+          builder_.value, LLVMAtomicRMWBinOpXchg,
+          value_operand(values, instruction.operands[0], instruction.range),
+          value_operand(values, instruction.operands[1], instruction.range),
+          atomic_order(instruction.atomic_order), 0);
+      break;
+    case MirInstructionKind::AtomicReadModifyWrite:
+      result = LLVMBuildAtomicRMW(
+          builder_.value, atomic_rmw_operation(instruction.operation),
+          value_operand(values, instruction.operands[0], instruction.range),
+          value_operand(values, instruction.operands[1], instruction.range),
+          atomic_order(instruction.atomic_order), 0);
+      break;
+    case MirInstructionKind::AtomicCompareExchange: {
+      const MirValueId expected_pointer_id = instruction.operands[1];
+      const MirValueId desired_id = instruction.operands[2];
+      const TypeId value_type = procedure.value(desired_id).type;
+      LLVMValueRef expected = LLVMBuildLoad2(
+          builder_.value, llvm_type(value_type),
+          value_operand(values, expected_pointer_id, instruction.range), "");
+      LLVMSetAlignment(expected, type(value_type).layout.alignment);
+      LLVMValueRef pair = LLVMBuildAtomicCmpXchg(
+          builder_.value,
+          value_operand(values, instruction.operands[0], instruction.range),
+          expected, value_operand(values, desired_id, instruction.range),
+          atomic_order(instruction.atomic_order),
+          atomic_order(instruction.atomic_failure_order), 0);
+      LLVMValueRef observed =
+          LLVMBuildExtractValue(builder_.value, pair, 0, "");
+      result = LLVMBuildExtractValue(builder_.value, pair, 1, "");
+
+      LLVMValueRef function =
+          LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder_.value));
+      const std::size_t branch = next_auxiliary_block_++;
+      const std::string failure_name =
+          "atomic.compare.failure." + std::to_string(branch);
+      const std::string continuation_name =
+          "atomic.compare.continue." + std::to_string(branch);
+      LLVMBasicBlockRef failure_block = LLVMAppendBasicBlockInContext(
+          context_.value, function, failure_name.c_str());
+      LLVMBasicBlockRef continuation_block = LLVMAppendBasicBlockInContext(
+          context_.value, function, continuation_name.c_str());
+      LLVMBuildCondBr(builder_.value, result, continuation_block,
+                      failure_block);
+      LLVMPositionBuilderAtEnd(builder_.value, failure_block);
+      LLVMValueRef store = LLVMBuildStore(
+          builder_.value, observed,
+          value_operand(values, expected_pointer_id, instruction.range));
+      LLVMSetAlignment(store, type(value_type).layout.alignment);
+      LLVMBuildBr(builder_.value, continuation_block);
+      LLVMPositionBuilderAtEnd(builder_.value, continuation_block);
+      break;
+    }
+    case MirInstructionKind::AtomicFence:
+      if (instruction.atomic_order != AtomicMemoryOrder::Relaxed) {
+        (void)LLVMBuildFence(builder_.value,
+                             atomic_order(instruction.atomic_order), 0, "");
+      }
+      break;
     case MirInstructionKind::Unary:
       result = emit_unary(procedure, instruction, values);
       break;
     case MirInstructionKind::Binary:
       result = emit_binary(procedure, instruction, values);
       break;
+    case MirInstructionKind::Convert:
+      result = emit_convert(procedure, instruction, values);
+      break;
+    case MirInstructionKind::PointerOffset: {
+      LLVMValueRef pointer =
+          value_operand(values, instruction.operands[0], instruction.range);
+      LLVMValueRef count =
+          value_operand(values, instruction.operands[1], instruction.range);
+      if (instruction.offset != 1) {
+        count = LLVMBuildMul(
+            builder_.value, count,
+            LLVMConstInt(LLVMTypeOf(count), instruction.offset, 0), "");
+      }
+      result =
+          LLVMBuildGEP2(builder_.value, LLVMInt8TypeInContext(context_.value),
+                        pointer, &count, 1, "");
+      break;
+    }
+    case MirInstructionKind::PointerSubtract: {
+      LLVMTypeRef result_type = llvm_type(instruction.type);
+      LLVMValueRef left = LLVMBuildPtrToInt(
+          builder_.value,
+          value_operand(values, instruction.operands[0], instruction.range),
+          result_type, "");
+      LLVMValueRef right = LLVMBuildPtrToInt(
+          builder_.value,
+          value_operand(values, instruction.operands[1], instruction.range),
+          result_type, "");
+      result = LLVMBuildNSWSub(builder_.value, left, right, "");
+      if (instruction.offset != 1) {
+        result = LLVMBuildExactSDiv(
+            builder_.value, result,
+            LLVMConstInt(result_type, instruction.offset, 0), "");
+      }
+      break;
+    }
     case MirInstructionKind::Call: {
       const MirValueId callee_id = instruction.operands.front();
       const TypeId signature_id =
@@ -883,28 +1559,226 @@ private:
                                                    instruction.range),
                                      0, "");
       break;
+    case MirInstructionKind::MemberAddress: {
+      LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(context_.value),
+                                         instruction.offset, 0);
+      LLVMValueRef base =
+          value_operand(values, instruction.operands[0], instruction.range);
+      result =
+          LLVMBuildGEP2(builder_.value, LLVMInt8TypeInContext(context_.value),
+                        base, &offset, 1, "");
+      break;
+    }
+    case MirInstructionKind::ExtractMember: {
+      const MirValueId aggregate_id = instruction.operands[0];
+      const TypeId aggregate_type = procedure.value(aggregate_id).type;
+      const TypeKind aggregate_kind = runtime_scalar_kind(aggregate_type);
+      if (aggregate_kind == TypeKind::Variant ||
+          aggregate_kind == TypeKind::Union ||
+          struct_has_bit_fields(aggregate_type)) {
+        // LLVM represents these values as exact opaque bytes because a union,
+        // tagged payload, or sub-byte field has no structural SSA equivalent.
+        // Materialize the value in the instruction's entry-block scratch slot,
+        // then perform the semantically checked typed load at its byte offset.
+        LLVMValueRef storage = aggregate_scratch[instruction_index];
+        if (storage == nullptr) {
+          error(instruction.range,
+                "opaque aggregate extraction has no scratch storage");
+          break;
+        }
+        LLVMValueRef store = LLVMBuildStore(
+            builder_.value,
+            value_operand(values, aggregate_id, instruction.range), storage);
+        LLVMSetAlignment(store, type(aggregate_type).layout.alignment);
+        LLVMValueRef address = storage;
+        if (instruction.offset != 0) {
+          LLVMValueRef offset = LLVMConstInt(
+              LLVMInt64TypeInContext(context_.value), instruction.offset, 0);
+          address = LLVMBuildGEP2(builder_.value,
+                                  LLVMInt8TypeInContext(context_.value),
+                                  storage, &offset, 1, "");
+        }
+        result = LLVMBuildLoad2(builder_.value, llvm_type(instruction.type),
+                                address, "");
+        LLVMSetAlignment(result, struct_has_bit_fields(aggregate_type)
+                                     ? 1U
+                                     : type(instruction.type).layout.alignment);
+        break;
+      }
+      result = LLVMBuildExtractValue(
+          builder_.value,
+          value_operand(values, aggregate_id, instruction.range),
+          static_cast<unsigned>(
+              aggregate_index(aggregate_type, instruction.offset)),
+          "");
+      break;
+    }
+    case MirInstructionKind::IndexAddress: {
+      const MirValueId base_id = instruction.operands[0];
+      LLVMValueRef base = value_operand(values, base_id, instruction.range);
+      const TypeKind base_kind =
+          runtime_scalar_kind(procedure.value(base_id).type);
+      if (base_kind == TypeKind::Slice || base_kind == TypeKind::String) {
+        base = LLVMBuildExtractValue(builder_.value, base, 0, "");
+      }
+      LLVMValueRef index =
+          value_operand(values, instruction.operands[1], instruction.range);
+      if (instruction.offset != 1) {
+        index = LLVMBuildMul(
+            builder_.value, index,
+            LLVMConstInt(LLVMTypeOf(index), instruction.offset, 0), "");
+      }
+      result =
+          LLVMBuildGEP2(builder_.value, LLVMInt8TypeInContext(context_.value),
+                        base, &index, 1, "");
+      break;
+    }
+    case MirInstructionKind::Slice: {
+      const MirValueId base_id = instruction.operands[0];
+      LLVMValueRef data = value_operand(values, base_id, instruction.range);
+      const TypeKind base_kind =
+          runtime_scalar_kind(procedure.value(base_id).type);
+      if (base_kind == TypeKind::Slice || base_kind == TypeKind::String) {
+        data = LLVMBuildExtractValue(builder_.value, data, 0, "");
+      }
+      const MirValueId low_id = instruction.operands[1];
+      const MirValueId high_id = instruction.operands[2];
+      LLVMValueRef low = value_operand(values, low_id, instruction.range);
+      LLVMValueRef high = value_operand(values, high_id, instruction.range);
+      const Type &slice_type = type(runtime_scalar_id(instruction.type));
+      const std::uint64_t stride = slice_type.kind == TypeKind::String
+                                       ? 1
+                                       : type(slice_type.element).layout.size;
+      if (stride != 0) {
+        LLVMValueRef byte_offset = LLVMBuildMul(
+            builder_.value, low, LLVMConstInt(LLVMTypeOf(low), stride, 0), "");
+        data =
+            LLVMBuildGEP2(builder_.value, LLVMInt8TypeInContext(context_.value),
+                          data, &byte_offset, 1, "");
+      }
+      LLVMValueRef count = LLVMBuildSub(builder_.value, high, low, "");
+      LLVMValueRef aggregate = LLVMGetUndef(llvm_type(instruction.type));
+      aggregate = LLVMBuildInsertValue(builder_.value, aggregate, data, 0, "");
+      result = LLVMBuildInsertValue(builder_.value, aggregate, count, 1, "");
+      break;
+    }
+    case MirInstructionKind::Aggregate: {
+      const TypeKind aggregate_kind = runtime_scalar_kind(instruction.type);
+      if (aggregate_kind == TypeKind::Variant ||
+          aggregate_kind == TypeKind::Union ||
+          struct_has_bit_fields(instruction.type)) {
+        // Build opaque aggregates in bounded entry-block storage. The initial
+        // zero establishes deterministic padding, the variant zero value, and
+        // neighboring bits before selected typed or bit-field writes occur.
+        LLVMValueRef storage = aggregate_scratch[instruction_index];
+        if (storage == nullptr) {
+          error(instruction.range,
+                "opaque aggregate construction has no scratch storage");
+          break;
+        }
+        const TypeId storage_type = runtime_scalar_id(instruction.type);
+        const Type &aggregate_type = type(storage_type);
+        LLVMValueRef zero_store =
+            LLVMBuildStore(builder_.value,
+                           LLVMConstNull(llvm_type(instruction.type)), storage);
+        LLVMSetAlignment(zero_store, aggregate_type.layout.alignment);
+
+        for (std::size_t index = 0; index < instruction.operands.size();
+             ++index) {
+          const MirValueId operand = instruction.operands[index];
+          const TypeId operand_type = procedure.value(operand).type;
+          const std::uint64_t offset = index < instruction.offsets.size()
+                                           ? instruction.offsets[index]
+                                           : 0;
+          LLVMValueRef address = storage;
+          if (offset != 0) {
+            LLVMValueRef byte_offset =
+                LLVMConstInt(LLVMInt64TypeInContext(context_.value), offset, 0);
+            address = LLVMBuildGEP2(builder_.value,
+                                    LLVMInt8TypeInContext(context_.value),
+                                    storage, &byte_offset, 1, "");
+          }
+          const std::uint32_t bit_width =
+              index < instruction.aggregate_bit_widths.size()
+                  ? instruction.aggregate_bit_widths[index]
+                  : 0;
+          if (bit_width != 0) {
+            const std::uint64_t absolute_bit =
+                index < instruction.aggregate_bit_offsets.size()
+                    ? instruction.aggregate_bit_offsets[index]
+                    : offset * 8U;
+            emit_bit_field_store_at(
+                address, operand, static_cast<std::uint32_t>(absolute_bit % 8U),
+                bit_width, instruction.range, procedure, values);
+            continue;
+          }
+          LLVMValueRef store = LLVMBuildStore(
+              builder_.value, value_operand(values, operand, instruction.range),
+              address);
+          LLVMSetAlignment(store, struct_has_bit_fields(storage_type)
+                                      ? 1U
+                                      : type(operand_type).layout.alignment);
+        }
+        result = LLVMBuildLoad2(builder_.value, llvm_type(instruction.type),
+                                storage, "");
+        LLVMSetAlignment(result, aggregate_type.layout.alignment);
+        break;
+      }
+      LLVMValueRef aggregate = LLVMConstNull(llvm_type(instruction.type));
+      for (std::size_t index = 0; index < instruction.operands.size();
+           ++index) {
+        const std::size_t member =
+            aggregate_index(instruction.type, index < instruction.offsets.size()
+                                                  ? instruction.offsets[index]
+                                                  : 0);
+        aggregate = LLVMBuildInsertValue(
+            builder_.value, aggregate,
+            value_operand(values, instruction.operands[index],
+                          instruction.range),
+            static_cast<unsigned>(member), "");
+      }
+      result = aggregate;
+      break;
+    }
+    case MirInstructionKind::Assembly: {
+      std::vector<LLVMTypeRef> parameter_types;
+      std::vector<LLVMValueRef> arguments;
+      parameter_types.reserve(instruction.operands.size());
+      arguments.reserve(instruction.operands.size());
+      for (MirValueId operand : instruction.operands) {
+        parameter_types.push_back(llvm_type(procedure.value(operand).type));
+        arguments.push_back(value_operand(values, operand, instruction.range));
+      }
+      LLVMTypeRef assembly_type = LLVMFunctionType(
+          llvm_type(instruction.type),
+          parameter_types.empty() ? nullptr : parameter_types.data(),
+          static_cast<unsigned>(parameter_types.size()), 0);
+      LLVMValueRef assembly =
+          LLVMGetInlineAsm(assembly_type, instruction.assembly_text.data(),
+                           instruction.assembly_text.size(),
+                           instruction.assembly_constraints.data(),
+                           instruction.assembly_constraints.size(), 1, 0,
+                           LLVMInlineAsmDialectATT, 0);
+      result = LLVMBuildCall2(builder_.value, assembly_type, assembly,
+                              arguments.empty() ? nullptr : arguments.data(),
+                              static_cast<unsigned>(arguments.size()), "");
+      if (instruction.type == semantic_.types.builtins().void_type) {
+        result = nullptr;
+      }
+      break;
+    }
+    case MirInstructionKind::Trap: {
+      LLVMValueRef trap = intrinsic_declaration("llvm.trap");
+      if (trap != nullptr) {
+        (void)LLVMBuildCall2(builder_.value, LLVMGlobalGetValueType(trap), trap,
+                             nullptr, 0, "");
+      }
+      break;
+    }
     case MirInstructionKind::Invalid:
-    case MirInstructionKind::AtomicLoad:
-    case MirInstructionKind::AtomicStore:
-    case MirInstructionKind::AtomicExchange:
-    case MirInstructionKind::AtomicReadModifyWrite:
-    case MirInstructionKind::AtomicCompareExchange:
-    case MirInstructionKind::AtomicFence:
-    case MirInstructionKind::Convert:
-    case MirInstructionKind::PointerOffset:
-    case MirInstructionKind::PointerSubtract:
     case MirInstructionKind::Assert:
-    case MirInstructionKind::MemberAddress:
-    case MirInstructionKind::LoadBitField:
-    case MirInstructionKind::StoreBitField:
-    case MirInstructionKind::ExtractMember:
-    case MirInstructionKind::IndexAddress:
     case MirInstructionKind::BoundsCheck:
     case MirInstructionKind::SliceBoundsCheck:
-    case MirInstructionKind::Slice:
-    case MirInstructionKind::Aggregate:
-    case MirInstructionKind::Assembly:
-    case MirInstructionKind::Trap:
       error(instruction.range,
             std::string("MIR operation is not yet implemented directly: ") +
                 mir_instruction_kind_name(instruction.kind));
@@ -1018,6 +1892,27 @@ private:
       LLVMSetAlignment(store, type(local.type).layout.alignment);
     }
 
+    // Variant, union, and bit-field aggregate operations use one reusable
+    // stack slot per static MIR instruction. Reserving every slot in the entry
+    // block prevents a source operation inside a loop from growing the stack
+    // on each iteration while keeping each operation's storage independent.
+    std::vector<LLVMValueRef> aggregate_scratch(procedure.instructions.size(),
+                                                nullptr);
+    for (std::size_t instruction_index = 0;
+         instruction_index < procedure.instructions.size();
+         ++instruction_index) {
+      const std::optional<TypeId> scratch_type = aggregate_scratch_type(
+          procedure, procedure.instructions[instruction_index]);
+      if (!scratch_type.has_value())
+        continue;
+      const std::string name =
+          "aggregate.scratch." + std::to_string(instruction_index);
+      LLVMValueRef allocation = LLVMBuildAlloca(
+          builder_.value, llvm_type(*scratch_type), name.c_str());
+      LLVMSetAlignment(allocation, type(*scratch_type).layout.alignment);
+      aggregate_scratch[instruction_index] = allocation;
+    }
+
     LLVMValueRef context_parameter = LLVMGetParam(function, 0);
     std::vector<LLVMValueRef> values(procedure.values.size(), nullptr);
     for (std::size_t block_index = 0; block_index < procedure.blocks.size();
@@ -1025,8 +1920,9 @@ private:
       LLVMPositionBuilderAtEnd(builder_.value, blocks[block_index]);
       const MirBlock &block = procedure.blocks[block_index];
       for (MirInstructionId instruction_id : block.instructions) {
-        emit_instruction(procedure, procedure.instruction(instruction_id),
-                         values, context_parameter, locals);
+        emit_instruction(procedure, instruction_id.value,
+                         procedure.instruction(instruction_id), values,
+                         context_parameter, locals, aggregate_scratch);
       }
       emit_terminator(procedure, block.terminator, values, blocks);
     }
@@ -1043,6 +1939,7 @@ private:
   const LlvmPackageEmissionOptions &options_;
   const SemanticPackage &semantic_;
   const CAbiTable &abi_;
+  const ConstantTable &global_initializers_;
   std::span<const SymbolId> globals_;
   std::span<const MirProcedure *const> procedures_;
   DiagnosticSink &diagnostics_;
@@ -1054,6 +1951,8 @@ private:
   std::vector<LLVMTypeRef> llvm_types_;
   std::vector<LLVMValueRef> functions_;
   std::vector<LLVMValueRef> global_values_;
+  std::size_t next_string_constant_ = 0;
+  std::size_t next_auxiliary_block_ = 0;
 };
 
 } // namespace
