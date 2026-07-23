@@ -128,6 +128,14 @@ struct InterfaceTimingBreakdown {
 
   ~InterfaceTimingBreakdown() {
     if (timings == nullptr) return;
+    std::vector<CompletedTimingEvent> task_events;
+    task_events.reserve(task_kind_timings.size());
+    for (const TaskKindTiming &task : task_kind_timings) {
+      task_events.push_back({
+          std::string(semantic_product_kind_name(task.kind)) +
+              " worker time (" + std::to_string(task.count) + " tasks)",
+          task.elapsed_nanoseconds});
+    }
     timings->record_completed_event(
         "semantic ready-wave selection",
         ready_wave_nanoseconds,
@@ -140,7 +148,7 @@ struct InterfaceTimingBreakdown {
         "interface task execution",
         execution_nanoseconds,
         TimingVisibility::Detail,
-        package_events);
+        task_events);
     timings->record_completed_event(
         "interface result publication",
         publication_nanoseconds,
@@ -153,12 +161,36 @@ struct InterfaceTimingBreakdown {
     return enabled() ? &value : nullptr;
   }
 
+  // Accumulates worker time by semantic product kind. The first encounter of
+  // each kind follows canonical ProductId scheduling order, so both event order
+  // and task counts are deterministic. Child durations may exceed execution
+  // wall time because independent workers overlap; that distinction exposes
+  // real semantic work separately from scheduler launch/join overhead.
+  void record_task(
+      SemanticProductKind kind,
+      std::uint64_t elapsed_nanoseconds) {
+    if (!enabled()) return;
+    for (TaskKindTiming &task : task_kind_timings) {
+      if (task.kind != kind) continue;
+      ++task.count;
+      task.elapsed_nanoseconds += elapsed_nanoseconds;
+      return;
+    }
+    task_kind_timings.push_back({kind, 1, elapsed_nanoseconds});
+  }
+
+  struct TaskKindTiming {
+    SemanticProductKind kind = SemanticProductKind::ParsedFile;
+    std::uint64_t count = 0;
+    std::uint64_t elapsed_nanoseconds = 0;
+  };
+
   TimingRecorder *timings = nullptr;
   std::uint64_t ready_wave_nanoseconds = 0;
   std::uint64_t preparation_nanoseconds = 0;
   std::uint64_t execution_nanoseconds = 0;
   std::uint64_t publication_nanoseconds = 0;
-  std::vector<CompletedTimingEvent> package_events;
+  std::vector<TaskKindTiming> task_kind_timings;
 };
 
 // Publishes a private diagnostic packet into the coordinator sink without
@@ -408,7 +440,7 @@ void hash_field(Sha256 &hash, std::string_view value) {
 // is stable for malformed or equal locations, preserving deterministic task
 // publication order as the recovery tiebreaker.
 void sort_semantic_sites_in_source_order(
-    const LoadedPackage &loaded, SemanticPackage &package) {
+    const LoadedPackage &loaded, std::vector<SemanticSite> &sites) {
   const auto source_position = [&](const SemanticSite &site) {
     std::size_t file_index = loaded.files.size();
     std::uint32_t byte_offset = std::numeric_limits<std::uint32_t>::max();
@@ -425,10 +457,15 @@ void sort_semantic_sites_in_source_order(
     return std::pair{file_index, byte_offset};
   };
   std::stable_sort(
-      package.sites.begin(), package.sites.end(),
+      sites.begin(), sites.end(),
       [&](const SemanticSite &left, const SemanticSite &right) {
         return source_position(left) < source_position(right);
       });
+}
+
+void sort_semantic_sites_in_source_order(
+    const LoadedPackage &loaded, SemanticPackage &package) {
+  sort_semantic_sites_in_source_order(loaded, package.sites);
 }
 
 // Validation files stay outside the ordinary workspace graph, so handwritten
@@ -1403,13 +1440,38 @@ void bind_handwritten_program_identity(
   if (!package.declarations.ok)
     return false;
 
-  SemanticPackage interface_context_package = package.declarations.package;
-  ConstantTable interface_context_constants = package.declarations.constants;
-  sort_semantic_sites_in_source_order(workspace_package.loaded,
-                                      interface_context_package);
-  package.metadata = collect_agent_metadata(sources, workspace_package.loaded,
-                                            interface_context_package,
-                                            options.attachments, diagnostics);
+  // Complete compilation needs source ordering only for metadata occurrence
+  // identity. Sort a small site projection instead of copying the complete
+  // semantic package and constant table. Interface-synthesis discovery retains
+  // a self-contained package because its obligation builder still consumes the
+  // reordered sites through the package table. That less-common path is kept
+  // explicit instead of making every complete package pay for the copy.
+  std::optional<SemanticPackage> provider_context_package;
+  if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
+    provider_context_package = package.declarations.package;
+    sort_semantic_sites_in_source_order(
+        workspace_package.loaded, *provider_context_package);
+    package.metadata = collect_agent_metadata(
+        sources,
+        workspace_package.loaded,
+        *provider_context_package,
+        options.attachments,
+        diagnostics);
+  } else {
+    const AppendOnlyTableView<SemanticSite> semantic_sites =
+        package.declarations.package.sites_for_read();
+    std::vector<SemanticSite> ordered_sites(
+        semantic_sites.begin(), semantic_sites.end());
+    sort_semantic_sites_in_source_order(
+        workspace_package.loaded, ordered_sites);
+    package.metadata = collect_agent_metadata(
+        sources,
+        workspace_package.loaded,
+        package.declarations.package,
+        ordered_sites,
+        options.attachments,
+        diagnostics);
+  }
   if (!package.metadata.ok)
     return false;
   if (options.validation_kind == ValidationKind::None &&
@@ -1423,14 +1485,16 @@ void bind_handwritten_program_identity(
       workspace_package.identity, package.declarations.package,
       package.declarations.constants, package.metadata, diagnostics);
   if (options.stage == CompileWorkspaceStage::DiscoverInterfaceSynthesis) {
+    assert(provider_context_package.has_value() &&
+           "interface discovery must retain its provider context");
     const ImportedProcedureContracts imported_contracts =
-        imported_procedure_contracts(interface_context_package);
+        imported_procedure_contracts(*provider_context_package);
     package.obligations = build_agent_obligations(
         workspace_package.identity,
         sources,
         workspace_package.loaded,
-        interface_context_package,
-        interface_context_constants,
+        *provider_context_package,
+        package.declarations.constants,
         package.metadata,
         imported_contracts,
         options.target,
@@ -1443,13 +1507,18 @@ void bind_handwritten_program_identity(
 
 // Computes one PackageNameSet transition. Every compiler stage publishes eager
 // authored declarations first and later re-enters only to close an already
-// completed product set. Synthesis discovery and complete compilation therefore
-// share one declaration graph; only task evaluation's synthesis mode differs.
-[[nodiscard]] std::optional<CompiledPackage> analyze_workspace_package_names(
+// completed product set. current_package is the task-owned retained row, so
+// resumption mutates it directly without copying semantic tables. A diagnosed
+// attempt leaves that row present for inspection and deterministic cleanup.
+// Synthesis discovery and complete compilation therefore share one declaration
+// graph; only task evaluation's synthesis mode differs.
+[[nodiscard]] bool analyze_workspace_package_names(
     SourceManager &sources, const CompileWorkspaceOptions &options,
     const WorkspaceDependencyIndex &schedule, std::size_t package_index,
     std::vector<AgentValidationContext> validation_context,
-    bool validation_context_is_typed, const CompileWorkspaceResult &result,
+    bool validation_context_is_typed,
+    std::optional<CompiledPackage> &current_package,
+    const CompileWorkspaceResult &result,
     DiagnosticSink &diagnostics) {
   const WorkspacePackage &workspace_package =
       result.graph.packages[package_index];
@@ -1465,7 +1534,7 @@ void bind_handwritten_program_identity(
       diagnostics.error(
           SourceRange::invalid(),
           "package product ran before its dependency interface was published");
-      return std::nullopt;
+      return false;
     }
     available.entries.push_back({
         {import.file, import.syntax},
@@ -1473,18 +1542,16 @@ void bind_handwritten_program_identity(
     });
   }
 
-  const bool resume_product_discovery =
-      result.packages[package_index].has_value() &&
-      !result.packages[package_index]->declaration_discovery.terminal;
-  CompiledPackage package;
-  if (resume_product_discovery) {
-    package = *result.packages[package_index];
-  }
+  const bool resume_product_discovery = current_package.has_value() &&
+      !current_package->declaration_discovery.terminal;
   if (!resume_product_discovery) {
+    current_package.emplace();
+    CompiledPackage &package = *current_package;
     package.identity = workspace_package.identity;
     package.validation_context = std::move(validation_context);
     package.validation_context_is_typed = validation_context_is_typed;
   }
+  CompiledPackage &package = *current_package;
   if (!resume_product_discovery) {
     for (const LoadedPackageFile &file : workspace_package.loaded.files) {
       if (file.kind != PackageFileKind::AssemblySource)
@@ -1498,7 +1565,7 @@ void bind_handwritten_program_identity(
   if (resume_product_discovery) {
     if (!finish_package_declaration_discovery(package.declaration_discovery,
                                               diagnostics)) {
-      return std::nullopt;
+      return false;
     }
   } else {
     package.declaration_discovery = begin_package_declaration_discovery(
@@ -1512,13 +1579,10 @@ void bind_handwritten_program_identity(
   // payload. The coordinator appends declaration, constant, layout, and
   // condition products from that exact table and blocks this barrier on them.
   if (!package.declaration_discovery.terminal) {
-    return package;
+    return true;
   }
 
-  if (!package.declaration_discovery.discovery_ok)
-    return std::nullopt;
-
-  return package;
+  return package.declaration_discovery.discovery_ok;
 }
 
 // One private worker result for a frozen interface-scheduling wave. package is
@@ -1549,6 +1613,12 @@ struct WorkspaceInterfaceTaskSlot {
   std::vector<ImportedTypeInstantiationRequest> generic_dependencies;
   std::optional<ConditionalProductAttempt> condition;
   std::optional<ConstantProductAttempt> constant;
+  // Ordinary constant workers retain only their overlay TypeStore. The value
+  // publisher needs that compact ID domain to translate task-local types, not
+  // a copy of the package's symbols, scopes, imports, declarations, and other
+  // semantic tables. A full package is materialized only when synthesis must
+  // preserve the stopped task's complete semantic context.
+  std::optional<TypeStore> constant_types;
   std::optional<SemanticPackage> constant_package;
   std::size_t constant_shared_type_count = 0;
   // Worker-local wall time is populated only for --timings=all and replayed by
@@ -2666,10 +2736,11 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
 }
 
 // Builds declaration semantics and preliminary interfaces through the dynamic
-// product graph. Workers are deliberately sequential until package tasks stop
-// mutating shared generic-layout owner state. Even in this oracle mode, every
-// task owns diagnostics and its new package payload; the coordinator publishes
-// both in stable SemanticProductId order after the complete wave joins.
+// product graph. Read-only products execute in bounded parallel waves; package
+// name/interface barriers follow them in a stable chain because those tasks may
+// extend SourceManager while loading validation context. Every task owns its
+// diagnostics and payload, and the coordinator publishes both in stable
+// SemanticProductId order after the complete wave joins.
 [[nodiscard]] bool analyze_workspace_interfaces(
     SourceManager &sources, const CompileWorkspaceOptions &options,
     const WorkspaceDependencyIndex &schedule, const std::vector<bool> &selected,
@@ -2744,9 +2815,10 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
     // use SemanticTaskAppend packets; declaration packets additionally contain
     // row-granular patches for the collected TypeId/SymbolId they refine.
     // PackageNameSet and PackageInterface can load validation source into
-    // SourceManager, so those tasks run after every read-only product and in one
-    // stable global chain. This keeps workers away from canonical package state
-    // while allowing every already-isolated product to execute concurrently.
+    // SourceManager, so the coordinator runs those tasks in stable order after
+    // every read-only worker joins. This keeps workers away from canonical
+    // package state while allowing every already-isolated product to execute
+    // concurrently.
     struct InterfaceWaveExecution {
       SourceManager *sources = nullptr;
       const CompileWorkspaceOptions *options = nullptr;
@@ -2757,7 +2829,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           nullptr;
       std::vector<bool> *retained_validation_is_typed = nullptr;
       std::vector<WorkspaceInterfaceTaskSlot> *slots = nullptr;
-      const std::vector<std::size_t> *task_indices = nullptr;
+      std::span<const std::size_t> task_indices;
       bool collect_task_timings = false;
     };
     InterfaceWaveExecution execution{
@@ -2769,13 +2841,12 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         &retained_validation,
         &retained_validation_is_typed,
         &slots,
-        nullptr,
+        {},
         interface_timing.enabled(),
     };
     const auto execute_interface_task = [](
         void *opaque, WorkTaskId scheduled_task,
         std::string &failure) -> bool {
-      (void)failure;
       auto &execution = *static_cast<InterfaceWaveExecution *>(opaque);
       SourceManager &sources = *execution.sources;
       const CompileWorkspaceOptions &options = *execution.options;
@@ -2786,8 +2857,13 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       auto &retained_validation_is_typed =
           *execution.retained_validation_is_typed;
       auto &slots = *execution.slots;
+      if (static_cast<std::size_t>(scheduled_task) >=
+          execution.task_indices.size()) {
+        failure = "interface worker received an invalid task projection";
+        return false;
+      }
       const std::size_t task_index =
-          (*execution.task_indices)[static_cast<std::size_t>(scheduled_task)];
+          execution.task_indices[static_cast<std::size_t>(scheduled_task)];
       WorkspaceInterfaceTaskSlot &slot = slots[task_index];
       AccumulatedPhaseTimer task_timing(
           execution.collect_task_timings
@@ -3076,19 +3152,17 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         continue;
       }
       if (kind == SemanticProductKind::PackageNameSet) {
-        if (result.packages[package_index].has_value() &&
-            !result.packages[package_index]->declaration_discovery.terminal &&
+        if (slot.package.has_value() &&
+            !slot.package->declaration_discovery.terminal &&
             package_has_unindexed_declaration_work(
-                result, owner, *result.packages[package_index])) {
-          slot.package = *result.packages[package_index];
+                result, owner, *slot.package)) {
           continue;
         }
-        slot.package = analyze_workspace_package_names(
-            sources, options, schedule, package_index,
-            std::move(retained_validation[package_index]),
-            retained_validation_is_typed[package_index], result,
-            slot.outcome.diagnostics);
-        if (!slot.package.has_value()) {
+        if (!analyze_workspace_package_names(
+                sources, options, schedule, package_index,
+                std::move(retained_validation[package_index]),
+                retained_validation_is_typed[package_index], slot.package,
+                result, slot.outcome.diagnostics)) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure = "package name-set analysis failed";
           if (!slot.outcome.diagnostics.has_errors()) {
@@ -3120,7 +3194,9 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
                                            slot.outcome.failure);
             continue;
           }
-          SemanticPackage task_package = package.declaration_discovery.package;
+          SemanticPackage task_package =
+              package.declaration_discovery.package
+                  .fork_declaration_task_view();
           slot.condition = evaluate_conditional_product(
               sources, result.graph.packages[package_index].loaded,
               task_package, options.target.facts, *site,
@@ -3132,7 +3208,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           }
           if (slot.condition->status ==
               CompileTimeProductStatus::WaitingForSynthesis) {
-            slot.constant_package = std::move(task_package);
+            slot.constant_package = task_package.materialize_task_view();
             slot.outcome.kind = SemanticProductOutcomeKind::WaitingForSynthesis;
             continue;
           }
@@ -3196,23 +3272,27 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
             SymbolKind::Type) {
           continue;
         }
-        slot.constant_package = package.declaration_discovery.package;
+        SemanticPackage task_package =
+            package.declaration_discovery.package
+                .fork_declaration_task_view();
         slot.constant_shared_type_count =
-            slot.constant_package->types.size();
+            task_package.types.size();
         slot.constant = evaluate_package_constant_product(
             sources,
             result.graph.packages[package_index].loaded,
-            *slot.constant_package,
+            task_package,
             options.target.facts,
             root,
             package.declaration_discovery.published_constants,
             compile_time_synthesis_mode(options.stage),
             slot.outcome.diagnostics);
         if (slot.constant->status == CompileTimeProductStatus::Complete) {
+          slot.constant_types = std::move(task_package.types);
           continue;
         }
         if (slot.constant->status ==
             CompileTimeProductStatus::WaitingForSynthesis) {
+          slot.constant_package = task_package.materialize_task_view();
           slot.outcome.kind =
               SemanticProductOutcomeKind::WaitingForSynthesis;
           continue;
@@ -3275,7 +3355,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         continue;
       }
       if (kind == SemanticProductKind::PackageInterface) {
-        if (!result.packages[package_index].has_value()) {
+        if (!slot.package.has_value()) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure =
               "package interface ran before its name-set payload was published";
@@ -3295,16 +3375,13 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           slot.outcome.kind = SemanticProductOutcomeKind::Blocked;
           continue;
         }
-        if (result.packages[package_index]
-                ->declaration_discovery.terminal) {
-          slot.package = *result.packages[package_index];
+        if (slot.package->declaration_discovery.terminal) {
           if (!finalize_workspace_package_interface(
                   sources,
                   options,
                   result.graph.packages[package_index],
                   *slot.package,
                   slot.outcome.diagnostics)) {
-            slot.package.reset();
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure = "package interface finalization failed";
             if (!slot.outcome.diagnostics.has_errors()) {
@@ -3326,43 +3403,58 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
 
     std::vector<std::size_t> safe_tasks;
     std::vector<std::size_t> source_mutating_tasks;
+    std::vector<bool> package_has_safe_task(result.packages.size(), false);
+    std::vector<bool> package_has_source_task(result.packages.size(), false);
     for (std::size_t task_index = 0; task_index < wave.products.size();
          ++task_index) {
       const SemanticProductId product = wave.products[task_index];
       const SemanticProductKind kind =
           result.semantic_graph.products[product.value].kind;
+      const PackageId owner =
+          result.semantic_products.package_by_product[product.value];
+      if (owner.value >= result.packages.size()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "interface ready wave contains a product with an invalid owner");
+        return false;
+      }
       const bool may_mutate_sources =
           kind == SemanticProductKind::PackageNameSet ||
           kind == SemanticProductKind::PackageInterface;
       if (may_mutate_sources) {
+        if (package_has_source_task[owner.value] ||
+            package_has_safe_task[owner.value]) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "interface ready wave violates its package barrier ordering");
+          return false;
+        }
+        package_has_source_task[owner.value] = true;
         source_mutating_tasks.push_back(task_index);
         continue;
       }
+      if (package_has_source_task[owner.value]) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "interface ready wave violates its package barrier ordering");
+        return false;
+      }
+      package_has_safe_task[owner.value] = true;
       safe_tasks.push_back(task_index);
     }
-    std::vector<std::size_t> task_indices = safe_tasks;
-    task_indices.insert(task_indices.end(), source_mutating_tasks.begin(),
-                        source_mutating_tasks.end());
-    execution.task_indices = &task_indices;
-
+    // Source-mutating tasks cannot run while a semantic worker borrows the
+    // canonical package or SourceManager. Execute the read-only set first.
+    // Once it joins, move each package into its task slot and run the stable
+    // source-task order directly on the coordinator thread. This removes two
+    // complete CompiledPackage copies per package and avoids launching idle
+    // workers for a deliberately serial chain.
+    execution.task_indices = safe_tasks;
     WorkGraph execution_graph;
-    execution_graph.tasks.resize(task_indices.size());
-    for (std::size_t index = 0; index < source_mutating_tasks.size(); ++index) {
-      const WorkTaskId task =
-          static_cast<WorkTaskId>(safe_tasks.size() + index);
-      execution_graph.tasks[task].dependencies.reserve(
-          safe_tasks.size() + (index == 0 ? 0 : 1));
-      for (std::size_t safe_index = 0; safe_index < safe_tasks.size();
-           ++safe_index) {
-        execution_graph.tasks[task].dependencies.push_back(
-            static_cast<WorkTaskId>(safe_index));
-      }
-      if (index != 0) {
-        execution_graph.tasks[task].dependencies.push_back(task - 1);
-      }
-    }
+    execution_graph.tasks.resize(safe_tasks.size());
     preparation_timing.finish();
     WorkGraphRunResult scheduled;
+    bool source_execution_ok = true;
+    std::string source_execution_failure;
     {
       AccumulatedPhaseTimer execution_timing(interface_timing.destination(
           interface_timing.execution_nanoseconds));
@@ -3371,6 +3463,28 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           WorkGraphRunOptions{options.semantic_worker_count},
           execute_interface_task,
           &execution);
+      if (scheduled.ok) {
+        for (std::size_t task_index : source_mutating_tasks) {
+          const SemanticProductId product = wave.products[task_index];
+          const PackageId owner =
+              result.semantic_products.package_by_product[product.value];
+          if (result.packages[owner.value].has_value()) {
+            slots[task_index].package =
+                std::move(result.packages[owner.value]);
+            result.packages[owner.value].reset();
+          }
+          const std::array projection{task_index};
+          execution.task_indices = projection;
+          std::string failure;
+          if (!execute_interface_task(&execution, 0, failure)) {
+            source_execution_ok = false;
+            source_execution_failure = failure.empty()
+                ? "source-mutating interface task execution failed"
+                : std::move(failure);
+            break;
+          }
+        }
+      }
     }
     AccumulatedPhaseTimer publication_timing(interface_timing.destination(
         interface_timing.publication_nanoseconds));
@@ -3378,17 +3492,9 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       for (std::size_t task_index = 0;
            task_index < wave.products.size(); ++task_index) {
         const SemanticProductId product = wave.products[task_index];
-        if (result.semantic_graph.products[product.value].kind !=
-            SemanticProductKind::PackageNameSet) {
-          continue;
-        }
-        const PackageId owner =
-            result.semantic_products.package_by_product[product.value];
-        interface_timing.package_events.push_back({
-            "package declarations: " + display_package_identity(
-                result.graph.packages[owner.value].identity),
-            slots[task_index].elapsed_nanoseconds,
-        });
+        interface_timing.record_task(
+            result.semantic_graph.products[product.value].kind,
+            slots[task_index].elapsed_nanoseconds);
       }
     }
     if (options.timings != nullptr) {
@@ -3412,7 +3518,14 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       options.timings->add_counter(
           "interface semantic tasks scheduled", wave.products.size());
       options.timings->add_counter(
-          "interface semantic worker slots", scheduled.workers_used);
+          "interface semantic worker slots",
+          std::max(
+              scheduled.workers_used,
+              source_mutating_tasks.empty() ? std::size_t{0}
+                                            : std::size_t{1}));
+      options.timings->add_counter(
+          "serialized package interface tasks",
+          source_mutating_tasks.size());
       if (generic_owner_tasks > 1) {
         options.timings->add_counter(
             "generic owner tasks in shared ready waves",
@@ -3424,13 +3537,29 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
             declaration_tasks);
       }
     }
-    if (!scheduled.ok) {
+    if (!scheduled.ok || !source_execution_ok) {
       std::string failure = "interface semantic worker scheduling failed";
-      for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
-        if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
-        failure += " at task " + std::to_string(index) + ": " +
-            scheduled.tasks[index].failure;
-        break;
+      if (!scheduled.ok) {
+        for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
+          if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
+          failure += " at task " + std::to_string(index) + ": " +
+              scheduled.tasks[index].failure;
+          break;
+        }
+      } else {
+        failure = std::move(source_execution_failure);
+      }
+      // Preserve the failed command's inspectable package payloads. A package
+      // may have moved into its slot before a later internal task failure.
+      for (std::size_t task_index : source_mutating_tasks) {
+        if (!slots[task_index].package.has_value()) continue;
+        const PackageId owner =
+            result.semantic_products
+                .package_by_product[wave.products[task_index].value];
+        if (!result.packages[owner.value].has_value()) {
+          result.packages[owner.value] =
+              std::move(*slots[task_index].package);
+        }
       }
       diagnostics.error(SourceRange::invalid(), std::move(failure));
       return false;
@@ -3818,7 +3947,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           slot.constant->status != CompileTimeProductStatus::Complete ||
           slot.outcome.kind != SemanticProductOutcomeKind::Complete ||
           !slot.constant->result.has_value() ||
-          !slot.constant_package.has_value()) {
+          !slot.constant_types.has_value()) {
         continue;
       }
       const SemanticProductId product = wave.products[task_index];
@@ -3826,17 +3955,17 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           result.semantic_products.package_by_product[product.value];
       CompiledPackage &package = *result.packages[owner.value];
       TypeStore &canonical = package.declaration_discovery.package.types;
-      std::vector<TypeId> published(slot.constant_package->types.size());
+      std::vector<TypeId> published(slot.constant_types->size());
       ConstantValue &value = slot.constant->result->value;
       const bool value_ok = publish_constant_task_value(
-          slot.constant_package->types,
+          *slot.constant_types,
           value,
           slot.constant_shared_type_count,
           canonical,
           published,
           slot.outcome.diagnostics);
       const std::optional<TypeId> value_type = publish_constant_task_type(
-          slot.constant_package->types,
+          *slot.constant_types,
           slot.constant->result->type,
           slot.constant_shared_type_count,
           canonical,

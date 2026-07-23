@@ -149,6 +149,11 @@ are materialized only at the public closed-summary boundary.
 Detailed command timing observes this boundary without entering semantic data.
 The interface graph reports aggregate ready-wave selection, task preparation,
 bounded execution, and deterministic publication across all dynamic waves.
+Its detailed execution children aggregate task-owned worker duration by
+semantic product kind. The children are CPU work measurements and may sum above
+their enclosing wall time when workers overlap. Package name-set and interface
+barriers run on the coordinator after read-only workers join; they take
+temporary ownership of the retained package instead of cloning it.
 Effect closure reports contract-table setup, procedure-flow convergence, final
 SCC construction, transitive effect propagation, and call-site composition for
 each package. Package-closure wave/task/worker counters expose the dependency

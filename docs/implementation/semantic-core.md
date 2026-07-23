@@ -132,6 +132,12 @@ When one frozen wave completes declarations and constants together, the
 coordinator fixes the declaration TypeStore prefix before interning
 constant-task structural types. This publication order prevents equal numeric
 task-local TypeIds from being reinterpreted as unrelated declaration rows.
+An ordinary constant worker borrows the frozen package through a declaration
+task view and returns only its evaluated value plus the overlay `TypeStore`
+needed to translate task-local type IDs. It does not copy the package's scopes,
+symbols, sites, imports, or declarations. A stopped synthesis task is the
+exception: it materializes one self-contained package because its local IDs and
+semantic context must survive the worker join and provider round trip.
 
 ## Named and default call binding
 

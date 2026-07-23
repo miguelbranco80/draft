@@ -119,7 +119,12 @@ may therefore execute independently even when they target one package; the
 coordinator publishes every packet in product-ID order. Name-set and interface
 tasks are placed after read-only work and serialized because validation-context
 loading can extend the command-owned source table; no worker reads that table
-while another worker changes it.
+while another worker changes it. Those package barriers move the retained
+`CompiledPackage` into the coordinator-owned task slot and restore it during
+publication rather than copying its complete semantic tables. The graph must
+therefore keep a package barrier out of any ready wave containing another
+product for that package; the coordinator checks this invariant before moving
+the payload.
 Ready imported constants remain dependency-interface inputs and are installed
 under consumer-local proxy IDs rather than duplicated as consumer products.
 The package interface waits for every constant product and validates storage
@@ -145,7 +150,8 @@ O(packages + imports), without a persistent cache. The `compiler passes`,
 classification wave/task/worker counters make those distinct operations
 visible. `--timings=all` adds package/tool scopes, file discovery and I/O,
 lexing/parsing, import-graph resolution, declaration ready-wave execution and
-publication, package-closure ready fronts, procedure-flow/effect closure
+publication, worker time and task count by semantic product kind,
+package-closure ready fronts, procedure-flow/effect closure
 subphases, and per-package LLVM parse/verify/optimize/code-generation phases.
 Exclusive time remains meaningful inside sequential groups; independently
 scheduled child durations may overlap their parent wall time. Child process CPU

@@ -54,7 +54,7 @@ if(NOT summary_stderr MATCHES "timings \\(wall clock\\):" OR
    NOT summary_stderr MATCHES "compiler passes: 1")
   message(FATAL_ERROR "summary report lacks required phase/counter rows\n${summary_stderr}")
 endif()
-if(summary_stderr MATCHES "package declarations:" OR
+if(summary_stderr MATCHES "worker time \\(" OR
    summary_stderr MATCHES "\\(self ")
   message(FATAL_ERROR "summary report leaked all-mode detail\n${summary_stderr}")
 endif()
@@ -72,7 +72,8 @@ endif()
 if(NOT all_stderr MATCHES "source file I/O: package.draft" OR
    NOT all_stderr MATCHES "lex and parse: package.draft" OR
    NOT all_stderr MATCHES "import graph resolution: workspace:hello" OR
-   NOT all_stderr MATCHES "package declarations: workspace:hello" OR
+   NOT all_stderr MATCHES "package name set worker time" OR
+   NOT all_stderr MATCHES "type identity worker time" OR
    NOT all_stderr MATCHES "semantic ready-wave selection:" OR
    NOT all_stderr MATCHES "interface task execution:" OR
    NOT all_stderr MATCHES "procedure-flow fixed point:" OR
