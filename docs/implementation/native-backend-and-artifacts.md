@@ -10,9 +10,10 @@ The bootstrap links the shared LLVM 22 distribution selected at CMake time.
 Each semantic package produces one complete LLVM module containing only the
 globals and concrete runtime procedures selected by artifact reachability.
 Every authored body was still checked before that projection. The module is
-parsed and verified in a fresh `LLVMContext`, checked against the selected
+constructed in a fresh `LLVMContext`, verified, checked against the selected
 Draft target triple and fixed data-layout string, and emitted through a
-task-owned target machine into an in-memory object or assembly buffer. A
+task-owned target machine into an in-memory object or assembly buffer. The
+retained textual adapter parses only explicit oracle/test input. A
 disagreement between LLVM's computed layout and the versioned Draft profile is
 a compiler/toolchain error; LLVM never supplies missing language or ABI facts.
 
@@ -30,11 +31,14 @@ represented by structural LLVM SSA. It may print the already-built module for
 inspection and passes that same mutable module to
 verification/optimization/native emission. A
 checked-source-to-object regression proves this path has no input-preparation or
-IR-parsing phase. Production package tasks still use the complete textual
-emitter until root runtime support, debug metadata, and every remaining module
-product reach parity; there is no partial production fallback. The external
-textual entry remains useful as the explicit Clang/LLVM qualification oracle
-rather than as the intended package-construction architecture.
+IR-parsing phase. Production dependency-package tasks now use this direct path;
+they also materialize only runtime-helper declarations actually referenced by
+their reachable MIR. The root package temporarily uses the complete textual
+emitter while hosted runtime support, entry/validation wrappers, and debug
+metadata move behind their final direct or prebuilt boundaries. This split is
+explicit at the root-module product rather than a failure fallback. The
+external textual entry remains useful as the explicit Clang/LLVM qualification
+oracle rather than as the intended package-construction architecture.
 
 The adapter exposes no LLVM reference outside its module. Its process-global
 AArch64 and X86 registries are initialized once, while contexts, modules, target machines,
@@ -78,9 +82,10 @@ Optimization is artifact configuration rather than Draft program meaning. It
 does not enter the semantic product graph, source/resolved-program identity,
 synthesis context, target profile, or package granularity. The canonical LLVM
 module retained by the compiler and printed by `emit-llvm` is pre-optimization;
-object and assembly bytes are derived from a task-private parsed copy. This
-keeps the inspectable lowering stable while allowing repeated O0 and O2 builds
-from the same checked graph.
+direct package tasks pass that same task-private module to native emission,
+while explicit textual-oracle input is parsed into its own task-private module.
+This keeps the inspectable lowering stable without imposing a print/reparse
+boundary on ordinary package objects.
 
 Test and benchmark harnesses use the same native option. Because their evidence
 asserts facts about an executed binary, the validation policy identity records

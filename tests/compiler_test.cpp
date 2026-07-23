@@ -871,6 +871,10 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
   EXPECT(state, report.find("MIR procedure tasks: 2") != std::string::npos);
   EXPECT(state, report.find("package LLVM module tasks: 2") !=
                     std::string::npos);
+  EXPECT(state, report.find("direct LLVM package modules: 1") !=
+                    std::string::npos);
+  EXPECT(state, report.find("textual LLVM package modules: 1") !=
+                    std::string::npos);
   EXPECT(state, report.find("artifact-layout tasks: 2") !=
                     std::string::npos);
   EXPECT(state, report.find("native lowering tasks: 6") !=
@@ -3105,8 +3109,12 @@ void test_multi_package_native_pipeline(TestState &state) {
         "draft.workspace.lib_2Fmath.translate") != std::string::npos);
     EXPECT(state, package_llvm_text(*result.packages[0]).find(
         "define hidden void @__draft.assert") != std::string::npos);
+    // Direct dependency modules declare runtime helpers only when reachable
+    // MIR actually references them. lib/math needs no assertion helper, so the
+    // old unconditional textual declaration must not reappear merely to make
+    // a complete package module.
     EXPECT(state, package_llvm_text(*result.packages[1]).find(
-        "declare hidden void @__draft.assert") != std::string::npos);
+        "__draft.assert") == std::string::npos);
   }
 }
 
@@ -3700,15 +3708,15 @@ void test_compiler_distributed_memory(TestState &state) {
     EXPECT(state,
         memory->bodies.package.parametric_instances.size() >= 11);
     EXPECT(state, package_llvm_text(*memory).find(
-        "@\"__draft.runtime.reset_temporary_allocator\"") !=
+        "__draft.runtime.reset_temporary_allocator") !=
         std::string::npos);
     EXPECT(state, package_llvm_text(*memory).find("arena_5Fprovider") !=
         std::string::npos);
-    EXPECT(state, package_llvm_text(*memory).find("@\"mmap\"") !=
+    EXPECT(state, package_llvm_text(*memory).find("@mmap") !=
         std::string::npos);
-    EXPECT(state, package_llvm_text(*memory).find("@\"mprotect\"") !=
+    EXPECT(state, package_llvm_text(*memory).find("@mprotect") !=
         std::string::npos);
-    EXPECT(state, package_llvm_text(*memory).find("@\"munmap\"") !=
+    EXPECT(state, package_llvm_text(*memory).find("@munmap") !=
         std::string::npos);
   }
 }
@@ -3866,14 +3874,14 @@ void test_compiler_distributed_os(TestState &state) {
   EXPECT(state, os != nullptr);
   if (os != nullptr) {
     EXPECT(state, os->llvm_module.ok);
-    EXPECT(state, package_llvm_text(*os).find("@\"__draft.os.args_data\"") !=
+    EXPECT(state, package_llvm_text(*os).find("__draft.os.args_data") !=
         std::string::npos);
-    EXPECT(state, package_llvm_text(*os).find("@\"getpid\"") != std::string::npos);
+    EXPECT(state, package_llvm_text(*os).find("@getpid") != std::string::npos);
     EXPECT(state, package_llvm_text(*os).find(
-        "declare i32 @\"open\"(ptr, i32, ...)") !=
+        "declare i32 @open(ptr, i32, ...)") !=
         std::string::npos);
     EXPECT(state, package_llvm_text(*os).find(
-        "i32 (ptr, i32, ...) @\"open\"") != std::string::npos);
+        "i32 (ptr, i32, ...) @open") != std::string::npos);
     EXPECT(state, os->assembly_sources.empty());
     EXPECT(state, os->native_interop.providers.size() == 2);
   }
@@ -3924,15 +3932,15 @@ void test_compiler_distributed_thread(TestState &state) {
   EXPECT(state, thread != nullptr);
   if (thread != nullptr) {
     EXPECT(state, thread->llvm_module.ok);
-    EXPECT(state, package_llvm_text(*thread).find("@\"pthread_create\"") !=
+    EXPECT(state, package_llvm_text(*thread).find("@pthread_create") !=
         std::string::npos);
     EXPECT(state, package_llvm_text(*thread).find(
-        "@\"__draft.runtime.install_thread_context\"") !=
+        "__draft.runtime.install_thread_context") !=
         std::string::npos);
-    EXPECT(state, package_llvm_text(*thread).find("@\"pthread_mutex_lock\"") !=
+    EXPECT(state, package_llvm_text(*thread).find("@pthread_mutex_lock") !=
         std::string::npos);
     EXPECT(state, package_llvm_text(*thread).find(
-        "@\"__draft.runtime.default_context\"") != std::string::npos);
+        "__draft.runtime.default_context") != std::string::npos);
   }
 }
 
@@ -3989,7 +3997,7 @@ void test_linux_core_selection(TestState &state) {
         if (package->identity.root_relative_path != "os") continue;
         EXPECT(state, package->assembly_sources.empty());
         EXPECT(state, package_llvm_text(*package).find(
-            "declare i32 @\"open\"(ptr, i32, ...)") !=
+            "declare i32 @open(ptr, i32, ...)") !=
             std::string::npos);
       }
     }

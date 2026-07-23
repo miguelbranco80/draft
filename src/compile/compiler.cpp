@@ -51,6 +51,7 @@
 #include "base/sha256.h"
 #include "base/timing.h"
 #include "base/work_graph.h"
+#include "backend/llvm_package_emitter.h"
 #include "elaborator/generated_source.h"
 #include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
@@ -6869,7 +6870,11 @@ struct MirProcedureWaveExecution {
   return std::nullopt;
 }
 
-// One worker owns the complete textual LLVM module for one semantic package.
+// One worker owns the complete LLVM module for one semantic package. Ordinary
+// dependency packages use the direct LLVM builder and never materialize a text
+// buffer merely to feed it back into LLVM. The root package temporarily keeps
+// the textual oracle only while its hosted-runtime, entry, validation, and
+// debug products are moved behind their final direct/prebuilt boundaries.
 // The procedure pointer vector borrows immutable results in the closed native
 // executor's fixed-size MIR slot array. Exact WorkGraph edges ensure those
 // results are complete before this task starts; the array remains stable until
@@ -6886,8 +6891,11 @@ struct PackageLlvmModuleTaskSlot {
   LlvmIrOptions options;
   bool retain_llvm_text = false;
   std::optional<LlvmObjectEmissionOptions> native_options;
+  bool collect_phase_timings = false;
   LlvmIrResult llvm;
   PackageNativeOutput native;
+  LlvmPackageEmissionPhaseTimings direct_phase_timings;
+  bool used_direct_builder = false;
   std::uint64_t elapsed_nanoseconds = 0;
 };
 
@@ -6897,13 +6905,20 @@ struct PackageLlvmModuleTaskSlot {
 // order while the enclosing target-lowering scope is still active.
 [[nodiscard]] std::vector<CompletedTimingEvent>
 llvm_native_phase_timing_events(
+    const LlvmPackageEmissionPhaseTimings &direct_phase,
     const LlvmObjectEmissionPhaseTimings &phase,
     LlvmNativeOutputKind output_kind) {
   std::vector<CompletedTimingEvent> children;
-  children.reserve(10);
+  children.reserve(12);
   const auto append = [&](std::string_view name, std::uint64_t elapsed) {
     if (elapsed != 0) children.push_back({std::string(name), elapsed});
   };
+  append(
+      "LLVM direct module construction",
+      direct_phase.module_construction_nanoseconds);
+  append(
+      "LLVM text printing",
+      direct_phase.llvm_text_printing_nanoseconds);
   append(
       "LLVM target initialization",
       phase.target_initialization_nanoseconds);
@@ -6955,35 +6970,75 @@ struct PackageLlvmModuleWaveExecution {
   }
   SemanticProductOutcome &outcome = (*context.outcomes)[index];
   const auto started = std::chrono::steady_clock::now();
-  slot.llvm = emit_llvm_package_module(
-      *slot.target,
-      *slot.sources,
-      slot.options,
-      *slot.semantic,
-      *slot.abi,
-      *slot.global_initializers,
-      slot.globals,
-      slot.procedures,
-      outcome.diagnostics);
-  if (slot.llvm.ok && slot.native_options.has_value()) {
-    LlvmObjectEmissionResult emitted = emit_llvm_object_in_process(
+  const bool direct_module =
+      !slot.options.emit_debug_information &&
+      !slot.options.emit_runtime_support &&
+      !slot.options.emit_program_entry &&
+      slot.options.validation_kind == ValidationKind::None;
+  if (direct_module) {
+    LlvmPackageEmissionOptions direct_options;
+    direct_options.module = slot.options;
+    direct_options.retain_llvm_text = slot.retain_llvm_text;
+    direct_options.native_options = slot.native_options;
+    direct_options.collect_phase_timings = slot.collect_phase_timings;
+    LlvmPackageEmissionResult emitted = emit_llvm_package_direct(
         *slot.target,
-        display_package_identity(slot.options.package),
-        slot.llvm.text,
-        *slot.native_options);
-    if (!emitted.ok) {
-      outcome.diagnostics.error(
-          SourceRange::invalid(), emitted.failure);
-    } else {
-      slot.native.ok = true;
-      slot.native.output_kind = slot.native_options->output_kind;
-      slot.native.optimization = slot.native_options->optimization;
-      slot.native.instrumentation = slot.native_options->instrumentation;
-      slot.native.bytes = std::move(emitted.bytes);
-      slot.native.phase_timings = emitted.phase_timings;
+        *slot.sources,
+        direct_options,
+        *slot.semantic,
+        *slot.abi,
+        *slot.global_initializers,
+        slot.globals,
+        slot.procedures,
+        outcome.diagnostics);
+    slot.used_direct_builder = true;
+    slot.direct_phase_timings = emitted.phase_timings;
+    slot.llvm.ok = emitted.ok;
+    slot.llvm.text = std::move(emitted.llvm_text);
+    if (emitted.ok && slot.native_options.has_value()) {
+      if (!emitted.native.ok) {
+        outcome.diagnostics.error(
+            SourceRange::invalid(), emitted.native.failure);
+      } else {
+        slot.native.ok = true;
+        slot.native.output_kind = slot.native_options->output_kind;
+        slot.native.optimization = slot.native_options->optimization;
+        slot.native.instrumentation = slot.native_options->instrumentation;
+        slot.native.bytes = std::move(emitted.native.bytes);
+        slot.native.phase_timings = emitted.native.phase_timings;
+      }
     }
+  } else {
+    slot.llvm = emit_llvm_package_module(
+        *slot.target,
+        *slot.sources,
+        slot.options,
+        *slot.semantic,
+        *slot.abi,
+        *slot.global_initializers,
+        slot.globals,
+        slot.procedures,
+        outcome.diagnostics);
+    if (slot.llvm.ok && slot.native_options.has_value()) {
+      LlvmObjectEmissionResult emitted = emit_llvm_object_in_process(
+          *slot.target,
+          display_package_identity(slot.options.package),
+          slot.llvm.text,
+          *slot.native_options);
+      if (!emitted.ok) {
+        outcome.diagnostics.error(
+            SourceRange::invalid(), emitted.failure);
+      } else {
+        slot.native.ok = true;
+        slot.native.output_kind = slot.native_options->output_kind;
+        slot.native.optimization = slot.native_options->optimization;
+        slot.native.instrumentation = slot.native_options->instrumentation;
+        slot.native.bytes = std::move(emitted.bytes);
+        slot.native.phase_timings = emitted.phase_timings;
+      }
+    }
+    if (!slot.retain_llvm_text && slot.native.ok) slot.llvm.text.clear();
   }
-  if (!slot.retain_llvm_text && slot.native.ok) slot.llvm.text.clear();
   const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now() - started).count();
   assert(elapsed >= 0 && "package LLVM task duration must be nonnegative");
@@ -7344,6 +7399,8 @@ struct NativePipelineExecution {
       slot.options.package = result.graph.packages[package_index].identity;
       slot.options.emit_debug_information = emit_debug_information;
       slot.retain_llvm_text = emit_llvm;
+      slot.collect_phase_timings =
+          timings != nullptr && timings->output() == TimingOutput::All;
       if (emit_native_output) {
         slot.native_options = native_output;
       }
@@ -7579,6 +7636,11 @@ struct NativePipelineExecution {
         if (timings != nullptr) {
           timings->add_counter("LLVM package modules emitted", 1);
           timings->add_counter(
+              module_slots[task.slot].used_direct_builder
+                  ? "direct LLVM package modules"
+                  : "textual LLVM package modules",
+              1);
+          timings->add_counter(
               "LLVM IR bytes",
               static_cast<std::uint64_t>(package.llvm_module.text.size()));
           if (package.native_output.ok) {
@@ -7593,6 +7655,7 @@ struct NativePipelineExecution {
                   module_slots[task.slot].elapsed_nanoseconds,
                   TimingVisibility::Detail,
                   llvm_native_phase_timing_events(
+                      module_slots[task.slot].direct_phase_timings,
                       package.native_output.phase_timings,
                       package.native_output.output_kind));
             }

@@ -454,13 +454,15 @@ private:
           value.kind != TypeKind::Union) {
         continue;
       }
+      // The command-local store retains symbolic and intermediate generic
+      // aggregates which have no runtime layout and may be completely absent
+      // from the artifact-live MIR projection. Do not diagnose those semantic
+      // rows merely because they coexist with emitted types. If reachable MIR
+      // later requests one, llvm_type reports that precise illegal runtime use.
+      if (!value.layout.known)
+        continue;
       if (value.kind == TypeKind::Variant || value.kind == TypeKind::Union ||
           struct_has_bit_fields(id)) {
-        if (!value.layout.known) {
-          error(value.declaration,
-                "opaque aggregate runtime type has no complete layout");
-          continue;
-        }
         // LLVM's C API names identified structs but cannot name an array type.
         // These Draft forms are intentionally byte storage rather than an LLVM
         // structural aggregate, so use the exact array directly. Opaque
@@ -479,11 +481,17 @@ private:
     for (std::size_t index = 0; index < semantic_.types.size(); ++index) {
       const TypeId id{static_cast<std::uint32_t>(index)};
       const Type &value = type(id);
+      // llvm_type recursively memoizes every structural and scalar type in the
+      // same table as the identified struct placeholders. Defining one early
+      // struct can therefore populate a later primitive/array row before this
+      // loop reaches it. LLVMStructSetBody accepts only an identified struct;
+      // the semantic kind, not a non-null cache entry, is the discriminator.
+      if (value.kind != TypeKind::Struct)
+        continue;
       LLVMTypeRef nominal = llvm_types_[index];
       if (nominal == nullptr)
         continue;
-      if (value.kind == TypeKind::Variant || value.kind == TypeKind::Union ||
-          struct_has_bit_fields(id)) {
+      if (struct_has_bit_fields(id)) {
         continue;
       }
       if (!value.layout.known) {
