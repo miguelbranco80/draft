@@ -3,14 +3,17 @@
 This report records the native-host qualification performed on 2026-07-19 for
 the compiler implementation through commit `c0638e1`, the completed semantic-
 work-graph qualification run on 2026-07-21 through commit `10ab54a`, and the
-package-module qualification through commit `80768cc` later that day. This
-report commit changes documentation only.
+package-module qualification through commit `80768cc` later that day. It also
+records the direct-LLVM and deterministic O0-unit qualification performed on
+2026-07-23 through commit `1dd14d9`. This report commit changes documentation
+only.
 
-The bootstrap links LLVM 22.1.8 and emits one complete module/object per
-semantic package in process. Matching Clang, linker, archiver, debug,
-system-library, and SDK or sysroot tools remain ordinary build configuration.
-Their locations do not enter Draft program identity, and ordinary compilation
-does not launch a version probe.
+The current bootstrap links LLVM 22.1.8 and constructs LLVM IR directly in
+process. O2 retains one complete module/object per semantic package; a large
+native-only O0 package may use deterministic internal units. Matching Clang,
+linker, archiver, debug, system-library, and SDK or sysroot tools remain
+ordinary build configuration. Their locations do not enter Draft program
+identity, and ordinary compilation does not launch a version probe.
 
 ## Qualified configurations
 
@@ -62,6 +65,34 @@ published eight artifact layouts. The structurally validated Draft coding skill
 was also forward-tested by fresh agents against the CLI and current compiler
 product graph; no granularity flag or obsolete per-function LLVM route was
 reported.
+
+## Direct-LLVM and O0-unit addendum
+
+On 2026-07-23, commit `1dd14d9` passed 91/91 tests in each of the macOS AArch64
+Debug, Release/NDEBUG, and bootstrap ASan/UBSan configurations. All three builds
+used warnings as errors. These suites include native determinism, direct-
+LLVM/external-Clang parity, native conformance, C-client integration, compiler-
+service and Draft IDE execution, provider-free resolution, every maintained
+target front-end check, and the complete example matrix.
+
+The qualified compiler checks every authored procedure, publishes one compact
+direct-reference product for every concrete runtime body, and computes the
+artifact-live procedure/global closure before MIR. The Draft IDE measurement
+checked 463 runtime procedures and selected 398 as native-live, leaving 65
+valid checked procedures out of machine emission. Target lowering scheduled
+398 independent MIR tasks, 26 package LLVM units, and 22 package layouts. A
+generated 131-live-procedure package additionally proved three canonical
+48-procedure O0 units with byte-identical output at one and four workers, while
+the equivalent O2 build retained one complete package unit.
+
+Three uncontended fresh O0 Draft IDE builds with the optimized bootstrap and
+`--timings` completed in 208.645, 209.688, and 212.521 ms. Their target-lowering
+times were 34.928, 33.928, and 34.554 ms; final native-link times were 54.436,
+57.182, and 56.628 ms. The same source measured about 67 ms in target lowering
+before O0 unit splitting. Each run performed one compiler pass, one workspace
+load, 26 in-process direct-LLVM unit emissions, and one external process—the
+final linker. Debug metadata and `.dSYM` generation were not requested, and no
+persistent compiler cache participated.
 
 ## What the gates establish
 
