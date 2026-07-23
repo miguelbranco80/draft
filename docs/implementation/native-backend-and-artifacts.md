@@ -15,9 +15,10 @@ projection. Each module is constructed in a fresh `LLVMContext`, verified,
 checked against the selected Draft target triple and fixed data-layout string,
 and emitted through a task-owned target machine into an in-memory object or
 assembly buffer. The retained textual adapter parses only explicit oracle/test
-input. A
-disagreement between LLVM's computed layout and the versioned Draft profile is
-a compiler/toolchain error; LLVM never supplies missing language or ABI facts.
+input. Unit tests which inspect LLVM text print the module from the same direct
+builder; there is no second textual Draft-to-LLVM implementation. A disagreement
+between LLVM's computed layout and the versioned Draft profile is a
+compiler/toolchain error; LLVM never supplies missing language or ABI facts.
 
 The direct-construction replacement now has its final ownership boundary: one
 task-local builder creates nominal types, reachable globals, ordinary-ABI MIR,

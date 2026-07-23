@@ -7586,7 +7586,6 @@ struct NativePipelineExecution {
         // Process services are a separate compiler-distributed target object.
         // Only unit zero owns the package-level entry/validation definitions;
         // calls to procedures defined in later units are ordinary declarations.
-        slot.options.emit_runtime_support = false;
         slot.options.emit_program_entry =
             package_unit_index == 0 && emit_program_entry && is_root;
         if (package_unit_index == 0 && is_root) {

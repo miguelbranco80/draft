@@ -26,7 +26,7 @@
 #pragma once
 
 #include "assembly/analyze.h"
-#include "backend/llvm_ir.h"
+#include "backend/llvm_package.h"
 #include "backend/llvm_object_emitter.h"
 #include "base/work_graph.h"
 #include "compile/body_work.h"

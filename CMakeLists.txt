@@ -229,7 +229,6 @@ add_library(
   src/backend/foreign_inputs.cpp
   src/backend/foreign_summaries.cpp
   "${DRAFT_RUNTIME_BUNDLE}"
-  src/backend/llvm_ir.cpp
   src/backend/native_object_tasks.cpp
   src/backend/runtime_assets.cpp
   src/backend/toolchain.cpp

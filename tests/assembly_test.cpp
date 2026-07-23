@@ -2,7 +2,7 @@
 
 #include "assembly/aarch64.h"
 #include "assembly/analyze.h"
-#include "backend/llvm_ir.h"
+#include "backend/llvm_package.h"
 #include "mir/lower.h"
 #include "sema/body_checker.h"
 #include "sema/semantic.h"

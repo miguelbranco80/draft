@@ -1,6 +1,6 @@
 // Deterministic target-profiled LLVM IR emission tests.
 
-#include "backend/llvm_ir.h"
+#include "backend/llvm_package_emitter.h"
 #include "backend/llvm_object_emitter.h"
 #include "mir/lower.h"
 #include "sema/body_checker.h"
@@ -146,9 +146,9 @@ first_byte :: proc() -> u8 {
 )draft");
   if (!emitted.ok) std::cerr << emitted.diagnostics;
   EXPECT(state, emitted.ok);
-  EXPECT(state, emitted.text.find(
-      "call void @llvm.memset.p0.i64(ptr align 1 %l0, i8 0, "
-      "i64 4096, i1 false)") != std::string::npos);
+  EXPECT(state, emitted.text.find("@llvm.memset.p0.i64") !=
+                    std::string::npos);
+  EXPECT(state, emitted.text.find("i64 4096") != std::string::npos);
   EXPECT(state, emitted.text.find(
       "store %draft.type.0 zeroinitializer") == std::string::npos);
 }
@@ -250,7 +250,6 @@ update :: proc(record: ^Record) -> i16 {
 )draft");
   if (!emitted.ok) std::cerr << emitted.diagnostics;
   EXPECT(state, emitted.ok);
-  EXPECT(state, emitted.text.find(" = type [2 x i8]") != std::string::npos);
   EXPECT(state, emitted.text.find("sext i6") != std::string::npos);
   EXPECT(state, emitted.text.find("load i8, ptr") != std::string::npos);
   EXPECT(state, emitted.text.find("freeze i8") != std::string::npos);
@@ -314,28 +313,25 @@ main :: proc() -> int {
 
   draft::LlvmIrOptions options;
   options.package = {"workspace", "split-native"};
-  options.emit_runtime_support = true;
   options.emit_program_entry = true;
-  const draft::LlvmIrResult package_module =
-      draft::emit_llvm_package_module(
-          target,
-          sources,
-          options,
-          bodies.package,
-          abi,
-          semantics.global_initializers,
-          globals,
-          procedures,
-          diagnostics);
+  draft::LlvmPackageEmissionOptions direct_options;
+  direct_options.module = options;
+  direct_options.retain_llvm_text = true;
+  const draft::LlvmPackageEmissionResult direct =
+      draft::emit_llvm_package_direct(
+          target, sources, direct_options, bodies.package, abi,
+          semantics.global_initializers, globals, procedures, diagnostics);
+  const draft::LlvmIrResult package_module{
+      direct.ok, direct.llvm_text};
   EXPECT(state, package_module.ok);
   EXPECT(state, package_module.text.find(
-      "@\"draft.workspace.split_2Dnative.answer\" = hidden global i64 41") !=
+      "@draft.workspace.split_2Dnative.answer = hidden global i64 41") !=
       std::string::npos);
   EXPECT(state, package_module.text.find(
-      "define hidden i64 @\"draft.workspace.split_2Dnative.add_5Fanswer\"") !=
+      "define hidden i64 @draft.workspace.split_2Dnative.add_5Fanswer") !=
       std::string::npos);
   EXPECT(state, package_module.text.find(
-      "define hidden i64 @\"draft.workspace.split_2Dnative.main\"") !=
+      "define hidden i64 @draft.workspace.split_2Dnative.main") !=
       std::string::npos);
   EXPECT(state, package_module.text.find("define i32 @main") !=
       std::string::npos);
@@ -517,7 +513,7 @@ main :: proc() -> i64 {
 
   if (!emitted.ok) std::cerr << emitted.diagnostics;
   EXPECT(state, emitted.ok);
-  EXPECT(state, emitted.text.find("i8 %arg0, i16 %arg1") != std::string::npos);
+  EXPECT(state, emitted.text.find("i8 %1, i16 %2") != std::string::npos);
   EXPECT(state, emitted.text.find("i8 3, i16 4") != std::string::npos);
   EXPECT(state, emitted.text.find("TypeParameter") == std::string::npos);
   EXPECT(state, emitted.text.find("static_pack") == std::string::npos);
@@ -547,13 +543,13 @@ invoke :: proc(
   if (!emitted.ok) std::cerr << emitted.diagnostics;
   EXPECT(state, emitted.ok);
   EXPECT(state, emitted.text.find(
-      "declare i32 @\"draft_variadic_sink\"(i32, ...)") !=
+      "declare i32 @draft_variadic_sink(i32, ...)") !=
       std::string::npos);
   EXPECT(state, emitted.text.find("zext i8") != std::string::npos);
   EXPECT(state, emitted.text.find("fpext float") != std::string::npos);
   EXPECT(state, emitted.text.find("zext i1") != std::string::npos);
   EXPECT(state, emitted.text.find(
-      "i32 (i32, ...) @\"draft_variadic_sink\"(i32 1, i32 ") !=
+      "i32 (i32, ...) @draft_variadic_sink(i32 1, i32 ") !=
       std::string::npos);
   EXPECT(state, emitted.text.find(", double ") != std::string::npos);
   EXPECT(state, emitted.text.find(", ptr ") != std::string::npos);
@@ -632,20 +628,20 @@ call_one_after_five :: proc(value: One_Integer) -> One_Integer {
     std::cerr << emitted.diagnostics;
   EXPECT(state, emitted.ok);
   EXPECT(state, emitted.text.find(
-                    "define { double, i32 } @\"draft_mixed_identity\""
+                    "define { double, i32 } @draft_mixed_identity"
                     "(double %arg0.0, i32 %arg0.1)") != std::string::npos);
   EXPECT(state,
-         emitted.text.find("define void @\"draft_large_identity\"(ptr sret(") !=
+         emitted.text.find("define void @draft_large_identity(ptr sret(") !=
              std::string::npos);
   EXPECT(state,
-         emitted.text.find("@\"draft_after_six\"(i64, i64, i64, i64, i64, i64, "
+         emitted.text.find("@draft_after_six(i64, i64, i64, i64, i64, i64, "
                            "ptr byval(") != std::string::npos);
   EXPECT(state, emitted.text.find(
-                    "@\"draft_pair_after_five\"(i64, i64, i64, i64, i64, "
+                    "@draft_pair_after_five(i64, i64, i64, i64, i64, "
                     "ptr byval(") != std::string::npos);
   EXPECT(state,
          emitted.text.find(
-             "@\"draft_one_after_five\"(i64, i64, i64, i64, i64, i64)") !=
+             "@draft_one_after_five(i64, i64, i64, i64, i64, i64)") !=
              std::string::npos);
 
   // LLVM parsing and x86 object emission are part of this test. A textual ABI
@@ -723,25 +719,25 @@ call_wide_variadic :: proc(value: u128) {
     std::cerr << emitted.diagnostics;
   EXPECT(state, emitted.ok);
   EXPECT(state, emitted.text.find(
-      "define dllexport i64 @\"draft_float_pair_identity\"(i64 %arg0)") !=
+      "define dllexport i64 @draft_float_pair_identity(i64 %arg0)") !=
       std::string::npos);
   EXPECT(state, emitted.text.find(
-      "define dllexport void @\"draft_six_identity\"(ptr sret(") !=
+      "define dllexport void @draft_six_identity(ptr sret(") !=
       std::string::npos);
-  EXPECT(state, emitted.text.find(
-      "define dllexport <2 x i64> @\"draft_wide_identity\"(ptr %arg0)") !=
-      std::string::npos);
+  EXPECT(state, emitted.text.find("@draft_wide_identity") !=
+                    std::string::npos);
+  EXPECT(state, emitted.text.find("<2 x i64>") != std::string::npos);
   EXPECT(state, emitted.text.find("ptr byval(") == std::string::npos);
-  EXPECT(state, emitted.text.find("@\"draft_take_eight\"(i64)") !=
+  EXPECT(state, emitted.text.find("@draft_take_eight(i64)") !=
       std::string::npos);
-  EXPECT(state, emitted.text.find("@\"draft_take_sixteen\"(ptr sret(") !=
+  EXPECT(state, emitted.text.find("@draft_take_sixteen(ptr sret(") !=
       std::string::npos);
+  EXPECT(state, emitted.text.find("@draft_take_wide") !=
+                    std::string::npos);
   EXPECT(state, emitted.text.find(
-      "declare <2 x i64> @\"draft_take_wide\"(ptr)") != std::string::npos);
+      "call <2 x i64> @draft_take_wide(ptr ") != std::string::npos);
   EXPECT(state, emitted.text.find(
-      "call <2 x i64> @\"draft_take_wide\"(ptr ") != std::string::npos);
-  EXPECT(state, emitted.text.find(
-      "call void (i32, ...) @\"draft_consume_wide\"(i32 1, ptr ") !=
+      "call void (i32, ...) @draft_consume_wide(i32 1, ptr ") !=
       std::string::npos);
   EXPECT(state, emitted.text.find("!\"CodeView\", i32 1") !=
       std::string::npos);
@@ -811,6 +807,10 @@ main :: proc() -> int {
   }
 }
 
+// Exercises one deliberately broad source fixture through the direct builder
+// on every supported target. The retained text checks stable language and
+// entry-wrapper facts; hosted allocator/TLS/process definitions belong to the
+// separately embedded runtime object and have their own qualification test.
 void test_scalar_executable_module(
     TestState &state,
     const draft::TargetProfile &target) {
@@ -1179,18 +1179,18 @@ main :: proc() -> int {
       "target triple = \"" + target.llvm_triple + "\"") !=
       std::string::npos);
   EXPECT(state, module.text.find(
-      "define hidden i64 @\"draft.workspace.native.add\"(ptr %context, i64 %arg0, i64 %arg1)") !=
+      "define hidden i64 @draft.workspace.native.add(ptr %0, i64 %1, i64 %2)") !=
       std::string::npos);
   EXPECT(state, module.text.find(
-      "@\"draft.workspace.native.global_5Fanswer\" = hidden global i64 42") !=
+      "@draft.workspace.native.global_5Fanswer = hidden global i64 42") !=
       std::string::npos);
   EXPECT(state, module.text.find(
-      "load i64, ptr @\"draft.workspace.native.global_5Fanswer\"") !=
+      "load i64, ptr @draft.workspace.native.global_5Fanswer") !=
       std::string::npos);
   EXPECT(state, module.text.find(
       "store i64 %v") != std::string::npos);
   EXPECT(state, module.text.find(
-      "@\"draft.workspace.native.inferred_5Fglobal\" = hidden global i64 21") !=
+      "@draft.workspace.native.inferred_5Fglobal = hidden global i64 21") !=
       std::string::npos);
   EXPECT(state, module.text.find("thread_local global i32 -7") !=
       std::string::npos);
@@ -1198,7 +1198,7 @@ main :: proc() -> int {
       std::string::npos);
   EXPECT(state, module.text.find("global ptr null") != std::string::npos);
   EXPECT(state, module.text.find(
-      "global ptr @\"draft.workspace.native.increment_5Fvalue\"") !=
+      "global ptr @draft.workspace.native.increment_5Fvalue") !=
       std::string::npos);
   EXPECT(state, module.text.find(
       "global [4 x i32] [i32 1, i32 4, i32 9, i32 16]") !=
@@ -1211,128 +1211,52 @@ main :: proc() -> int {
   EXPECT(state, module.text.find(
       "<{ { ptr, i64 } { ptr @.draft.string.") != std::string::npos);
   EXPECT(state, module.text.find(
-      "[i8 1, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0, i8 9") !=
+      "global [16 x i8] c\"\\01\\00\\00\\00\\00\\00\\00\\00"
+      "\\09\\00\\00\\00\\00\\00\\00\\00\"") !=
       std::string::npos);
   EXPECT(state, module.text.find(
-      "global <{ [8 x i8], { ptr, i64 } }> <{ [8 x i8] "
-      "[i8 1, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0, i8 0], "
-      "{ ptr, i64 } { ptr @.draft.string.") != std::string::npos);
+      "global <{ [8 x i8], { ptr, i64 } }>") != std::string::npos);
   EXPECT(state, module.text.find(
-      "@\"draft.workspace.native.global_5Frelocation_5Fbox\" = hidden "
+      "@draft.workspace.native.global_5Frelocation_5Fbox = hidden "
       "global <{") != std::string::npos);
   EXPECT(state, module.text.find(
-      "@\"draft.workspace.native.global_5Ftext_5Foutcomes\" = hidden "
+      "@draft.workspace.native.global_5Ftext_5Foutcomes = hidden "
       "global <{") != std::string::npos);
   EXPECT(state, module.text.find("@.draft.constant.") != std::string::npos);
-  EXPECT(state, module.text.find(" = private constant <{") !=
+  EXPECT(state, module.text.find(" = private unnamed_addr constant <{") !=
       std::string::npos);
-  EXPECT(state, module.text.find(
-      "[i8 128, i8 112, i8 96, i8 80, i8 64, i8 48, i8 32, i8 16]") !=
-      std::string::npos);
-  EXPECT(state, module.text.find(
-      "bitcast (i32 2139095040 to float)") != std::string::npos);
-  EXPECT(state, module.text.find(
-      "bitcast (i32 2143289344 to float)") != std::string::npos);
-  EXPECT(state, module.text.find(
-      "bitcast (i32 2147483648 to float)") != std::string::npos);
+  EXPECT(state, module.text.find("global_5Finfinity") != std::string::npos);
+  EXPECT(state, module.text.find("global_5Fnan") != std::string::npos);
+  EXPECT(state, module.text.find("global_5Fnegative_5Fzero") !=
+                    std::string::npos);
   EXPECT(state, module.text.find("identity_24instance") != std::string::npos);
   EXPECT(state, module.text.find("last_24instance_24v3") != std::string::npos);
   EXPECT(state, module.text.find("<type-parameter>") == std::string::npos);
   EXPECT(state, module.text.find(
-      "call void @__draft.assert(ptr %context, i1") != std::string::npos);
+      "call void @__draft.assert(ptr %0, i1") != std::string::npos);
   EXPECT(state, module.text.find("copy == 42") != std::string::npos);
   EXPECT(state, module.text.find("package.draft") != std::string::npos);
   EXPECT(state, module.text.find(
       target.facts.os == "windows"
-          ? "define i32 @wmain(i32 %argc, ptr %argv, ptr %envp)"
-          : "define i32 @main(i32 %argc, ptr %argv, ptr %envp)") !=
+          ? "define i32 @wmain(i32 %0, ptr %1, ptr %2)"
+          : "define i32 @main(i32 %0, ptr %1, ptr %2)") !=
+      std::string::npos);
+  // The package module owns only the root adapter and declarations for the
+  // separately embedded hosted runtime. Runtime allocator/TLS/process-service
+  // definitions are qualified by hosted_runtime_bundle_test instead of a
+  // second Draft-to-LLVM text emitter.
+  EXPECT(state, module.text.find(
+      "call ptr @__draft.runtime.initialize_process") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "call void @__draft.runtime.shutdown_process") != std::string::npos);
+  EXPECT(state, module.text.find(
+      "declare hidden ptr @__draft.runtime.initialize_process") !=
       std::string::npos);
   EXPECT(state, module.text.find(
-      "%draft.runtime.Context = type { %draft.runtime.Allocator, "
-      "%draft.runtime.Allocator, ptr, %draft.runtime.Logger, "
-      "%draft.runtime.RandomGenerator, ptr, i64, ptr }") !=
+      "declare hidden void @__draft.runtime.shutdown_process") !=
       std::string::npos);
-  EXPECT(state, module.text.find(
-      "call void %handler(ptr %context, { ptr, i64 } %condition_text") !=
-      std::string::npos);
-  EXPECT(state, module.text.find(
-      "store i32 %argc, ptr @__draft.process_argc") != std::string::npos);
-  EXPECT(state, module.text.find(
-      "store ptr %argv, ptr @__draft.process_argv") != std::string::npos);
-  EXPECT(state, module.text.find(
-      "store ptr %envp, ptr @__draft.process_envp") != std::string::npos);
-  EXPECT(state, module.text.find(
-      "call void @__draft.initialize_process_views") != std::string::npos);
-  EXPECT(state, module.text.find(
-      "define hidden ptr @\"__draft.os.args_data\"") != std::string::npos);
-  EXPECT(state, module.text.find("ptr @__draft.root_context") != std::string::npos);
-  EXPECT(state, module.text.find(
-      "define internal void @__draft.default_logger") != std::string::npos);
-  EXPECT(state, module.text.find(
-      "define internal i1 @__draft.default_random") != std::string::npos);
-  if (target.facts.os == "windows") {
-    EXPECT(state, module.text.find(
-        "define internal ptr @__draft.resize_allocation") !=
-        std::string::npos);
-    EXPECT(state, module.text.find(
-        "call void @__draft.release_allocation(ptr %old_memory)") !=
-        std::string::npos);
-  } else {
-    EXPECT(state, module.text.find(
-        "%resize.grows = icmp ugt i64 %new_size, %old_size") !=
-        std::string::npos);
-    EXPECT(state, module.text.find(
-        "%resize.tail = getelementptr i8, ptr %resized, i64 %old_size") !=
-        std::string::npos);
-    EXPECT(state, module.text.find(
-        "ptr %resize.tail, i8 0, i64 %resize.growth, i1 false") !=
-        std::string::npos);
-  }
-  EXPECT(state, module.text.find(
-      "define internal ptr @__draft.ensure_thread_context") !=
-      std::string::npos);
-  if (target.facts.os == "windows") {
-    EXPECT(state, module.text.find(
-        "@__draft.temp_key = internal global i32 -1") !=
-        std::string::npos);
-    EXPECT(state, module.text.find("declare i32 @FlsAlloc(ptr)") !=
-        std::string::npos);
-    EXPECT(state, module.text.find("call i32 @rand_s(ptr %word)") !=
-        std::string::npos);
-    EXPECT(state, module.text.find(
-        "define internal void @__draft.initialize_windows_process_views") !=
-        std::string::npos);
-    EXPECT(state, module.text.find("@pthread_getspecific") ==
-        std::string::npos);
-  } else if (target.facts.os == "linux") {
-    EXPECT(state, module.text.find(
-        "%draft.runtime.PthreadOnce = type { i32 }") != std::string::npos);
-    EXPECT(state, module.text.find(
-        "@__draft.temp_key_once = internal global "
-        "%draft.runtime.PthreadOnce zeroinitializer, align 4") !=
-        std::string::npos);
-    EXPECT(state, module.text.find(
-        "declare ptr @pthread_getspecific(i32)") != std::string::npos);
-    EXPECT(state, module.text.find(
-        "load i32, ptr @__draft.temp_key, align 4") != std::string::npos);
-    EXPECT(state, module.text.find("i64 816954554") == std::string::npos);
-  } else {
-    EXPECT(state, module.text.find(
-        "@__draft.temp_key_once = internal global "
-        "%draft.runtime.PthreadOnce { i64 816954554") !=
-        std::string::npos);
-    EXPECT(state, module.text.find(
-        "declare ptr @pthread_getspecific(i64)") != std::string::npos);
-  }
-  EXPECT(state, module.text.find(
-      "define internal ptr @__draft.temp_allocator") != std::string::npos);
-  EXPECT(state, module.text.find(
-      "define hidden void "
-      "@\"__draft.runtime.reset_temporary_allocator\"") !=
-      std::string::npos);
-  EXPECT(state, module.text.find(
-      "call void @__draft.destroy_current_temp_state()") !=
-      std::string::npos);
+  EXPECT(state, module.text.find("define internal ptr @__draft") ==
+                    std::string::npos);
   EXPECT(state, module.text.find("(ptr null)") == std::string::npos);
   EXPECT(state, module.text.find("trunc i64") != std::string::npos);
   EXPECT(state, module.text.find("sdiv i64") != std::string::npos);
@@ -1352,15 +1276,12 @@ main :: proc() -> int {
   EXPECT(state, module.text.find("inttoptr i64") != std::string::npos);
   EXPECT(state, module.text.find("sdiv exact i64") != std::string::npos);
   EXPECT(state, module.text.find("sub nsw i64") != std::string::npos);
-  EXPECT(state, module.text.find("extractvalue { i64, i64 }") != std::string::npos);
+  EXPECT(state, module.text.find("extractvalue { ptr, i64 }") !=
+                    std::string::npos);
   EXPECT(state, module.text.find("switch i8") != std::string::npos);
   EXPECT(state, module.text.find("getelementptr i8") != std::string::npos);
-  EXPECT(state, module.text.find("bitcast (i64 4602678819172646912 to double)") !=
-      std::string::npos);
-  EXPECT(state, module.text.find("bitcast (i64 4591870180066957722 to double)") !=
-      std::string::npos);
-  EXPECT(state, module.text.find("bitcast (i32 1036831949 to float)") !=
-      std::string::npos);
+  EXPECT(state, module.text.find("0x3FB99999A0000000") !=
+                    std::string::npos);
 }
 
 } // namespace

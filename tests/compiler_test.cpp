@@ -906,8 +906,6 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
                     std::string::npos);
   EXPECT(state, report.find("direct LLVM package units: 2") !=
                     std::string::npos);
-  EXPECT(state, report.find("textual LLVM package modules:") ==
-                    std::string::npos);
   EXPECT(state, report.find("artifact-layout tasks: 2") !=
                     std::string::npos);
   EXPECT(state, report.find("native lowering tasks: 6") !=

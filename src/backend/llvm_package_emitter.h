@@ -15,8 +15,13 @@
 
 #pragma once
 
-#include "backend/llvm_ir.h"
+#include "backend/llvm_package.h"
 #include "backend/llvm_object_emitter.h"
+#include "interop/c_abi.h"
+#include "mir/mir.h"
+#include "sema/analyzer.h"
+#include "sema/constant.h"
+#include "source/diagnostic.h"
 
 #include <cstdint>
 #include <optional>

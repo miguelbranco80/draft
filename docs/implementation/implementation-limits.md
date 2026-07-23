@@ -164,13 +164,15 @@ The artifact planner consumes only that layout; no package-wide MIR container
 or alternative persistent per-function LLVM representation remains in compiler
 state.
 
-Every production package LLVM task now constructs its module directly through
-LLVM's C API, including root/validation wrappers and source debug metadata, and
-continues that same task-private module into verification, optimization, and
-native emission. The textual package emitter remains only an independent
-qualification/test oracle. The hosted runtime is a separately compiled object
-embedded for each exact target. There is no production print/reparse boundary
-or unsupported-operation fallback between the two emitters.
+Every package LLVM task constructs its module through the single direct LLVM
+C-API builder, including root/validation wrappers and source debug metadata,
+and continues that same task-private module into verification, optimization,
+and native emission. An explicit inspection or qualification request prints
+that already-built module; the external textual adapter may parse the retained
+text as an independent LLVM/toolchain consumer oracle. There is no second
+Draft-to-LLVM textual emitter. The hosted runtime is a separately compiled
+object embedded for each exact target. There is no production print/reparse
+boundary and no alternate-emitter fallback for unsupported operations.
 
 ## Native host and instrumentation limits
 

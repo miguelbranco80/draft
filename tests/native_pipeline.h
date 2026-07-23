@@ -11,7 +11,7 @@
 #pragma once
 
 #include "assembly/aarch64.h"
-#include "backend/llvm_ir.h"
+#include "backend/llvm_package_emitter.h"
 #include "mir/lower.h"
 #include "sema/body_checker.h"
 
@@ -102,16 +102,13 @@ struct LoweredProcedureProducts {
       globals.push_back(symbol);
     }
   }
-  return emit_llvm_package_module(
-      target,
-      sources,
-      options,
-      semantic,
-      abi,
-      global_initializers,
-      globals,
-      procedure_pointers,
-      diagnostics);
+  LlvmPackageEmissionOptions direct_options;
+  direct_options.module = options;
+  direct_options.retain_llvm_text = true;
+  LlvmPackageEmissionResult emitted = emit_llvm_package_direct(
+      target, sources, direct_options, semantic, abi, global_initializers,
+      globals, procedure_pointers, diagnostics);
+  return {emitted.ok, std::move(emitted.llvm_text)};
 }
 
 } // namespace draft::test_support

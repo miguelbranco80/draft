@@ -1,6 +1,6 @@
 // C ABI validation and exact linker-symbol emission tests.
 
-#include "backend/llvm_ir.h"
+#include "backend/llvm_package.h"
 #include "interop/native.h"
 #include "mir/lower.h"
 #include "sema/body_checker.h"
@@ -81,6 +81,11 @@ foreign libc {
 export increment as "draft_increment" :: c proc(value: i32) -> i32 {
     return value + 1
 }
+
+call_imports :: proc(text: cstring) -> i32 {
+    printf(text)
+    return puts(text)
+}
 )draft");
 
   const draft::NativeInteropResult native = draft::validate_native_interop(
@@ -114,11 +119,11 @@ export increment as "draft_increment" :: c proc(value: i32) -> i32 {
   EXPECT(state, native.providers[0] == "libc");
   EXPECT(state, mir.ok);
   EXPECT(state, llvm.ok);
-  EXPECT(state, llvm.text.find("declare i32 @\"puts\"(ptr)") !=
+  EXPECT(state, llvm.text.find("declare i32 @puts(ptr)") !=
       std::string::npos);
-  EXPECT(state, llvm.text.find("declare i32 @\"printf\"(ptr, ...)") !=
+  EXPECT(state, llvm.text.find("declare i32 @printf(ptr, ...)") !=
       std::string::npos);
-  EXPECT(state, llvm.text.find("define i32 @\"draft_increment\"(i32 %arg0)") !=
+  EXPECT(state, llvm.text.find("define i32 @draft_increment(i32 %arg0)") !=
       std::string::npos);
 }
 
@@ -173,9 +178,9 @@ export wrap_narrow :: c proc(
   EXPECT(state, mir.ok);
   EXPECT(state, llvm.ok);
   EXPECT(state, llvm.text.find(
-      "declare i8 @\"narrow\"(i8, i16)") != std::string::npos);
+      "declare i8 @narrow(i8, i16)") != std::string::npos);
   EXPECT(state, llvm.text.find(
-      "define i8 @\"wrap_narrow\"(i8 %arg0, i16 %arg1)") !=
+      "define i8 @wrap_narrow(i8 %arg0, i16 %arg1)") !=
           std::string::npos);
   EXPECT(state, llvm.text.find("signext") == std::string::npos);
   EXPECT(state, llvm.text.find("zeroext") == std::string::npos);
@@ -223,9 +228,9 @@ export wrap_narrow :: c proc(
   EXPECT(state, llvm.ok);
   EXPECT(state,
          llvm.text.find(
-             "declare signext i8 @\"narrow\"(i8 signext, i16 zeroext)") !=
+             "declare signext i8 @narrow(i8 signext, i16 zeroext)") !=
              std::string::npos);
-  EXPECT(state, llvm.text.find("define signext i8 @\"wrap_narrow\""
+  EXPECT(state, llvm.text.find("define signext i8 @wrap_narrow"
                                "(i8 signext %arg0, i16 zeroext %arg1)") !=
       std::string::npos);
 }
@@ -384,51 +389,48 @@ export wrap_large :: c proc(value: C24) -> C24 {
   EXPECT(state, native.ok);
   EXPECT(state, mir.ok);
   EXPECT(state, llvm.ok);
-  EXPECT(state, llvm.text.find("declare i64 @\"small\"(i64)") !=
+  EXPECT(state, llvm.text.find("declare i64 @small(i64)") !=
                     std::string::npos);
-  EXPECT(state, llvm.text.find("define i64 @\"wrap_small\"(i64 %arg0)") !=
+  EXPECT(state, llvm.text.find("define i64 @wrap_small(i64 %arg0)") !=
                     std::string::npos);
-  EXPECT(state, llvm.text.find("declare i24 @\"odd\"(i64)") !=
+  EXPECT(state, llvm.text.find("declare i24 @odd(i64)") !=
                     std::string::npos);
-  EXPECT(state, llvm.text.find("define i24 @\"wrap_odd\"(i64 %arg0)") !=
+  EXPECT(state, llvm.text.find("define i24 @wrap_odd(i64 %arg0)") !=
                     std::string::npos);
-  EXPECT(state, llvm.text.find("declare i128 @\"aligned\"(i128)") !=
+  EXPECT(state, llvm.text.find("declare i128 @aligned(i128)") !=
                     std::string::npos);
-  EXPECT(state, llvm.text.find("define i128 @\"wrap_aligned\"(i128 %arg0)") !=
+  EXPECT(state, llvm.text.find("define i128 @wrap_aligned(i128 %arg0)") !=
                     std::string::npos);
   EXPECT(state, llvm.text.find("= type <{ i64, [8 x i8] }>") !=
                     std::string::npos);
-  EXPECT(state, llvm.text.find("@\"floats\"([2 x float]") !=
+  EXPECT(state, llvm.text.find("@floats([2 x float]") !=
                     std::string::npos);
-  EXPECT(state, llvm.text.find("@\"wrap_floats\"([2 x float] %arg0)") !=
+  EXPECT(state, llvm.text.find("@wrap_floats([2 x float] %arg0)") !=
                     std::string::npos);
-  EXPECT(state, llvm.text.find("@\"halves\"([3 x half]") !=
+  EXPECT(state, llvm.text.find("@halves([3 x half]") !=
                     std::string::npos);
-  EXPECT(state, llvm.text.find("@\"wrap_halves\"([3 x half] %arg0)") !=
+  EXPECT(state, llvm.text.find("@wrap_halves([3 x half] %arg0)") !=
                     std::string::npos);
-  EXPECT(state, llvm.text.find("@\"float_overlay\"([2 x float]") !=
-                    std::string::npos);
-  EXPECT(state, llvm.text.find(
-                    "@\"wrap_float_overlay\"([2 x float] %arg0)") !=
+  EXPECT(state, llvm.text.find("@float_overlay([2 x float]") !=
                     std::string::npos);
   EXPECT(state, llvm.text.find(
-                    "declare zeroext i8 @\"unsigned_code\"(i8 zeroext)") !=
+                    "@wrap_float_overlay([2 x float] %arg0)") !=
                     std::string::npos);
   EXPECT(state, llvm.text.find(
-                    "define zeroext i8 @\"wrap_unsigned_code\"(i8 zeroext %arg0)") !=
+                    "declare zeroext i8 @unsigned_code(i8 zeroext)") !=
                     std::string::npos);
   EXPECT(state, llvm.text.find(
-                    "declare signext i8 @\"signed_code\"(i8 signext)") !=
+                    "define zeroext i8 @wrap_unsigned_code(i8 zeroext %arg0)") !=
                     std::string::npos);
   EXPECT(state, llvm.text.find(
-                    "define signext i8 @\"wrap_signed_code\"(i8 signext %arg0)") !=
-                    std::string::npos);
-  EXPECT(state, llvm.text.find("declare void @\"large\"(ptr sret(") !=
-                    std::string::npos);
-  EXPECT(state, llvm.text.find("define void @\"wrap_large\"(ptr sret(") !=
+                    "declare signext i8 @signed_code(i8 signext)") !=
                     std::string::npos);
   EXPECT(state, llvm.text.find(
-                    "declare signext i8 @\"narrow\"(i8 signext, i16 zeroext)") !=
+                    "define signext i8 @wrap_signed_code(i8 signext %arg0)") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("declare void @large(ptr sret(") !=
+                    std::string::npos);
+  EXPECT(state, llvm.text.find("define void @wrap_large(ptr sret(") !=
                     std::string::npos);
   EXPECT(state, !source.diagnostics.has_errors());
 }

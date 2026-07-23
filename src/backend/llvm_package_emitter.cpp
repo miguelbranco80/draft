@@ -224,12 +224,6 @@ public:
             "ABI classification table does not match package and target");
       return result;
     }
-    if (options_.module.emit_runtime_support) {
-      error(SourceRange::invalid(),
-            "direct package builder does not embed a hosted runtime");
-      return result;
-    }
-
     context_.value = LLVMContextCreate();
     if (context_.value == nullptr) {
       error(SourceRange::invalid(), "could not allocate an LLVM context");
