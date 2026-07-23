@@ -7083,6 +7083,7 @@ struct NativePipelineExecution {
     const TargetProfile &target,
     RuntimeAssertionMode runtime_assertions,
     bool emit_llvm,
+    bool emit_debug_information,
     bool emit_program_entry,
     ValidationKind validation_kind,
     std::span<const ValidationEntry> validation_entries,
@@ -7268,6 +7269,7 @@ struct NativePipelineExecution {
         slot.procedures.push_back(&mir_slots[index].result.procedure);
       }
       slot.options.package = result.graph.packages[package_index].identity;
+      slot.options.emit_debug_information = emit_debug_information;
       slot.options.emit_runtime_support =
           package_index == result.graph.root_package.value;
       slot.options.emit_program_entry =
@@ -8484,6 +8486,7 @@ bool continue_compiled_workspace(
             options.target,
             options.configuration.runtime_assertions,
             options.emit_llvm,
+            options.emit_debug_information,
             options.emit_program_entry,
             options.validation_kind,
             compiled.validation_entries,

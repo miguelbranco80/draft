@@ -340,6 +340,7 @@ void test_all_native_artifact_kinds(TestState &state) {
     options.build_directory = (temporary / "build").string();
     options.output_path = output.string();
     options.artifact_kind = kind;
+    options.emit_debug_symbols = true;
     // Exercise the retained qualification oracle for every artifact shape. The
     // default in-process path has focused byte-format tests and the native host
     // suite; this fake driver makes the independent Clang argument contract
@@ -381,6 +382,27 @@ void test_all_native_artifact_kinds(TestState &state) {
   EXPECT(state,
       arguments.find("\n-- ar --\n-static\n-D\n-o\n") != std::string::npos);
   EXPECT(state, arguments.find("\n-S\n") != std::string::npos);
+
+  // Rebuilding the same output through the ordinary fast path must neither
+  // launch dsymutil nor leave the earlier debug bundle beside the new dylib.
+  // A stale companion is worse than no companion because a debugger can accept
+  // it and report source locations for different machine code.
+  std::ofstream(log, std::ios::binary | std::ios::trunc).close();
+  draft::NativeBuildOptions fast_options;
+  fast_options.clang_path = fake_clang.string();
+  fast_options.archiver_path = fake_archiver.string();
+  fast_options.dsymutil_path = fake_dsymutil.string();
+  fast_options.build_directory = (temporary / "fast-build").string();
+  fast_options.output_path = (temporary / "library.dylib").string();
+  fast_options.artifact_kind = draft::NativeArtifactKind::DynamicLibrary;
+  fast_options.object_emitter =
+      draft::NativeObjectEmitter::ExternalClangOracle;
+  const draft::NativeBuildResult fast = draft::build_native_artifact(
+      target, compiled, fast_options, diagnostics);
+  EXPECT(state, fast.ok);
+  EXPECT(state, fast.debug_symbols_path.empty());
+  EXPECT(state, !std::filesystem::exists(temporary / "library.dylib.dSYM"));
+  EXPECT(state, read_file(log).find("-- dsymutil --") == std::string::npos);
 
   std::filesystem::remove_all(temporary, error);
 }
@@ -447,6 +469,7 @@ void test_linux_toolchain_arguments(TestState &state,
     options.build_directory = (temporary / "build").string();
     options.output_path = output.string();
     options.artifact_kind = kind;
+    options.emit_debug_symbols = true;
     return draft::build_native_artifact(
         target, compiled, options, diagnostics);
   };
@@ -558,6 +581,7 @@ void test_windows_toolchain_arguments(TestState &state) {
     options.build_directory = (temporary / "build").string();
     options.output_path = output.string();
     options.artifact_kind = kind;
+    options.emit_debug_symbols = true;
     return draft::build_native_artifact(
         target, compiled, options, diagnostics);
   };
@@ -700,6 +724,7 @@ void test_package_assembly_reaches_link(TestState &state) {
   native_options.dsymutil_path = fake_dsymutil.string();
   native_options.build_directory = (temporary / "build").string();
   native_options.output_path = (temporary / "program").string();
+  native_options.emit_debug_symbols = true;
   const draft::NativeBuildResult built = draft::build_native_executable(
       target, compiled, native_options, diagnostics);
   if (diagnostics.has_errors()) {

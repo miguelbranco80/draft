@@ -124,6 +124,7 @@ using ArtifactSnapshot =
   options.workspace.core_content_identity = "draft-core-bootstrap-v4";
   options.lower_mir = true;
   options.emit_llvm = true;
+  options.emit_debug_information = true;
   options.emit_program_entry = emit_program_entry;
   return draft::compile_workspace(
       sources,
@@ -145,6 +146,7 @@ void compare_repeated_artifact(
   options.build_directory = (artifact_directory / "build").string();
   options.output_path = (artifact_directory / "output").string();
   options.artifact_kind = kind;
+  options.emit_debug_symbols = true;
   options.object_worker_count = 1;
 
   draft::DiagnosticSink first_diagnostics;

@@ -182,6 +182,7 @@ build/draftc build path/to/workspace [--root package/path]... [-o output] \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows] \
   [--kind executable|object|static-library|dynamic-library|assembly] \
   [-O0|-O2] \
+  [--debug-symbols] \
   [--assertions=off] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
@@ -220,6 +221,13 @@ context, or resolved-program identity. `emit-llvm` deliberately prints the
 canonical pre-optimization package modules; use `build --kind assembly -O2` to
 inspect optimized native assembly. Draft currently exposes only `-O0` and
 `-O2`, and performs no cross-package LTO.
+
+Ordinary builds omit LLVM source-location metadata and platform debug
+companions. Pass `--debug-symbols` to construct full source locations and, for
+linked Mach-O or PE/COFF artifacts, publish the sibling `.dSYM` or `.pdb`.
+ELF keeps requested DWARF in the primary artifact and therefore still returns
+no companion path. The flag changes derived debug products only; assertions,
+optimization, source semantics, and resolution identity remain independent.
 
 Without `--root`, `build` recursively discovers every ordinary surface package
 under the workspace that contains a package-level procedure named `main` and
@@ -264,8 +272,9 @@ uses `ld.lld`, `llvm-ar`, and the target's libc development files. These
 installations are compiler operational prerequisites, not resolution-manifest
 inputs. Ordinary builds do not execute a toolchain-version probe.
 
-Windows defaults to `.exe`, `.obj`, `.lib`, and `.dll` names. A linked PE
-executable or DLL also publishes a deterministic sibling `.pdb`; a DLL
+Windows defaults to `.exe`, `.obj`, `.lib`, and `.dll` names. With
+`--debug-symbols`, a linked PE executable or DLL also publishes a deterministic
+sibling `.pdb`; a DLL
 publishes its import `.lib` as a second companion. The command prints both
 companion paths when present. A native Windows compiler build links the official
 LLVM-C 22 development distribution; matching Clang/lld-link/llvm-lib and an x64
@@ -301,6 +310,7 @@ build/draftc resolve path/to/workspace [--root package/path] [--revalidate] [--b
   [-o output] \
   [--kind executable|object|static-library|dynamic-library|assembly] \
   [-O0|-O2] \
+  [--debug-symbols] \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows] [--assertions=off] \
   [--model model] \
   [--provider name=object|archive|shared-library:/absolute/path]... \

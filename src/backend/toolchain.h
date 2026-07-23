@@ -74,9 +74,8 @@ struct NativeBuildOptions {
   // qualification emitter also uses this exact executable when selected. An
   // empty path selects clang from the linked LLVM distribution.
   std::string clang_path;
-  // Final Mach-O executables and dylibs carry a debug map, while their linked
-  // DWARF lives in a sibling dSYM bundle. ELF retains DWARF in the primary
-  // artifact.
+  // Requested Mach-O debug information is linked into a sibling dSYM bundle.
+  // This path is unused when emit_debug_symbols is false.
   // Empty selects dsymutil from the linked LLVM distribution.
   std::string dsymutil_path;
   // The macOS host default is Apple's libtool, whose -D switch removes
@@ -90,6 +89,10 @@ struct NativeBuildOptions {
   // module independently before native emission; it never changes semantic
   // scheduling, package granularity, source identity, or resolution pins.
   NativeOptimizationLevel optimization = NativeOptimizationLevel::O0;
+  // Linked debug companions are deliberately opt-in. The compiled package
+  // modules must have been constructed with matching debug information when
+  // this is true. False is the ordinary fast-development path.
+  bool emit_debug_symbols = false;
   NativeInstrumentationProfile instrumentation =
       NativeInstrumentationProfile::None;
   NativeObjectEmitter object_emitter = NativeObjectEmitter::InProcessLlvm;
@@ -121,10 +124,10 @@ struct NativeBuildResult {
   // evidence and no runtime `clang --version` process is launched to obtain it.
   std::string toolchain_version;
   std::string output_path;
-  // Mach-O executables/dylibs publish a sibling dSYM; PE executables/DLLs
-  // publish a sibling deterministic PDB. ELF and non-linked artifacts leave
-  // this path empty because their DWARF remains in the primary artifact or
-  // members. The compiler verifies required structure but does not hash it.
+  // Requested Mach-O executable/dylib debug information publishes a sibling
+  // dSYM; requested PE executable/DLL information publishes a deterministic
+  // PDB. The fast path and every ELF/non-linked artifact leave this empty.
+  // The compiler verifies requested companion structure but does not hash it.
   std::string debug_symbols_path;
   // A Windows DLL also publishes the import library required by an ordinary
   // statically linked C client. Other artifact kinds and targets leave these

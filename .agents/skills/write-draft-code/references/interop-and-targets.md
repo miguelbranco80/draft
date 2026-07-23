@@ -466,14 +466,15 @@ or package-assembly object set must use `--kind static-library` because COFF
 has no relocatable partial link. Mapped providers remain separate and require a
 final executable/DLL link or consumer-side linking. `--kind assembly`
 publishes the package `.s` files instead.
-macOS additionally requires the Apple linker/SDK, `libtool`, and the matching
-LLVM `dsymutil`; applicable executable/shared outputs publish a verified
-`.dSYM`. Linux uses the matching Clang/LLVM tools, `ld.lld`, `llvm-ar`, and the
-selected glibc development contract; DWARF remains in ELF and no fake dSYM is
-emitted. These are compiler build/host requirements, not Draft package
-dependencies or resolution-manifest inputs.
+macOS additionally requires the Apple linker/SDK and `libtool`; a
+`--debug-symbols` build also uses matching LLVM `dsymutil` and publishes a
+verified `.dSYM`. Linux uses the matching Clang/LLVM tools, `ld.lld`, `llvm-ar`,
+and the selected glibc development contract; requested DWARF remains in ELF and
+no fake dSYM is emitted. These are compiler build/host requirements, not Draft
+package dependencies or resolution-manifest inputs.
 Windows uses matching Clang/lld-link and `llvm-lib`, with `.exe`, `.obj`,
-`.lib`, and `.dll` defaults. Linked PE outputs publish a sibling PDB; a DLL
+`.lib`, and `.dll` defaults. Linked PE outputs built with `--debug-symbols`
+publish a sibling PDB; a DLL
 also publishes its import `.lib` companion. Its bootstrap links `LLVM-C.dll`
 because LLVM's monolithic libLLVM dylib is unavailable on Windows.
 

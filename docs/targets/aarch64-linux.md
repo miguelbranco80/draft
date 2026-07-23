@@ -62,8 +62,9 @@ emission, validation, resolution, and judgment; macOS remains the compatibility
 default. The root LLVM runtime now emits glibc's 32-bit `pthread_once_t` and
 `pthread_key_t` layouts. The native adapter emits ELF relocatable objects,
 deterministic archives, `.so` files with SONAMEs, and PIE executables using the
-host glibc development files and `ld.lld`. Final ELF artifacts retain DWARF and
-a content-derived GNU build ID; they correctly omit a Mach-O dSYM companion.
+host glibc development files and `ld.lld`. `--debug-symbols` retains DWARF in
+the final ELF artifact; every build carries a content-derived GNU build ID and
+correctly omits a Mach-O dSYM companion.
 
 The selected glibc 2.39 AArch64 terminal contract gives `struct termios` four
 32-bit flag words, one line-discipline byte, thirty-two control bytes, padding,

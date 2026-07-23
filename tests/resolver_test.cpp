@@ -1328,6 +1328,7 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   draft::CompileWorkspaceOptions offline_options = compile_options(workspace);
   offline_options.lower_mir = true;
   offline_options.emit_llvm = true;
+  offline_options.emit_debug_information = true;
   const draft::CompileWorkspaceResult offline =
       draft::compile_workspace_with_resolution(
           offline_sources,
@@ -1364,6 +1365,7 @@ void test_interface_sites_precede_dependent_bodies(TestState &state) {
   draft::NativeBuildOptions first_native;
   first_native.build_directory = (native_root / "first-build").string();
   first_native.output_path = (native_root / "first-program").string();
+  first_native.emit_debug_symbols = true;
   const draft::NativeBuildResult first_built = draft::build_native_executable(
       draft::make_aarch64_macos_profile(),
       offline,

@@ -238,6 +238,7 @@ void test_native_examples(TestState &state) {
         "draft-core-bootstrap-v4";
     compile_options.lower_mir = true;
     compile_options.emit_llvm = true;
+    compile_options.emit_debug_information = true;
     draft::CompileWorkspaceResult compiled = draft::compile_workspace(
         sources,
         (source_root / test.package).string(),
@@ -253,6 +254,7 @@ void test_native_examples(TestState &state) {
     draft::NativeBuildOptions native_options;
     native_options.build_directory = (case_directory / "build").string();
     native_options.output_path = (case_directory / "program").string();
+    native_options.emit_debug_symbols = true;
     const draft::NativeBuildResult built = draft::build_native_executable(
         target, compiled, native_options, diagnostics);
     if (diagnostics.has_errors()) {
@@ -618,6 +620,7 @@ main :: proc() -> int {
       "draft-partial-text-write-core-v1";
   compile_options.lower_mir = true;
   compile_options.emit_llvm = true;
+  compile_options.emit_debug_information = true;
   draft::CompileWorkspaceResult compiled = draft::compile_workspace(
       sources,
       (workspace / "app").string(),
@@ -734,6 +737,7 @@ main :: proc() -> int {
   draft::NativeBuildOptions native_options;
   native_options.build_directory = (case_directory / "build").string();
   native_options.output_path = (case_directory / "program").string();
+  native_options.emit_debug_symbols = true;
   const draft::NativeBuildResult built = draft::build_native_executable(
       target, compiled, native_options, diagnostics);
   if (diagnostics.has_errors()) {

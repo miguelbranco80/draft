@@ -247,6 +247,10 @@ and O2 policy, so use `bench -O2` when measuring optimized code. `emit-llvm`
 remains the canonical pre-optimization inspection; use
 `build --kind assembly -O2` to inspect optimized native output. Do not invent
 O1, O3, size optimization, LTO, arbitrary pass, or granularity flags.
+Ordinary `build` and `resolve --build` also omit source-level debug metadata;
+pass `--debug-symbols` only when the requested result will be debugged or its
+debug contract is under test. On macOS this publishes a dSYM, on Windows a PDB,
+and on Linux it retains DWARF in the primary artifact.
 
 For a library or artifact-specific task, select the actual kind:
 

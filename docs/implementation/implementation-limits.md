@@ -171,5 +171,5 @@ selected `asm` constructs.
 AddressSanitizer is qualified only for the macOS target. Linux and every other
 instrumentation request remain fail-closed until the compiler pass, runtime,
 deployment, execution environment, and evidence identity are specified and
-tested together. Linux ELF debug information is embedded in the primary
-artifact; split debug packages are not implemented.
+tested together. Requested Linux ELF debug information is embedded in the
+primary artifact; split debug packages are not implemented.

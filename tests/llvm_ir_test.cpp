@@ -46,7 +46,8 @@ struct EmittedFixture {
 // filesystem order and from the native toolchain adapter.
 [[nodiscard]] EmittedFixture emit_fixture_for_target(
     std::string text, const draft::TargetProfile &target,
-    std::vector<draft::SourceExpansionMap> expansion_maps = {}) {
+    std::vector<draft::SourceExpansionMap> expansion_maps = {},
+    bool emit_debug_information = true) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   draft::LoadedPackage loaded;
@@ -75,6 +76,7 @@ struct EmittedFixture {
       draft::classify_c_types(bodies.package.types, target.facts);
   draft::LlvmIrOptions options;
   options.package = {"workspace", "agent-noop"};
+  options.emit_debug_information = emit_debug_information;
   draft::LlvmIrResult module =
       draft::test_support::emit_package_llvm_module(
       target,
@@ -92,6 +94,27 @@ struct EmittedFixture {
   result.text = std::move(module.text);
   result.diagnostics = draft::render_diagnostics(sources, diagnostics);
   return result;
+}
+
+// Debug metadata is an explicit artifact request. The fast path must omit the
+// complete metadata graph and per-instruction locations, rather than merely
+// declining to run a platform debug linker after paying LLVM's metadata cost.
+void test_debug_information_is_optional(TestState &state) {
+  const EmittedFixture emitted = emit_fixture_for_target(
+      R"draft(package no_debug
+
+increment :: proc(value: i64) -> i64 {
+    return value + 1
+}
+)draft",
+      draft::make_aarch64_macos_profile(),
+      {},
+      false);
+  if (!emitted.ok) std::cerr << emitted.diagnostics;
+  EXPECT(state, emitted.ok);
+  EXPECT(state, emitted.text.find("!DICompileUnit") == std::string::npos);
+  EXPECT(state, emitted.text.find("!DILocation") == std::string::npos);
+  EXPECT(state, emitted.text.find("!dbg !") == std::string::npos);
 }
 
 // Most historical snapshots exercise Darwin AArch64. Target-specific ABI
@@ -1345,6 +1368,7 @@ main :: proc() -> int {
 int main() {
   TestState state;
   test_large_aggregate_zero_uses_memset(state);
+  test_debug_information_is_optional(state);
   test_agent_constructs_have_no_runtime_footprint(state);
   test_generated_debug_locations_are_hermetic(state);
   test_packed_field_access_uses_occurrence_alignment(state);

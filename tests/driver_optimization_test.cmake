@@ -1,4 +1,4 @@
-# Process-level contract test for Draft native optimization selection.
+# Process-level contract test for Draft native optimization and debug selection.
 #
 # The LLVM adapter unit test proves the two pipelines differ internally. This
 # script proves the public `build`, `resolve --build`, `test`, and `bench`
@@ -35,6 +35,13 @@ if(NOT usage_result EQUAL 2 OR NOT optimization_usage_count EQUAL 4)
   message(FATAL_ERROR
     "usage does not expose O0/O2 on all native-producing commands\n${usage_stderr}")
 endif()
+string(REGEX MATCHALL "\\[--debug-symbols\\]"
+  debug_usage_options "${usage_stderr}")
+list(LENGTH debug_usage_options debug_usage_count)
+if(NOT debug_usage_count EQUAL 2)
+  message(FATAL_ERROR
+    "usage does not expose opt-in debug symbols on build commands\n${usage_stderr}")
+endif()
 
 execute_process(
   COMMAND "${DRAFTC}" build "${workspace}" --root app -O1
@@ -70,9 +77,34 @@ execute_process(
 )
 if(NOT resolve_without_build_result EQUAL 2 OR
    NOT resolve_without_build_stderr MATCHES
-     "-O0 and -O2 require resolve --build")
+     "-O0, -O2, and --debug-symbols require resolve --build")
   message(FATAL_ERROR
     "resolve accepted optimization without --build\n${resolve_without_build_stderr}")
+endif()
+
+execute_process(
+  COMMAND "${DRAFTC}" resolve "${workspace}" --root app --debug-symbols
+  RESULT_VARIABLE debug_without_build_result
+  OUTPUT_VARIABLE debug_without_build_stdout
+  ERROR_VARIABLE debug_without_build_stderr
+)
+if(NOT debug_without_build_result EQUAL 2 OR
+   NOT debug_without_build_stderr MATCHES
+     "-O0, -O2, and --debug-symbols require resolve --build")
+  message(FATAL_ERROR
+    "resolve accepted debug symbols without --build\n${debug_without_build_stderr}")
+endif()
+
+execute_process(
+  COMMAND "${DRAFTC}" emit-llvm "${workspace}" --root app
+  RESULT_VARIABLE fast_llvm_result
+  OUTPUT_VARIABLE fast_llvm_stdout
+  ERROR_VARIABLE fast_llvm_stderr
+)
+if(NOT fast_llvm_result EQUAL 0 OR
+   fast_llvm_stdout MATCHES "!DICompileUnit|!DILocation|!dbg !")
+  message(FATAL_ERROR
+    "ordinary LLVM emission retained debug metadata\n${fast_llvm_stderr}")
 endif()
 
 execute_process(

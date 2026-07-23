@@ -90,6 +90,7 @@ The general Draft rules remain in the
 bootstrap implementation records how it realizes the hosted
 [Context, process, thread, and atomic surface](../implementation/runtime-and-core.md)
 and [native artifact behavior](../implementation/native-backend-and-artifacts.md).
-The linked LLVM 22 library and matching Clang/`dsymutil` tools, Apple linker,
-SDK, and `libtool` are operational prerequisites documented in the
+The linked LLVM 22 library and matching Clang tools, Apple linker, SDK, and
+`libtool` are operational prerequisites; `--debug-symbols` additionally uses
+matching `dsymutil`. These are documented in the
 [command reference](../operations/command-reference.md), not language inputs.

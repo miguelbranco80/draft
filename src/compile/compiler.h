@@ -86,6 +86,10 @@ struct CompileWorkspaceOptions {
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
+  // Native debug information is opt-in so an ordinary development build does
+  // not construct and lower source-location metadata. This affects derived
+  // artifacts only and never enters semantic or resolved-program identity.
+  bool emit_debug_information = false;
   // Library and object artifacts lower a complete root without synthesizing a
   // hosted `main`. The root still owns runtime support in either mode.
   bool emit_program_entry = true;

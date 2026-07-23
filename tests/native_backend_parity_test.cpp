@@ -95,6 +95,7 @@ struct ArtifactCase {
   options.workspace.core_content_identity = "draft-core-bootstrap-v4";
   options.lower_mir = true;
   options.emit_llvm = true;
+  options.emit_debug_information = true;
   options.emit_program_entry = emit_program_entry;
   return draft::compile_workspace(
       sources,
@@ -183,6 +184,7 @@ struct ArtifactCase {
   options.artifact_kind = artifact.kind;
   options.object_emitter = emitter;
   options.optimization = optimization;
+  options.emit_debug_symbols = true;
   options.object_worker_count = 4;
   return draft::build_native_artifact(
       target, compiled, options, diagnostics);

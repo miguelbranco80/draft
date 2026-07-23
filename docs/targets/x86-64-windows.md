@@ -105,8 +105,9 @@ The embedded LLVM 22 adapter registers the X86 target and emits deterministic
 AMD64 COFF package objects at O0 and O2. Matching Clang/LLD produces `.exe` and
 `.dll`; `llvm-lib` produces deterministic `.lib` archives. C exports carry the
 COFF `dllexport` contract, and a DLL publishes its `.lib` import library as an
-explicit hashed companion. Linked executables and DLLs request reproducible
-CodeView/PDB output and publish the sibling `.pdb` path and digest.
+explicit companion. Linked executables and DLLs use reproducible links;
+`--debug-symbols` additionally requests CodeView/PDB output and publishes the
+sibling `.pdb` path.
 
 COFF has no relocatable partial-link operation equivalent to ELF/Mach-O `-r`.
 `--kind object` therefore publishes an exact `.obj` only when the complete

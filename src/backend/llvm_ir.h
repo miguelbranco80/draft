@@ -19,6 +19,11 @@ namespace draft {
 
 struct LlvmIrOptions {
   PackageIdentity package;
+  // Debug information is an operational artifact choice, not part of Draft
+  // program meaning. Ordinary fast builds leave this false so module
+  // construction does not allocate source-location metadata that the user did
+  // not request. Qualification and debugger-oriented builds opt in explicitly.
+  bool emit_debug_information = false;
   // One module in every final artifact owns the compiler runtime definitions.
   // Executables additionally own the hosted C `main`; libraries do not.
   bool emit_runtime_support = false;

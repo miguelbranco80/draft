@@ -98,9 +98,9 @@ policy is otherwise the same target-independent Draft source used on AArch64.
 
 The embedded LLVM 22 adapter registers the X86 target and emits one ELF object
 per semantic package at O0 or O2. Matching Clang/LLD and `llvm-ar` assemble
-target-qualified sources, link executables and `.so` files, create deterministic
-archives, and retain DWARF in ELF outputs. Final artifacts use a deterministic
-GNU build ID and no Mach-O dSYM companion.
+target-qualified sources, link executables and `.so` files, and create
+deterministic archives. `--debug-symbols` retains DWARF in ELF outputs. Final
+artifacts use a deterministic GNU build ID and no Mach-O dSYM companion.
 
 Files such as `native@x86_64-linux.s` are exact package-assembly inputs and may
 contain the full external assembler language. The first x86-64 profile has no

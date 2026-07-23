@@ -285,7 +285,7 @@ public:
       return result;
     }
     collect_strings();
-    initialize_debug_metadata();
+    if (options_.emit_debug_information) initialize_debug_metadata();
 
     output_ << "; Draft bootstrap LLVM module\n"
             << "source_filename = \"draft:"
@@ -308,10 +308,12 @@ public:
         emit_validation_entry();
       }
     }
-    emit_debug_metadata();
+    if (options_.emit_debug_information) emit_debug_metadata();
 
     result.ok = diagnostics_.error_count() == initial_errors_;
-    result.text = attach_debug_locations(output_.str());
+    result.text = options_.emit_debug_information
+        ? attach_debug_locations(output_.str())
+        : output_.str();
     return result;
   }
 
@@ -442,7 +444,7 @@ private:
 
   [[nodiscard]] std::optional<std::size_t> emit_debug_location(
       SourceRange range) {
-    if (!range.is_valid() ||
+    if (!options_.emit_debug_information || !range.is_valid() ||
         current_debug_subprogram_ == std::numeric_limits<std::size_t>::max()) {
       return std::nullopt;
     }
@@ -5123,7 +5125,9 @@ private:
     if (!procedure.valid)
       return;
     auxiliary_index_ = 0;
-    current_debug_subprogram_ = debug_subprogram(procedure);
+    if (options_.emit_debug_information) {
+      current_debug_subprogram_ = debug_subprogram(procedure);
+    }
     const Type &procedure_signature = type(procedure.type);
     const CAbiFunctionPlan procedure_abi =
         procedure_signature.c_calling_convention
@@ -5140,8 +5144,11 @@ private:
     }
     output_ << llvm_function_result(procedure.type) << ' '
             << symbol_name(procedure.symbol)
-            << function_signature(procedure.type, true) << " !dbg !"
-            << current_debug_subprogram_ << " {\n";
+            << function_signature(procedure.type, true);
+    if (options_.emit_debug_information) {
+      output_ << " !dbg !" << current_debug_subprogram_;
+    }
+    output_ << " {\n";
     std::vector<std::string> operands(procedure.values.size());
     for (std::size_t block_index = 0; block_index < procedure.blocks.size();
          ++block_index) {

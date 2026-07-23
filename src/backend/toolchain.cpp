@@ -1387,15 +1387,16 @@ NativeBuildResult build_native_artifact(
     link_arguments.push_back("-Wl,--build-id=sha1");
   } else if (target.facts.object_format == "coff") {
     // lld-link's reproducible mode derives timestamps and the PDB GUID from
-    // content. Linked PE artifacts always carry CodeView debug information in
-    // a sibling PDB; object/archive outputs keep their records in the members.
+    // content. A requested linked PE debug product carries CodeView information
+    // in a sibling PDB; ordinary fast builds omit both the linker work and the
+    // companion. Object/archive outputs keep any requested records in members.
     link_arguments.push_back("-Wl,/Brepro");
     if (options.artifact_kind == NativeArtifactKind::Executable ||
         options.artifact_kind == NativeArtifactKind::DynamicLibrary) {
-      pdb_path = output_path;
-      pdb_path->replace_extension(".pdb");
+      std::filesystem::path requested_pdb = output_path;
+      requested_pdb.replace_extension(".pdb");
       std::error_code remove_error;
-      std::filesystem::remove(*pdb_path, remove_error);
+      std::filesystem::remove(requested_pdb, remove_error);
       if (remove_error) {
         diagnostics.error(
             SourceRange::invalid(),
@@ -1403,11 +1404,14 @@ NativeBuildResult build_native_artifact(
                 remove_error.message());
         return result;
       }
-      link_arguments.push_back("-Wl,/debug:full");
-      link_arguments.push_back("-Xlinker");
-      link_arguments.push_back("/pdb:" + pdb_path->string());
-      link_arguments.push_back("-Xlinker");
-      link_arguments.push_back("/pdbaltpath:%_PDB%");
+      if (options.emit_debug_symbols) {
+        pdb_path = std::move(requested_pdb);
+        link_arguments.push_back("-Wl,/debug:full");
+        link_arguments.push_back("-Xlinker");
+        link_arguments.push_back("/pdb:" + pdb_path->string());
+        link_arguments.push_back("-Xlinker");
+        link_arguments.push_back("/pdbaltpath:%_PDB%");
+      }
     }
     if (options.artifact_kind == NativeArtifactKind::Executable) {
       // Draft's Windows entry is wmain so UTF-16 process vectors can be
@@ -1474,15 +1478,33 @@ NativeBuildResult build_native_artifact(
     return result;
   }
 
-  // A Mach-O link keeps only a debug map in the executable or dylib. Package
-  // objects still contain complete DWARF, but ordinary debuggers and
-  // source-aware disassemblers expect dsymutil to relocate that data into the
-  // conventional sibling bundle. Run it before reporting build success so a
-  // "built" native program always has the source information promised by the
-  // backend contract.
+  // Remove an obsolete dSYM when the same output is rebuilt through the fast
+  // path. Leaving it beside a newer executable would let a debugger consume
+  // stale source mappings even though this invocation returned no companion.
   if ((options.artifact_kind == NativeArtifactKind::Executable ||
        options.artifact_kind == NativeArtifactKind::DynamicLibrary) &&
-      target.facts.object_format == "macho") {
+      target.facts.object_format == "macho" &&
+      !options.emit_debug_symbols) {
+    const std::filesystem::path stale_debug_symbols =
+        output_path.string() + ".dSYM";
+    std::error_code remove_error;
+    std::filesystem::remove_all(stale_debug_symbols, remove_error);
+    if (remove_error) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot remove stale native debug-symbol bundle: " +
+              remove_error.message());
+      return result;
+    }
+  }
+
+  // A Mach-O link keeps only a debug map in the executable or dylib. When the
+  // caller requested debug symbols, relocate package-object DWARF into the
+  // conventional sibling bundle before reporting build success.
+  if ((options.artifact_kind == NativeArtifactKind::Executable ||
+       options.artifact_kind == NativeArtifactKind::DynamicLibrary) &&
+      target.facts.object_format == "macho" &&
+      options.emit_debug_symbols) {
     const std::filesystem::path debug_symbols =
         output_path.string() + ".dSYM";
     std::error_code remove_error;

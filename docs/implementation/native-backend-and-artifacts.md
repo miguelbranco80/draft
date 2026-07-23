@@ -277,12 +277,15 @@ tokens and the nonexistent `INT128_C` facility.
 
 ## Native Mach-O debug companions
 
-Status: implemented for executable and dynamic-library artifacts.
+Status: implemented as an explicit debug-symbol option for executable and
+dynamic-library artifacts.
 
 Mach-O final links retain a debug map rather than copying input-object DWARF
-into the executable or dylib. A successful native build therefore runs the
-matching LLVM `dsymutil` before it reports success and publishes the conventional
-sibling `<artifact>.dSYM`.
+into the executable or dylib. A build requested with `--debug-symbols`
+therefore emits source-location metadata, runs the matching LLVM `dsymutil`
+before reporting success, and publishes the conventional sibling
+`<artifact>.dSYM`. The ordinary fast path emits neither metadata nor bundle and
+removes a stale sibling left by an earlier debug build of the same output.
 
 The invocation ignores object and Swift-module timestamps, uses one worker, and
 verifies its linked output. The returned native result carries the bundle path.
@@ -309,13 +312,14 @@ release qualification.
 
 Status: implemented for AArch64 and x86-64 Linux executable and shared-library artifacts.
 
-ELF final links retain input-object DWARF directly in the executable or
-shared library. They therefore do not run `dsymutil` or publish an empty
-platform-shaped companion. The native result leaves its separate debug-symbol
-fields empty, while the primary artifact remains unstripped and carries
-`.debug_info`, `.debug_line`, logical Draft source coordinates, and its
-deterministic GNU build ID. A future split-debug profile must be a separate
-explicit artifact contract rather than an ambient `objcopy` convention.
+When requested, ELF final links retain input-object DWARF directly in the
+executable or shared library. They therefore do not run `dsymutil` or publish
+an empty platform-shaped companion. The native result leaves its separate
+debug-symbol fields empty; `--debug-symbols` controls whether the primary
+artifact carries `.debug_info`, `.debug_line`, and logical Draft source
+coordinates. The deterministic GNU build ID remains independent. A future
+split-debug profile must be a separate explicit artifact contract rather than
+an ambient `objcopy` convention.
 
 ## Native PE/COFF artifacts and debug information
 
@@ -326,8 +330,9 @@ The x86-64 Windows adapter emits AMD64 COFF package objects in process, invokes
 matching Clang/LLD for `.exe` and `.dll` links, and uses `llvm-lib` for
 deterministic `.lib` archives. C exports use LLVM `dllexport`, so a DLL link
 also publishes an explicit import library. Linked outputs request lld-link
-`/Brepro` and full CodeView debug information in a sibling PDB. The result
-returns the companion paths without reading or hashing their bytes.
+`/Brepro`; `--debug-symbols` additionally requests full CodeView information
+in a sibling PDB. The result returns a requested companion path without reading
+or hashing its bytes, and removes a stale PDB on a later non-debug build.
 
 Tools are launched with `CreateProcessW` and a restricted inherited-handle
 list. Argument conversion/quoting preserves the exact UTF-8 operational paths
@@ -353,8 +358,8 @@ Apple Silicon exercises `draft-aarch64-macos-v5`, AArch64 Linux exercises
 builds and runs executables, provokes the selected trap path, repeats every
 artifact build to compare its complete output tree, and compile a C client
 against the generated header and shared library. Mach-O cases additionally
-require the `.dSYM` companion; ELF cases require its absence because their DWARF
-stays in the primary artifact.
+request and require the `.dSYM` companion; ELF cases request debug information
+but require no companion because their DWARF stays in the primary artifact.
 
 The native matrix also runs the embedded-LLVM/external-Clang parity gate for all
 five artifact kinds and the one-worker/four-worker determinism gate. Those tests

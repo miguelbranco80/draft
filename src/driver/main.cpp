@@ -605,6 +605,7 @@ int expand_package(
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
     draft::NativeOptimizationLevel optimization,
+    bool emit_debug_symbols,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::RuntimeAssetInput> &runtime_assets,
     draft::TimingRecorder *timings,
@@ -681,6 +682,7 @@ int expand_package(
   native_options.output_path = output.string();
   native_options.artifact_kind = artifact_kind;
   native_options.optimization = optimization;
+  native_options.emit_debug_symbols = emit_debug_symbols;
   native_options.foreign_providers = foreign_providers;
   native_options.runtime_assets = runtime_assets;
   native_options.timings = timings;
@@ -708,6 +710,7 @@ int build_selected_package(
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
     draft::NativeOptimizationLevel optimization,
+    bool emit_debug_symbols,
     draft::RuntimeAssertionMode runtime_assertions,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
@@ -730,6 +733,7 @@ int build_selected_package(
   }
   compile_options.lower_mir = true;
   compile_options.emit_llvm = true;
+  compile_options.emit_debug_information = emit_debug_symbols;
   compile_options.emit_program_entry =
       artifact_kind == draft::NativeArtifactKind::Executable;
   compile_options.timings = timings;
@@ -746,6 +750,7 @@ int build_selected_package(
       requested_output,
       artifact_kind,
       optimization,
+      emit_debug_symbols,
       foreign_providers,
       runtime_assets,
       timings,
@@ -770,6 +775,7 @@ int build_workspace(
     const std::optional<std::string> &requested_output,
     draft::NativeArtifactKind artifact_kind,
     draft::NativeOptimizationLevel optimization,
+    bool emit_debug_symbols,
     draft::RuntimeAssertionMode runtime_assertions,
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
@@ -849,6 +855,7 @@ int build_workspace(
         requested_output,
         artifact_kind,
         optimization,
+        emit_debug_symbols,
         runtime_assertions,
         foreign_providers,
         provider_summaries,
@@ -1060,6 +1067,7 @@ struct ResolveBuildRequest {
       draft::NativeArtifactKind::Executable;
   draft::NativeOptimizationLevel optimization =
       draft::NativeOptimizationLevel::O0;
+  bool emit_debug_symbols = false;
 };
 
 // Resolve and judge first run the complete provider-independent front end, so
@@ -1133,6 +1141,8 @@ int run_agent_command(
       build_options = resolve_options.compile;
       build_options->lower_mir = true;
       build_options->emit_llvm = true;
+      build_options->emit_debug_information =
+          resolve_build->emit_debug_symbols;
       build_options->emit_program_entry =
           resolve_build->artifact_kind ==
           draft::NativeArtifactKind::Executable;
@@ -1196,6 +1206,7 @@ int run_agent_command(
                 resolve_build->output,
                 resolve_build->artifact_kind,
                 resolve_build->optimization,
+                resolve_build->emit_debug_symbols,
                 foreign_providers,
                 runtime_assets,
                 timings,
@@ -1313,6 +1324,7 @@ void print_usage() {
             << "      [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows]\n"
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
             << "      [-O0|-O2]\n"
+            << "      [--debug-symbols]\n"
             << "      [--assertions=off]\n"
             << "      [--provider name=object|archive|shared-library:<path>]...\n"
             << "      [--provider-summary name:<path>]...\n"
@@ -1339,6 +1351,7 @@ void print_usage() {
             << "      [-o <output>]\n"
             << "      [--kind executable|object|static-library|dynamic-library|assembly]\n"
             << "      [-O0|-O2] (with --build)\n"
+            << "      [--debug-symbols] (with --build)\n"
             << "      [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows]\n"
             << "      [--assertions=off]\n"
             << "      [--model <model>]\n"
@@ -1504,6 +1517,7 @@ int main(int argc, char **argv) {
     bool root_set = false;
     bool artifact_kind_set = false;
     bool optimization_set = false;
+    bool emit_debug_symbols = false;
     std::string root_selector = ".";
     std::optional<std::string> codex_model;
     std::optional<std::string> output;
@@ -1554,6 +1568,9 @@ int main(int argc, char **argv) {
                 argument, optimization_set, optimization)) {
           return 2;
         }
+      } else if (argument == "--debug-symbols" &&
+                 !emit_debug_symbols) {
+        emit_debug_symbols = true;
       } else if (argument == "--model" &&
                  !codex_model.has_value() && index + 1 < argc) {
         codex_model = argv[++index];
@@ -1589,8 +1606,10 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    if (!build_after_resolution && optimization_set) {
-      std::cerr << "error: -O0 and -O2 require resolve --build\n";
+    if (!build_after_resolution &&
+        (optimization_set || emit_debug_symbols)) {
+      std::cerr << "error: -O0, -O2, and --debug-symbols require "
+                   "resolve --build\n";
       return 2;
     }
     if ((revalidate && codex_model.has_value()) ||
@@ -1614,6 +1633,7 @@ int main(int argc, char **argv) {
       resolve_build->output = output;
       resolve_build->artifact_kind = artifact_kind;
       resolve_build->optimization = optimization;
+      resolve_build->emit_debug_symbols = emit_debug_symbols;
     }
     return run_agent_command(
         argv[2],
@@ -1862,6 +1882,7 @@ int main(int argc, char **argv) {
     draft::NativeOptimizationLevel optimization =
         draft::NativeOptimizationLevel::O0;
     bool optimization_set = false;
+    bool emit_debug_symbols = false;
     bool assertions_off = false;
     bool target_set = false;
     std::vector<std::string> root_selectors;
@@ -1893,6 +1914,9 @@ int main(int argc, char **argv) {
                 argument, optimization_set, optimization)) {
           return 2;
         }
+      } else if (argument == "--debug-symbols" &&
+                 !emit_debug_symbols) {
+        emit_debug_symbols = true;
       } else if (argument == "-o" && !output.has_value() &&
                  index + 1 < argc) {
         output = argv[++index];
@@ -1935,6 +1959,7 @@ int main(int argc, char **argv) {
         output,
         artifact_kind,
         optimization,
+        emit_debug_symbols,
         assertions_off
             ? draft::RuntimeAssertionMode::Off
             : draft::RuntimeAssertionMode::On,
