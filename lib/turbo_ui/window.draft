@@ -7,14 +7,18 @@ package turbo_ui
 
 import core/tui
 
-// Window_Flags state which frame operations are meaningful for one window.
-// This is deliberately a plain group of booleans rather than an open-ended
-// class hierarchy. Dialog and tool constructors merely choose useful defaults.
+// Window_Flags state which frame and desktop operations are meaningful for one
+// window. tileable is intentionally independent from direct movement and
+// resizing: an auxiliary pane may permit manual sizing while remaining fixed
+// during whole-desktop Tile/Cascade. This is deliberately a plain group of
+// booleans rather than an open-ended class hierarchy. Dialog and tool
+// constructors merely choose useful defaults.
 pub Window_Flags :: struct {
     movable: bool,
     resizable: bool,
     closable: bool,
     zoomable: bool,
+    tileable: bool,
 }
 
 // Window_State is freely movable application state. bounds is the current
@@ -58,6 +62,7 @@ pub window_init :: proc(id: Widget_Id, bounds: Rect, z: u32) -> Window_State {
             resizable = true,
             closable = true,
             zoomable = true,
+            tileable = true,
         },
         minimum_width = 16,
         minimum_height = 6,
@@ -65,7 +70,8 @@ pub window_init :: proc(id: Widget_Id, bounds: Rect, z: u32) -> Window_State {
 }
 
 // tool_window_init keeps ordinary movement, growth, and closing but omits zoom
-// for auxiliary panes which should not replace the complete working desktop.
+// and automatic arrangement for auxiliary panes which should not replace or
+// consume a cell in the complete document desktop.
 pub tool_window_init :: proc(
     id: Widget_Id,
     bounds: Rect,
@@ -73,6 +79,7 @@ pub tool_window_init :: proc(
 ) -> Window_State {
     result := window_init(id, bounds, z)
     result.flags.zoomable = false
+    result.flags.tileable = false
     return result
 }
 
@@ -87,6 +94,7 @@ pub dialog_window_init :: proc(
     result := window_init(id, bounds, z)
     result.flags.resizable = false
     result.flags.zoomable = false
+    result.flags.tileable = false
     result.minimum_width = 20
     result.minimum_height = 6
     return result
@@ -119,14 +127,39 @@ top_visible_window :: proc(windows: []Window_State) -> Widget_Id {
     return selected
 }
 
-// top_window_at returns the visible window with greatest z at point. Equal z
-// values resolve by later slice position, matching window_order.
+// point_in_window_footprint matches the cells painted by begin_window. Window
+// shadows sit one cell to the right and below the frame; treating those cells
+// as empty would let a visually covered rear resize handle receive a click.
+// The two unpainted bounding-box corners remain transparent.
+point_in_window_footprint :: proc(point: Point, window: Window_State) -> bool {
+    if point_in_rect(point, window.bounds) {
+        return true
+    }
+    right_shadow := Rect{
+        column = rect_right(window.bounds),
+        row = saturated_add(window.bounds.row, 1),
+        width = 1,
+        height = window.bounds.height,
+    }
+    bottom_shadow := Rect{
+        column = saturated_add(window.bounds.column, 1),
+        row = rect_bottom(window.bounds),
+        width = window.bounds.width,
+        height = 1,
+    }
+    return point_in_rect(point, right_shadow) ||
+        point_in_rect(point, bottom_shadow)
+}
+
+// top_window_at returns the visible painted window footprint with greatest z
+// at point. Equal z values resolve by later slice position, matching
+// window_order exactly.
 top_window_at :: proc(windows: []Window_State, point: Point) -> Widget_Id {
     selected := No_Widget
     selected_z: u32
     found := false
     for window in windows {
-        if window.visible && point_in_rect(point, window.bounds) &&
+        if window.visible && point_in_window_footprint(point, window) &&
             (!found || window.z >= selected_z) {
             selected = window.id
             selected_z = window.z
@@ -361,20 +394,20 @@ pub window_order :: proc(windows: []Window_State, output: []usize) -> usize {
     return count
 }
 
-// arrangeable_window identifies ordinary document and tool windows. Fixed
-// dialogs remain exactly where the application placed them: tiling a desktop
-// must never silently resize a confirmation or search dialog whose controls
-// were laid out for a deliberate size.
+// arrangeable_window applies the explicit desktop policy. Direct move/resize
+// capabilities do not imply participation: fixed dialogs and manually sized
+// tool panes remain where the application placed them unless it deliberately
+// marks them tileable.
 arrangeable_window :: proc(window: Window_State) -> bool {
-    return window.visible && window.flags.movable && window.flags.resizable
+    return window.visible && window.flags.tileable
 }
 
 // tile_windows partitions desktop into a near-square grid and places every
-// visible, movable, resizable window into one cell in stable slice order.
-// Hidden windows and fixed dialogs are untouched. Tiling ends zoom because the
-// arranged rectangle becomes the new ordinary restore position. The return
-// value is the number of windows placed, allowing an application to report a
-// no-op without rediscovering the eligible set.
+// visible tileable window into one cell in stable slice order. Hidden and
+// non-tileable windows are untouched. Tiling ends zoom because the arranged
+// rectangle becomes the new ordinary restore position. The return value is the
+// number of windows placed, allowing an application to report a no-op without
+// rediscovering the eligible set.
 pub tile_windows :: proc(
     windows: []Window_State,
     desktop: Rect,
@@ -665,6 +698,23 @@ pub begin_window_frame :: proc(
     }
 
     if event.kind == .mouse {
+        // Terminal focus changes and multiplexers can occasionally lose a
+        // release report. A later no-button motion is authoritative evidence
+        // that no drag remains; a new primary press starts a fresh hit test.
+        // Without this repair, target routing below would keep sending every
+        // future mouse event to the stale window captured by active_id.
+        window_capture := state^.active_kind == .window_drag ||
+            state^.active_kind == .window_resize ||
+            state^.active_kind == .window_close ||
+            state^.active_kind == .window_zoom
+        stale_motion := event.mouse.action == .move &&
+            !event.mouse.primary_down
+        fresh_press := event.mouse.action == .press &&
+            event.mouse.button == .primary
+        if window_capture && (stale_motion || fresh_press) {
+            state^.active_id = No_Widget
+            state^.active_kind = .none
+        }
         if state^.active_kind == .window_drag ||
             state^.active_kind == .window_resize ||
             state^.active_kind == .window_close ||

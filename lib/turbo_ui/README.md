@@ -19,11 +19,11 @@ rectangle normally excludes the menu and status rows. Supply one visible
 
 Three constructors select ordinary capability sets:
 
-| Constructor | Move | Resize | Close | Zoom |
-| --- | --- | --- | --- | --- |
-| `window_init` | yes | yes | yes | yes |
-| `tool_window_init` | yes | yes | yes | no |
-| `dialog_window_init` | yes | no | yes | no |
+| Constructor | Move | Resize | Close | Zoom | Tile/Cascade |
+| --- | --- | --- | --- | --- | --- |
+| `window_init` | yes | yes | yes | yes | yes |
+| `tool_window_init` | yes | yes | yes | no | no |
+| `dialog_window_init` | yes | no | yes | no | no |
 
 The flags remain explicit in `Window_State` and may be adjusted by an
 application. `show_modal_window` records the owning active window before a
@@ -39,9 +39,16 @@ keyboard move/size mode, arrows move, Shift-arrows resize, Enter accepts, and
 Escape restores the entry rectangle.
 
 `tile_windows` and `cascade_windows` provide deterministic whole-desktop
-arrangement for visible movable/resizable windows. Both deliberately leave
-fixed dialogs and hidden windows untouched; the application still controls
-participation through each window's capability flags.
+arrangement for visible windows whose independent `tileable` flag is set. Both
+deliberately leave fixed dialogs, auxiliary tool panes, and hidden windows
+untouched. Manual move/resize capability does not imply arrangement
+participation; an application may change `flags.tileable` explicitly.
+
+Hit testing follows the same frame-and-shadow footprint that painting exposes.
+A front shadow therefore occludes rear controls instead of visually covering a
+resize handle while allowing that handle to receive the click. Window chrome
+capture normally ends on release; a later no-button move or new primary press
+also cancels stale capture when a terminal or multiplexer lost the release.
 
 ```draft
 desktop := turbo_ui.Rect{row = 1, width = surface.columns}
