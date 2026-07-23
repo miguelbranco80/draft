@@ -123,6 +123,17 @@ the concrete call and procedure-pointer-flow graph. MIR and package emission
 start only from closed semantic products, so lowering never feeds facts back
 into type checking.
 
+Final semantic closure uses the import graph as a readiness relation, not as a
+serial traversal order. The coordinator repeatedly freezes every package whose
+dependencies have already published final effect-bearing interfaces. One
+package preparation task computes imported contracts, agent obligations, and
+the immutable effect context. Direct-effect and denial products from every
+package in that ready set then share workspace-wide procedure waves; package-
+local flow closure and final native/interface validation share bounded package
+waves. Diagnostics remain task-local and are replayed in PackageId and phase
+order. A failed package cannot unlock a consumer, while unrelated ready
+packages still complete.
+
 One immutable `ProcedureEffectAnalysis` is prepared per package before its
 direct ready wave. It owns the selected HIR-row projection, terminal
 native/imported contracts, dense SymbolId lookup, and procedure-leaf paths for
@@ -140,8 +151,9 @@ The interface graph reports aggregate ready-wave selection, task preparation,
 bounded execution, and deterministic publication across all dynamic waves.
 Effect closure reports contract-table setup, procedure-flow convergence, final
 SCC construction, transitive effect propagation, and call-site composition for
-each package. Worker measurements stay in task-owned slots and are replayed by
-the coordinator in product order.
+each package. Package-closure wave/task/worker counters expose the dependency
+frontier, including packages which shared a ready wave. Worker measurements
+stay in task-owned slots and are replayed by the coordinator in product order.
 
 ## Emission reachability
 

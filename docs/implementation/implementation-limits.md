@@ -91,6 +91,11 @@ requested them; package-local semantic suffixes still publish in PackageId/work
 order after the whole worker set joins. No semantic-wave payload imposes a
 package-local execution chain; only source-loading name/interface barriers are
 serialized after read-only task slots join.
+Final effect/interface closure likewise uses dependency-ready package fronts.
+Preparation and flow closure run as package tasks; direct effects and denials
+from every package in the front share procedure waves; completed SCC products
+retain exact local and imported edges. Diagnostics publish only after join in
+PackageId and phase order, and an invalid dependency never unlocks its consumer.
 Per-package phase and declaration-generation counters are deleted. Source
 transitions supersede exact product rows; body initialization and closure reuse
 are derived from retained product/payload invariants rather than a parallel

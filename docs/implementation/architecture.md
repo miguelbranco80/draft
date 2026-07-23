@@ -136,8 +136,8 @@ grammar boundary proves that it cannot alter a package interface—while
 transitive consumers retain checked HIR and invalidate only effect/obligation
 closure. One command-local adjacency index is built with the workspace graph,
 retained across every continuation, and supports import lookup, reverse source
-invalidation, canonical initial product construction, and the body/closure
-traversals not yet migrated to semantic products. Building its sorted views
+invalidation, canonical initial product construction, and dependency-ready
+package closure. Building its sorted views
 costs O((packages + imports) log(packages + imports)); invalidation costs
 O(packages + imports), without a persistent cache. The `compiler passes`,
 `workspace loads`, `workspace source transitions`, `package body starts`,
@@ -145,11 +145,11 @@ O(packages + imports), without a persistent cache. The `compiler passes`,
 classification wave/task/worker counters make those distinct operations
 visible. `--timings=all` adds package/tool scopes, file discovery and I/O,
 lexing/parsing, import-graph resolution, declaration ready-wave execution and
-publication, procedure-flow/effect closure subphases, and per-package LLVM
-parse/verify/optimize/code-generation phases. Exclusive time remains meaningful
-inside sequential groups; independently scheduled child durations may overlap
-their parent wall time. Child process CPU is reported separately from parent
-wall time.
+publication, package-closure ready fronts, procedure-flow/effect closure
+subphases, and per-package LLVM parse/verify/optimize/code-generation phases.
+Exclusive time remains meaningful inside sequential groups; independently
+scheduled child durations may overlap their parent wall time. Child process CPU
+is reported separately from parent wall time.
 
 Each package row separates its immutable package-interface payload from its
 body-owned semantic tables and constants. Every authored symbolic template and

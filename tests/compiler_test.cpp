@@ -863,6 +863,128 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
                     std::string::npos);
 }
 
+// Final effect interfaces impose a true dependency edge, but sibling imported
+// packages impose no order on each other. This diamond proves the semantic-
+// closure coordinator freezes both leaves together, then unlocks the root in a
+// second wave. The counters are architecture evidence rather than a wall-time
+// assertion: a serial dependency-order loop would report three direct-effect
+// waves and could not report two packages in one shared closure wave.
+void test_independent_dependencies_share_closure_ready_wave(
+    TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-package-closure-wave-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  std::filesystem::create_directories(root / "left", error);
+  std::filesystem::create_directories(root / "right", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "import left\n"
+         "import right\n"
+         "main :: proc() -> int {\n"
+         "    return cast[int](left.answer() + right.answer())\n"
+         "}\n";
+  app.close();
+  std::ofstream left_source(
+      root / "left" / "package.draft", std::ios::binary);
+  left_source << "package left\n"
+                 "pub answer :: proc() -> i64 {\n"
+                 "    return 20\n"
+                 "}\n";
+  left_source.close();
+  std::ofstream right_source(
+      root / "right" / "package.draft", std::ios::binary);
+  right_source << "package right\n"
+                  "pub answer :: proc() -> i64 {\n"
+                  "    return 22\n"
+                  "}\n";
+  right_source.close();
+  EXPECT(state, app.good() && left_source.good() && right_source.good());
+
+  draft::CompileWorkspaceOptions base_options;
+  base_options.target = draft::make_aarch64_macos_profile();
+  base_options.workspace.workspace_directory = root.string();
+
+  draft::TimingRecorder sequential_timings(draft::TimingOutput::Summary);
+  draft::SourceManager sequential_sources;
+  draft::DiagnosticSink sequential_diagnostics;
+  draft::CompileWorkspaceOptions sequential_options = base_options;
+  sequential_options.semantic_worker_count = 1;
+  sequential_options.timings = &sequential_timings;
+  const draft::CompileWorkspaceResult sequential = draft::compile_workspace(
+      sequential_sources,
+      (root / "app").string(),
+      std::move(sequential_options),
+      sequential_diagnostics);
+
+  draft::TimingRecorder parallel_timings(draft::TimingOutput::Summary);
+  draft::SourceManager parallel_sources;
+  draft::DiagnosticSink parallel_diagnostics;
+  draft::CompileWorkspaceOptions parallel_options = base_options;
+  parallel_options.semantic_worker_count = 4;
+  parallel_options.timings = &parallel_timings;
+  const draft::CompileWorkspaceResult parallel = draft::compile_workspace(
+      parallel_sources,
+      (root / "app").string(),
+      std::move(parallel_options),
+      parallel_diagnostics);
+  if (sequential_diagnostics.has_errors()) {
+    std::cerr <<
+        draft::render_diagnostics(
+            sequential_sources, sequential_diagnostics);
+  }
+  if (parallel_diagnostics.has_errors()) {
+    std::cerr <<
+        draft::render_diagnostics(parallel_sources, parallel_diagnostics);
+  }
+  EXPECT(state, sequential.ok);
+  EXPECT(state, parallel.ok);
+  EXPECT(state, sequential.packages.size() == 3);
+  EXPECT(state, parallel.packages.size() == 3);
+  EXPECT(state,
+         sequential.semantic_graph.products.size() ==
+             parallel.semantic_graph.products.size());
+  const std::size_t compared_products = std::min(
+      sequential.semantic_graph.products.size(),
+      parallel.semantic_graph.products.size());
+  for (std::size_t index = 0; index < compared_products; ++index) {
+    const draft::SemanticProduct &left =
+        sequential.semantic_graph.products[index];
+    const draft::SemanticProduct &right =
+        parallel.semantic_graph.products[index];
+    EXPECT(state, left.kind == right.kind);
+    EXPECT(state, left.state == right.state);
+    EXPECT(state, left.dependencies == right.dependencies);
+    EXPECT(state, left.failure == right.failure);
+  }
+  EXPECT(state,
+         draft::render_diagnostics(
+             sequential_sources, sequential_diagnostics) ==
+             draft::render_diagnostics(
+                 parallel_sources, parallel_diagnostics));
+
+  const std::string report = parallel_timings.render();
+  const std::string sequential_report = sequential_timings.render();
+  EXPECT(state, report.find("package closure ready waves: 2") !=
+                    std::string::npos);
+  EXPECT(state, sequential_report.find("package closure ready waves: 2") !=
+                    std::string::npos);
+  EXPECT(state, report.find("package closure packages: 3") !=
+                    std::string::npos);
+  EXPECT(state, report.find("packages in shared closure waves: 2") !=
+                    std::string::npos);
+  EXPECT(state, report.find("direct effect ready waves: 2") !=
+                    std::string::npos);
+  EXPECT(state, report.find("effect closure package ready waves: 2") !=
+                    std::string::npos);
+  EXPECT(state, report.find("package finalization ready waves: 2") !=
+                    std::string::npos);
+}
+
 // Source diagnostics are stored in task-indexed sinks and replayed only after
 // join. Comparing complete rendered output catches a completion-order leak that
 // an error-count assertion would miss.
@@ -4553,6 +4675,7 @@ int main() {
   test_procedure_body_worker_counts_are_deterministic(state);
   test_large_source_worker_counts_are_deterministic(state);
   test_independent_packages_share_one_body_ready_wave(state);
+  test_independent_dependencies_share_closure_ready_wave(state);
   test_parallel_body_diagnostics_are_canonical(state);
   test_parallel_declaration_failures_are_canonical(state);
   test_invalid_unused_body_products_do_not_stop_the_wave(state);

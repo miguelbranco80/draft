@@ -668,14 +668,18 @@ does not describe a preliminary imported contract to Codex after closing a
 different one for denials.
 
 The compiler attaches these retained payloads to live semantic-product rows.
-One `DirectEffectSummary` row maps to one selected HIR-bearing body product and
-runs in a bounded worker wave. `ClosedEffectScc` rows map one-for-one to the
-dependency-first components above; each row names its source direct products,
-its exact earlier component dependencies, the target, and completed imported
-component products. One independently checked `DenialResult` row then names its
-exact body and owning closed component. Diagnostics remain task-local until
-canonical graph publication, so a denial violation is the `Error` state of the
-specific procedure product rather than an unstructured package failure.
+One `DirectEffectSummary` row maps to one selected HIR-bearing body product.
+Every dependency-ready package contributes those rows to the same bounded
+workspace wave rather than running a private package executor.
+`ClosedEffectScc` rows map one-for-one to the dependency-first components above;
+each row names its source direct products, its exact earlier component
+dependencies, the target, and completed imported component products. SCCs from
+independent ready packages publish together whenever those exact edges allow.
+One independently checked `DenialResult` row then names its exact body and
+owning closed component, again sharing the complete package frontier.
+Diagnostics remain task-local until canonical graph publication, so a denial
+violation is the `Error` state of the specific procedure product rather than an
+unstructured package failure.
 
 A body or interface source transition supersedes the affected direct,
 closed-SCC, and denial rows transitively through package consumers while
