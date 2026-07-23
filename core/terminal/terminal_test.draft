@@ -1,7 +1,8 @@
 // These tests exercise the platform-independent contracts of core/terminal
 // without borrowing or modifying the test runner's real terminal. They verify
-// timeout conversion, inactive raw/screen/resize resources, size-query
-// validation, and streaming key decoding across read boundaries. The native
+// timeout conversion, inactive raw/screen/resize resources, destructive input
+// cleanup validation, size-query validation, and streaming key decoding across
+// read boundaries. The native
 // validation driver copies this package to a private workspace, selects the
 // matching host target, and links the real libc symbols. Actual mode and
 // alternate-screen changes require an application or pseudo-terminal
@@ -53,6 +54,7 @@ test_inactive_session :: proc(test: ^testing.Test) {
     (count, error) := read(&session, storage[:], 0 * time.nanosecond)
     testing.expect(test, count == 0)
     testing.expect(test, error == .invalid)
+    testing.expect(test, discard_pending_input(&session) == .invalid)
     testing.expect(test, !suspend(&session))
     testing.expect(test, !resume(&session))
     testing.expect(test, restore(&session))

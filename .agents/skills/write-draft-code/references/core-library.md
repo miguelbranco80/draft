@@ -531,6 +531,7 @@ terminal.suspend(&session) -> bool
 terminal.resume(&session) -> bool
 terminal.read(&session, destination, timeout: time.Duration)
     -> (usize, io.Error)
+terminal.discard_pending_input(&session) -> io.Error
 terminal.restore(&session) -> bool
 
 terminal.Screen
@@ -590,7 +591,11 @@ Both are idempotent in their destination state and return false from inactive
 state. `read` requires active state, rounds the duration upward to poll's
 millisecond resolution, returns `(0, .none)` on timeout and `.end_of_input` on
 hangup. Raw mode makes control keys ordinary bytes, so applications can handle
-Ctrl-C and leave through normal cleanup.
+Ctrl-C and leave through normal cleanup. After disabling a terminal protocol
+which produces input bytes, `discard_pending_input` consumes queued reports
+until a bounded quiet interval before the owner restores cooked mode. It is
+intentionally destructive and must not be called while application input still
+has meaning.
 
 Screen borrows its output descriptor and owns only the alternate-screen cleanup
 obligation. Pair every non-inactive Screen with `restore_screen`.
@@ -639,6 +644,8 @@ without emitting punctuation when a key-only application enabled no mouse.
 `Mouse_Reporting` borrows an active Screen and owns the obligation to disable
 ANSI button, drag, motion, and SGR modes. Disable/suspend it before suspending a
 Screen, resume it after the Screen, and restore it before `restore_screen`.
+On final cleanup, discard pending input after restoring reporting and before
+restoring the Session so queued SGR reports do not reach the parent shell.
 
 The package deliberately has no frame/layout builder, general signal/job-
 control layer, event loop, terminfo, or ncurses dependency.

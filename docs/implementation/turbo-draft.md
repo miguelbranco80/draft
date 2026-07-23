@@ -181,6 +181,11 @@ application resumes the terminal and invalidates the differential renderer.
 Consequently an invalid edit can never cause Run to execute the older retained
 program.
 
+Normal IDE exit disables mouse reporting, discards reports already queued in
+raw input, and only then restores the screen and cooked input. This prevents
+all-motion SGR report fragments from becoming visible shell command bytes after
+a long synchronous build or check.
+
 ## Deliberate first-version limits
 
 Checking is synchronous and conservatively treats every edited file as an

@@ -689,7 +689,9 @@ report_error :: proc(message: string) {
 }
 
 // main acquires resources in input, resize, screen, mouse order and releases
-// them in exact reverse order. Every cleanup is attempted even after failure.
+// them in exact reverse order. After disabling mouse reports, it discards any
+// reports already queued in raw input before returning cooked mode to the
+// shell. Every cleanup is attempted even after failure.
 main :: proc() -> int {
     if has_smoke_argument() {
         return run_smoke()
@@ -719,10 +721,12 @@ main :: proc() -> int {
     }
 
     mouse_restored := terminal.restore_mouse_reporting(&reporting)
+    input_discarded := terminal.discard_pending_input(&session) == .none
     screen_restored := terminal.restore_screen(&screen)
     watch_ended := terminal.end_resize_watch(&watcher)
     input_restored := terminal.restore(&session)
-    if !mouse_restored || !screen_restored || !watch_ended || !input_restored {
+    if !mouse_restored || !input_discarded || !screen_restored ||
+        !watch_ended || !input_restored {
         report_error("turbo-ui-gallery: terminal cleanup failed\n")
         return 1
     }

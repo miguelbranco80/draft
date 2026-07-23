@@ -196,6 +196,14 @@ console handle. Timeout is the successful `(0, .none)` case, hangup is
 `.end_of_input`, and the initial core error vocabulary collapses other native
 failures to `.unavailable`.
 
+`terminal.discard_pending_input` is the explicit destructive cleanup operation
+for byte-producing terminal protocols. After an application disables mouse or
+another report mode, it consumes already-queued bytes until input has remained
+quiet for fifty milliseconds. A 250-millisecond total bound prevents continuous
+input from delaying terminal restoration indefinitely. The Session remains
+active throughout, so the application can then restore cooked mode; every later
+cleanup must still be attempted if discarding fails.
+
 `core/terminal.Screen` separately owns the obligation to leave an ANSI/VT
 alternate screen and show the cursor. It borrows the output descriptor and
 becomes active before writing the enter sequence, because a failed complete
@@ -255,9 +263,12 @@ borrows an active `Screen`. It enables button, drag, all-motion, and SGR reports
 with ANSI modes 1000/1002/1003/1006 and disables them in reverse order. Its
 active/suspended states compose with screen job control: suspend reporting
 before the screen, resume it after the screen, and restore it before final
-screen restoration. The Windows virtual-terminal console and POSIX terminals
-share those byte sequences. Unicode text interpretation, broader signal/job-
-control policy, and event-loop composition remain application concerns.
+screen restoration. Before restoring cooked input, an application that enabled
+reporting discards queued reports through the still-active Session so those
+bytes cannot become shell input. The Windows virtual-terminal console and POSIX
+terminals share those byte sequences. Unicode text interpretation, broader
+signal/job-control policy, and event-loop composition remain application
+concerns.
 
 Darwin stores a 72-byte, eight-aligned termios record and uses 32-bit `nfds_t`;
 the selected glibc contract stores a 60-byte, four-aligned record and uses

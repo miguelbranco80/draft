@@ -1,8 +1,8 @@
 // The terminal package is the small interactive-console boundary shared by
 // full-screen applications. It turns one existing input descriptor into an
 // immediate byte stream, waits for input with a bounded timeout, queries and
-// watches the terminal cell dimensions, and restores the exact native mode
-// saved at entry.
+// watches the terminal cell dimensions, drains queued protocol input at the
+// final cleanup boundary, and restores the exact native mode saved at entry.
 // Companion files own a small ANSI alternate-screen lifetime and a streaming
 // key decoder. The package owns no descriptor: callers retain descriptor
 // lifetime, frame construction, styling, text interpretation, and application
@@ -43,6 +43,15 @@ Poll_Invalid :: cast[c_abi.short](0x0020)
 
 Nanoseconds_Per_Millisecond :: 1000 * 1000
 Maximum_Poll_Milliseconds :: 2147483647
+
+// Full-screen applications commonly enable terminal protocols that encode
+// events as input bytes. Disabling such a protocol prevents future reports,
+// but reports generated immediately beforehand may remain queued. These
+// private limits make discard_pending_input observe a short quiet interval
+// without letting continuous input delay cleanup indefinitely.
+Discard_Input_Buffer_Size :: 4096
+Discard_Input_Quiet_Period :: 50 * time.millisecond
+Discard_Input_Maximum_Duration :: 250 * time.millisecond
 
 // Native_Window_Size is the target-seam result record. POSIX writes it directly
 // through TIOCGWINSZ; Windows derives the same fields from its visible console
@@ -452,4 +461,56 @@ pub read :: proc(
     // the selected contract. Treat that mismatch as native unavailability
     // rather than spinning the application event loop without progress.
     return (0, .unavailable)
+}
+
+// discard_pending_input consumes terminal bytes until the active Session has
+// remained quiet for a short bounded interval. It exists for one destructive
+// cleanup boundary: after an application disables a byte-producing terminal
+// protocol such as mouse reporting, and before it restores cooked input for
+// the parent shell. A zero-time poll alone is insufficient because the
+// terminal emulator may still be delivering reports generated just before the
+// disable sequence was processed.
+//
+// The operation retains no bytes, allocates nothing, and leaves the Session
+// active. Hangup means there is no input to leak and succeeds. Invalid Session
+// state and native read failures propagate normally. Continuous input is
+// bounded by Discard_Input_Maximum_Duration and returns .unavailable instead
+// of making terminal restoration wait forever. Applications must still
+// attempt every later restoration step after any error.
+pub discard_pending_input :: proc(session: ^Session) -> io.Error {
+    if session^.state != .active {
+        return .invalid
+    }
+
+    storage: [Discard_Input_Buffer_Size]u8
+    started := time.monotonic_now()
+    quiet_since := started
+    for {
+        now := time.monotonic_now()
+        if now - started >= Discard_Input_Maximum_Duration {
+            return .unavailable
+        }
+        if now - quiet_since >= Discard_Input_Quiet_Period {
+            return .none
+        }
+
+        (count, error) := read(
+            session,
+            storage[:],
+            Discard_Input_Quiet_Period,
+        )
+        if error == .end_of_input {
+            return .none
+        }
+        if error != .none {
+            return error
+        }
+        if count != 0 {
+            quiet_since = time.monotonic_now()
+        }
+    }
+
+    // The unconditional loop exits only through the returns above. Draft's
+    // structural return checker intentionally does not prove that fact.
+    return .unavailable
 }

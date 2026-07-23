@@ -2690,7 +2690,9 @@ report_error :: proc(message: string) {
 
 // run_app_terminal is the one terminal-resource owner shared by every caller.
 // Resources are acquired in input, resize, screen, mouse order and every
-// cleanup runs in exact reverse order.
+// resource cleanup runs in exact reverse order. After disabling mouse reports,
+// the app discards reports already queued in raw input before returning that
+// descriptor to the shell's cooked mode.
 run_app_terminal :: proc(app: ^App) -> int {
     session: terminal.Session
     if terminal.begin_raw(&session, os.standard_input) != .none {
@@ -2719,10 +2721,12 @@ run_app_terminal :: proc(app: ^App) -> int {
     }
 
     mouse_restored := terminal.restore_mouse_reporting(&reporting)
+    input_discarded := terminal.discard_pending_input(&session) == .none
     screen_restored := terminal.restore_screen(&screen)
     watch_ended := terminal.end_resize_watch(&watcher)
     input_restored := terminal.restore(&session)
-    if !mouse_restored || !screen_restored || !watch_ended || !input_restored {
+    if !mouse_restored || !input_discarded || !screen_restored ||
+        !watch_ended || !input_restored {
         report_error("turbo-editor: terminal cleanup failed\n")
         return 1
     }
