@@ -374,7 +374,7 @@ void test_all_native_artifact_kinds(TestState &state) {
   EXPECT(state, std::filesystem::exists(temporary / "library.dylib"));
   EXPECT(state, std::filesystem::exists(temporary / "library.dylib.dSYM"));
   EXPECT(state, std::filesystem::exists(
-      temporary / "assembly" / "package-0-module.s"));
+      temporary / "assembly" / "package-0-unit-0.s"));
   EXPECT(state, read_file(
       temporary / "assembly" / "package-0-assembly-0.s") ==
       compiled.packages.front()->assembly_sources.front().contents);
@@ -618,7 +618,7 @@ void test_windows_toolchain_arguments(TestState &state) {
       temporary / "windows-assembly").ok);
   EXPECT(state, !diagnostics.has_errors());
   EXPECT(state, std::filesystem::exists(
-      temporary / "build" / "package-0-module.obj"));
+      temporary / "build" / "package-0-unit-0.obj"));
   EXPECT(state, std::filesystem::exists(
       temporary / "build" / "package-0-assembly-0.obj"));
 

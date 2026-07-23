@@ -29,7 +29,7 @@ Status: implemented bootstrap architecture; not a Draft language limit.
 The command-local semantic product graph owns target/source/parsed inputs,
 package name and interface barriers, opaque synthesis waits, declarations,
 constants, faceted type completion, procedure HIR, effect closure, denials,
-per-procedure MIR, package assembly, package LLVM modules, artifact layout, and
+per-procedure MIR, package assembly, package LLVM units, artifact layout, and
 source-generation transitions. Collection and import binding happen
 once per source generation; selected package branches append into the retained
 canonical tables. Declaration tasks use frozen patch-enabled views, generic and
@@ -134,17 +134,20 @@ closure. One workspace reachability product later closes from the authored root
 and globals. Object, archive, and assembly output keep an authored `main` live
 even when only executable output contributes the hosted C `main`/`wmain`
 wrapper.
-Only its live rows receive independently owned MIR products. Once the complete
-projection is ready, one `PackageLlvmModule` per package borrows its MIR task
-payloads in canonical order and emits only live package globals and concrete
-definitions. MIR, package modules, and layouts share one exact closed executor,
-so a package module waits only for its own MIR rather than a workspace barrier.
-For a native command that same package task publishes matching object or
-assembly bytes and discards LLVM text unless an explicit consumer requests it.
-Each package publishes a deterministic `ArtifactLayout` over that emission and
-its assembly. The artifact planner consumes only that layout; no package-wide
-MIR container or alternative per-function LLVM representation remains in
-compiler state.
+Only its live rows receive independently owned MIR products. O2, assembly, and
+retained-IR requests publish one complete `PackageLlvmUnit` per package. A
+native-only O0 object request divides a package with more than 48 live
+procedures into canonical 48-procedure units. The threshold and partition are
+independent of worker count; unit zero owns all live globals and package entry
+wrappers, while later units use ordinary hidden external declarations for
+cross-unit references. MIR, LLVM units, and layouts share one exact closed
+executor, so a unit waits only for its assigned MIR rather than a package or
+workspace barrier. Each native unit publishes matching bytes and discards LLVM
+text unless the single complete unit has an explicit IR consumer. Every package
+publishes a deterministic `ArtifactLayout` over its ordered units and assembly.
+The artifact planner consumes only that layout; no package-wide MIR container
+or alternative persistent per-function LLVM representation remains in compiler
+state.
 
 Every production package LLVM task now constructs its module directly through
 LLVM's C API, including root/validation wrappers and source debug metadata, and

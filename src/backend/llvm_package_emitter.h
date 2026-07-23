@@ -1,7 +1,8 @@
-// Direct in-process construction and emission of one Draft package module.
+// Direct in-process construction and emission of one Draft package LLVM unit.
 //
-// This is the native backend's package boundary. It consumes immutable,
-// artifact-live semantic and MIR products, constructs a fresh LLVM module
+// This is the native backend's package-owned emission boundary. It consumes
+// immutable artifact-live semantic products plus an ordered MIR subset,
+// constructs a fresh LLVM module
 // through LLVM's API, optionally prints that module for an explicit `emit-llvm`
 // request, and optionally continues the same module into object or assembly
 // bytes. Context, module, builder, and every LLVM value remain task-local and
@@ -24,9 +25,11 @@
 
 namespace draft {
 
-// One package task's operational requests. retain_llvm_text is an inspection
+// One package-unit task's operational requests. retain_llvm_text is an inspection
 // choice and native_options selects a derived artifact; neither changes Draft
-// semantics or package identity. When both are absent the builder still
+// semantics or package identity. O2 and retained-text callers supply the whole
+// package; native-only O0 callers may supply one deterministic subset. When
+// both outputs are absent the builder still
 // constructs and verifies its direct module, which is useful for focused
 // backend tests.
 struct LlvmPackageEmissionOptions {
@@ -37,8 +40,8 @@ struct LlvmPackageEmissionOptions {
 };
 
 // Direct construction timing is separate from the target-machine subphases in
-// LlvmObjectEmissionResult. Zero means timing was not requested or module
-// construction was not reached.
+// LlvmObjectEmissionResult. Zero means timing was not requested, construction
+// was not reached, or the measured operation fit below one clock tick.
 struct LlvmPackageEmissionPhaseTimings {
   std::uint64_t module_construction_nanoseconds = 0;
   std::uint64_t llvm_text_printing_nanoseconds = 0;

@@ -573,7 +573,7 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
               .native_reference_by_product[product.value]
               .has_value());
     }
-    EXPECT(state, left_products.package_llvm_module.is_valid());
+    EXPECT(state, left_products.package_llvm_units.size() == 1);
     EXPECT(state, left.llvm_module.ok);
     for (std::size_t mir_index = 0;
          mir_index < left_products.mir_procedures.size(); ++mir_index) {
@@ -601,6 +601,12 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
              std::find(row.dependencies.begin(), row.dependencies.end(),
                        left_products.package_assembly) !=
                  row.dependencies.end());
+      EXPECT(state,
+             std::find(
+                 row.dependencies.begin(),
+                 row.dependencies.end(),
+                 sequential.semantic_products.artifact_reachability) !=
+                 row.dependencies.end());
       std::optional<draft::SemanticProductId> denial;
       for (std::size_t denial_index = 0;
            denial_index < left_products.effect_body_work_indices.size();
@@ -617,12 +623,12 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
                          *denial) != row.dependencies.end());
       }
     }
-    if (left_products.package_llvm_module.is_valid()) {
+    if (left_products.package_llvm_units.size() == 1) {
       const draft::SemanticProduct &module_row =
           sequential.semantic_graph.products[
-              left_products.package_llvm_module.value];
+              left_products.package_llvm_units.front().value];
       EXPECT(state,
-             module_row.kind == draft::SemanticProductKind::PackageLlvmModule);
+             module_row.kind == draft::SemanticProductKind::PackageLlvmUnit);
       EXPECT(state,
              module_row.state == draft::SemanticProductState::Complete);
       for (const draft::SemanticProductId mir :
@@ -647,16 +653,17 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
           sequential.graph.root_package.is_valid() &&
           sequential.graph.root_package.value == 0;
       EXPECT(state, left.artifact_layout.inputs.size() ==
-                        1 + (is_root ? 1 : 0) +
+                        left_products.package_llvm_units.size() +
+                            (is_root ? 1 : 0) +
                             left.assembly_sources.size());
       EXPECT(state, !left.artifact_layout.inputs.empty());
       if (!left.artifact_layout.inputs.empty()) {
         EXPECT(state,
                left.artifact_layout.inputs.front().kind ==
-                   draft::PackageArtifactInputKind::PackageLlvmModule);
+                   draft::PackageArtifactInputKind::PackageLlvmUnit);
         EXPECT(state,
                left.artifact_layout.inputs.front().producer ==
-                   left_products.package_llvm_module);
+                   left_products.package_llvm_units.front());
       }
       if (is_root && left.artifact_layout.inputs.size() >= 2) {
         EXPECT(state,
@@ -669,7 +676,7 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
       EXPECT(state,
              std::find(layout_row.dependencies.begin(),
                        layout_row.dependencies.end(),
-                       left_products.package_llvm_module) !=
+                       left_products.package_llvm_units.front()) !=
                  layout_row.dependencies.end());
     }
   }
@@ -881,9 +888,9 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
   EXPECT(state, report.find("direct semantic worker slots: 4") !=
                     std::string::npos);
   EXPECT(state, report.find("MIR procedure tasks: 2") != std::string::npos);
-  EXPECT(state, report.find("package LLVM module tasks: 2") !=
+  EXPECT(state, report.find("package LLVM unit tasks: 2") !=
                     std::string::npos);
-  EXPECT(state, report.find("direct LLVM package modules: 2") !=
+  EXPECT(state, report.find("direct LLVM package units: 2") !=
                     std::string::npos);
   EXPECT(state, report.find("textual LLVM package modules:") ==
                     std::string::npos);
@@ -3165,12 +3172,16 @@ void test_native_output_is_a_package_product(TestState &state) {
   EXPECT(state, root.has_value());
   if (!root.has_value()) return;
   EXPECT(state, root->llvm_module.text.empty());
-  EXPECT(state, root->native_output.ok);
-  EXPECT(state, !root->native_output.bytes.empty());
+  EXPECT(state, root->native_outputs.size() == 1);
+  if (root->native_outputs.size() != 1) return;
+  EXPECT(state, root->native_outputs.front().ok);
+  EXPECT(state, !root->native_outputs.front().bytes.empty());
   EXPECT(state,
-      root->native_output.output_kind == draft::LlvmNativeOutputKind::Object);
+      root->native_outputs.front().output_kind ==
+          draft::LlvmNativeOutputKind::Object);
   EXPECT(state,
-      root->native_output.optimization == draft::NativeOptimizationLevel::O2);
+      root->native_outputs.front().optimization ==
+          draft::NativeOptimizationLevel::O2);
   EXPECT(state, root->artifact_layout.ok);
   const std::string report = timings.render();
   EXPECT(state,
@@ -3179,13 +3190,122 @@ void test_native_output_is_a_package_product(TestState &state) {
   EXPECT(state, report.find("LLVM native bytes:") != std::string::npos);
 }
 
+// Native-only O0 emission partitions a large live package into fixed units so
+// LLVM machine-code generation can use the same deterministic ready set as MIR
+// lowering. The boundary is a compiler scheduling choice, not a semantic or
+// worker-count choice: 131 live procedures form three 48-procedure units with
+// either one or four workers. O2 must retain one complete package unit so LLVM
+// can optimize across every authored procedure.
+void test_o0_native_units_are_deterministic_and_o2_is_package_wide(
+    TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-o0-unit-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream source(root / "app" / "package.draft", std::ios::binary);
+  source << "package app\n";
+  for (std::size_t index = 0; index < 130; ++index) {
+    source << "export entry_" << index << " as \"draft_unit_entry_"
+           << index << "\" :: c proc() -> i32 {\n"
+           << "    return " << index << "\n"
+           << "}\n";
+  }
+  source << "main :: proc() -> int {\n"
+            "    return 0\n"
+            "}\n";
+  source.close();
+  EXPECT(state, source.good());
+  if (!source.good()) return;
+
+  const auto compile = [&](std::size_t worker_count,
+                           draft::NativeOptimizationLevel optimization,
+                           draft::TimingRecorder *timings) {
+    draft::SourceManager sources;
+    draft::DiagnosticSink diagnostics;
+    draft::CompileWorkspaceOptions options;
+    options.target = draft::make_aarch64_macos_profile();
+    options.workspace.workspace_directory = root.string();
+    options.lower_mir = true;
+    options.emit_native_output = true;
+    options.native_output.optimization = optimization;
+    options.semantic_worker_count = worker_count;
+    options.timings = timings;
+    draft::CompileWorkspaceResult result = draft::compile_workspace(
+        sources, (root / "app").string(), std::move(options), diagnostics);
+    if (diagnostics.has_errors()) {
+      std::cerr << draft::render_diagnostics(sources, diagnostics);
+    }
+    EXPECT(state, result.ok);
+    EXPECT(state, !diagnostics.has_errors());
+    return result;
+  };
+
+  draft::TimingRecorder parallel_timings(draft::TimingOutput::Summary);
+  const draft::CompileWorkspaceResult sequential =
+      compile(1, draft::NativeOptimizationLevel::O0, nullptr);
+  const draft::CompileWorkspaceResult parallel =
+      compile(4, draft::NativeOptimizationLevel::O0, &parallel_timings);
+  const draft::CompileWorkspaceResult optimized =
+      compile(4, draft::NativeOptimizationLevel::O2, nullptr);
+  if (!sequential.ok || !parallel.ok || !optimized.ok ||
+      sequential.packages.empty() || parallel.packages.empty() ||
+      optimized.packages.empty() ||
+      !sequential.packages.front().has_value() ||
+      !parallel.packages.front().has_value() ||
+      !optimized.packages.front().has_value()) {
+    return;
+  }
+
+  const draft::CompiledPackage &sequential_package =
+      *sequential.packages.front();
+  const draft::CompiledPackage &parallel_package = *parallel.packages.front();
+  const draft::CompiledPackage &optimized_package =
+      *optimized.packages.front();
+  const draft::PackageSemanticProducts &sequential_products =
+      sequential.semantic_products.packages.front();
+  const draft::PackageSemanticProducts &parallel_products =
+      parallel.semantic_products.packages.front();
+  const draft::PackageSemanticProducts &optimized_products =
+      optimized.semantic_products.packages.front();
+  EXPECT(state, sequential_products.native_live_body_work_indices.size() == 131);
+  EXPECT(state, sequential_products.package_llvm_units.size() == 3);
+  EXPECT(state, parallel_products.package_llvm_units.size() == 3);
+  EXPECT(state, optimized_products.package_llvm_units.size() == 1);
+  EXPECT(state, sequential_package.native_outputs.size() == 3);
+  EXPECT(state, parallel_package.native_outputs.size() == 3);
+  EXPECT(state, optimized_package.native_outputs.size() == 1);
+  EXPECT(state, sequential_package.artifact_layout.inputs.size() == 4);
+  EXPECT(state, parallel_package.artifact_layout.inputs.size() == 4);
+  EXPECT(state, optimized_package.artifact_layout.inputs.size() == 2);
+  for (std::size_t unit_index = 0; unit_index < 3; ++unit_index) {
+    EXPECT(state, sequential_package.native_outputs[unit_index].ok);
+    EXPECT(state, parallel_package.native_outputs[unit_index].ok);
+    EXPECT(state,
+           sequential_package.native_outputs[unit_index].bytes ==
+               parallel_package.native_outputs[unit_index].bytes);
+    EXPECT(state,
+           sequential_package.artifact_layout.inputs[unit_index].kind ==
+               draft::PackageArtifactInputKind::PackageLlvmUnit);
+    EXPECT(state,
+           sequential_package.artifact_layout.inputs[unit_index].index ==
+               unit_index);
+  }
+  EXPECT(state,
+         parallel_timings.render().find("package LLVM unit tasks: 3") !=
+             std::string::npos);
+}
+
 // A package with no artifact-live procedures has no MIR prerequisites for its
-// module. The unified native executor must therefore start that module in the
+// LLVM unit. The unified native executor must therefore start that unit in the
 // same initial ready set as another package's MIR instead of preserving the old
 // workspace-wide MIR-to-module barrier. The timing counters describe the
 // actual closed execution graph; output assertions prove the early task still
-// publishes an ordinary deterministic package module and layout.
-void test_native_pipeline_overlaps_empty_module_with_other_mir(
+// publishes an ordinary deterministic package unit and layout.
+void test_native_pipeline_overlaps_empty_unit_with_other_mir(
     TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
       "draft-bootstrap-native-pipeline-overlap-test"};
@@ -3250,7 +3370,7 @@ void test_native_pipeline_overlaps_empty_module_with_other_mir(
          report.find("native lowering initial ready tasks: 2") !=
              std::string::npos);
   EXPECT(state,
-         report.find("package LLVM modules initially ready: 1") !=
+         report.find("package LLVM units initially ready: 1") !=
              std::string::npos);
   EXPECT(state,
          report.find("native lowering worker slots: 4") !=
@@ -3398,19 +3518,23 @@ void test_main_remains_live_without_hosted_entry_wrapper(TestState &state) {
   EXPECT(state, products.checked_runtime_body_work_indices.size() == 3);
   EXPECT(state, products.native_live_body_work_indices.size() == 2);
   EXPECT(state, products.mir_procedures.size() == 2);
-  EXPECT(state, root_package->native_output.ok);
+  EXPECT(state, root_package->native_outputs.size() == 1);
+  if (root_package->native_outputs.size() != 1) return;
+  EXPECT(state, root_package->native_outputs.front().ok);
   EXPECT(state, root_package->llvm_module.text.empty());
   EXPECT(state,
-         root_package->native_output.bytes.find("draft.workspace.app.main") !=
+         root_package->native_outputs.front().bytes.find(
+             "draft.workspace.app.main") !=
              std::string::npos);
   EXPECT(state,
-         root_package->native_output.bytes.find(
+         root_package->native_outputs.front().bytes.find(
              "draft.workspace.app.live_5Fleaf") != std::string::npos);
   EXPECT(state,
-         root_package->native_output.bytes.find("draft.workspace.app.dead") ==
+         root_package->native_outputs.front().bytes.find(
+             "draft.workspace.app.dead") ==
              std::string::npos);
   EXPECT(state,
-         root_package->native_output.bytes.find("\n_main:") ==
+         root_package->native_outputs.front().bytes.find("\n_main:") ==
              std::string::npos);
 }
 
@@ -5032,7 +5156,8 @@ int main() {
   test_target_lowering_continues_checked_graph(state);
   test_multi_package_native_pipeline(state);
   test_native_output_is_a_package_product(state);
-  test_native_pipeline_overlaps_empty_module_with_other_mir(state);
+  test_o0_native_units_are_deterministic_and_o2_is_package_wide(state);
+  test_native_pipeline_overlaps_empty_unit_with_other_mir(state);
   test_native_emission_uses_artifact_reachability(state);
   test_main_remains_live_without_hosted_entry_wrapper(state);
   test_nonprocedure_main_is_not_a_native_root(state);

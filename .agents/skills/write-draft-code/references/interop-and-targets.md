@@ -482,8 +482,9 @@ also publishes its import `.lib` companion. Its bootstrap links `LLVM-C.dll`
 because LLVM's monolithic libLLVM dylib is unavailable on Windows.
 
 After complete lowering, one explicit artifact layout orders each package's
-complete LLVM module followed, for the root, by the exact compiler-embedded
-hosted runtime and then its package-assembly inputs. Every selected row becomes
+LLVM units followed, for the root, by the exact compiler-embedded hosted
+runtime and then its package-assembly inputs. O2 and compiler assembly use one
+complete unit; native-only O0 object builds may use fixed internal units. Every selected row becomes
 an independent native work-graph task. Workers own isolated LLVM contexts or
 private assembler paths and return task-indexed bytes; the hosted-runtime row
 borrows immutable embedded bytes.
@@ -493,7 +494,7 @@ determinism gate and the real embedded LLVM/external-Clang parity gate for all
 artifact kinds.
 
 Assembly output is a directory bundle, not concatenated text. It contains
-`package-<package-index>-module.s` for each semantic package and
+`package-<package-index>-unit-0.s` for each semantic package and
 `hosted-runtime.s` for the selected target, plus
 `package-<package-index>-assembly-<input-index><source-extension>` for each
 selected package-assembly input. Ordinary source locations remain in native

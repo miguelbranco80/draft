@@ -46,7 +46,7 @@ bool begins_with(
 }
 
 // Every hosted target must expose the complete root-runtime surface used by
-// direct package modules. Searching assembly is an independent, readable
+// direct package LLVM units. Searching assembly is an independent, readable
 // symbol oracle which works for Mach-O, ELF, and COFF without adding an object
 // parser merely for this bundle test.
 void expect_runtime_symbols(

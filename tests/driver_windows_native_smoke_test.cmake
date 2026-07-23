@@ -163,9 +163,9 @@ run_checked(
     --target "${target_selector}" --kind assembly
     -o "${assembly_bundle}"
 )
-if(NOT EXISTS "${assembly_bundle}/package-0-module.s")
+if(NOT EXISTS "${assembly_bundle}/package-0-unit-0.s")
   message(FATAL_ERROR
-    "Windows assembly build did not publish its package module")
+    "Windows assembly build did not publish its package LLVM unit")
 endif()
 run_checked(
   "COFF static-library publication"

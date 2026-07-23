@@ -186,6 +186,82 @@ main :: proc() {
   EXPECT(state, reachable.live_globals.size() == 1);
 }
 
+// The summary is also the inspectable boundary for native calls and indirect
+// call uncertainty. A callback passed to a foreign provider is both an exact
+// procedure relocation and an escaped value; invoking a callback acquired from
+// a foreign provider deliberately retains an unknown-target fact instead of
+// guessing that every checked procedure is live.
+void test_foreign_escape_and_unknown_target_are_summarized(TestState &state) {
+  CheckedSource source(R"draft(package native_refs
+
+Callback :: c proc(user: rawptr) -> rawptr
+
+foreign host {
+    install :: c proc(callback: Callback, user: rawptr)
+    acquire :: c proc() -> Callback
+}
+
+worker :: c proc(user: rawptr) -> rawptr {
+    return user
+}
+
+escape_worker :: proc() {
+    install(worker, nil)
+}
+
+invoke_unknown :: proc() {
+    callback := acquire()
+    callback(nil)
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, !source.diagnostics.has_errors());
+  EXPECT(state, source.direct.procedures.size() == 3);
+  if (source.diagnostics.has_errors()) return;
+
+  const draft::PackageIdentity package{"workspace", "native_refs"};
+  std::vector<draft::NativeProcedureReferenceSummary> summaries;
+  for (std::size_t index = 0; index < source.bodies.procedures.size(); ++index) {
+    const std::vector<draft::HirProcedure> &procedures =
+        source.bodies.procedures[index].program.procedures();
+    if (procedures.size() != 1) continue;
+    const draft::DirectProcedureEffectSummary *direct =
+        source.direct.find(procedures.front().symbol);
+    EXPECT(state, direct != nullptr);
+    if (direct == nullptr) continue;
+    summaries.push_back(draft::collect_native_procedure_references(
+        package,
+        source.bodies.package,
+        source.bodies.procedures[index],
+        index,
+        *direct));
+  }
+  const std::optional<std::size_t> escape =
+      procedure_summary(summaries, "escape_worker");
+  const std::optional<std::size_t> unknown =
+      procedure_summary(summaries, "invoke_unknown");
+  EXPECT(state, escape.has_value());
+  EXPECT(state, unknown.has_value());
+  if (!escape.has_value() || !unknown.has_value()) return;
+
+  EXPECT(state, summaries[*escape].foreign_calls.size() == 1);
+  if (summaries[*escape].foreign_calls.size() == 1) {
+    EXPECT(state, summaries[*escape].foreign_calls.front().provider == "host");
+    EXPECT(
+        state,
+        summaries[*escape].foreign_calls.front().linker_name_spelling ==
+            "install");
+  }
+  EXPECT(state, has_identity(summaries[*escape].procedure_values, "worker"));
+  EXPECT(
+      state,
+      has_identity(summaries[*escape].escaped_procedure_values, "worker"));
+  EXPECT(state, summaries[*unknown].has_unknown_call_target);
+}
+
 // A live global can retain a callback even when no live procedure names that
 // callback directly. This exercises the procedure/global alternating closure
 // and protects aggregate initializer relocation discovery.
@@ -232,6 +308,7 @@ void test_missing_internal_edge_is_rejected(TestState &state) {
 int main() {
   TestState state;
   test_checked_and_live_procedures_are_distinct(state);
+  test_foreign_escape_and_unknown_target_are_summarized(state);
   test_global_initializer_reaches_procedure(state);
   test_missing_internal_edge_is_rejected(state);
   if (state.failures != 0) {

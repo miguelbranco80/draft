@@ -310,9 +310,9 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
       executable.packages[0].has_value() &&
       executable.packages[1].has_value()) {
     draft::CompileWorkspaceResult broken = executable;
-    broken.packages[0]->native_output.optimization =
+    broken.packages[0]->native_outputs.front().optimization =
         draft::NativeOptimizationLevel::O2;
-    broken.packages[1]->native_output.optimization =
+    broken.packages[1]->native_outputs.front().optimization =
         draft::NativeOptimizationLevel::O2;
     const std::filesystem::path failed_directory = temporary / "failed-ready-set";
     draft::NativeBuildOptions failed_options;
@@ -330,7 +330,7 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
           std::string::npos);
     }
     EXPECT(state, !std::filesystem::exists(
-        failed_directory / "build" / "package-0-module.o"));
+        failed_directory / "build" / "package-0-unit-0.o"));
   } else {
     EXPECT(state, false);
   }

@@ -81,15 +81,15 @@ expression, or name lookup.
 | Artifact reachability | One command-selected root closure separates the complete checked procedure set from the procedure/global subset required by the requested artifact. |
 | MIR procedure | Lowering is owned by one checked concrete procedure and does not mutate semantic type tables. |
 | Package assembly | Captured and parsed assembly is an explicit checked-body product, published beside direct effects and consumed by MIR and native layout. |
-| Package LLVM module | One complete package task consumes ordered artifact-live MIR products, owns only live globals/definitions, and may immediately publish requested object/assembly bytes while retaining text only for explicit inspection or qualification. |
-| Artifact layout | The package module and assembly link inputs are published in canonical order after their products complete. |
+| Package LLVM unit | O2 and retained-IR requests consume the complete ordered artifact-live MIR set; a large native-only O0 object request consumes one fixed 48-procedure subset. Unit zero owns live globals and entry wrappers. Every unit may immediately publish requested bytes. |
+| Artifact layout | Every package LLVM unit, hosted runtime where owned, and assembly link input is published in canonical order after its exact products complete. |
 
-After artifact reachability closes, MIR procedures, package modules, and
+After artifact reachability closes, MIR procedures, package LLVM units, and
 artifact layouts form one closed execution subgraph rather than three global
-phase barriers. Each MIR task is independent; one package-module task depends
-only on its package's MIR tasks; one layout task depends only on that package
-emission. `WorkGraph` may therefore start native emission or layout while
-unrelated MIR is unfinished. Package assembly has already published in the direct-semantic
+phase barriers. Each MIR task is independent; one LLVM-unit task depends only
+on its assigned MIR and direct-reference products; one layout task depends only
+on that package's units. `WorkGraph` may therefore start native emission or
+layout while unrelated MIR is unfinished. Package assembly has already published in the direct-semantic
 ready wave for its checked bodies. The dynamic semantic graph remains the
 authority: private results are published after join through canonical ready
 waves, so scheduling cannot reorder product state, diagnostics, or durable
@@ -215,9 +215,10 @@ Package retry rounds and retained-package rechecking are gone. Generic instance
 and type-layout demand are explicit graph products; procedure workers publish
 isolated immutable bodies; effects and denials close through explicit SCCs; MIR
 is produced per artifact-live concrete procedure after a workspace reachability
-product; LLVM emission consumes one completed ordered live MIR/global set per
-semantic package; and deterministic parallel scheduling is qualified at one and
-four semantic workers.
+product; LLVM emission consumes one or more deterministic units over the
+completed ordered live MIR/global set while retaining a complete package unit
+for O2; and deterministic parallel scheduling is qualified at one and four
+semantic workers.
 
 The bootstrap retains package-owned canonical semantic tables because stable
 SymbolId, ScopeId, and TypeId values need one publication domain. Workers never

@@ -87,8 +87,9 @@ struct CompileWorkspaceOptions {
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
-  // A native-producing command can request that each package task immediately
-  // turn its complete module into object or assembly bytes. Those bytes remain
+  // A native-producing command can request that each package-owned LLVM task
+  // immediately produce object or assembly bytes. O2 stays package-wide while
+  // native-only O0 may use deterministic internal units. Those bytes remain
   // command-local derived products and let final artifact assembly avoid a
   // second broad LLVM phase after every package has finished lowering.
   bool emit_native_output = false;
@@ -146,21 +147,22 @@ struct ExternalProcedureBodyProduct {
 };
 
 // One compiler-owned native input in the exact order eventually presented to
-// object emission and the platform linker. index is zero for the package LLVM
-// module and hosted runtime, and addresses CompiledPackage::assembly_sources
-// for PackageAssembly. A root runtime row names the target product as producer;
-// its immutable bytes live in the compiler distribution rather than this
-// result. producer is otherwise the semantic product which made the input
-// ready. Rows contain no physical paths and may be serialized or compared for
-// command-local determinism.
+// object emission and the platform linker. index addresses
+// CompiledPackage::native_outputs for PackageLlvmUnit, is zero for the hosted
+// runtime, and addresses CompiledPackage::assembly_sources for PackageAssembly.
+// A root runtime row names the target product as producer; its immutable bytes
+// live in the compiler distribution rather than this result. producer is
+// otherwise the exact semantic product which made the input ready. Rows contain
+// no physical paths and may be serialized or compared for command-local
+// determinism.
 enum class PackageArtifactInputKind {
-  PackageLlvmModule,
+  PackageLlvmUnit,
   HostedRuntime,
   PackageAssembly,
 };
 
 struct PackageArtifactInput {
-  PackageArtifactInputKind kind = PackageArtifactInputKind::PackageLlvmModule;
+  PackageArtifactInputKind kind = PackageArtifactInputKind::PackageLlvmUnit;
   std::size_t index = 0;
   SemanticProductId producer;
 };
@@ -171,10 +173,12 @@ struct PackageArtifactLayout {
 };
 
 // PackageNativeOutput is the copyable terminal product of one package LLVM
-// task. No LLVM context or module escapes the worker: bytes own exactly one
+// unit task. No LLVM context or module escapes the worker: bytes own exactly one
 // object or assembly unit, while configuration records the choices used to
 // create them so a later artifact request cannot silently consume a mismatched
-// product. Phase timings are observations only and never enter identity.
+// product. One package owns one unit for O2, assembly, and retained LLVM text;
+// a native-only O0 object build may own several deterministic units. Phase
+// timings are observations only and never enter identity.
 struct PackageNativeOutput {
   bool ok = false;
   LlvmNativeOutputKind output_kind = LlvmNativeOutputKind::Object;
@@ -248,13 +252,16 @@ struct CompiledPackage {
   std::vector<std::size_t> native_live_body_work_indices;
   std::vector<SymbolId> native_live_globals;
   AssemblyProgram assembly;
-  // One complete LLVM module owns this semantic package's artifact-live
-  // globals and concrete runtime procedures. Procedure MIR remains
-  // independently owned by semantic-product side-table rows; this result is
-  // the package-level native lowering product consumed by LLVM verification
-  // and object emission.
+  // emit-llvm and every package-wide emission mode retain one complete module
+  // here for inspection. Native-only O0 object emission may instead construct
+  // several private LLVM units and leave this result empty; procedure MIR
+  // remains independently owned by semantic-product side-table rows in both
+  // modes.
   LlvmIrResult llvm_module;
-  PackageNativeOutput native_output;
+  // Canonical LLVM-unit order within this package. Each row is independently
+  // emitted and later appears at the same index in artifact_layout. O2 always
+  // has exactly one row so optimization sees the complete semantic package.
+  std::vector<PackageNativeOutput> native_outputs;
   PackageArtifactLayout artifact_layout;
 };
 
@@ -268,7 +275,7 @@ struct CompiledPackage {
 // declarations, bodies, effects, denials, and native-interop facts but no MIR.
 // ValidationDiscovery additionally owns the canonical test or benchmark entry
 // set but still has no target IR. TargetLowering owns every requested assembly
-// program, procedure-owned MIR, package LLVM module, and artifact layout. The
+// program, procedure-owned MIR, package LLVM unit, and artifact layout. The
 // state is never serialized or cached; it exists so later command stages can
 // continue the exact checked graph without guessing from empty output vectors.
 enum class CompileWorkspaceProgress {
@@ -440,11 +447,12 @@ struct PackageSemanticProducts {
   std::vector<std::size_t> native_live_body_work_indices;
   std::vector<SymbolId> native_live_globals;
   std::vector<SemanticProductId> mir_procedures;
-  // package_llvm_module depends on the live procedure MIR and reference rows,
-  // package declarations, target ABI classifications, and package assembly.
-  // artifact_layout is the publication barrier over that reachable module and
-  // the package assembly input.
-  SemanticProductId package_llvm_module;
+  // Each package_llvm_units row depends on only the live procedure MIR assigned
+  // to that deterministic unit plus package declarations, target ABI facts,
+  // and artifact reachability. O2 and retained-IR modes publish exactly one
+  // row; native-only O0 object emission may publish several. artifact_layout is
+  // the publication barrier over every unit and package assembly input.
+  std::vector<SemanticProductId> package_llvm_units;
   SemanticProductId artifact_layout;
   // Parallel to the package TypeStore after at least one body wave.
   // Declaration-baseline types contain an invalid product because their

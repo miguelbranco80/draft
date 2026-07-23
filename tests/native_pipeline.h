@@ -1,11 +1,12 @@
 // Procedure-product helpers for direct MIR and LLVM subsystem tests.
 //
 // Production compilation schedules each HIR product and MIR procedure through
-// the semantic graph, then emits one complete LLVM module for their semantic
-// package. A unit test often starts below that coordinator and still needs to
-// exercise the same ownership boundary from one in-memory package. These
-// helpers perform only that visible source-order lowering. They never
-// concatenate HIR arenas or build a package-wide MirProgram.
+// the semantic graph, then emits either one complete package module or
+// deterministic native-only O0 units. A unit test often starts below that
+// coordinator and still needs to exercise the complete-module ownership
+// boundary from one in-memory package. These helpers perform only that visible
+// source-order lowering. They never concatenate HIR arenas or build a
+// package-wide MirProgram.
 
 #pragma once
 

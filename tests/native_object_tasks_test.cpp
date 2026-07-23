@@ -1,7 +1,7 @@
 // Native object planning tests independent of LLVM and the host filesystem.
 //
 // The fixture constructs completed package products directly so these tests
-// isolate stable task identity, canonical module/assembly order, borrowed input
+// isolate stable task identity, canonical LLVM-unit/assembly order, borrowed input
 // bytes, and target-rule rejection. Toolchain tests separately prove that the
 // planned work reaches object emitters, publication, and linking.
 
@@ -40,11 +40,12 @@ draft::CompileWorkspaceResult make_compiled_fixture() {
   root.identity = {"workspace", "app"};
   root.llvm_module.ok = true;
   root.llvm_module.text = "; root module\n";
-  root.native_output.ok = true;
-  root.native_output.bytes = "root object";
+  root.native_outputs.push_back({});
+  root.native_outputs.back().ok = true;
+  root.native_outputs.back().bytes = "root object";
   root.artifact_layout.ok = true;
   root.artifact_layout.inputs = {
-      {draft::PackageArtifactInputKind::PackageLlvmModule, 0, {0}},
+      {draft::PackageArtifactInputKind::PackageLlvmUnit, 0, {0}},
       {draft::PackageArtifactInputKind::HostedRuntime, 0, {2}},
   };
   compiled.packages[0] = std::move(root);
@@ -53,13 +54,14 @@ draft::CompileWorkspaceResult make_compiled_fixture() {
   dependency.identity = {"draft-core-test", "os"};
   dependency.llvm_module.ok = true;
   dependency.llvm_module.text = "; dependency module\n";
-  dependency.native_output.ok = true;
-  dependency.native_output.bytes = "dependency object";
+  dependency.native_outputs.push_back({});
+  dependency.native_outputs.back().ok = true;
+  dependency.native_outputs.back().bytes = "dependency object";
   dependency.assembly_sources.push_back({"first.s", "first:\n  ret\n"});
   dependency.assembly_sources.push_back({"second.S", "second:\n  ret\n"});
   dependency.artifact_layout.ok = true;
   dependency.artifact_layout.inputs = {
-      {draft::PackageArtifactInputKind::PackageLlvmModule, 0, {1}},
+      {draft::PackageArtifactInputKind::PackageLlvmUnit, 0, {1}},
       {draft::PackageArtifactInputKind::PackageAssembly, 0, {3}},
       {draft::PackageArtifactInputKind::PackageAssembly, 1, {3}},
   };
@@ -68,8 +70,8 @@ draft::CompileWorkspaceResult make_compiled_fixture() {
 }
 
 // Planning must preserve one simple, inspectable order regardless of future
-// completion order: root module, its compiler-distributed runtime, and then
-// each later package module followed by its selected assembly sources.
+// completion order: root unit, its compiler-distributed runtime, and then each
+// later package unit followed by its selected assembly sources.
 void test_canonical_task_order(TestState &state) {
   const draft::CompileWorkspaceResult compiled = make_compiled_fixture();
   draft::NativeObjectPlan plan;
@@ -85,14 +87,14 @@ void test_canonical_task_order(TestState &state) {
   }
 
   EXPECT(state,
-      plan.tasks[0].kind == draft::NativeObjectTaskKind::PackageLlvmModule);
+      plan.tasks[0].kind == draft::NativeObjectTaskKind::PackageLlvmUnit);
   EXPECT(state, plan.tasks[0].package_index == 0);
   EXPECT(state, plan.tasks[0].producer == draft::SemanticProductId{0});
   EXPECT(state,
-      plan.tasks[0].package_module_input ==
-          draft::NativePackageModuleInputKind::EmittedNativeBytes);
-  EXPECT(state, plan.tasks[0].display_name == "workspace:app LLVM module");
-  EXPECT(state, plan.tasks[0].output_stem == "package-0-module");
+      plan.tasks[0].package_unit_input ==
+          draft::NativePackageUnitInputKind::EmittedNativeBytes);
+  EXPECT(state, plan.tasks[0].display_name == "workspace:app LLVM unit 0");
+  EXPECT(state, plan.tasks[0].output_stem == "package-0-unit-0");
   EXPECT(state, plan.tasks[0].input_bytes == "root object");
 
   EXPECT(state,
@@ -100,8 +102,8 @@ void test_canonical_task_order(TestState &state) {
   EXPECT(state, plan.tasks[1].package_index == 0);
   EXPECT(state, plan.tasks[1].producer == draft::SemanticProductId{2});
   EXPECT(state,
-      plan.tasks[1].package_module_input ==
-          draft::NativePackageModuleInputKind::EmittedNativeBytes);
+      plan.tasks[1].package_unit_input ==
+          draft::NativePackageUnitInputKind::EmittedNativeBytes);
   EXPECT(state,
       plan.tasks[1].display_name ==
           "draft-aarch64-macos-v5 hosted runtime");
@@ -110,9 +112,9 @@ void test_canonical_task_order(TestState &state) {
   EXPECT(state, !plan.tasks[1].input_bytes.empty());
 
   EXPECT(state,
-      plan.tasks[2].kind == draft::NativeObjectTaskKind::PackageLlvmModule);
+      plan.tasks[2].kind == draft::NativeObjectTaskKind::PackageLlvmUnit);
   EXPECT(state, plan.tasks[2].package_index == 1);
-  EXPECT(state, plan.tasks[2].output_stem == "package-1-module");
+  EXPECT(state, plan.tasks[2].output_stem == "package-1-unit-0");
   EXPECT(state,
       plan.tasks[3].kind == draft::NativeObjectTaskKind::PackageAssembly);
   EXPECT(state, plan.tasks[3].package_index == 1);
@@ -123,6 +125,42 @@ void test_canonical_task_order(TestState &state) {
   EXPECT(state, plan.tasks[4].input_index == 1);
   EXPECT(state, plan.tasks[4].output_stem == "package-1-assembly-1");
   EXPECT(state, plan.tasks[4].source_extension == ".S");
+}
+
+// Several O0 units remain adjacent and retain their canonical indices before
+// the root runtime. This is the exact order the final linker receives; neither
+// parallel LLVM completion nor object publication may reorder it.
+void test_multiple_llvm_units_keep_package_order(TestState &state) {
+  draft::CompileWorkspaceResult compiled = make_compiled_fixture();
+  draft::CompiledPackage &root = *compiled.packages.front();
+  draft::PackageNativeOutput second;
+  second.ok = true;
+  second.bytes = "root object second unit";
+  root.native_outputs.push_back(std::move(second));
+  root.artifact_layout.inputs.insert(
+      root.artifact_layout.inputs.begin() + 1,
+      {draft::PackageArtifactInputKind::PackageLlvmUnit, 1, {4}});
+
+  draft::NativeObjectPlan plan;
+  draft::NativeObjectPlanOptions options;
+  std::string reason;
+  EXPECT(state, draft::prepare_native_object_plan(
+      draft::make_aarch64_macos_profile(), compiled, options, plan, reason));
+  EXPECT(state, reason.empty());
+  EXPECT(state, plan.tasks.size() == 6);
+  if (plan.tasks.size() != 6) return;
+  EXPECT(state,
+      plan.tasks[0].kind == draft::NativeObjectTaskKind::PackageLlvmUnit);
+  EXPECT(state, plan.tasks[0].input_index == 0);
+  EXPECT(state, plan.tasks[0].output_stem == "package-0-unit-0");
+  EXPECT(state,
+      plan.tasks[1].kind == draft::NativeObjectTaskKind::PackageLlvmUnit);
+  EXPECT(state, plan.tasks[1].input_index == 1);
+  EXPECT(state, plan.tasks[1].producer == draft::SemanticProductId{4});
+  EXPECT(state, plan.tasks[1].output_stem == "package-0-unit-1");
+  EXPECT(state, plan.tasks[1].input_bytes == "root object second unit");
+  EXPECT(state,
+      plan.tasks[2].kind == draft::NativeObjectTaskKind::HostedRuntime);
 }
 
 // The artifact layer must consume exactly the representation requested by its
@@ -146,24 +184,24 @@ void test_plan_selects_one_exact_package_representation(TestState &state) {
   EXPECT(state, plan.tasks.empty());
 
   draft::NativeObjectPlanOptions oracle;
-  oracle.package_module_input =
-      draft::NativePackageModuleInputKind::LlvmTextOracle;
+  oracle.package_unit_input =
+      draft::NativePackageUnitInputKind::LlvmTextOracle;
   EXPECT(state, draft::prepare_native_object_plan(
       draft::make_aarch64_macos_profile(), compiled, oracle, plan, reason));
   EXPECT(state, reason.empty());
   EXPECT(state, plan.tasks.size() >= 2);
   if (plan.tasks.size() >= 2) {
     EXPECT(state,
-        plan.tasks.front().package_module_input ==
-            draft::NativePackageModuleInputKind::LlvmTextOracle);
+        plan.tasks.front().package_unit_input ==
+            draft::NativePackageUnitInputKind::LlvmTextOracle);
     EXPECT(state, plan.tasks.front().input_bytes == "; root module\n");
     // The external oracle applies only to package LLVM. The runtime has
     // already been compiled for the exact target and remains native bytes.
     EXPECT(state,
         plan.tasks[1].kind == draft::NativeObjectTaskKind::HostedRuntime);
     EXPECT(state,
-        plan.tasks[1].package_module_input ==
-            draft::NativePackageModuleInputKind::EmittedNativeBytes);
+        plan.tasks[1].package_unit_input ==
+            draft::NativePackageUnitInputKind::EmittedNativeBytes);
     EXPECT(state, !plan.tasks[1].input_bytes.empty());
   }
 
@@ -186,9 +224,10 @@ void test_plan_selects_one_exact_package_representation(TestState &state) {
       draft::LlvmNativeOutputKind::Assembly;
   for (std::optional<draft::CompiledPackage> &package : compiled.packages) {
     if (!package.has_value()) continue;
-    package->native_output.output_kind =
-        draft::LlvmNativeOutputKind::Assembly;
-    package->native_output.bytes = "package assembly";
+    for (draft::PackageNativeOutput &native : package->native_outputs) {
+      native.output_kind = draft::LlvmNativeOutputKind::Assembly;
+      native.bytes = "package assembly";
+    }
   }
   EXPECT(state, draft::prepare_native_object_plan(
       draft::make_aarch64_macos_profile(),
@@ -292,6 +331,7 @@ void test_plan_rejects_incomplete_or_unknown_input(TestState &state) {
 int main() {
   TestState state;
   test_canonical_task_order(state);
+  test_multiple_llvm_units_keep_package_order(state);
   test_plan_selects_one_exact_package_representation(state);
   test_plan_rejects_incomplete_or_unknown_input(state);
   if (state.failures != 0) {

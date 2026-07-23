@@ -31,8 +31,8 @@
 // because it depends only on checked bodies and target facts, and is retained
 // before artifact selection. After artifact reachability selects runtime work,
 // one closed dependency executor lowers procedure-owned MIR, constructs each
-// package LLVM module as soon as its own MIR completes, and constructs its
-// artifact layout. The coordinator publishes those private outputs through
+// package-owned LLVM unit as soon as its assigned MIR completes, and constructs
+// its artifact layout. The coordinator publishes those private outputs through
 // canonical semantic waves.
 // Within an unchanged source generation, CompileWorkspaceProgress advances so
 // native lowering can continue checked state without reloading source. A
@@ -1115,9 +1115,10 @@ void bind_handwritten_program_identity(
         superseded.end(),
         products.mir_procedures.begin(),
         products.mir_procedures.end());
-    if (products.package_llvm_module.is_valid()) {
-      superseded.push_back(products.package_llvm_module);
-    }
+    superseded.insert(
+        superseded.end(),
+        products.package_llvm_units.begin(),
+        products.package_llvm_units.end());
     if (products.artifact_layout.is_valid()) {
       superseded.push_back(products.artifact_layout);
     }
@@ -1149,7 +1150,7 @@ void bind_handwritten_program_identity(
     products.native_live_body_work_indices.clear();
     products.native_live_globals.clear();
     products.mir_procedures.clear();
-    products.package_llvm_module = {};
+    products.package_llvm_units.clear();
     products.artifact_layout = {};
     package.direct_effects = {};
     package.effects = {};
@@ -1159,7 +1160,7 @@ void bind_handwritten_program_identity(
     package.native_live_globals.clear();
     package.assembly = {};
     package.llvm_module = {};
-    package.native_output = {};
+    package.native_outputs.clear();
     package.artifact_layout = {};
   }
   return true;
@@ -1366,9 +1367,10 @@ void bind_handwritten_program_identity(
         superseded.end(),
         products.mir_procedures.begin(),
         products.mir_procedures.end());
-    if (products.package_llvm_module.is_valid()) {
-      superseded.push_back(products.package_llvm_module);
-    }
+    superseded.insert(
+        superseded.end(),
+        products.package_llvm_units.begin(),
+        products.package_llvm_units.end());
     if (products.artifact_layout.is_valid()) {
       superseded.push_back(products.artifact_layout);
     }
@@ -1416,7 +1418,7 @@ void bind_handwritten_program_identity(
     products.native_live_body_work_indices.clear();
     products.native_live_globals.clear();
     products.mir_procedures.clear();
-    products.package_llvm_module = {};
+    products.package_llvm_units.clear();
     products.artifact_layout = {};
     products.body_type_producer.clear();
     products.declaration_inputs.clear();
@@ -6892,17 +6894,18 @@ struct MirProcedureWaveExecution {
   return std::nullopt;
 }
 
-// One worker owns the complete LLVM module for one semantic package. Every
-// production package uses the direct LLVM builder and never materializes a
-// text buffer merely to feed it back into LLVM. Root entry/validation wrappers
-// are constructed in the same module; invariant process services come from the
-// separate compiler-bundled target runtime object.
+// One worker owns one package LLVM unit. O2 and retained-IR operations use one
+// complete unit; native-only O0 may use deterministic procedure chunks. Every
+// production unit uses the direct LLVM builder and never materializes a text
+// buffer merely to feed it back into LLVM. Root entry/validation wrappers live
+// in unit zero; invariant process services come from the separate compiler-
+// bundled target runtime object.
 // The procedure pointer vector borrows immutable results in the closed native
 // executor's fixed-size MIR slot array. Exact WorkGraph edges ensure those
 // results are complete before this task starts; the array remains stable until
 // every downstream task joins. Results and diagnostics remain task-local until
 // product-ordered semantic publication.
-struct PackageLlvmModuleTaskSlot {
+struct PackageLlvmUnitTaskSlot {
   const SourceManager *sources = nullptr;
   const TargetProfile *target = nullptr;
   const SemanticPackage *semantic = nullptr;
@@ -6917,6 +6920,9 @@ struct PackageLlvmModuleTaskSlot {
   LlvmIrResult llvm;
   PackageNativeOutput native;
   LlvmPackageEmissionPhaseTimings direct_phase_timings;
+  std::size_t package_index = 0;
+  std::size_t unit_index = 0;
+  std::size_t unit_count = 1;
   std::uint64_t elapsed_nanoseconds = 0;
 };
 
@@ -6965,24 +6971,24 @@ llvm_native_phase_timing_events(
   return children;
 }
 
-struct PackageLlvmModuleWaveExecution {
-  std::vector<PackageLlvmModuleTaskSlot> *slots = nullptr;
+struct PackageLlvmUnitWaveExecution {
+  std::vector<PackageLlvmUnitTaskSlot> *slots = nullptr;
   std::vector<SemanticProductOutcome> *outcomes = nullptr;
 };
 
-[[nodiscard]] bool execute_package_llvm_module_task(
+[[nodiscard]] bool execute_package_llvm_unit_task(
     void *opaque_context,
     WorkTaskId task,
     std::string &failure) {
   auto &context =
-      *static_cast<PackageLlvmModuleWaveExecution *>(opaque_context);
+      *static_cast<PackageLlvmUnitWaveExecution *>(opaque_context);
   const std::size_t index = static_cast<std::size_t>(task);
   if (context.slots == nullptr || context.outcomes == nullptr ||
       index >= context.slots->size() || index >= context.outcomes->size()) {
     failure = "package LLVM worker received an invalid task slot";
     return false;
   }
-  PackageLlvmModuleTaskSlot &slot = (*context.slots)[index];
+  PackageLlvmUnitTaskSlot &slot = (*context.slots)[index];
   if (slot.sources == nullptr || slot.target == nullptr ||
       slot.semantic == nullptr || slot.abi == nullptr ||
       slot.global_initializers == nullptr) {
@@ -7032,7 +7038,7 @@ struct PackageLlvmModuleWaveExecution {
       ? SemanticProductOutcomeKind::Complete
       : SemanticProductOutcomeKind::Error;
   if (outcome.kind == SemanticProductOutcomeKind::Error) {
-    outcome.failure = "package failed LLVM module emission";
+    outcome.failure = "package failed LLVM unit emission";
   }
   return true;
 }
@@ -7043,7 +7049,7 @@ struct PackageLlvmModuleWaveExecution {
 // in the phase-owned slot selected below.
 enum class NativePipelineTaskKind {
   MirProcedure,
-  PackageLlvmModule,
+  PackageLlvmUnit,
   ArtifactLayout,
 };
 
@@ -7056,15 +7062,15 @@ struct NativePipelineTask {
   SemanticProductId product;
 };
 
-// ArtifactLayout needs only the module result produced by its exact preceding
-// task and the stable package assembly count. It deliberately does not read the
-// canonical CompiledPackage: module publication happens later, in semantic
-// product order, after the complete closed executor joins.
+// ArtifactLayout needs only the LLVM-unit results produced by its exact
+// preceding tasks and the stable package assembly count. It deliberately does
+// not read the canonical CompiledPackage: unit publication happens later, in
+// semantic product order, after the complete closed executor joins.
 struct NativePipelineLayoutTaskSlot {
-  const LlvmIrResult *module = nullptr;
+  std::vector<const LlvmIrResult *> units;
+  std::vector<SemanticProductId> unit_products;
   std::size_t assembly_source_count = 0;
   bool include_hosted_runtime = false;
-  SemanticProductId module_product;
   SemanticProductId runtime_product;
   SemanticProductId assembly_product;
   PackageArtifactLayout layout;
@@ -7077,7 +7083,7 @@ struct NativePipelineLayoutTaskSlot {
 struct NativePipelineExecution {
   const std::vector<NativePipelineTask> *tasks = nullptr;
   MirProcedureWaveExecution mir;
-  PackageLlvmModuleWaveExecution modules;
+  PackageLlvmUnitWaveExecution units;
   std::vector<NativePipelineLayoutTaskSlot> *layouts = nullptr;
   std::vector<SemanticProductOutcome> *layout_outcomes = nullptr;
 };
@@ -7092,12 +7098,12 @@ struct NativePipelineExecution {
       return nullptr;
     }
     return &(*execution.mir.outcomes)[task.slot];
-  case NativePipelineTaskKind::PackageLlvmModule:
-    if (execution.modules.outcomes == nullptr ||
-        task.slot >= execution.modules.outcomes->size()) {
+  case NativePipelineTaskKind::PackageLlvmUnit:
+    if (execution.units.outcomes == nullptr ||
+        task.slot >= execution.units.outcomes->size()) {
       return nullptr;
     }
-    return &(*execution.modules.outcomes)[task.slot];
+    return &(*execution.units.outcomes)[task.slot];
   case NativePipelineTaskKind::ArtifactLayout:
     if (execution.layout_outcomes == nullptr ||
         task.slot >= execution.layout_outcomes->size()) {
@@ -7134,9 +7140,9 @@ struct NativePipelineExecution {
         static_cast<WorkTaskId>(task.slot),
         failure);
     break;
-  case NativePipelineTaskKind::PackageLlvmModule:
-    invoked = execute_package_llvm_module_task(
-        &execution.modules,
+  case NativePipelineTaskKind::PackageLlvmUnit:
+    invoked = execute_package_llvm_unit_task(
+        &execution.units,
         static_cast<WorkTaskId>(task.slot),
         failure);
     break;
@@ -7147,19 +7153,31 @@ struct NativePipelineExecution {
       return false;
     }
     NativePipelineLayoutTaskSlot &slot = (*execution.layouts)[task.slot];
-    if (slot.module == nullptr || !slot.module->ok ||
-        !slot.module_product.is_valid() ||
+    if (slot.units.empty() ||
+        slot.units.size() != slot.unit_products.size() ||
         !slot.assembly_product.is_valid()) {
-      failure = "native pipeline layout task has incomplete module inputs";
+      failure = "native pipeline layout task has incomplete LLVM-unit inputs";
       return false;
     }
+    for (std::size_t unit_index = 0;
+         unit_index < slot.units.size(); ++unit_index) {
+      if (slot.units[unit_index] == nullptr ||
+          !slot.units[unit_index]->ok ||
+          !slot.unit_products[unit_index].is_valid()) {
+        failure = "native pipeline layout task has an invalid LLVM unit";
+        return false;
+      }
+    }
     slot.layout.inputs.reserve(
-        1 + (slot.include_hosted_runtime ? 1 : 0) +
+        slot.units.size() + (slot.include_hosted_runtime ? 1 : 0) +
         slot.assembly_source_count);
-    slot.layout.inputs.push_back({
-        PackageArtifactInputKind::PackageLlvmModule,
-        0,
-        slot.module_product});
+    for (std::size_t unit_index = 0;
+         unit_index < slot.units.size(); ++unit_index) {
+      slot.layout.inputs.push_back({
+          PackageArtifactInputKind::PackageLlvmUnit,
+          unit_index,
+          slot.unit_products[unit_index]});
+    }
     if (slot.include_hosted_runtime) {
       if (!slot.runtime_product.is_valid()) {
         failure = "native pipeline layout has no hosted-runtime producer";
@@ -7193,12 +7211,20 @@ struct NativePipelineExecution {
 }
 
 // Appends the complete artifact-live native subgraph, then executes it through
-// one dependency scheduler. A PackageLlvmModule task depends only on the MIR
-// procedures in its own semantic package, and its ArtifactLayout depends only
-// on that module. Consequently a small package may finish module construction
-// while another package is still lowering MIR. SemanticProductGraph outcomes
-// are nevertheless published through their ordinary frozen ready waves after
-// the executor joins, preserving canonical diagnostics and graph state.
+// one dependency scheduler. O2, assembly, and retained-IR requests keep one
+// complete LLVM unit per semantic package because whole-package optimization or
+// inspection requires that scope. A native-only O0 object request may instead
+// divide a large package into fixed 48-procedure units. The partition follows
+// canonical live-MIR order and never worker count, so scheduling changes neither
+// object membership nor final link order.
+//
+// Each LLVM unit depends only on its assigned MIR procedures and direct-
+// reference products. ArtifactLayout depends on every unit for its package.
+// Consequently LLVM construction can begin for one chunk while unrelated MIR
+// is still lowering, and independent units can enter LLVM concurrently.
+// SemanticProductGraph outcomes are nevertheless published through ordinary
+// frozen ready waves after the closed executor joins, preserving canonical
+// diagnostics and graph state.
 [[nodiscard]] bool run_workspace_native_pipeline_products(
     const SourceManager &sources,
     const TargetProfile &target,
@@ -7227,18 +7253,50 @@ struct NativePipelineExecution {
   std::vector<SemanticProductOutcome> mir_outcomes(mir_count);
   std::vector<std::vector<std::size_t>> mir_slots_by_package(package_count);
   std::vector<std::vector<WorkTaskId>> mir_tasks_by_package(package_count);
-  std::vector<PackageLlvmModuleTaskSlot> module_slots(package_count);
-  std::vector<SemanticProductOutcome> module_outcomes(package_count);
+  // Forty-eight is a measured bootstrap policy rather than a semantic
+  // constant. Fresh Draft IDE builds on the qualification host reduced target
+  // lowering from about 67 ms package-wide to 34-36 ms here. Sixty-four left a
+  // 43-48 ms critical path, while thirty-two created four more linker inputs
+  // without a repeatable improvement over forty-eight. Keep this fixed and
+  // worker-count independent; revise it only with an equivalent fresh-build
+  // benchmark and deterministic artifact coverage.
+  constexpr std::size_t kO0ProcedureUnitSize = 48;
+  const bool emit_package_units = emit_llvm || emit_native_output;
+  const bool split_o0_object_units =
+      emit_native_output && !emit_llvm &&
+      native_output.output_kind == LlvmNativeOutputKind::Object &&
+      native_output.optimization == NativeOptimizationLevel::O0;
+  std::vector<std::size_t> unit_counts_by_package(package_count, 0);
+  std::size_t unit_count = 0;
+  if (emit_package_units) {
+    for (std::size_t package_index = 0;
+         package_index < package_count; ++package_index) {
+      if (!result.packages[package_index].has_value()) continue;
+      const std::size_t procedure_count =
+          result.semantic_products.packages[package_index]
+              .native_live_body_work_indices.size();
+      const std::size_t package_unit_count =
+          split_o0_object_units && procedure_count > kO0ProcedureUnitSize
+          ? (procedure_count + kO0ProcedureUnitSize - 1) /
+                kO0ProcedureUnitSize
+          : 1;
+      unit_counts_by_package[package_index] = package_unit_count;
+      unit_count += package_unit_count;
+    }
+  }
+  // These vectors are sized once because layout slots retain pointers to unit
+  // results while the closed WorkGraph executes. Reallocation after such a
+  // pointer was installed would make an otherwise valid dependency unsafe.
+  std::vector<PackageLlvmUnitTaskSlot> unit_slots(unit_count);
+  std::vector<SemanticProductOutcome> unit_outcomes(unit_count);
+  std::vector<std::vector<std::size_t>> unit_slots_by_package(package_count);
+  std::vector<std::vector<WorkTaskId>> unit_tasks_by_package(package_count);
   std::vector<NativePipelineLayoutTaskSlot> layout_slots(package_count);
   std::vector<SemanticProductOutcome> layout_outcomes(package_count);
-  std::vector<WorkTaskId> module_task_by_package(
-      package_count, std::numeric_limits<WorkTaskId>::max());
-  std::size_t module_count = 0;
   std::size_t layout_count = 0;
   std::vector<NativePipelineTask> tasks;
-  const bool emit_package_module = emit_llvm || emit_native_output;
-  tasks.reserve(
-      mir_count + (emit_package_module ? 2 * package_count : 0));
+  tasks.reserve(mir_count + unit_count +
+                (emit_package_units ? package_count : 0));
   WorkGraph execution_graph;
 
   const auto append_execution_task = [&tasks, &execution_graph](
@@ -7289,10 +7347,17 @@ struct NativePipelineExecution {
             "runtime procedure has no denial result product");
         return false;
       }
+      // A MIR row exists only because the workspace reachability projection
+      // selected this checked body. Retain that fact as an explicit graph edge
+      // even though the projection is already complete when native scheduling
+      // begins; otherwise the durable semantic graph would incorrectly claim
+      // that an arbitrary checked body plus its denial/assembly facts was
+      // sufficient to authorize machine lowering.
       const std::array semantic_dependencies{
           products.procedure_bodies[work_index],
           *denial,
-          products.package_assembly};
+          products.package_assembly,
+          result.semantic_products.artifact_reachability};
       const SemanticProductId product = append_workspace_semantic_product(
           result,
           SemanticProductKind::MirProcedure,
@@ -7321,106 +7386,140 @@ struct NativePipelineExecution {
     }
   }
 
-  if (emit_package_module) {
+  if (emit_package_units) {
+    std::size_t unit_slot_index = 0;
     for (std::size_t package_index = 0;
          package_index < package_count; ++package_index) {
       if (!result.packages[package_index].has_value()) continue;
       CompiledPackage &package = *result.packages[package_index];
       PackageSemanticProducts &products =
           result.semantic_products.packages[package_index];
-      if (products.package_llvm_module.is_valid() ||
+      if (!products.package_llvm_units.empty() ||
           products.artifact_layout.is_valid() || package.llvm_module.ok ||
-          package.native_output.ok || package.artifact_layout.ok) {
+          !package.native_outputs.empty() || package.artifact_layout.ok) {
         diagnostics.error(
             SourceRange::invalid(),
             "native product slice is not empty before native scheduling");
         return false;
       }
-
-      std::vector<SemanticProductId> dependencies{
-          result.semantic_products.target,
-          products.package_interface,
-          products.package_assembly,
-          result.semantic_products.artifact_reachability};
-      dependencies.insert(
-          dependencies.end(),
-          products.abi_classifications.begin(),
-          products.abi_classifications.end());
-      for (std::size_t work_index : products.native_live_body_work_indices) {
-        const auto position = std::find(
-            products.checked_runtime_body_work_indices.begin(),
-            products.checked_runtime_body_work_indices.end(),
-            work_index);
-        if (position == products.checked_runtime_body_work_indices.end()) {
-          diagnostics.error(
-              SourceRange::invalid(),
-              "live native body is absent from the checked runtime projection");
-          return false;
-        }
-        const std::size_t reference_index = static_cast<std::size_t>(
-            position - products.checked_runtime_body_work_indices.begin());
-        if (reference_index >= products.native_reference_summaries.size()) {
-          diagnostics.error(
-              SourceRange::invalid(),
-              "live native body has no direct-reference product");
-          return false;
-        }
-        dependencies.push_back(
-            products.native_reference_summaries[reference_index]);
-      }
-      dependencies.insert(
-          dependencies.end(),
-          products.mir_procedures.begin(),
-          products.mir_procedures.end());
       const PackageId owner{static_cast<std::uint32_t>(package_index)};
-      products.package_llvm_module = append_workspace_semantic_product(
-          result,
-          SemanticProductKind::PackageLlvmModule,
-          dependencies,
-          owner,
-          false,
-          diagnostics);
-      if (!products.package_llvm_module.is_valid()) return false;
-
-      PackageLlvmModuleTaskSlot &slot = module_slots[package_index];
-      slot.sources = &sources;
-      slot.target = &target;
-      slot.semantic = &package.bodies.package;
-      slot.abi = &package.c_abi;
-      slot.global_initializers = &package.declarations.global_initializers;
-      slot.globals = products.native_live_globals;
-      slot.procedures.reserve(mir_slots_by_package[package_index].size());
-      for (std::size_t index : mir_slots_by_package[package_index]) {
-        slot.procedures.push_back(&mir_slots[index].result.procedure);
-      }
-      slot.options.package = result.graph.packages[package_index].identity;
-      slot.options.emit_debug_information = emit_debug_information;
-      slot.retain_llvm_text = emit_llvm;
-      slot.collect_phase_timings =
-          timings != nullptr && timings->output() == TimingOutput::All;
-      if (emit_native_output) {
-        slot.native_options = native_output;
-      }
       const bool is_root =
           package_index == result.graph.root_package.value;
-      // Process services are a separate compiler-distributed target object in
-      // every build mode. Debug information describes authored package code;
-      // it never changes runtime ownership or forces the root module through a
-      // textual LLVM serialization boundary.
-      slot.options.emit_runtime_support = false;
-      slot.options.emit_program_entry =
-          emit_program_entry && is_root;
-      if (is_root) {
-        slot.options.validation_kind = validation_kind;
-        slot.options.validation_entries.assign(
-            validation_entries.begin(), validation_entries.end());
+      const std::size_t package_unit_count =
+          unit_counts_by_package[package_index];
+      const std::size_t package_procedure_count =
+          mir_slots_by_package[package_index].size();
+      for (std::size_t package_unit_index = 0;
+           package_unit_index < package_unit_count;
+           ++package_unit_index) {
+        const std::size_t procedure_begin = package_unit_count == 1
+            ? 0
+            : package_unit_index * kO0ProcedureUnitSize;
+        const std::size_t procedure_end = package_unit_count == 1
+            ? package_procedure_count
+            : std::min(
+                  procedure_begin + kO0ProcedureUnitSize,
+                  package_procedure_count);
+
+        std::vector<SemanticProductId> dependencies{
+            result.semantic_products.target,
+            products.package_interface,
+            result.semantic_products.artifact_reachability};
+        dependencies.insert(
+            dependencies.end(),
+            products.abi_classifications.begin(),
+            products.abi_classifications.end());
+        std::vector<WorkTaskId> execution_dependencies;
+        execution_dependencies.reserve(procedure_end - procedure_begin);
+        for (std::size_t procedure_index = procedure_begin;
+             procedure_index < procedure_end; ++procedure_index) {
+          const std::size_t work_index =
+              products.native_live_body_work_indices[procedure_index];
+          const auto position = std::find(
+              products.checked_runtime_body_work_indices.begin(),
+              products.checked_runtime_body_work_indices.end(),
+              work_index);
+          if (position == products.checked_runtime_body_work_indices.end()) {
+            diagnostics.error(
+                SourceRange::invalid(),
+                "live native body is absent from the checked runtime projection");
+            return false;
+          }
+          const std::size_t reference_index = static_cast<std::size_t>(
+              position - products.checked_runtime_body_work_indices.begin());
+          if (reference_index >= products.native_reference_summaries.size() ||
+              procedure_index >= products.mir_procedures.size() ||
+              procedure_index >= mir_tasks_by_package[package_index].size()) {
+            diagnostics.error(
+                SourceRange::invalid(),
+                "live native body has no complete unit dependency set");
+            return false;
+          }
+          dependencies.push_back(
+              products.native_reference_summaries[reference_index]);
+          dependencies.push_back(products.mir_procedures[procedure_index]);
+          execution_dependencies.push_back(
+              mir_tasks_by_package[package_index][procedure_index]);
+        }
+        const SemanticProductId product = append_workspace_semantic_product(
+            result,
+            SemanticProductKind::PackageLlvmUnit,
+            dependencies,
+            owner,
+            false,
+            diagnostics);
+        if (!product.is_valid()) return false;
+        products.package_llvm_units.push_back(product);
+
+        PackageLlvmUnitTaskSlot &slot = unit_slots[unit_slot_index];
+        slot.sources = &sources;
+        slot.target = &target;
+        slot.semantic = &package.bodies.package;
+        slot.abi = &package.c_abi;
+        slot.global_initializers =
+            &package.declarations.global_initializers;
+        // A package's globals must have exactly one definition. Later units
+        // obtain hidden external declarations on demand when their procedures
+        // reference a global owned by unit zero.
+        if (package_unit_index == 0) {
+          slot.globals = products.native_live_globals;
+        }
+        slot.procedures.reserve(procedure_end - procedure_begin);
+        for (std::size_t procedure_index = procedure_begin;
+             procedure_index < procedure_end; ++procedure_index) {
+          const std::size_t mir_slot =
+              mir_slots_by_package[package_index][procedure_index];
+          slot.procedures.push_back(&mir_slots[mir_slot].result.procedure);
+        }
+        slot.options.package = result.graph.packages[package_index].identity;
+        slot.options.emit_debug_information = emit_debug_information;
+        slot.retain_llvm_text = emit_llvm;
+        slot.collect_phase_timings =
+            timings != nullptr && timings->output() == TimingOutput::All;
+        if (emit_native_output) slot.native_options = native_output;
+        slot.package_index = package_index;
+        slot.unit_index = package_unit_index;
+        slot.unit_count = package_unit_count;
+        // Process services are a separate compiler-distributed target object.
+        // Only unit zero owns the package-level entry/validation definitions;
+        // calls to procedures defined in later units are ordinary declarations.
+        slot.options.emit_runtime_support = false;
+        slot.options.emit_program_entry =
+            package_unit_index == 0 && emit_program_entry && is_root;
+        if (package_unit_index == 0 && is_root) {
+          slot.options.validation_kind = validation_kind;
+          slot.options.validation_entries.assign(
+              validation_entries.begin(), validation_entries.end());
+        }
+        const WorkTaskId unit_task = append_execution_task(
+            NativePipelineTaskKind::PackageLlvmUnit,
+            unit_slot_index,
+            product,
+            std::move(execution_dependencies));
+        unit_slots_by_package[package_index].push_back(unit_slot_index);
+        unit_tasks_by_package[package_index].push_back(unit_task);
+        ++unit_slot_index;
       }
-      module_task_by_package[package_index] = append_execution_task(
-          NativePipelineTaskKind::PackageLlvmModule,
-          package_index,
-          products.package_llvm_module,
-          mir_tasks_by_package[package_index]);
-      ++module_count;
     }
 
     for (std::size_t package_index = 0;
@@ -7431,9 +7530,9 @@ struct NativePipelineExecution {
           result.semantic_products.packages[package_index];
       const bool include_hosted_runtime =
           package_index == result.graph.root_package.value;
-      std::vector<SemanticProductId> dependencies{
-          products.package_llvm_module,
-          products.package_assembly};
+      std::vector<SemanticProductId> dependencies =
+          products.package_llvm_units;
+      dependencies.push_back(products.package_assembly);
       if (include_hosted_runtime)
         dependencies.push_back(result.semantic_products.target);
       const PackageId owner{static_cast<std::uint32_t>(package_index)};
@@ -7446,17 +7545,20 @@ struct NativePipelineExecution {
           diagnostics);
       if (!products.artifact_layout.is_valid()) return false;
       NativePipelineLayoutTaskSlot &slot = layout_slots[package_index];
-      slot.module = &module_slots[package_index].llvm;
+      slot.units.reserve(unit_slots_by_package[package_index].size());
+      slot.unit_products = products.package_llvm_units;
+      for (std::size_t unit_slot : unit_slots_by_package[package_index]) {
+        slot.units.push_back(&unit_slots[unit_slot].llvm);
+      }
       slot.assembly_source_count = package.assembly_sources.size();
       slot.include_hosted_runtime = include_hosted_runtime;
-      slot.module_product = products.package_llvm_module;
       slot.runtime_product = result.semantic_products.target;
       slot.assembly_product = products.package_assembly;
       append_execution_task(
           NativePipelineTaskKind::ArtifactLayout,
           package_index,
           products.artifact_layout,
-          {module_task_by_package[package_index]});
+          unit_tasks_by_package[package_index]);
       ++layout_count;
     }
   }
@@ -7510,7 +7612,7 @@ struct NativePipelineExecution {
   NativePipelineExecution execution;
   execution.tasks = &tasks;
   execution.mir = {&mir_slots, &mir_outcomes};
-  execution.modules = {&module_slots, &module_outcomes};
+  execution.units = {&unit_slots, &unit_outcomes};
   execution.layouts = &layout_slots;
   execution.layout_outcomes = &layout_outcomes;
   const WorkGraphRunResult scheduled = run_work_graph(
@@ -7542,15 +7644,15 @@ struct NativePipelineExecution {
 
   if (timings != nullptr) {
     std::size_t dependency_edge_count = 0;
-    std::size_t initially_ready_module_count = 0;
+    std::size_t initially_ready_unit_count = 0;
     for (std::size_t task_index = 0;
          task_index < execution_graph.tasks.size(); ++task_index) {
       dependency_edge_count +=
           execution_graph.tasks[task_index].dependencies.size();
       if (execution_graph.tasks[task_index].dependencies.empty() &&
           tasks[task_index].kind ==
-              NativePipelineTaskKind::PackageLlvmModule) {
-        ++initially_ready_module_count;
+              NativePipelineTaskKind::PackageLlvmUnit) {
+        ++initially_ready_unit_count;
       }
     }
     timings->add_counter("native lowering tasks", tasks.size());
@@ -7561,10 +7663,10 @@ struct NativePipelineExecution {
     timings->add_counter(
         "native lowering initial ready tasks", expected_first_wave.size());
     timings->add_counter(
-        "package LLVM modules initially ready", initially_ready_module_count);
+        "package LLVM units initially ready", initially_ready_unit_count);
     timings->add_counter("MIR procedure tasks", mir_slots.size());
-    if (emit_package_module) {
-      timings->add_counter("package LLVM module tasks", module_count);
+    if (emit_package_units) {
+      timings->add_counter("package LLVM unit tasks", unit_count);
       timings->add_counter("artifact-layout tasks", layout_count);
     }
   }
@@ -7637,35 +7739,51 @@ struct NativePipelineExecution {
           timings->add_counter("MIR procedures lowered", 1);
         }
         break;
-      case NativePipelineTaskKind::PackageLlvmModule:
-        package.llvm_module = std::move(module_slots[task.slot].llvm);
-        package.native_output =
-            std::move(module_slots[task.slot].native);
+      case NativePipelineTaskKind::PackageLlvmUnit: {
+        PackageLlvmUnitTaskSlot &unit = unit_slots[task.slot];
+        if (unit.package_index != owner.value ||
+            unit.unit_index != package.native_outputs.size()) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "LLVM unit publication order does not match its package");
+          return false;
+        }
+        if (unit.unit_count == 1) {
+          package.llvm_module = std::move(unit.llvm);
+        }
+        package.native_outputs.push_back(std::move(unit.native));
         if (timings != nullptr) {
-          timings->add_counter("LLVM package modules emitted", 1);
-          timings->add_counter("direct LLVM package modules", 1);
+          timings->add_counter("LLVM package units emitted", 1);
+          timings->add_counter("direct LLVM package units", 1);
           timings->add_counter(
               "LLVM IR bytes",
               static_cast<std::uint64_t>(package.llvm_module.text.size()));
-          if (package.native_output.ok) {
+          const PackageNativeOutput &native = package.native_outputs.back();
+          if (native.ok) {
             timings->add_counter(
                 "LLVM native bytes",
-                static_cast<std::uint64_t>(
-                    package.native_output.bytes.size()));
+                static_cast<std::uint64_t>(native.bytes.size()));
             if (timings->output() == TimingOutput::All) {
+              std::string event_name = "LLVM package emission: " +
+                  display_package_identity(package.identity);
+              if (unit.unit_count > 1) {
+                event_name += " [unit " +
+                    std::to_string(unit.unit_index + 1) + "/" +
+                    std::to_string(unit.unit_count) + "]";
+              }
               timings->record_completed_event_group(
-                  "LLVM package emission: " +
-                      display_package_identity(package.identity),
-                  module_slots[task.slot].elapsed_nanoseconds,
+                  std::move(event_name),
+                  unit.elapsed_nanoseconds,
                   TimingVisibility::Detail,
                   llvm_native_phase_timing_events(
-                      module_slots[task.slot].direct_phase_timings,
-                      package.native_output.phase_timings,
-                      package.native_output.output_kind));
+                      unit.direct_phase_timings,
+                      native.phase_timings,
+                      native.output_kind));
             }
           }
         }
         break;
+      }
       case NativePipelineTaskKind::ArtifactLayout:
         package.artifact_layout =
             std::move(layout_slots[task.slot].layout);

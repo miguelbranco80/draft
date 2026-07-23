@@ -1,10 +1,12 @@
-// Direct LLVM package-module construction from verified Draft MIR.
+// Direct LLVM package-unit construction from verified Draft MIR.
 //
-// The package task owns one LLVM context, module, and builder. Its inputs are
-// immutable semantic types, ABI classifications, global constants, and the
-// artifact-live MIR procedure set selected by native reachability. The output
-// is optional inspection text plus optional native bytes; no LLVM allocation or
-// pointer survives the synchronous call.
+// The package-unit task owns one LLVM context, module, and builder. Its inputs
+// are immutable semantic types, ABI classifications, global constants, and an
+// ordered subset of artifact-live MIR selected by native reachability. O2 and
+// retained-IR operations pass the complete package set; native-only O0 may pass
+// a deterministic chunk so independent target machines can execute in
+// parallel. The output is optional inspection text plus optional native bytes;
+// no LLVM allocation or pointer survives the synchronous call.
 //
 // This file is intentionally inside the LLVM object-library boundary. It may
 // depend on semantic/MIR read interfaces and LLVM's C API, but semantic and MIR
@@ -1353,7 +1355,7 @@ private:
 
   // Returns one compiler-runtime helper declaration with an exact fixed
   // signature. Root runtime emission later supplies definitions under these
-  // same names; dependency package modules retain hidden external references.
+  // same names; dependency package units retain hidden external references.
   [[nodiscard]] LLVMValueRef runtime_helper(std::string_view name,
                                             LLVMTypeRef result,
                                             std::span<LLVMTypeRef> parameters) {
@@ -3743,20 +3745,17 @@ private:
     }
   }
 
-  [[nodiscard]] bool has_body(SymbolId symbol) const {
-    return std::any_of(
-        procedures_.begin(), procedures_.end(), [symbol](const auto *body) {
-          return body != nullptr && body->valid && body->symbol == symbol;
-        });
-  }
-
+  // Program entry may live in a different deterministic O0 unit from main's
+  // definition. Semantic reachability has already proved that a concrete body
+  // exists somewhere in the package; this unit needs only the checked symbol
+  // and signature so function_for_symbol can create an external declaration.
   [[nodiscard]] std::optional<SymbolId> main_symbol() const {
     const std::optional<SymbolId> found =
         semantic_.symbols.lookup_direct(semantic_.package_scope, "main");
     if (!found.has_value())
       return std::nullopt;
     const Symbol &symbol = semantic_.symbols.symbol(*found);
-    if (symbol.kind != SymbolKind::Procedure || !has_body(*found))
+    if (symbol.kind != SymbolKind::Procedure)
       return std::nullopt;
     return found;
   }

@@ -78,7 +78,7 @@ enum class SemanticProductKind {
   ArtifactReachability,
   MirProcedure,
   PackageAssembly,
-  PackageLlvmModule,
+  PackageLlvmUnit,
   ArtifactLayout,
 };
 

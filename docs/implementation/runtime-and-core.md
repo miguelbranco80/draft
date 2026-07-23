@@ -26,12 +26,13 @@ assertion callback is an ordinary Draft procedure pointer, so its physical call
 prepends the active Context pointer.
 
 One target-selected compiler-distributed runtime object defines runtime failure
-helpers and root process state. Every package module, including the executable
-root, references those hidden link-unit symbols; only the root package module
-adds the small hosted `main`/`wmain` wrapper when building an executable. This
-gives all ordinary calls one coherent Context and prevents per-package runtime
-state from emerging as a bootstrap artifact. Changing this layout or helper
-contract requires a new runtime ABI and core distribution identity.
+helpers and root process state. Every package LLVM unit which uses those
+services references the hidden link-unit symbols; only unit zero of the root
+package adds the small hosted `main`/`wmain` wrapper when building an
+executable. This gives all ordinary calls one coherent Context and prevents
+per-package runtime state from emerging as a bootstrap artifact. Changing this
+layout or helper contract requires a new runtime ABI and core distribution
+identity.
 
 `context` is a predeclared, addressable value in every ordinary Draft procedure.
 When `core/runtime` is imported, its type is exactly the public

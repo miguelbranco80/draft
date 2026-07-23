@@ -38,16 +38,16 @@ namespace draft {
 // The value affects execution and output naming inside one command but is not a
 // persistent semantic identity or content-hash field.
 enum class NativeObjectTaskKind {
-  PackageLlvmModule,
+  PackageLlvmUnit,
   HostedRuntime,
   PackageAssembly,
 };
 
-// Selects the representation carried by a package-module task. Ordinary builds
+// Selects the representation carried by a package LLVM-unit task. Ordinary builds
 // consume bytes already emitted by the dependency-ready package LLVM task. The
 // textual form exists only for the explicit external-Clang qualification
 // oracle. Package assembly has its own task kind and ignores this value.
-enum class NativePackageModuleInputKind {
+enum class NativePackageUnitInputKind {
   EmittedNativeBytes,
   LlvmTextOracle,
 };
@@ -58,8 +58,8 @@ enum class NativePackageModuleInputKind {
 // O0/assembly product. Oracle planning instead requires retained LLVM text and
 // deliberately ignores that expected native product.
 struct NativeObjectPlanOptions {
-  NativePackageModuleInputKind package_module_input =
-      NativePackageModuleInputKind::EmittedNativeBytes;
+  NativePackageUnitInputKind package_unit_input =
+      NativePackageUnitInputKind::EmittedNativeBytes;
   LlvmObjectEmissionOptions expected_native_output;
   // Relocatable object output deliberately leaves hosted-runtime references
   // unresolved for the eventual executable/library link, just as it leaves
@@ -70,8 +70,8 @@ struct NativeObjectPlanOptions {
 
 // One task names one independently emittable native input. package_index is in
 // CompileWorkspaceResult::packages. input_index addresses the package's
-// assembly-source vector and is zero for its LLVM module or hosted runtime.
-// output_stem is
+// native-output vector for an LLVM unit, the package assembly-source vector for
+// package assembly, and is zero for hosted runtime. output_stem is
 // collision-free within one native build directory and contains no physical
 // source path. source_extension is ".ll" for an oracle unit, ".s" for emitted
 // package/runtime assembly, empty for an emitted object, or the exact selected
@@ -79,9 +79,9 @@ struct NativeObjectPlanOptions {
 // the exact semantic product copied from PackageArtifactLayout; this preserves
 // graph-to-object identity without making workers inspect compiler side tables.
 struct NativeObjectTask {
-  NativeObjectTaskKind kind = NativeObjectTaskKind::PackageLlvmModule;
-  NativePackageModuleInputKind package_module_input =
-      NativePackageModuleInputKind::EmittedNativeBytes;
+  NativeObjectTaskKind kind = NativeObjectTaskKind::PackageLlvmUnit;
+  NativePackageUnitInputKind package_unit_input =
+      NativePackageUnitInputKind::EmittedNativeBytes;
   std::size_t package_index = 0;
   std::size_t input_index = 0;
   SemanticProductId producer;
@@ -102,7 +102,7 @@ struct NativeObjectPlan {
 };
 
 // Copies each package's already published ArtifactLayout in ascending package
-// order. It validates every selected package module and assembly rule before
+// and unit order. It validates every selected LLVM unit and assembly rule before
 // publishing a partial plan. On failure plan is empty and reason names the
 // first package/input in stable order.
 [[nodiscard]] bool prepare_native_object_plan(

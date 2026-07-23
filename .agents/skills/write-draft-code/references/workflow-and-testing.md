@@ -239,11 +239,12 @@ architecture. Cross-checking can prove the front end and lowering contract,
 but native execution requires the matching host toolchain and runtime.
 
 Native `build`, `resolve --build`, `test`, and `bench` default to `-O0`; pass
-`-O2` when the task requires optimized code. O2 runs within each complete
-semantic-package LLVM module, while packages remain independently emitted. It
-may change derived object or assembly bytes, not Draft semantics, assertions,
-resolution pins, or module granularity. Validation evidence distinguishes O0
-and O2 policy, so use `bench -O2` when measuring optimized code. `emit-llvm`
+`-O2` when the task requires optimized code. Native-only O0 object builds may
+split a package above 48 live procedures into fixed internal units. O2 runs
+within each complete semantic-package LLVM module, while packages remain
+independently emitted. The choice may change derived native products, not Draft
+semantics, assertions, or resolution pins. Validation evidence distinguishes
+O0 and O2 policy, so use `bench -O2` when measuring optimized code. `emit-llvm`
 remains the canonical pre-optimization inspection; use
 `build --kind assembly -O2` to inspect optimized native output. Do not invent
 O1, O3, size optimization, LTO, arbitrary pass, or granularity flags.
@@ -279,9 +280,11 @@ build/draftc build path/to/workspace --root package -o /tmp/program --timings=al
 import-graph resolution, declaration ready-wave execution/publication,
 procedure-flow and effect-closure stages, per-package LLVM
 parse/verify/optimize/code-generation stages, and exclusive `self` time. Native
-lowering counters expose its exact MIR-to-package-module-to-layout task graph,
-including dependency edges, the initial ready set, worker slots, and modules
-which can start without a MIR prerequisite. Native and validation commands also
+lowering counters expose its exact MIR-to-package-LLVM-unit-to-layout task graph,
+including dependency edges, the initial ready set, worker slots, and units
+which can start without a MIR prerequisite. Native-only O0 object builds may
+report several fixed 48-procedure units for one large package; O2 and retained-
+IR builds remain package-wide. Native and validation commands also
 distinguish child-process CPU from wall time.
 Complete semantic closure reports a joined effect/reference executor: package
 flow closure occupies the first task rows while procedure-native-reference work
@@ -300,12 +303,12 @@ do not add per-worker timing writes to the single-threaded recorder.
 
 Every complete semantic check publishes direct native-reference rows, even when
 no artifact is requested. Native lowering additionally reports package
-assembly, artifact reachability, live MIR, package LLVM, and artifact-layout
+assembly, artifact reachability, live MIR, package LLVM units, and artifact-layout
 work. Each live `MirProcedure` payload lives in its workspace product side table
 rather than a package MIR program. After reachability, one exact closed executor
-lets a package-module task start when that package's MIR tasks finish and lets
-its layout follow without waiting for unrelated package MIR. A later native
-ready set contains one module-object task per published package layout plus any
+lets a package-unit task start when its assigned MIR tasks finish and lets its
+layout follow without waiting for unrelated package MIR. A later native ready
+set contains one object task per published unit plus any
 selected package-assembly tasks. Worker counts are internal/test options, not
 CLI flags. Repository determinism tests compare those counters across worker
 counts; do not invent `--workers` or `-j`.

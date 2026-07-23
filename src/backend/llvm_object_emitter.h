@@ -1,8 +1,9 @@
-// In-process LLVM object and assembly emission for one Draft package module.
+// In-process LLVM object and assembly emission for one Draft package-owned unit.
 //
 // This module is the only bootstrap layer that links LLVM's native target
-// library. It accepts one complete textual LLVM module for one semantic package
-// plus a complete Draft target profile, parses and verifies the module in a
+// library. Its textual oracle accepts one complete LLVM module for one semantic
+// package; its constructed-module seam may receive a deterministic O0 subset.
+// Both receive a complete Draft target profile, verify the module in a
 // fresh LLVM context, checks LLVM's target-machine data layout against the
 // profile, and returns emitted bytes in memory. It
 // performs no filesystem I/O, process launch, package scheduling, linking, or
@@ -49,8 +50,9 @@ enum class LlvmNativeOutputKind {
 // menus of individual LLVM releases are not part of Draft's command contract.
 //
 // Optimization changes derived native bytes only. It does not enter source,
-// target, resolved-program, synthesis, or semantic-product identity, and it
-// cannot change package-module granularity.
+// target, resolved-program, synthesis, or semantic-product identity. O2 keeps
+// whole-package granularity; native-only O0 may use deterministic internal
+// units so target-machine work can run concurrently.
 enum class NativeOptimizationLevel {
   O0,
   O2,
@@ -72,7 +74,7 @@ enum class LlvmNativeInstrumentation {
 };
 
 // Options contain only choices already authorized by a compiler command. They
-// are not ambient LLVM flags. Optimization transforms a complete package module
+// are not ambient LLVM flags. Optimization transforms the supplied LLVM unit
 // immediately before object or assembly emission; language-level assertion
 // removal remains a separate MIR configuration.
 struct LlvmObjectEmissionOptions {
@@ -87,10 +89,11 @@ struct LlvmObjectEmissionOptions {
 };
 
 // Wall durations for the sequential operations inside one isolated LLVM
-// package-module task. Zero means the diagnostic measurement was disabled or
-// the operation was not reached. These values never enter artifact identity or
-// influence LLVM behavior; they exist solely so the native coordinator can
-// reconstruct nested --timings=all rows after parallel workers join.
+// package-unit task. Zero means the diagnostic measurement was disabled, the
+// operation was not reached, or a tiny operation completed below one clock
+// tick. These values never enter artifact identity or influence LLVM behavior;
+// they exist solely so the native coordinator can reconstruct nested
+// --timings=all rows after parallel workers join.
 struct LlvmObjectEmissionPhaseTimings {
   std::uint64_t target_initialization_nanoseconds = 0;
   std::uint64_t input_preparation_nanoseconds = 0;

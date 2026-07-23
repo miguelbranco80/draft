@@ -744,8 +744,8 @@ void capture_child_usage(
   NativeObjectTaskProduct &product = (*context.products)[task_id];
 
   if (task.kind != NativeObjectTaskKind::PackageAssembly) {
-    if (task.package_module_input ==
-        NativePackageModuleInputKind::EmittedNativeBytes) {
+    if (task.package_unit_input ==
+        NativePackageUnitInputKind::EmittedNativeBytes) {
       product.timing_name =
           "pre-emitted native unit: " + task.display_name;
       product.native_bytes = task.input_bytes;
@@ -1003,16 +1003,16 @@ NativeBuildResult build_native_artifact(
       return result;
     }
   }
-  // Freeze every artifact-layout package module and assembly input into
+  // Freeze every artifact-layout package unit and assembly input into
   // stable work slots before invoking a tool. This validation boundary ensures
   // later execution can change scheduling without changing task identity,
   // output names, diagnostic order, or linker order.
   NativeObjectPlan object_plan;
   NativeObjectPlanOptions plan_options;
-  plan_options.package_module_input =
+  plan_options.package_unit_input =
       options.object_emitter == NativeObjectEmitter::ExternalClangOracle
-      ? NativePackageModuleInputKind::LlvmTextOracle
-      : NativePackageModuleInputKind::EmittedNativeBytes;
+      ? NativePackageUnitInputKind::LlvmTextOracle
+      : NativePackageUnitInputKind::EmittedNativeBytes;
   plan_options.expected_native_output.output_kind = assembly_output
       ? LlvmNativeOutputKind::Assembly
       : LlvmNativeOutputKind::Object;

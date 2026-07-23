@@ -1,11 +1,11 @@
-// Native emission from one already-constructed LLVM package module.
+// Native emission from one already-constructed package-owned LLVM unit.
 //
-// This is an internal seam between Draft's direct package-module builder and
+// This is an internal seam between Draft's direct package-unit builder and
 // the small target-machine adapter. The caller owns the LLVM context and module
 // for the complete synchronous call. The adapter verifies and then mutates the
 // module through the selected O2 and instrumentation pipelines before copying
 // object or assembly bytes into an ordinary result value. No LLVM handle
-// escapes the package task.
+// escapes the package-unit task.
 //
 // The textual LLVM adapter deliberately uses the same operation after parsing
 // explicit oracle input. Ordinary Draft compilation must call this operation

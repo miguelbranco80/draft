@@ -430,8 +430,8 @@ std::string_view semantic_product_kind_name(SemanticProductKind kind) {
     return "MIR procedure";
   case SemanticProductKind::PackageAssembly:
     return "package assembly";
-  case SemanticProductKind::PackageLlvmModule:
-    return "package LLVM module";
+  case SemanticProductKind::PackageLlvmUnit:
+    return "package LLVM unit";
   case SemanticProductKind::ArtifactLayout:
     return "artifact layout";
   }

@@ -322,7 +322,7 @@ gate.
    concrete runtime body, depending on that exact body, its denial result, and
    package assembly. The closed native
    dependency executor lowers and verifies private MIR tasks while allowing a
-   package module to start after only its own tasks finish; the coordinator
+   package LLVM unit to start after only its assigned tasks finish; the coordinator
    publishes each immutable payload only into the
    side-table row addressed by its product. Workspace package rows retain no
    aggregate `MirProgram`. Tests prove exact dependency/payload identity,
@@ -351,26 +351,27 @@ gate.
    synthesis requests, manifest bytes, resolved-program identity, product graph
    rows, declaration/body diagnostics, and failure selection.
 
-10. **Native product consumption — complete.** Preserve procedure-owned MIR while
-    emitting one LLVM module per semantic package, keep package assembly
-    explicit, emit only the artifact-reachable concrete procedure/global
-    projection, and publish linker inputs through deterministic artifact
-    barriers.
+10. **Native product consumption — complete.** Preserve procedure-owned MIR,
+    keep package assembly explicit, emit only the artifact-reachable concrete
+    procedure/global projection, retain whole-package O2 optimization, permit
+    deterministic internal O0 units, and publish linker inputs through
+    deterministic artifact barriers.
 
     Every concrete `MirProcedure` remains a live product with an immutable
-    side-table payload. One `PackageLlvmModule` per package depends on the exact
-    ordered MIR set together with the target, interface, selected bodies, ABI
-    classifications, and denials. Its worker borrows those payloads and emits
-    globals, relocatable constants, runtime/entry support when owned, and all
-    concrete definitions in one module. One `ArtifactLayout` row per package
-    then publishes that module followed by selected assembly in canonical
-    order. MIR, module construction, and layout share one closed dependency
-    executor: a module waits only for its package's MIR slots, and a layout
-    waits only for that module. The coordinator publishes the already-joined
-    results through ordinary semantic ready waves, deleting the former three
-    workspace-wide executor barriers.
+    side-table payload. O2 and retained-IR modes publish one complete
+    `PackageLlvmUnit`; a native-only O0 object build uses canonical 48-procedure
+    units when a package exceeds that size. Each unit depends on its exact MIR
+    and direct-reference rows together with target, interface, ABI, and
+    reachability facts. Unit zero owns globals, relocatable constants, and
+    runtime/entry wrappers; later units declare cross-unit references. One
+    `ArtifactLayout` row per package publishes all units followed by selected
+    assembly in canonical order. MIR, unit construction, and layout share one
+    closed dependency executor: a unit waits only for its assigned MIR slots,
+    and a layout waits only for that package's units. The coordinator publishes
+    already-joined results through ordinary semantic ready waves, deleting the
+    former three workspace-wide executor barriers.
     Native object planning consumes only those layouts and runs every package
-    module or assembly source as one independent task. Tests prove exact product
+    unit or assembly source as one independent task. Tests prove exact product
     dependencies, one-/four-worker IR identity, cross-package ready sets,
     complete-module verification, artifact ordering, native parity, and
     byte-for-byte artifact determinism.

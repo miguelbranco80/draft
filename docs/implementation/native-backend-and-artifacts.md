@@ -7,13 +7,15 @@ This document records the bootstrap compiler's target-independent MIR to LLVM re
 Status: LLVM 22 C-API object and assembly emission implemented and qualified.
 
 The bootstrap links the shared LLVM 22 distribution selected at CMake time.
-Each semantic package produces one complete LLVM module containing only the
-globals and concrete runtime procedures selected by artifact reachability.
-Every authored body was still checked before that projection. The module is
-constructed in a fresh `LLVMContext`, verified, checked against the selected
-Draft target triple and fixed data-layout string, and emitted through a
-task-owned target machine into an in-memory object or assembly buffer. The
-retained textual adapter parses only explicit oracle/test input. A
+Each semantic package produces either one complete LLVM module or, for a large
+native-only O0 build, a deterministic sequence of internal LLVM units. Both
+forms contain only the globals and concrete runtime procedures selected by
+artifact reachability; every authored body was still checked before that
+projection. Each module is constructed in a fresh `LLVMContext`, verified,
+checked against the selected Draft target triple and fixed data-layout string,
+and emitted through a task-owned target machine into an in-memory object or
+assembly buffer. The retained textual adapter parses only explicit oracle/test
+input. A
 disagreement between LLVM's computed layout and the versioned Draft profile is
 a compiler/toolchain error; LLVM never supplies missing language or ABI facts.
 
@@ -50,7 +52,7 @@ compiler distribution code built at O2, not a user-program cache or sidecar.
 The adapter exposes no LLVM reference outside its module. Its process-global
 AArch64 and X86 registries are initialized once, while contexts, modules, target machines,
 pass options, messages, and output buffers have one explicit call lifetime. The
-linked distribution must report thread support so isolated package-module calls
+linked distribution must report thread support so isolated package-unit calls
 can be scheduled concurrently without sharing an LLVM context.
 
 The former external Clang IR compilation path remains only as a low-level
@@ -62,17 +64,19 @@ SDKs, startup objects, and system libraries remain operational host inputs.
 
 ## Native optimization boundary
 
-Status: explicit O0 and O2 package-module pipelines implemented.
+Status: parallel native-only O0 units and package-wide O2 implemented.
 
-Optimization begins only after the compiler has emitted and verified one
-complete LLVM module per semantic package. O0 performs no LLVM middle-end
-transformation and creates the target machine with `LLVMCodeGenLevelNone`. O2
-runs LLVM's version-selected `default<O2>` pipeline over that complete module,
-then creates code using `LLVMCodeGenLevelDefault`. AddressSanitizer, when
-selected by validation, runs after optimization so it instruments the memory
-operations which survive into code generation.
+O2 begins only after the compiler has emitted one complete LLVM module per
+semantic package. It runs LLVM's version-selected `default<O2>` pipeline over
+that complete module, then creates code using `LLVMCodeGenLevelDefault`.
+Native-only O0 object emission performs no LLVM middle-end transformation. A
+package with at most 48 live procedures uses one module; a larger package uses
+fixed 48-procedure units, each with `LLVMCodeGenLevelNone`. Retained LLVM text
+and compiler-produced assembly remain package-wide even at O0. AddressSanitizer,
+when selected by validation, runs after optimization so it instruments the
+memory operations which survive into code generation.
 
-The adapter verifies the complete input module once before either pipeline.
+The adapter verifies each supplied unit once before its selected pipeline.
 Normal O2 builds do not enable LLVM's `VerifyEach` diagnostic mode, which would
 repeat whole-module verification after every pass. A malformed compiler output
 therefore still fails at the backend boundary, while valid production builds do
@@ -187,16 +191,19 @@ checking.
 Status: bounded parallel emission and ordered publication implemented.
 
 After artifact reachability, target lowering constructs live MIR,
-`PackageLlvmModule`, and `ArtifactLayout` products in one exact dependency
-executor. A module may start as soon as its own MIR inputs finish; its layout
-does not wait for unrelated packages. The layout's canonical order is the
-complete live package emission followed by selected package assembly. A native
-package task immediately turns its module into the requested object or assembly
-bytes and retains text only for an explicit IR consumer or Clang qualification.
+`PackageLlvmUnit`, and `ArtifactLayout` products in one exact dependency
+executor. O2, assembly, and retained-IR requests use one complete unit per
+semantic package. Native-only O0 object emission divides packages larger than
+48 live procedures into fixed 48-procedure units. A unit may start as soon as
+its assigned MIR inputs finish; its layout does not wait for unrelated units or
+packages. The layout's canonical order is every unit by stable index followed
+by selected package assembly. A native unit immediately emits the requested
+bytes and retains text only when it is the single complete unit requested for
+IR inspection or Clang qualification.
 Once those semantic products publish, the artifact backend freezes one task for
 every layout row.
 The root layout places the exact target hosted-runtime input immediately after
-its package module and before authored assembly. Relocatable `--kind object`
+its package units and before authored assembly. Relocatable `--kind object`
 deliberately omits that input and leaves runtime references unresolved for the
 eventual final consumer, just as it leaves foreign references unresolved.
 Executables, dynamic/static libraries, and assembly bundles include it.
@@ -210,7 +217,7 @@ canonical cross-object publication and linker order, so it never reconstructs
 or guesses LLVM's internal section graph.
 
 The dependency-ready native executor uses bounded workers. Each package LLVM
-task owns a fresh context, module, target machine, and in-memory output buffer;
+unit owns a fresh context, module, target machine, and in-memory output buffer;
 its object/assembly bytes remain an owned command-local product after the task
 joins. The later artifact scheduler borrows those bytes without copying. Each
 assembler or Clang-oracle task uses task-private input/output paths and launches
@@ -284,7 +291,7 @@ contracts implemented.
 
 The root artifact layout owns the separate compiler-distributed hosted runtime
 for every final executable or library, while only executable compilation adds
-the small hosted C `main`/`wmain` wrapper to the root package module. A
+the small hosted C `main`/`wmain` wrapper to root package unit zero. A
 relocatable object intentionally carries unresolved runtime references for its
 eventual consumer. Ordinary Draft procedures and globals have hidden native
 visibility; only explicit C exports retain default visibility.
@@ -302,9 +309,10 @@ provider records `$ORIGIN` as a runtime search directory. This supports the
 repository's vendored sibling-library layout without encoding the provider's
 physical build path or requiring ambient `LD_LIBRARY_PATH`.
 Assembly output is a directory bundle with one compiler-produced source for
-each semantic package module, the selected hosted-runtime assembly, and exact
-copied external assembly inputs, avoiding local-label collisions that
-concatenation could create.
+each package LLVM unit, the selected hosted-runtime assembly, and exact copied
+external assembly inputs, avoiding local-label collisions that concatenation
+could create. Compiler-produced assembly currently keeps one complete unit per
+semantic package even at O0.
 Generated C headers cover root-package exports and transitively required C
 records, unions, enums, fixed-array fields, and callback types. Layout
 assertions make size, alignment, and field-offset disagreement a C compile error.

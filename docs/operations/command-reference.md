@@ -66,10 +66,12 @@ used, and the single workspace-wide wave which owns them; later C and LLVM
 consumers do not repeat this work.
 Target lowering reports `native lowering tasks`, exact dependency edges, the
 initial ready-set size, worker slots, and semantic publication waves. MIR,
-package-module, and artifact-layout task counts are separate. A package module
-with no live MIR prerequisites appears in `package LLVM modules initially
-ready`; it can execute alongside another package's MIR rather than waiting at a
-workspace-wide phase barrier.
+package-LLVM-unit, and artifact-layout task counts are separate. A package unit
+with no live MIR prerequisites appears in `package LLVM units initially ready`;
+it can execute alongside another package's MIR rather than waiting at a
+workspace-wide phase barrier. `package LLVM unit tasks` may exceed the package
+count only for a native-only O0 object build with more than 48 live procedures
+in a package.
 Semantic closure reports `effect/reference ready waves`, task counts, and
 worker slots because package effect-flow tasks and procedure native-reference
 tasks share one executor after direct effects publish.
@@ -212,15 +214,18 @@ to the loader. The complete vendored example is
 [`examples/raylib-asteroids`](../../examples/raylib-asteroids/README.md).
 
 Native builds default to `-O0`, which skips LLVM middle-end optimization and
-selects LLVM's fastest no-optimization target-machine level. `-O2` runs LLVM's
-default O2 pipeline independently over each complete semantic-package module,
-then uses the matching default target-machine optimization level. The choice
-applies equally to object and compiler-produced assembly output. Authored
+selects LLVM's fastest no-optimization target-machine level. A native-only O0
+object build splits packages larger than 48 artifact-live procedures into fixed
+48-procedure LLVM units that can emit concurrently. `-O2` runs LLVM's default
+O2 pipeline independently over each complete semantic-package module, then uses
+the matching default target-machine optimization level. Compiler-produced
+assembly and retained LLVM text remain package-wide at both levels. Authored
 package assembly is copied or assembled exactly as written.
 
-Optimization may change only derived native bytes. It does not change source
-semantics, assertions, package-module granularity, resolution pins, synthesis
-context, or resolved-program identity. `emit-llvm` deliberately prints the
+Optimization may change only derived native products. It does not change source
+semantics, assertions, resolution pins, synthesis context, or resolved-program
+identity. The O0 object partition is canonical and independent of worker count.
+`emit-llvm` deliberately prints the
 canonical pre-optimization package modules; use `build --kind assembly -O2` to
 inspect optimized native assembly. Draft currently exposes only `-O0` and
 `-O2`, and performs no cross-package LTO.
@@ -293,7 +298,7 @@ including provider-free `--revalidate`, also fails explicitly; active `judge`
 runs requiring Codex are unavailable, while `judge --list` works. Provider-free
 builds of already resolved source remain ordinary `build` commands.
 
-All completely lowered package modules and package-assembly inputs form one
+All completely lowered package LLVM units and package-assembly inputs form one
 bounded native ready set. Workers emit only
 task-local bytes; after they join, the compiler reports the lowest task-ID
 failure or publishes files and linker inputs in canonical artifact-layout
@@ -402,8 +407,8 @@ failure revokes that exact key. Benchmark validation uses one warmup and ten
 process-isolated samples. `--verify` is a readable CI/release spelling; the
 benchmark still executes and records fresh evidence.
 
-Both commands default to `-O0` and accept the same compiler-owned `-O2`
-package-module pipeline as `build`. The selected level is part of the
+Both commands default to `-O0` and accept the same compiler-owned native-unit
+pipeline as `build`; O2 remains package-wide. The selected level is part of the
 validation policy identity, so O0 and O2 runs produce distinct evidence keys;
 it remains absent from resolved-program identity. In particular, pass `-O2`
 when the recorded benchmark should measure optimized code.

@@ -99,8 +99,10 @@ conceptual diagram alone. An ordinary handwritten `check` constructs one graph:
 interface discovery installs declarations and types, then semantic continuation
 checks bodies, effects, denials, and completed interfaces on those same package
 rows. A native `build` continues that graph directly through procedure-owned
-MIR and one complete LLVM module/object per semantic package, then invokes only
-the remaining platform tools; it does not reload or recheck handwritten source.
+MIR and package-owned LLVM units, then invokes only the remaining platform
+tools; O2 uses one complete module per semantic package while a large native-
+only O0 object build may use several units. It does not reload or recheck
+handwritten source.
 `--timings` exposes resolution rounds as in-memory source transitions. A
 checked complete-file overlay is parsed into the existing workspace graph;
 package/root/import IDs remain stable. Target selection, source generations,
@@ -269,32 +271,37 @@ cannot drift between front end and backend. MIR reads the table immutably:
 compiler-only storage addresses use `rawptr` plus an explicit addressed TypeId,
 while actual source pointers retain their canonical semantic type.
 
-The LLVM adapter has one direct ownership operation: emit one complete module
-for one semantic package. The module contains artifact-live package globals,
-relocatable initializer storage, artifact-live concrete MIR procedures,
-referenced runtime declarations, directly constructed source debug metadata,
-and any requested hosted entry point. Invariant hosted runtime implementation
-is one separately compiled target object embedded in the compiler distribution;
-the root artifact layout selects it by exact target identity rather than
-reconstructing it inside the root module.
+The LLVM adapter has one direct ownership operation: emit one package-owned
+LLVM unit from immutable semantic inputs and an ordered live-MIR subset. O2,
+assembly, and retained-IR requests use one complete unit for the semantic
+package. A native-only O0 object build may divide more than 48 live procedures
+into fixed 48-procedure units so target-machine work can run concurrently.
+Unit zero owns all live globals, relocatable initializer storage, source debug
+metadata, and any requested hosted entry point; later units obtain hidden
+external declarations for cross-unit procedures and globals on demand.
+Invariant hosted runtime implementation is one separately compiled target
+object embedded in the compiler distribution; the root artifact layout selects
+it by exact target identity rather than reconstructing it inside unit zero.
 Procedure MIR is not
 reassembled into an owning `MirProgram`; the emitter borrows the immutable
 payloads from their product side-table rows in canonical package order. This
 gives LLVM the natural package optimization scope while retaining procedure-
 granular semantic checking and MIR lowering.
 
-Compiler orchestration publishes one `PackageLlvmModule` after all of that
-package's `MirProcedure` products complete. For a native command the same task
-immediately publishes the requested object or assembly bytes; LLVM text is
-retained only when an explicit IR consumer or qualification oracle requests it.
-One `ArtifactLayout` product per
-package then publishes the canonical module/assembly input sequence. MIR,
-package-module construction, and layout no longer run as three workspace-wide
-batches. One closed native execution graph mirrors the exact semantic edges: a
-module starts when its own package's MIR slots finish, and its layout may finish
-while unrelated package MIR is still running. Workers write only fixed private
-slots. After the executor joins, the coordinator replays ordinary semantic
-ready waves and moves payloads into canonical rows in product order.
+Compiler orchestration publishes one or more `PackageLlvmUnit` products. Each
+depends only on the direct-reference and `MirProcedure` products assigned to
+that deterministic unit plus shared target, package-interface, ABI, and
+reachability facts. For a native command the same task immediately publishes
+the requested object or assembly bytes; LLVM text is retained only for the
+single complete unit used by an explicit IR consumer or qualification oracle.
+One `ArtifactLayout` product per package then publishes every unit in unit-index
+order followed by hosted runtime and authored assembly where applicable. MIR,
+LLVM-unit construction, and layout do not run as three workspace-wide batches.
+One closed native execution graph mirrors the exact semantic edges: a unit
+starts when its assigned MIR slots finish, and its layout may finish while
+unrelated package MIR is still running. Workers write only fixed private slots.
+After the executor joins, the coordinator replays ordinary semantic ready waves
+and moves payloads into canonical rows in product order.
 
 Published layouts then form the independent artifact-materialization ready set.
 Ordinary package rows borrow their already emitted bytes without copying;
@@ -341,9 +348,10 @@ orchestration.
   runtime body and validates parsed assembly beside direct-effect discovery,
   including non-artifact checks. One explicit artifact closure later selects
   the runtime procedures admitted to the exact native dependency executor. A
-  package module borrows its completed ordered MIR slots only after their
-  executor edges complete. LLVM is an emission/optimization back end rather
-  than Draft's semantic model.
+  package LLVM unit borrows its completed ordered MIR slots only after their
+  executor edges complete. O2 owns one complete package unit; native-only O0
+  may own fixed-size internal units. LLVM is an emission/optimization back end
+  rather than Draft's semantic model.
 
 HIR storage expressions retain the minimum alignment guaranteed by their exact
 occurrence, separately from logical type alignment. Member and index address

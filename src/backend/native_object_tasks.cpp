@@ -46,7 +46,7 @@ bool prepare_native_object_plan(
 
   // WorkTaskId must represent every eventual vector index. Check before
   // appending so no narrowing conversion can produce an aliased task ID. The
-  // artifact layouts already contain the exact module/assembly count.
+  // artifact layouts already contain the exact unit/assembly count.
   const std::size_t maximum_task_count =
       static_cast<std::size_t>(std::numeric_limits<WorkTaskId>::max()) + 1U;
   std::size_t task_count = 0;
@@ -86,9 +86,9 @@ bool prepare_native_object_plan(
     const bool is_root = compiled.graph.root_package.is_valid() &&
         package_index == compiled.graph.root_package.value;
     if (is_root) saw_root_package = true;
-    bool saw_module = false;
     bool saw_runtime = false;
     bool saw_assembly = false;
+    std::size_t next_unit = 0;
     std::size_t next_assembly = 0;
     for (const PackageArtifactInput &layout :
          package->artifact_layout.inputs) {
@@ -97,23 +97,33 @@ bool prepare_native_object_plan(
         plan = NativeObjectPlan{};
         return false;
       }
-      if (layout.kind == PackageArtifactInputKind::PackageLlvmModule) {
-        if (saw_module || saw_runtime || saw_assembly || layout.index != 0) {
-          reason = "package LLVM module layout is malformed";
+      if (layout.kind == PackageArtifactInputKind::PackageLlvmUnit) {
+        if (saw_runtime || saw_assembly || layout.index != next_unit) {
+          reason = "package LLVM unit layout is malformed";
           plan = NativeObjectPlan{};
           return false;
         }
         NativeObjectTask task;
-        task.kind = NativeObjectTaskKind::PackageLlvmModule;
-        task.package_module_input = options.package_module_input;
+        task.kind = NativeObjectTaskKind::PackageLlvmUnit;
+        task.package_unit_input = options.package_unit_input;
         task.package_index = package_index;
+        task.input_index = layout.index;
         task.producer = layout.producer;
-        task.display_name =
-            display_package_identity(package->identity) + " LLVM module";
-        task.output_stem = package_stem + "-module";
-        if (options.package_module_input ==
-            NativePackageModuleInputKind::EmittedNativeBytes) {
-          const PackageNativeOutput &native = package->native_output;
+        task.display_name = display_package_identity(package->identity) +
+            " LLVM unit " + std::to_string(layout.index);
+        task.output_stem = package_stem + "-unit-" +
+            std::to_string(layout.index);
+        if (options.package_unit_input ==
+            NativePackageUnitInputKind::EmittedNativeBytes) {
+          if (layout.index >= package->native_outputs.size()) {
+            reason = "compiled package " + std::to_string(package_index) +
+                " has no native output for LLVM unit " +
+                std::to_string(layout.index);
+            plan = NativeObjectPlan{};
+            return false;
+          }
+          const PackageNativeOutput &native =
+              package->native_outputs[layout.index];
           if (!native.ok || native.bytes.empty() ||
               native.output_kind !=
                   options.expected_native_output.output_kind ||
@@ -132,7 +142,11 @@ bool prepare_native_object_plan(
               : std::string{};
           task.input_bytes = native.bytes;
         } else {
-          if (!package->llvm_module.ok || package->llvm_module.text.empty()) {
+          // Retained LLVM text is deliberately package-wide. Splitting it
+          // would make the qualification oracle compare a different
+          // optimization unit from production O2 and complicate inspection.
+          if (layout.index != 0 || next_unit != 0 ||
+              !package->llvm_module.ok || package->llvm_module.text.empty()) {
             reason = "compiled package " + std::to_string(package_index) +
                 " has no retained LLVM text for the external oracle";
             plan = NativeObjectPlan{};
@@ -143,11 +157,12 @@ bool prepare_native_object_plan(
         }
         plan.tasks.push_back(std::move(task));
         plan.graph.tasks.emplace_back();
-        saw_module = true;
+        ++next_unit;
         continue;
       }
       if (layout.kind == PackageArtifactInputKind::HostedRuntime) {
-        if (!saw_module || saw_runtime || saw_assembly || layout.index != 0) {
+        if (next_unit == 0 || saw_runtime || saw_assembly ||
+            layout.index != 0) {
           reason = "hosted runtime layout is malformed";
           plan = NativeObjectPlan{};
           return false;
@@ -172,8 +187,8 @@ bool prepare_native_object_plan(
         }
         NativeObjectTask task;
         task.kind = NativeObjectTaskKind::HostedRuntime;
-        task.package_module_input =
-            NativePackageModuleInputKind::EmittedNativeBytes;
+        task.package_unit_input =
+            NativePackageUnitInputKind::EmittedNativeBytes;
         task.package_index = package_index;
         task.producer = layout.producer;
         task.display_name = target.facts.identity + " hosted runtime";
@@ -194,8 +209,13 @@ bool prepare_native_object_plan(
         plan.graph.tasks.emplace_back();
         continue;
       }
+      if (layout.kind != PackageArtifactInputKind::PackageAssembly) {
+        reason = "package artifact layout has an unknown input kind";
+        plan = NativeObjectPlan{};
+        return false;
+      }
       saw_assembly = true;
-      if (!saw_module || layout.index != next_assembly ||
+      if (next_unit == 0 || layout.index != next_assembly ||
           layout.index >= package->assembly_sources.size()) {
         reason = "package assembly layout is malformed";
         plan = NativeObjectPlan{};
@@ -226,7 +246,11 @@ bool prepare_native_object_plan(
       plan.graph.tasks.emplace_back();
       ++next_assembly;
     }
-    if (!saw_module ||
+    const bool unit_count_matches = options.package_unit_input ==
+            NativePackageUnitInputKind::EmittedNativeBytes
+        ? next_unit == package->native_outputs.size()
+        : next_unit == 1;
+    if (next_unit == 0 || !unit_count_matches ||
         next_assembly != package->assembly_sources.size()) {
       reason = "package artifact layout does not cover every native input";
       plan = NativeObjectPlan{};
@@ -237,7 +261,7 @@ bool prepare_native_object_plan(
   // caller is producing a relocatable object and intentionally omits that row
   // from the resulting task plan. Requiring the row here prevents a malformed
   // final executable/library plan from silently linking without the Context,
-  // process-state, and runtime-check definitions its package modules reference.
+  // process-state, and runtime-check definitions its package units reference.
   if (compiled.graph.root_package.is_valid() &&
       (!saw_root_package || !saw_root_runtime)) {
     reason = "root package artifact layout has no hosted runtime";
