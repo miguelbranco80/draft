@@ -144,7 +144,14 @@ from existing compiler products:
 
 These are views, not another parser, indexer, or semantic engine. The Draft UI
 copies them into its own bounded storage and presents independent movable,
-resizable windows. `lib/turbo_ui` distinguishes ordinary zoomable windows,
+resizable windows. The document editor uses that same ordinary window model:
+its content is the reusable `turbo_editor` view, while the application owns its
+close, zoom, z-order, and arrangement policy. Files and Buffers are auxiliary
+non-tileable tool panes, so Tile/Cascade arrange the document together with
+visible semantic windows without moving those browsers. Opening a buffer
+reopens and focuses the document window if it was closed.
+
+`lib/turbo_ui` distinguishes ordinary zoomable windows,
 non-zooming tool windows, fixed-size dialogs, and topmost popup scopes through
 plain capability records and balanced immediate-mode calls. Close is a request
 returned to Draft application policy; modal dialogs exclusively route mouse,
@@ -155,8 +162,8 @@ F6 opens Project: its top list selects a runnable root by
 mouse or Enter and its lower section displays the checked package/dependency
 graph. F7 through F11 toggle declaration, reference/call, effect, denial, and
 diagnostic views. F12 remains a quick root cycle and Shift-F12 cycles targets.
-The Window menu tiles or cascades ordinary movable/resizable windows without
-disturbing fixed dialogs.
+The Window menu tiles or cascades ordinary tileable windows without disturbing
+auxiliary tools or fixed dialogs.
 The semantic sections are currently read-only text projections, not trees with
 source-jump navigation.
 

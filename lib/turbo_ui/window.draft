@@ -232,6 +232,13 @@ pub activate_window :: proc(
         state^.focused_id = windows[index].focus_id
         raise_window(windows, id)
     }
+    // Applications may activate a window while painting another window's
+    // control—for example, a file list can open and raise an editor whose
+    // earlier z-order pass has already run. A no-event traversal is then
+    // required so pixels and hit-testing observe the same new ordering.
+    if state^.frame_open {
+        state^.repaint_requested = true
+    }
     return true
 }
 
@@ -244,8 +251,13 @@ pub show_window :: proc(
     if index == len(windows) {
         return false
     }
+    was_visible := windows[index].visible
     windows[index].visible = true
-    return activate_window(state, windows, id)
+    activated := activate_window(state, windows, id)
+    if state^.frame_open && !was_visible {
+        state^.repaint_requested = true
+    }
+    return activated
 }
 
 // show_modal_window records the currently active owner before activating the
@@ -276,6 +288,7 @@ pub hide_window :: proc(
     if index == len(windows) {
         return false
     }
+    was_visible := windows[index].visible
     windows[index].visible = false
     if state^.popup_id != No_Widget && state^.popup_owner == id {
         popup_close(state)
@@ -298,6 +311,9 @@ pub hide_window :: proc(
         if next != No_Widget {
             activate_window(state, windows, next)
         }
+    }
+    if state^.frame_open && was_visible {
+        state^.repaint_requested = true
     }
     return true
 }

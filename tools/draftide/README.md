@@ -56,8 +56,11 @@ first version selects compiler-known project sources rather than browsing the
 complete filesystem.
 F12 changes root and Shift-F12 changes target. Alt-F3 closes the active tool
 window, Ctrl-F5 enters keyboard move/size mode, and Ctrl-F6 selects the next
-window. The Window menu also tiles or cascades ordinary windows while leaving
-fixed dialogs untouched. Editing, selection, search,
+window. The editor itself is an ordinary closable, zoomable desktop window;
+Window > Editor or opening a source brings it back. Tile and Cascade arrange
+that editor together with visible semantic windows, while leaving Files,
+Buffers, and fixed dialogs in their application-selected positions. Editing,
+selection, search,
 save, undo/redo, mouse input, and dirty-file conflict rules are inherited from
 `lib/turbo_editor_app` and `lib/turbo_editor`.
 

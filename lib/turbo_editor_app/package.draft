@@ -32,19 +32,20 @@ Input_Capacity :: 128
 Maximum_Columns :: 300
 Maximum_Rows :: 120
 
-Window_Files :: 0
-Window_Buffers :: 1
-Window_Search :: 2
-Window_Quit :: 3
-Window_Diagnostics :: 4
-Window_Project :: 5
-Window_Declarations :: 6
-Window_References :: 7
-Window_Effects :: 8
-Window_Denials :: 9
-Window_Open_Workspace :: 10
-Window_Workspace_Confirm :: 11
-Window_Count :: 12
+Window_Editor :: 0
+Window_Files :: 1
+Window_Buffers :: 2
+Window_Search :: 3
+Window_Quit :: 4
+Window_Diagnostics :: 5
+Window_Project :: 6
+Window_Declarations :: 7
+Window_References :: 8
+Window_Effects :: 9
+Window_Denials :: 10
+Window_Open_Workspace :: 11
+Window_Workspace_Confirm :: 12
+Window_Count :: 13
 
 Menu_File :: 520
 Menu_File_Popup :: 521
@@ -116,6 +117,20 @@ App :: struct {
 }
 
 init_windows :: proc(app: ^App) {
+    // The document is an ordinary desktop window rather than a privileged
+    // background layer. Its content remains the reusable turbo_editor view;
+    // only this application decides that the view is closable, zoomable, and
+    // eligible for Tile/Cascade beside semantic windows.
+    app^.windows[Window_Editor] = turbo_ui.window_init(
+        399,
+        turbo_ui.Rect{column = 1, row = 1, width = 86, height = 26},
+        1,
+    )
+    // Preserve the old full-desktop editing area on first launch while still
+    // giving the editor real chrome and an ordinary restore rectangle. The
+    // first Tile/Cascade operation leaves zoom and arranges it normally.
+    app^.windows[Window_Editor].zoomed = true
+    app^.windows[Window_Editor].focus_id = 600
     app^.windows[Window_Files] = turbo_ui.tool_window_init(
         400,
         turbo_ui.Rect{column = 2, row = 3, width = 28, height = 15},
@@ -273,7 +288,14 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
     }
     app^.active = index
     app^.buffer_selection = index
-    app^.ui.focused_id = cast[turbo_ui.Widget_Id](600 + app^.active)
+    editor_focus := cast[turbo_ui.Widget_Id](600 + app^.active)
+    app^.windows[Window_Editor].focus_id = editor_focus
+    turbo_ui.show_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Editor].id,
+    )
+    app^.ui.focused_id = editor_focus
     if app^.host.check != nil {
         refresh_host(app)
     }
@@ -694,9 +716,7 @@ open_project_source :: proc(app: ^App, source_index: usize) -> bool {
     app^.buffer_selection = app^.active
     app^.file_selection = source_index
     bind_active_buffer_to_host_root(app)
-    app^.ui.focused_id = cast[turbo_ui.Widget_Id](600 + app^.active)
-    refresh_host(app)
-    return true
+    return activate_buffer(app, app^.active)
 }
 
 // open_selected_host_source synchronizes the editor's active buffer with the
@@ -720,16 +740,13 @@ open_selected_host_source :: proc(app: ^App) -> bool {
     selected_root := app^.host.selected_root(app^.host.user)
     for index: usize = 0; index < app^.buffer_count; index += 1 {
         if byte_views_equal(turbo_editor.path_bytes(&app^.buffers[index]), path) {
-            app^.active = index
-            app^.buffer_selection = index
             source_index := project_source_index(app, path)
             if source_index < app^.project_source_count {
                 app^.file_selection = source_index
             }
             app^.buffer_root[index] = selected_root
             app^.buffer_has_root[index] = true
-            refresh_host(app)
-            return true
+            return activate_buffer(app, index)
         }
     }
     if !init_one_buffer_bytes(app, path) {
@@ -743,8 +760,7 @@ open_selected_host_source :: proc(app: ^App) -> bool {
     }
     app^.buffer_root[app^.active] = selected_root
     app^.buffer_has_root[app^.active] = true
-    refresh_host(app)
-    return true
+    return activate_buffer(app, app^.active)
 }
 
 // select_project_root is the single UI transition for F12 and the Project
@@ -2033,7 +2049,7 @@ paint_app_menu_bar :: proc(app: ^App, surface: ^tui.Surface) {
         Menu_Window, Menu_Window_Popup,
         turbo_ui.Rect{column = 28, width = 10, height = 1},
         "Window", cast[u8]('w'),
-        turbo_ui.Rect{column = 28, row = 1, width = 35, height = 16},
+        turbo_ui.Rect{column = 28, row = 1, width = 35, height = 17},
     )
     turbo_ui.menu_bar_end(&app^.ui, &app^.menus)
 }
@@ -2184,8 +2200,9 @@ paint_app_menus :: proc(app: ^App) -> bool {
     window_menu := turbo_ui.begin_menu(
         &app^.ui, &app^.menus,
         Menu_Window, Menu_Window_Popup,
-        turbo_ui.Rect{column = 28, row = 1, width = 35, height = 16},
+        turbo_ui.Rect{column = 28, row = 1, width = 35, height = 17},
     )
+    menu_window_toggle(app, &window_menu, 561, Window_Editor, "Editor", "")
     menu_window_toggle(app, &window_menu, 550, Window_Files, "Files", "F2")
     menu_window_toggle(app, &window_menu, 551, Window_Buffers, "Buffers", "F3")
     turbo_ui.menu_separator(&app^.ui, &window_menu)
@@ -2258,28 +2275,6 @@ paint_app :: proc(
     )
     paint_app_menu_bar(app, surface)
 
-    editor_bounds := turbo_ui.Rect{row = 1, width = surface^.columns}
-    if surface^.rows > 2 {
-        editor_bounds.height = surface^.rows - 2
-    }
-    edit_result := turbo_editor.edit(
-        active_buffer(app),
-        &app^.ui,
-        cast[turbo_ui.Widget_Id](600 + app^.active),
-        editor_bounds,
-        app^.syntax_spans[:app^.syntax_span_count],
-        editor_theme,
-    )
-    if edit_result.save_requested {
-        save_active_buffer(app)
-    }
-    if edit_result.search_requested {
-        request_search(app)
-    }
-    if edit_result.changed {
-        refresh_host(app)
-    }
-
     order: [Window_Count]usize
     count := turbo_ui.window_order(app^.windows[:], order[:])
     should_quit := false
@@ -2287,7 +2282,9 @@ paint_app :: proc(
         index := order[order_index]
         window := &app^.windows[index]
         title := "Files"
-        if index == Window_Buffers {
+        if index == Window_Editor {
+            title = "Editor"
+        } else if index == Window_Buffers {
             title = "Buffers"
         } else if index == Window_Search {
             title = "Find"
@@ -2320,6 +2317,24 @@ paint_app :: proc(
         }
         if window_context.visible {
             switch index {
+            case Window_Editor:
+                edit_result := turbo_editor.edit(
+                    active_buffer(app),
+                    &app^.ui,
+                    cast[turbo_ui.Widget_Id](600 + app^.active),
+                    window_context.content,
+                    app^.syntax_spans[:app^.syntax_span_count],
+                    editor_theme,
+                )
+                if edit_result.save_requested {
+                    save_active_buffer(app)
+                }
+                if edit_result.search_requested {
+                    request_search(app)
+                }
+                if edit_result.changed {
+                    refresh_host(app)
+                }
             case Window_Files:
                 paint_path_list(
                     app,

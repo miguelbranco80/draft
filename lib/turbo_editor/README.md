@@ -2,7 +2,9 @@
 
 `turbo_editor` is a reusable exact-byte document buffer and terminal-cell
 editor view. It depends on `lib/turbo_ui`, but not on terminal input, rendering,
-the Draft compiler, or a process/event loop.
+the Draft compiler, a process/event loop, or a desktop-window policy. A host may
+place the same editor view in any `turbo_ui` content rectangle; Turbo Draft puts
+it in an ordinary movable, resizable, zoomable window.
 
 The package provides:
 

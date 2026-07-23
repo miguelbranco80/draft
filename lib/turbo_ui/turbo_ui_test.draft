@@ -301,6 +301,17 @@ test_window_order_drag_and_resize :: proc(test: ^testing.Test) {
     testing.expect(test, state.active_kind == .none)
     testing.expect(test, state.target_window == windows[1].id)
     end_frame(&state)
+
+    // A window may be opened by a control whose owner has already painted.
+    // The next no-event traversal is part of the public immediate-mode
+    // contract: it makes the new z-order visible before presentation.
+    windows[1].visible = false
+    begin_window_frame(&state, &surface, no_event(), theme, windows[:])
+    end_frame(&state)
+    begin_window_frame(&state, &surface, no_event(), theme, windows[:])
+    testing.expect(test, show_window(&state, windows[:], windows[1].id))
+    end_frame(&state)
+    testing.expect(test, needs_repaint(&state))
     tui.surface_destroy(&surface)
 }
 
