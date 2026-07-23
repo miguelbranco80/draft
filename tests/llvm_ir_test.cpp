@@ -12,7 +12,6 @@
 #include "native_pipeline.h"
 #include "workspace/package.h"
 
-#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -39,7 +38,6 @@ struct TestState {
 struct EmittedFixture {
   bool ok = false;
   std::string text;
-  std::vector<draft::SourceCorrelationEntry> source_correlations;
   std::string diagnostics;
 };
 
@@ -92,7 +90,6 @@ struct EmittedFixture {
   result.ok = semantics.ok && bodies.ok && mir.ok && module.ok &&
       !diagnostics.has_errors();
   result.text = std::move(module.text);
-  result.source_correlations = std::move(module.source_correlations);
   result.diagnostics = draft::render_diagnostics(sources, diagnostics);
   return result;
 }
@@ -162,63 +159,11 @@ generated :: proc() -> i64 {
   EXPECT(state, emitted.text.find(", !dbg !") != std::string::npos);
   EXPECT(state, emitted.text.find("draft.debug.begin") == std::string::npos);
   EXPECT(state, emitted.text.find("draft.debug.end") == std::string::npos);
-  EXPECT(state, emitted.text.find(
-      "generated:workspace:generated-debug:surface.draft:declaration:0") !=
-      std::string::npos);
   EXPECT(state, emitted.text.find("checkout-that-must-not-leak") ==
       std::string::npos);
   EXPECT(state, emitted.text.find("package.draft [resolved]") ==
       std::string::npos);
 
-  EXPECT(state, !emitted.source_correlations.empty());
-  if (!emitted.source_correlations.empty()) {
-    const draft::SourceCorrelationEntry &entry =
-        emitted.source_correlations.front();
-    EXPECT(state, entry.package.root_identity == "workspace");
-    EXPECT(state, entry.package.root_relative_path == "agent-noop");
-    EXPECT(state, entry.procedure == "generated");
-    EXPECT(state, !entry.operation.empty());
-    EXPECT(state, entry.authored_file == "surface.draft");
-    EXPECT(state, entry.authored.line == 41);
-    EXPECT(state, entry.authored.column == 7);
-    EXPECT(state, entry.generated_file == "package.draft");
-    EXPECT(state, entry.generated.line == 3);
-    EXPECT(
-        state,
-        entry.synthesis_site ==
-            "workspace:generated-debug:surface.draft:declaration:0");
-  }
-
-  draft::SourceCorrelationMap map;
-  map.target_identity = "draft-aarch64-macos-v5";
-  map.compiler_identity = "compiler-v1";
-  map.program_identity =
-      "resolved-program-sha256:" + draft::sha256("resolved-program").hex();
-  // Reverse the rows to prove that serialization owns canonical order rather
-  // than inheriting whichever traversal order a backend happens to use.
-  map.entries = emitted.source_correlations;
-  std::reverse(map.entries.begin(), map.entries.end());
-  const std::string correlation =
-      draft::serialize_source_correlation_map(map);
-  std::string correlation_error;
-  EXPECT(state, draft::validate_source_correlation_map(
-      map, correlation_error));
-  EXPECT(state, correlation_error.empty());
-  EXPECT(state, correlation.find("draft-source-correlation-v1") !=
-      std::string::npos);
-  EXPECT(state, correlation.find("\"authored\": {\"file\": \"surface.draft\"") !=
-      std::string::npos);
-  EXPECT(state, correlation.find("\"generated\": {\"file\": \"package.draft\"") !=
-      std::string::npos);
-  EXPECT(state, correlation.find("checkout-that-must-not-leak") ==
-      std::string::npos);
-
-  if (!map.entries.empty()) {
-    map.entries.push_back(map.entries.front());
-    EXPECT(state, !draft::validate_source_correlation_map(
-        map, correlation_error));
-    EXPECT(state, correlation_error.find("duplicated") != std::string::npos);
-  }
 }
 
 // The semantic type of Record.value is still u32, but its occurrence begins at
@@ -370,11 +315,6 @@ main :: proc() -> int {
           target, "semantic package module", package_module.text, {});
   if (!package_object.ok) std::cerr << package_object.failure << '\n';
   EXPECT(state, package_object.ok);
-
-  for (const draft::SourceCorrelationEntry &entry :
-       package_module.source_correlations) {
-    EXPECT(state, entry.procedure_ordinal < mir.procedures.size());
-  }
 
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
@@ -818,7 +758,7 @@ main :: proc() -> int {
 
   // Inspect the two extraction lines themselves. Debug metadata separates an
   // extract from its later store, so adjacency would make this test depend on
-  // an unrelated source-correlation detail.
+  // unrelated instruction decoration.
   const std::string tuple_extract = "extractvalue { i32, i64, i8 }";
   const std::size_t width_position = emitted.text.find(tuple_extract);
   const std::size_t width_end = emitted.text.find('\n', width_position);

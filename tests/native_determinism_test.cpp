@@ -200,8 +200,6 @@ void compare_repeated_artifact(
   EXPECT(state,
       second.object_workers_used == std::min<std::size_t>(4, task_count));
   EXPECT(state, second.debug_symbols_path == first.debug_symbols_path);
-  EXPECT(state,
-      second.debug_symbols_digest == first.debug_symbols_digest);
   error.clear();
   const ArtifactSnapshot second_snapshot =
       snapshot_artifact(options.output_path, kind, error);
@@ -297,8 +295,6 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
     }
     EXPECT(state, !std::filesystem::exists(
         failed_directory / "build" / "package-0-module.o"));
-    EXPECT(state, !std::filesystem::exists(
-        failed_directory / "build" / "draft-source-correlation.json"));
   } else {
     EXPECT(state, false);
   }

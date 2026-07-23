@@ -7,7 +7,6 @@
 // and included in the final deterministic link inputs.
 
 #include "backend/toolchain.h"
-#include "base/content_tree.h"
 #include "compile/compiler.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
@@ -710,27 +709,9 @@ void test_package_assembly_reaches_link(TestState &state) {
   EXPECT(state, std::filesystem::exists(temporary / "program"));
   EXPECT(state, built.debug_symbols_path ==
       (temporary / "program.dSYM").string());
-  draft::Sha256Digest debug_symbols_digest;
-  draft::DiagnosticSink debug_digest_diagnostics;
-  EXPECT(state, draft::hash_content_tree(
-      temporary / "program.dSYM",
-      debug_symbols_digest,
-      debug_digest_diagnostics));
-  EXPECT(state, built.debug_symbols_digest == debug_symbols_digest);
   EXPECT(state, !std::filesystem::exists(
       temporary / "program.dSYM" / "Contents" / "Resources" /
           "Relocations"));
-  EXPECT(
-      state,
-      built.source_correlation_path ==
-          (temporary / "build" / "draft-source-correlation.json").string());
-  const std::string source_correlation =
-      read_file(temporary / "build" / "draft-source-correlation.json");
-  EXPECT(state, !source_correlation.empty());
-  EXPECT(state, built.source_correlation_digest ==
-      draft::sha256(source_correlation));
-  EXPECT(state, source_correlation.find("llvm-modules-sha256:") !=
-      std::string::npos);
 
   const std::string arguments = read_file(log);
   EXPECT(state, arguments.find(

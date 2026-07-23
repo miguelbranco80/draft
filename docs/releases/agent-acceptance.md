@@ -9,7 +9,7 @@ operations. It combines features that are most useful when exercised together:
 - independent native test and benchmark execution and evidence;
 - an artifact-backed judgment whose claim depends on the imported body;
 - provider-free checking and native building from saved expansions; and
-- generated-source correlation in the native debug sidecar.
+- native debug information for a program containing generated source.
 
 The committed `.draft` files are content-addressed acceptance inputs, not build
 caches. They contain four checked generated-source objects and separate v6

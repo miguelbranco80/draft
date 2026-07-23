@@ -489,9 +489,10 @@ artifact kinds.
 Assembly output is a directory bundle, not concatenated text. It contains
 `package-<package-index>-module.s` for each semantic package and
 `package-<package-index>-assembly-<input-index><source-extension>` for each
-selected package-assembly input. Native builds also emit source-correlation
-metadata. Deterministic output must not contain physical checkout paths,
-nondeterministic archive metadata, or filesystem enumeration order.
+selected package-assembly input. Ordinary source locations remain in native
+debug information; no separate source-correlation artifact is emitted.
+Deterministic output must not contain physical checkout paths, nondeterministic
+archive metadata, or filesystem enumeration order.
 
 ## Portability checklist
 

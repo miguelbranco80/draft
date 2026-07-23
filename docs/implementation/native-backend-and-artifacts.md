@@ -169,18 +169,16 @@ diagnostic sink or timing recorder.
 
 After every started task joins, the command thread replays timing records,
 selects the lowest-ID failure, and publishes successful products in task-ID
-order. A failed ready set publishes no canonical native object or complete
-source-correlation sidecar. Successful publication fixes assembly filenames,
-object/link argument order, and archive member order independently of worker
-completion order. One-worker and four-worker qualification builds compare every
-artifact tree byte for byte.
+order. A failed ready set publishes no canonical native object. Successful
+publication fixes assembly filenames, object/link argument order, and archive
+member order independently of worker completion order. One-worker and
+four-worker qualification builds compare every artifact tree byte for byte.
 
 The external Clang oracle is also exercised against the same real compiled
 graphs for executable, relocatable object, static library, dynamic library, and
-assembly output. Both routes must produce the expected native container and
-source-correlation identity, and both executable results are launched. LLVM and
-Clang output bytes need not be identical when the target contract permits
-incidental encoding differences.
+assembly output. Both routes must produce the expected native container, and
+both executable results are launched. LLVM and Clang output bytes need not be
+identical when the target contract permits incidental encoding differences.
 
 ## Relocatable aggregate constants
 
@@ -261,41 +259,6 @@ macros use the `<stdint.h>` exact-width constant forms through 64 bits; 128-bit
 values are assembled from two `UINT64_C` halves, avoiding out-of-range decimal
 tokens and the nonexistent `INT128_C` facility.
 
-## Native source correlation sidecar
-
-Status: canonical operation map implemented; runtime instrumentation remains a
-validation-profile concern.
-
-Every LLVM debug marker now publishes the same row to an implementation-owned
-`draft-source-correlation-v1` sidecar. A source-addressable row is identified by
-package, canonical MIR procedure ordinal, and emission ordinal, describes the
-procedure spelling plus MIR instruction or terminator, and carries both
-generated and authored file/line/column coordinates. The ordinal is necessary
-because multiple concrete specializations may retain one source procedure
-spelling.
-Generated rows additionally carry the persistent synthesis-site identity.
-Filenames are logical basenames under the separately recorded package identity;
-physical checkout paths never enter the native artifact or sidecar.
-
-The textual LLVM emitter gives every real instruction the canonical two-space
-instruction indentation consumed by the linear debug-location pass. This
-includes result-less Draft calls: a void call still receives the source
-location of its MIR row. LLVM therefore never has to discard an otherwise
-valid function's debug information because an inlinable call lacks `!dbg`.
-
-The native adapter writes the canonical JSON only after every native-object
-task succeeds and returns its SHA-256 digest beside the native output. A
-normal resolved build binds the map to the resolved-program digest. The lower
-level backend API can deliberately compile a checked graph before resolution;
-that form binds the map to a digest of the exact, canonically ordered package
-module set instead of inventing a resolved-program identity. The sidecar
-remains derived output in both cases, avoiding a circular program identity.
-
-The sidecar is the common join boundary for future counter-based coverage and
-sampling profiles. Sanitizer, race, allocator-poisoning, and coverage runtimes
-still require explicit versioned validation profiles; this map does not pretend
-that an unrequested instrument ran.
-
 ## Native Mach-O debug companions
 
 Status: implemented for executable and dynamic-library artifacts.
@@ -306,27 +269,25 @@ matching LLVM `dsymutil` before it reports success and publishes the conventiona
 sibling `<artifact>.dSYM`.
 
 The invocation ignores object and Swift-module timestamps, uses one worker, and
-verifies its linked output. The returned native result carries both the bundle path and its
-canonical content-tree digest. Object, archive, and assembly artifacts keep
-their debug data in their object members or `.loc` directives and therefore do
-not receive a misleading final-link companion.
+verifies its linked output. The returned native result carries the bundle path.
+Object, archive, and assembly artifacts keep their debug data in their object
+members or `.loc` directives and therefore do not receive a misleading
+final-link companion. The compiler does not walk or hash the bundle: it is a
+derived native product, not a Draft program input.
 
 LLVM dsymutil also emits `Contents/Resources/Relocations`, a rewriting cache
 whose YAML records the physical binary path. That cache is unnecessary for
-symbolizing the already-linked binary and is removed before hashing or
-publication. The standard `Info.plist` and `Contents/Resources/DWARF` payload
-remain, and their logical Draft compilation directory/file coordinates agree
-with `draft-source-correlation-v1`. Compiler content v121 first made the
-expanded native artifact contract explicit without changing resolved source
-semantics; the current compiler-content version retains that contract.
+symbolizing the already-linked binary and is removed before publication. The
+standard `Info.plist` and `Contents/Resources/DWARF` payload remain with logical
+Draft compilation directory/file coordinates.
 
-The resolver's macOS native acceptance case now checks the complementary
+The resolver's macOS native acceptance case checks the complementary
 generated-source path. After four declaration/member/expression/statement pins
-are replayed without a provider, it links and runs the program and requires the
-executable expression and statement site identities in both
-`draft-source-correlation-v1` and the linked DWARF payload. Declaration-only
-and layout-only pins are not required to fabricate machine operations. This is
-a real host-toolchain/dSYM gate and remains part of release qualification.
+are replayed without a provider, it links and runs the program and requires a
+nonempty linked DWARF payload. Persistent synthesis-site identities remain in
+resolution metadata; the backend does not fabricate native labels solely to
+duplicate them. This is a real host-toolchain/dSYM gate and remains part of
+release qualification.
 
 ## Native ELF debug information
 
@@ -336,10 +297,9 @@ ELF final links retain input-object DWARF directly in the executable or
 shared library. They therefore do not run `dsymutil` or publish an empty
 platform-shaped companion. The native result leaves its separate debug-symbol
 fields empty, while the primary artifact remains unstripped and carries
-`.debug_info`, `.debug_line`, logical Draft source coordinates, the source
-correlation sidecar, and its deterministic GNU build ID. A future split-debug
-profile must be a separate explicit artifact contract rather than an ambient
-`objcopy` convention.
+`.debug_info`, `.debug_line`, logical Draft source coordinates, and its
+deterministic GNU build ID. A future split-debug profile must be a separate
+explicit artifact contract rather than an ambient `objcopy` convention.
 
 ## Native PE/COFF artifacts and debug information
 
@@ -349,9 +309,9 @@ gate; full validation/determinism harness parity remains pending.
 The x86-64 Windows adapter emits AMD64 COFF package objects in process, invokes
 matching Clang/LLD for `.exe` and `.dll` links, and uses `llvm-lib` for
 deterministic `.lib` archives. C exports use LLVM `dllexport`, so a DLL link
-also publishes an explicit hashed import library. Linked outputs request
-lld-link `/Brepro` and full CodeView debug information in a sibling PDB whose
-path and byte digest are returned with the primary result.
+also publishes an explicit import library. Linked outputs request lld-link
+`/Brepro` and full CodeView debug information in a sibling PDB. The result
+returns the companion paths without reading or hashing their bytes.
 
 Tools are launched with `CreateProcessW` and a restricted inherited-handle
 list. Argument conversion/quoting preserves the exact UTF-8 operational paths

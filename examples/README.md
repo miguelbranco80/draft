@@ -115,7 +115,7 @@ policy rather than missing backend features.
 
 | Example | What it covers |
 | --- | --- |
-| [`agent-acceptance`](agent-acceptance/) | End-to-end declaration, member, expression, and statement synthesis; `judge`; committed content-addressed expansions; tests and benchmarks that consume generated declarations; evidence; generated-source correlation; and provider-free rebuilding. See the [acceptance guide](../docs/releases/agent-acceptance.md). |
+| [`agent-acceptance`](agent-acceptance/) | End-to-end declaration, member, expression, and statement synthesis; `judge`; committed content-addressed expansions; tests and benchmarks that consume generated declarations; evidence; native debug output; and provider-free rebuilding. See the [acceptance guide](../docs/releases/agent-acceptance.md). |
 | [`agent-pending`](agent-pending/) | The smallest intentionally unresolved synthesis and judgment workspace, with a self-contained [live-run guide](agent-pending/README.md). It demonstrates the first Codex-backed `resolve`, generated-source inspection, and the subsequent provider-free build. |
 | [`judgment-tour`](judgment-tour/) | Provider-free package, struct-member, procedure, branch, loop, switch-case, and target-selected judgments; attached evidence; selective execution; ordinary assertions; and a pointer-taking procedure as Draft's current method-style pattern. |
 | [`agent-judgment-mix`](agent-judgment-mix/) | Intentionally unresolved declaration, member, expression, statement, and parsed-assembly synthesis guided by package, type-member, and dominating procedure judgments, with a self-contained live-run guide. |

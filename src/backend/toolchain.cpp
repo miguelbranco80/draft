@@ -4,7 +4,7 @@
 // one explicit TargetProfile and produces an object, archive, shared library,
 // executable, or assembly directory. It owns command-local build paths,
 // worker-private tool inputs, subprocess lifetimes, canonical publication,
-// source-correlation output, and Mach-O debug companions. It does not decide
+// and Mach-O debug companions. It does not decide
 // Draft semantics, layout, ABI, or target selection; those facts must already
 // be explicit in the compiler result and target profile.
 //
@@ -23,8 +23,6 @@
 
 #include "backend/llvm_object_emitter.h"
 #include "backend/native_object_tasks.h"
-#include "backend/source_correlation.h"
-#include "base/content_tree.h"
 #include "base/timing.h"
 
 #include <algorithm>
@@ -426,25 +424,6 @@ void append_target_arguments(
     std::string &contents,
     std::string &reason);
 
-// Reads and hashes one regular companion file. PDB and import-library digests
-// use bytes rather than the directory-tree hash used by dSYM bundles.
-[[nodiscard]] bool hash_regular_file(
-    const std::filesystem::path &path,
-    Sha256Digest &digest,
-    DiagnosticSink &diagnostics,
-    std::string_view role) {
-  std::string bytes;
-  std::string reason;
-  if (!read_file_bytes(path, bytes, reason)) {
-    diagnostics.error(
-        SourceRange::invalid(), "cannot read " + std::string(role) + ": " +
-            reason);
-    return false;
-  }
-  digest = sha256(bytes);
-  return true;
-}
-
 // Writes one complete compiler-owned file through a sibling temporary and
 // renames it into place. The caller owns the parent directory. On failure the
 // final path is not replaced, reason is diagnostic-ready, and a failed rename
@@ -576,7 +555,7 @@ void append_target_arguments(
 
 // dsymutil owns a conventional directory layout, but a successful process exit
 // is not by itself proof that a usable companion was published. Check the two
-// files consumed by macOS symbol tooling before hashing or returning the tree.
+// files consumed by macOS symbol tooling before returning the tree.
 [[nodiscard]] bool require_regular_file(
     const std::filesystem::path &path,
     std::string_view role,
@@ -1044,25 +1023,6 @@ NativeBuildResult build_native_artifact(
   }
 
   std::vector<std::string> objects;
-  SourceCorrelationMap source_correlation;
-  source_correlation.target_identity = target.facts.identity;
-  source_correlation.compiler_identity = compiled.compiler_content_identity;
-  if (compiled.resolved_program_digest.has_value()) {
-    source_correlation.program_identity = "resolved-program-sha256:" +
-        compiled.resolved_program_digest->hex();
-  }
-  Sha256 direct_module_identity;
-  for (const std::optional<CompiledPackage> &package : compiled.packages) {
-    // prepare_native_object_plan proved every row is present and lowered. This
-    // separate canonical traversal publishes package-level correlation and
-    // identity independent of how object tasks are eventually scheduled.
-    source_correlation.entries.insert(
-        source_correlation.entries.end(),
-        package->llvm_module.source_correlations.begin(),
-        package->llvm_module.source_correlations.end());
-    direct_module_identity.update(
-        sha256(package->llvm_module.text).bytes);
-  }
 
   TimingScope object_emission_timing = options.timings != nullptr
       ? options.timings->scope("LLVM and assembly object emission")
@@ -1190,39 +1150,6 @@ NativeBuildResult build_native_artifact(
     objects.push_back(object.string());
   }
   object_emission_timing.finish();
-
-  if (source_correlation.program_identity.empty()) {
-    source_correlation.program_identity = "llvm-modules-sha256:" +
-        direct_module_identity.finalize().hex();
-  }
-
-  // Write the map only after every native object task succeeds and canonical
-  // object publication completes. A failed partial build may leave worker-
-  // private diagnostic files in the isolated directory, but it must not
-  // publish a complete-looking source correlation artifact for an incomplete
-  // graph.
-  std::string correlation_error;
-  if (!validate_source_correlation_map(
-          source_correlation,
-          correlation_error)) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "cannot publish native source correlation: " + correlation_error);
-    return result;
-  }
-  const std::string source_correlation_bytes =
-      serialize_source_correlation_map(source_correlation);
-  const std::filesystem::path source_correlation_path =
-      build_directory / "draft-source-correlation.json";
-  if (!write_atomic(
-          source_correlation_path,
-          source_correlation_bytes,
-          correlation_error)) {
-    diagnostics.error(SourceRange::invalid(), correlation_error);
-    return result;
-  }
-  result.source_correlation_path = source_correlation_path.string();
-  result.source_correlation_digest = sha256(source_correlation_bytes);
 
   if (options.artifact_kind == NativeArtifactKind::Assembly) {
     result.ok = true;
@@ -1560,26 +1487,12 @@ NativeBuildResult build_native_artifact(
               remove_error.message());
       return result;
     }
-    if (!hash_content_tree(
-            debug_symbols, result.debug_symbols_digest, diagnostics)) {
-      return result;
-    }
     result.debug_symbols_path = debug_symbols.string();
   }
   if (pdb_path.has_value()) {
-    if (!hash_regular_file(
-            *pdb_path, result.debug_symbols_digest, diagnostics,
-            "PE debug-symbol file")) {
-      return result;
-    }
     result.debug_symbols_path = pdb_path->string();
   }
   if (import_library_path.has_value()) {
-    if (!hash_regular_file(
-            *import_library_path, result.import_library_digest, diagnostics,
-            "PE import library")) {
-      return result;
-    }
     result.import_library_path = import_library_path->string();
   }
   result.ok = true;

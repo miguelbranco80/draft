@@ -311,7 +311,6 @@ public:
 
     result.ok = diagnostics_.error_count() == initial_errors_;
     result.text = attach_debug_locations(output_.str());
-    result.source_correlations = std::move(source_correlations_);
     return result;
   }
 
@@ -440,9 +439,8 @@ private:
     return metadata;
   }
 
-  [[nodiscard]] std::optional<std::size_t> emit_debug_marker(
-      SourceRange range,
-      std::string_view operation) {
+  [[nodiscard]] std::optional<std::size_t> emit_debug_location(
+      SourceRange range) {
     if (!range.is_valid() ||
         current_debug_subprogram_ == std::numeric_limits<std::size_t>::max()) {
       return std::nullopt;
@@ -450,44 +448,10 @@ private:
     const DebugCoordinate coordinate = debug_coordinate(range);
     const std::size_t file = debug_file(coordinate.file_name);
     const std::size_t scope = debug_scope(current_debug_subprogram_, file);
-    const std::size_t ordinal = debug_marker_index_++;
-    SourceCorrelationEntry correlation;
-    correlation.package = options_.package;
-    correlation.procedure = current_debug_procedure_;
-    correlation.procedure_ordinal =
-        static_cast<std::uint64_t>(current_debug_procedure_ordinal_);
-    correlation.ordinal = static_cast<std::uint64_t>(ordinal);
-    correlation.operation = operation;
-    correlation.authored_file = coordinate.file_name;
-    correlation.authored = coordinate.surface;
-    correlation.generated_file = coordinate.generated_file_name;
-    correlation.generated = coordinate.generated;
-    correlation.synthesis_site = coordinate.site_identity;
-    source_correlations_.push_back(std::move(correlation));
-
-    // The label repeats the stable local operation identity. Tools which only
-    // have DWARF can join it to the sidecar without relying on metadata node
-    // numbers, while tools reading the sidecar never need to parse this label.
-    std::string label_name = "draft.operation:" +
-        std::to_string(current_debug_procedure_ordinal_) + ":" +
-        std::to_string(ordinal) + ":" + std::string(operation);
-    if (coordinate.synthesized) {
-      label_name += ":generated:" + coordinate.site_identity;
-    } else {
-      label_name += ":source";
-    }
-    label_name += ":" + std::to_string(coordinate.generated.line) + ":" +
-        std::to_string(coordinate.generated.column);
-    const std::size_t label = add_debug_metadata(
-        "!DILabel(scope: !" + std::to_string(scope) + ", name: \"" +
-        llvm_bytes(label_name) + "\", file: !" + std::to_string(file) +
-        ", line: " + std::to_string(coordinate.surface.line) + ")");
     const std::size_t location = add_debug_metadata(
         "!DILocation(line: " + std::to_string(coordinate.surface.line) +
         ", column: " + std::to_string(coordinate.surface.column) +
         ", scope: !" + std::to_string(scope) + ")");
-    output_ << "  call void @llvm.dbg.label(metadata !" << label
-            << "), !dbg !" << location << '\n';
     return location;
   }
 
@@ -884,7 +848,6 @@ private:
     // declare them, while the root package owns their single definitions and
     // the process-wide root context.
     output_ << "declare void @llvm.trap() cold noreturn nounwind\n"
-            << "declare void @llvm.dbg.label(metadata)\n"
             << "declare i16 @llvm.bswap.i16(i16)\n"
             << "declare i32 @llvm.bswap.i32(i32)\n"
             << "declare i64 @llvm.bswap.i64(i64)\n"
@@ -4493,11 +4456,11 @@ private:
                         const MirProcedure &procedure,
                         const MirInstruction &instruction,
                         std::vector<std::string> &operands) {
-    // One intrinsic marker per MIR operation makes every source operation
-    // addressable by line-table consumers without adding runtime behavior.
-    // It also covers constant/alias MIR rows that do not print an LLVM value.
-    const std::optional<std::size_t> debug_location = emit_debug_marker(
-        instruction.range, mir_instruction_kind_name(instruction.kind));
+    // Printed LLVM instructions inherit this MIR row's source location. Rows
+    // which lower only to aliases or constants need no invented debug-label
+    // instruction; ordinary DWARF line tables describe executable code.
+    const std::optional<std::size_t> debug_location =
+        emit_debug_location(instruction.range);
     begin_debug_operation(debug_location);
     const std::string result = instruction.result.is_valid()
         ? "%v" + std::to_string(instruction.result.value)
@@ -4988,8 +4951,8 @@ private:
   void emit_terminator(const MirProcedure &procedure,
                        const MirTerminator &terminator,
                        const std::vector<std::string> &operands) {
-    const std::optional<std::size_t> debug_location = emit_debug_marker(
-        terminator.range, mir_terminator_kind_name(terminator.kind));
+    const std::optional<std::size_t> debug_location =
+        emit_debug_location(terminator.range);
     begin_debug_operation(debug_location);
     switch (terminator.kind) {
     case MirTerminatorKind::Return:
@@ -5161,9 +5124,6 @@ private:
     if (!procedure.valid)
       return;
     auxiliary_index_ = 0;
-    debug_marker_index_ = 0;
-    current_debug_procedure_ = semantic_.symbols.symbol(procedure.symbol).name;
-    current_debug_procedure_ordinal_ = procedure_index;
     current_debug_subprogram_ = debug_subprogram(procedure);
     const Type &procedure_signature = type(procedure.type);
     const CAbiFunctionPlan procedure_abi =
@@ -5461,7 +5421,6 @@ private:
   std::vector<DebugMetadataNode> debug_metadata_;
   std::vector<DebugFile> debug_files_;
   std::vector<DebugScope> debug_scopes_;
-  std::vector<SourceCorrelationEntry> source_correlations_;
   std::size_t debug_subroutine_type_ = 0;
   std::size_t debug_compile_unit_ = 0;
   // One target-selected LLVM module flag: Dwarf Version for Mach-O/ELF or
@@ -5471,9 +5430,6 @@ private:
   std::size_t debug_info_flag_ = 0;
   std::size_t current_debug_subprogram_ =
       std::numeric_limits<std::size_t>::max();
-  std::string current_debug_procedure_;
-  std::size_t current_debug_procedure_ordinal_ = 0;
-  std::size_t debug_marker_index_ = 0;
   std::size_t initial_errors_ = 0;
   std::size_t auxiliary_index_ = 0;
 };

@@ -121,7 +121,6 @@ add_library(
   src/backend/llvm_ir.cpp
   src/backend/native_object_tasks.cpp
   src/backend/runtime_assets.cpp
-  src/backend/source_correlation.cpp
   src/backend/toolchain.cpp
   src/base/content_tree.cpp
   src/base/sha256.cpp

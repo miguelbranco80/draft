@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "backend/source_correlation.h"
 #include "interop/c_abi.h"
 #include "mir/mir.h"
 #include "sema/analyzer.h"
@@ -34,9 +33,6 @@ struct LlvmIrOptions {
 struct LlvmIrResult {
   bool ok = false;
   std::string text;
-  // These rows are collected at the same point as the LLVM debug markers, so
-  // the sidecar and instruction metadata cannot silently drift apart.
-  std::vector<SourceCorrelationEntry> source_correlations;
 };
 
 // Emits one complete LLVM module for one semantic package. procedures is the

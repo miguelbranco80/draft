@@ -5,13 +5,12 @@
 // qualification option, so it needs one real host gate that prevents it from
 // decaying into an argument-shaped mock. This test compiles the same checked
 // package graphs through both emitters for every artifact kind, verifies the
-// expected native container, compares compiler-owned correlation identity, and
-// launches both executable results.
+// expected native container, and launches both executable results.
 //
 // Object bytes are not compared across emitters. LLVM's library and Clang
 // driver may choose different incidental encodings while satisfying the same
 // target profile. The stable comparison boundary is accepted object/link
-// behavior, artifact shape, source correlation, and launched Draft behavior.
+// behavior, artifact shape, and launched Draft behavior.
 
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
@@ -269,8 +268,6 @@ void test_backend_routes(TestState &state) {
     if (!embedded.ok || !oracle.ok) continue;
     EXPECT(state, artifact.name,
         embedded.toolchain_version == oracle.toolchain_version);
-    EXPECT(state, artifact.name,
-        embedded.source_correlation_digest == oracle.source_correlation_digest);
 
     if (artifact.kind == draft::NativeArtifactKind::Assembly) {
       error.clear();
@@ -325,8 +322,8 @@ void test_backend_routes(TestState &state) {
   // One launched O2 executable is sufficient to qualify optimization
   // propagation through both object emitters: later artifact kinds package the
   // same produced object bytes through already-covered linker/archive paths.
-  // The source-correlation identity remains source-based and must therefore
-  // agree even though incidental embedded/oracle encodings may differ.
+  // The two routes may choose different incidental object encodings, so this
+  // gate checks their observable behavior rather than comparing object bytes.
   const ArtifactCase optimized_artifact{
       "o2-executable", draft::NativeArtifactKind::Executable, true};
   const std::filesystem::path embedded_o2_root =
@@ -364,9 +361,6 @@ void test_backend_routes(TestState &state) {
   EXPECT(state, optimized_artifact.name, embedded_o2.ok);
   EXPECT(state, optimized_artifact.name, oracle_o2.ok);
   if (embedded_o2.ok && oracle_o2.ok) {
-    EXPECT(state, optimized_artifact.name,
-        embedded_o2.source_correlation_digest ==
-            oracle_o2.source_correlation_digest);
     int embedded_status = 0;
     int oracle_status = 0;
     EXPECT(state, optimized_artifact.name,

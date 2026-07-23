@@ -14,7 +14,7 @@
 // temporary files and subprocess lifetimes only during a synchronous call; no
 // LLVM handle, borrowed source view, or worker survives the return. This layer
 // depends on lowered compiler products, target facts, backend input adapters,
-// diagnostics, and base hashing/timing. No semantic layer may depend on it.
+// diagnostics, and base timing. No semantic layer may depend on it.
 // Relevant specification: docs/specification/04-native-interop.md sections
 // 11-12 and docs/specification/06-compiler.md, "Native lowering and summaries".
 
@@ -23,7 +23,6 @@
 #include "backend/foreign_inputs.h"
 #include "backend/llvm_object_emitter.h"
 #include "backend/runtime_assets.h"
-#include "base/sha256.h"
 #include "compile/compiler.h"
 #include "source/diagnostic.h"
 #include "target/profile.h"
@@ -110,9 +109,8 @@ struct NativeBuildOptions {
 
 // NativeBuildResult describes only products published by this invocation. ok
 // is false until the requested artifact is complete; callers must not consume
-// output paths from a failed result. Digests cover the documented canonical
-// side products, while operational evidence such as worker count and LLVM
-// version remains outside program identity.
+// output paths from a failed result. Operational evidence such as worker count
+// and LLVM version remains outside program identity.
 struct NativeBuildResult {
   bool ok = false;
   // Number of workers selected for native object tasks. This operational
@@ -123,23 +121,16 @@ struct NativeBuildResult {
   // evidence and no runtime `clang --version` process is launched to obtain it.
   std::string toolchain_version;
   std::string output_path;
-  // Every native build emits a canonical operation-to-source sidecar in its
-  // isolated build directory. Coverage and sampling tools can bind their data
-  // to this digest without making a derived file part of program identity.
-  std::string source_correlation_path;
-  Sha256Digest source_correlation_digest;
   // Mach-O executables/dylibs publish a sibling dSYM; PE executables/DLLs
-  // publish a sibling deterministic PDB. The digest covers the canonical
-  // companion bytes/tree. ELF and non-linked artifacts leave these fields
-  // empty because their DWARF remains in the primary artifact or members.
+  // publish a sibling deterministic PDB. ELF and non-linked artifacts leave
+  // this path empty because their DWARF remains in the primary artifact or
+  // members. The compiler verifies required structure but does not hash it.
   std::string debug_symbols_path;
-  Sha256Digest debug_symbols_digest;
   // A Windows DLL also publishes the import library required by an ordinary
   // statically linked C client. Other artifact kinds and targets leave these
   // fields empty. The library is a first-class output rather than an implicit
   // linker side effect, so callers can copy and verify the exact companion.
   std::string import_library_path;
-  Sha256Digest import_library_digest;
   // Canonical physical roots checked for this invocation. This lets an
   // embedding build system deploy them without the compiler inventing a
   // target-specific output layout. Empty on failure.

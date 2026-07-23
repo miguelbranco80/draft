@@ -477,8 +477,6 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
     const draft::CompiledPackage &right = *parallel.packages.front();
     EXPECT(state, package_llvm_text(left) == package_llvm_text(right));
     EXPECT(state, left.llvm_module.text == right.llvm_module.text);
-    EXPECT(state, left.llvm_module.source_correlations ==
-                      right.llvm_module.source_correlations);
     EXPECT(state, left.artifact_layout.ok == right.artifact_layout.ok);
     EXPECT(state, left.artifact_layout.inputs.size() ==
                       right.artifact_layout.inputs.size());
