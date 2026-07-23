@@ -666,8 +666,8 @@ void add_provider(std::vector<std::string> &providers, std::string_view provider
 }
 
 // One worker writes only its matching result slot. Native bytes stay in memory
-// until every task has joined; source_bytes is present only when the former
-// public contract also exposes an LLVM oracle input or package assembly source.
+// until every task has joined; source_bytes is present only when an explicit
+// oracle or package-assembly operation needs a materialized textual input.
 // Child CPU belongs to the one optional assembler/qualification process for
 // this task and is replayed into TimingRecorder later by the owning thread.
 struct NativeObjectTaskProduct {

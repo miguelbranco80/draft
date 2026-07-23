@@ -56,8 +56,8 @@ pass options, messages, and output buffers have one explicit call lifetime. The
 linked distribution must report thread support so isolated package-unit calls
 can be scheduled concurrently without sharing an LLVM context.
 
-The former external Clang IR compilation path remains only as a low-level
-qualification oracle. Ordinary commands never select it and never run
+An external Clang IR consumer exists only as a low-level qualification oracle.
+Ordinary commands never select it and never run
 `clang --version`. Native evidence records the LLVM version compiled into
 `draftc`; the linker driver, package assembler, sanitizer runtime, `llvm-ar`, and
 `dsymutil` default to tools from that same selected LLVM installation. Platform

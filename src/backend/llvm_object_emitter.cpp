@@ -90,10 +90,10 @@ struct TargetDataOwner {
 };
 
 // AddressSanitizer's module pass instruments only functions carrying LLVM's
-// sanitize_address attribute. Add that opt-in directly to parsed definitions
-// so the production adapter does not rewrite or rescan textual IR. The frame
-// pointer string attribute is part of Draft's selected diagnostic profile and
-// remains attached even at O2.
+// sanitize_address attribute. Add that opt-in directly to every definition in
+// the task-owned module, whether a production builder constructed it or the
+// explicit oracle adapter parsed it. The frame-pointer string attribute is
+// part of Draft's selected diagnostic profile and remains attached even at O2.
 [[nodiscard]] bool add_address_sanitizer_attributes(LLVMContextRef context,
                                                     LLVMModuleRef module,
                                                     std::string &failure) {

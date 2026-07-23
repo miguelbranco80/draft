@@ -377,9 +377,9 @@ private:
   // The debug graph is intentionally line-table oriented: it gives each Draft
   // procedure a source subprogram and each emitted instruction the authored
   // location, while semantic type inspection remains the compiler/tooling
-  // index's job. This matches the useful information provided by the previous
-  // textual emitter without reintroducing a textual metadata construction
-  // boundary.
+  // index's job. Keeping debug metadata at this boundary also lets native-only
+  // builds omit DIBuilder allocation entirely when the user did not request
+  // debugger artifacts.
   void initialize_debug_metadata() {
     debug_builder_.value = LLVMCreateDIBuilder(module_.value);
     if (debug_builder_.value == nullptr) {
@@ -700,7 +700,8 @@ private:
         // These Draft forms are intentionally byte storage rather than an LLVM
         // structural aggregate, so use the exact array directly. Opaque
         // pointers make a nominal alias unnecessary even for recursive source
-        // types, and this matches the complete textual backend representation.
+        // types. The byte array is therefore the direct representation of the
+        // target profile's already-computed storage layout.
         llvm_types_[index] = LLVMArrayType2(
             LLVMInt8TypeInContext(context_.value), value.layout.size);
         continue;

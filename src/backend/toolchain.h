@@ -58,10 +58,9 @@ enum class NativeInstrumentationProfile {
 };
 
 // Ordinary native builds emit every artifact-layout LLVM unit through the
-// library linked into draftc. ExternalClangOracle preserves the former
-// subprocess path only so qualification tests can compile the exact same IR
-// with an independent driver; it is not a user build mode or a second semantic
-// backend.
+// library linked into draftc. ExternalClangOracle is the deliberately separate
+// qualification consumer which compiles retained IR with an independent
+// driver; it is not a user build mode or a second semantic backend.
 enum class NativeObjectEmitter {
   InProcessLlvm,
   ExternalClangOracle,
