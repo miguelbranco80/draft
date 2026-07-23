@@ -3503,7 +3503,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
     {
       AccumulatedPhaseTimer execution_timing(interface_timing.destination(
           interface_timing.execution_nanoseconds));
-      scheduled = run_work_graph(
+      scheduled = options.work_executor->run(
           execution_graph,
           WorkGraphRunOptions{options.semantic_worker_count},
           execute_interface_task,
@@ -4814,6 +4814,7 @@ struct PackageBodyWavePublication {
 [[nodiscard]] bool run_workspace_body_ready_wave(
     const SourceManager &sources,
     const TargetFacts &target,
+    WorkExecutor &work_executor,
     std::size_t worker_count,
     TimingRecorder *timings,
     CompileWorkspaceResult &result,
@@ -4914,7 +4915,7 @@ struct PackageBodyWavePublication {
       &slots,
       &outcomes,
   };
-  const WorkGraphRunResult scheduled = run_work_graph(
+  const WorkGraphRunResult scheduled = work_executor.run(
       execution_graph,
       WorkGraphRunOptions{worker_count},
       execute_procedure_body_task,
@@ -5114,6 +5115,7 @@ struct AbiClassificationWaveExecution {
 // ProductId order after the bounded worker set joins.
 [[nodiscard]] bool run_workspace_abi_classifications(
     const TargetFacts &target,
+    WorkExecutor &work_executor,
     std::size_t worker_count,
     TimingRecorder *timings,
     CompileWorkspaceResult &result,
@@ -5156,7 +5158,7 @@ struct AbiClassificationWaveExecution {
   WorkGraph execution_graph;
   execution_graph.tasks.resize(wave.products.size());
   AbiClassificationWaveExecution execution{&target, &slots, &outcomes};
-  const WorkGraphRunResult scheduled = run_work_graph(
+  const WorkGraphRunResult scheduled = work_executor.run(
       execution_graph,
       WorkGraphRunOptions{worker_count},
       execute_abi_classification_task,
@@ -5407,6 +5409,7 @@ struct DirectSemanticWaveExecution {
     const TargetProfile &target,
     std::span<PackageClosureWork> ready_packages,
     const WorkspaceDependencyIndex &schedule,
+    WorkExecutor &work_executor,
     std::size_t worker_count,
     TimingRecorder *timings,
     CompileWorkspaceResult &result,
@@ -5564,7 +5567,7 @@ struct DirectSemanticWaveExecution {
       &effect_outcomes,
       &assembly_slots,
       &assembly_outcomes};
-  const WorkGraphRunResult scheduled = run_work_graph(
+  const WorkGraphRunResult scheduled = work_executor.run(
       execution_graph,
       WorkGraphRunOptions{worker_count},
       execute_direct_semantic_task,
@@ -5797,6 +5800,7 @@ struct DenialWaveExecution {
 [[nodiscard]] bool run_ready_package_denial_products(
     const SourceManager &sources,
     std::span<PackageClosureWork> ready_packages,
+    WorkExecutor &work_executor,
     std::size_t worker_count,
     TimingRecorder *timings,
     CompileWorkspaceResult &result,
@@ -5884,7 +5888,7 @@ struct DenialWaveExecution {
   WorkGraph execution_graph;
   execution_graph.tasks.resize(slots.size());
   DenialWaveExecution execution{&slots, &outcomes};
-  const WorkGraphRunResult scheduled = run_work_graph(
+  const WorkGraphRunResult scheduled = work_executor.run(
       execution_graph,
       WorkGraphRunOptions{worker_count},
       execute_denial_task,
@@ -6046,7 +6050,7 @@ struct PackageClosurePreparationExecution {
       &slots,
       options.timings != nullptr &&
           options.timings->output() == TimingOutput::All};
-  const WorkGraphRunResult scheduled = run_work_graph(
+  const WorkGraphRunResult scheduled = options.work_executor->run(
       execution_graph,
       WorkGraphRunOptions{options.semantic_worker_count},
       execute_package_closure_preparation,
@@ -6389,7 +6393,7 @@ struct EffectReferenceExecution {
           options.timings->output() == TimingOutput::All};
   execution.references = &reference_slots;
   execution.reference_outcomes = &reference_outcomes;
-  const WorkGraphRunResult scheduled = run_work_graph(
+  const WorkGraphRunResult scheduled = options.work_executor->run(
       execution_graph,
       WorkGraphRunOptions{options.semantic_worker_count},
       execute_effect_reference_task,
@@ -6549,7 +6553,7 @@ struct PackageClosureFinalizationExecution {
   WorkGraph execution_graph;
   execution_graph.tasks.resize(slots.size());
   PackageClosureFinalizationExecution execution{&slots};
-  const WorkGraphRunResult scheduled = run_work_graph(
+  const WorkGraphRunResult scheduled = options.work_executor->run(
       execution_graph,
       WorkGraphRunOptions{options.semantic_worker_count},
       execute_package_closure_finalization,
@@ -7236,6 +7240,7 @@ struct NativePipelineExecution {
     bool emit_program_entry,
     ValidationKind validation_kind,
     std::span<const ValidationEntry> validation_entries,
+    WorkExecutor &work_executor,
     std::size_t worker_count,
     TimingRecorder *timings,
     CompileWorkspaceResult &result,
@@ -7615,7 +7620,7 @@ struct NativePipelineExecution {
   execution.units = {&unit_slots, &unit_outcomes};
   execution.layouts = &layout_slots;
   execution.layout_outcomes = &layout_outcomes;
-  const WorkGraphRunResult scheduled = run_work_graph(
+  const WorkGraphRunResult scheduled = work_executor.run(
       execution_graph,
       WorkGraphRunOptions{worker_count},
       execute_native_pipeline_task,
@@ -8195,6 +8200,7 @@ bool continue_compiled_workspace_semantics(
     if (!run_workspace_body_ready_wave(
             sources,
             options.target.facts,
+            *options.work_executor,
             options.semantic_worker_count,
             options.timings,
             result,
@@ -8425,6 +8431,7 @@ bool continue_compiled_workspace_semantics(
       : TimingScope{};
   if (!run_workspace_abi_classifications(
           options.target.facts,
+          *options.work_executor,
           options.semantic_worker_count,
           options.timings,
           result,
@@ -8604,6 +8611,7 @@ bool continue_compiled_workspace_semantics(
             options.target,
             ready_packages,
             schedule,
+            *options.work_executor,
             options.semantic_worker_count,
             options.timings,
             result,
@@ -8628,6 +8636,7 @@ bool continue_compiled_workspace_semantics(
     if (!run_ready_package_denial_products(
             sources,
             ready_packages,
+            *options.work_executor,
             options.semantic_worker_count,
             options.timings,
             result,
@@ -8775,6 +8784,7 @@ bool continue_compiled_workspace(
             options.emit_program_entry,
             options.validation_kind,
             compiled.validation_entries,
+            *options.work_executor,
             options.semantic_worker_count,
             options.timings,
             compiled,

@@ -2,21 +2,24 @@
 //
 // This base module owns no compiler, package, target, or LLVM concepts. Its
 // input is a closed graph whose stable integer task IDs index dependency rows;
-// its output is one terminal result in that same ID domain. A caller owns all
-// task-specific inputs and output slots for the complete synchronous run. The
-// scheduler may change when ready tasks start, but it never changes which slot
-// receives a result, which failed dependency blocks a consumer, or the order in
-// which a caller later publishes results.
+// its output is one terminal result in that same ID domain. WorkExecutor owns a
+// fixed command-lifetime worker pool and may execute many synchronous graphs in
+// sequence. A caller owns all task-specific inputs and output slots for each
+// run. The scheduler may change when ready tasks start, but it never changes
+// which slot receives a result, which failed dependency blocks a consumer, or
+// the order in which a caller later publishes results.
 //
 // Dependencies are immutable during a run. Each operation may mutate only the
 // caller-owned state assigned to its task ID, and independent operations may be
-// called concurrently. The module depends only on the C++ runtime and base-level
-// data; higher compiler phases may use it, but it cannot call into them.
+// called concurrently. The module depends only on the C++ runtime and
+// base-level data; higher compiler phases may use it, but it cannot call into
+// them.
 
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -36,9 +39,9 @@ struct WorkTask {
 };
 
 // A WorkGraph is a command-local scheduling value, not semantic compiler state
-// and not a serializable cache. Its vector index is the stable task identity for
-// the run. The graph must be acyclic and every dependency must name a row in the
-// same vector.
+// and not a serializable cache. Its vector index is the stable task identity
+// for the run. The graph must be acyclic and every dependency must name a row
+// in the same vector.
 struct WorkGraph {
   std::vector<WorkTask> tasks;
 };
@@ -77,37 +80,65 @@ struct WorkGraphRunOptions {
 // direct failure reason; an empty reason is replaced with a deterministic
 // scheduler diagnostic. The operation must not throw, retain the context after
 // returning, or read/write another task's mutable output slot.
-using WorkTaskOperation = bool (*)(
-    void *context,
-    WorkTaskId task,
-    std::string &failure);
+using WorkTaskOperation = bool (*)(void *context, WorkTaskId task,
+                                   std::string &failure);
 
 // WorkGraphRunResult contains only scheduling outcomes. Task-specific products
 // remain in caller-owned slots so this base module does not need callbacks,
-// variants, or type erasure for compiler data. workers_used is the deterministic
-// selected pool size and is useful for timing evidence and focused tests.
+// variants, or type erasure for compiler data. workers_used is the
+// deterministic selected pool size and is useful for timing evidence and
+// focused tests.
 struct WorkGraphRunResult {
   bool ok = false;
   std::size_t workers_used = 0;
   std::vector<WorkTaskResult> tasks;
 };
 
+// WorkExecutor owns the one bounded worker pool used by a compiler command.
+// Constructing it records the host concurrency bound; workers are started on
+// the first parallel run and then sleep between graphs. Reusing those workers
+// matters because semantic compilation intentionally has many small dependency-
+// ready waves, for which creating and joining a fresh operating-system thread
+// set would cost more than the semantic work itself.
+//
+// A run is synchronous and the executor is deliberately non-reentrant. The
+// graph, operation, context, and task-owned result storage may therefore remain
+// ordinary stack values at the call site. worker_count == 0 uses the executor's
+// host bound; a smaller explicit count is useful for deterministic sequential
+// qualification. A one-worker run stays on the calling thread and does not wake
+// the pool. The executor contains no compiler products and retains no result
+// between runs, so sharing one across phases is execution reuse rather than a
+// compiler cache.
+class WorkExecutor {
+public:
+  explicit WorkExecutor(std::size_t maximum_workers = 0);
+  ~WorkExecutor();
+
+  WorkExecutor(const WorkExecutor &) = delete;
+  WorkExecutor &operator=(const WorkExecutor &) = delete;
+  WorkExecutor(WorkExecutor &&) = delete;
+  WorkExecutor &operator=(WorkExecutor &&) = delete;
+
+  [[nodiscard]] std::size_t maximum_workers() const;
+
+  // Executes one validated graph and returns only after every started worker
+  // has stopped borrowing the call-owned graph, operation, context, and result.
+  // Failed tasks remain in their stable slots; consumers of a failed task are
+  // skipped transitively while independent work still reaches a terminal state.
+  [[nodiscard]] WorkGraphRunResult run(const WorkGraph &graph,
+                                       WorkGraphRunOptions options,
+                                       WorkTaskOperation operation,
+                                       void *context);
+
+private:
+  struct Implementation;
+  std::unique_ptr<Implementation> implementation_;
+};
+
 // Validates ID domains, canonical dependency rows, and acyclicity without
 // executing work. The first error is selected by ascending task/dependency ID,
 // so malformed graphs produce the same reason on every host.
-[[nodiscard]] bool validate_work_graph(
-    const WorkGraph &graph,
-    std::string &reason);
-
-// Executes the validated ready graph synchronously. Failed tasks are retained
-// in their own result slots. A consumer whose dependency failed is marked
-// SkippedDependency without invoking the operation, and that state propagates
-// transitively. Independent ready work still completes, allowing the caller to
-// report the stable lowest-ID failure after joining every started operation.
-[[nodiscard]] WorkGraphRunResult run_work_graph(
-    const WorkGraph &graph,
-    WorkGraphRunOptions options,
-    WorkTaskOperation operation,
-    void *context);
+[[nodiscard]] bool validate_work_graph(const WorkGraph &graph,
+                                       std::string &reason);
 
 } // namespace draft

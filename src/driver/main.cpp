@@ -49,6 +49,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -609,6 +610,7 @@ int expand_package(
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::RuntimeAssetInput> &runtime_assets,
     draft::TimingRecorder *timings,
+    const std::shared_ptr<draft::WorkExecutor> &work_executor,
     const draft::CompileWorkspaceResult &compiled,
     draft::DiagnosticSink &diagnostics) {
   if (!compiled.ok ||
@@ -686,6 +688,7 @@ int expand_package(
   native_options.foreign_providers = foreign_providers;
   native_options.runtime_assets = runtime_assets;
   native_options.timings = timings;
+  native_options.work_executor = work_executor;
   const draft::NativeBuildResult built = draft::build_native_artifact(
       target, compiled, native_options, diagnostics);
   if (!built.ok) return false;
@@ -715,7 +718,8 @@ int build_selected_package(
     const std::vector<draft::ForeignProviderInput> &foreign_providers,
     const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
     const std::vector<draft::RuntimeAssetInput> &runtime_assets,
-    draft::TimingRecorder *timings) {
+    draft::TimingRecorder *timings,
+    const std::shared_ptr<draft::WorkExecutor> &work_executor) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   draft::CompileWorkspaceOptions compile_options;
@@ -742,6 +746,7 @@ int build_selected_package(
   compile_options.emit_program_entry =
       artifact_kind == draft::NativeArtifactKind::Executable;
   compile_options.timings = timings;
+  compile_options.work_executor = work_executor;
   const draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
@@ -759,6 +764,7 @@ int build_selected_package(
       foreign_providers,
       runtime_assets,
       timings,
+      work_executor,
       compiled,
       diagnostics);
   if (!diagnostics.diagnostics().empty()) {
@@ -852,6 +858,12 @@ int build_workspace(
     return 2;
   }
 
+  // All selected roots belong to one user-visible build command. Reusing the
+  // executor here keeps worker lifetime at that command boundary even though
+  // each root deliberately owns an independent SourceManager and compiler
+  // product graph. The executor retains no products between those builds.
+  const std::shared_ptr<draft::WorkExecutor> work_executor =
+      std::make_shared<draft::WorkExecutor>();
   for (const draft::WorkspacePackageSelection &root : roots) {
     const int result = build_selected_package(
         workspace_directory,
@@ -865,7 +877,8 @@ int build_workspace(
         foreign_providers,
         provider_summaries,
         runtime_assets,
-        timings);
+        timings,
+        work_executor);
     if (result != 0) return result;
   }
   return 0;
@@ -1222,6 +1235,7 @@ int run_agent_command(
                 foreign_providers,
                 runtime_assets,
                 timings,
+                build_options->work_executor,
                 *resolved.compiled_program,
                 diagnostics);
           }

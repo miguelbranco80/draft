@@ -89,7 +89,8 @@ phase option structs. Compiler, validation, and native adapters contribute
 nested events and deterministic work counters; none may consult recorded time
 or make it part of semantic identity. Sequential phases use an explicit nesting
 stack. Parallel semantic and native workers measure into task-owned result
-slots; after the join, the command thread appends completed events and their
+slots; after the synchronous run, the command thread appends completed events
+and their
 phase children in stable task-ID order. The recorder itself therefore remains
 single-threaded, and scheduler completion order cannot change timing row order
 or compiler results.
@@ -219,15 +220,16 @@ demand. Site indices continue to observe package-level loop-range enrichment
 without copying or mutating the procedure's immutable HIR.
 
 Every currently ready root is now dispatched from one shared prefix and all
-workers run through the bounded closed-wave executor. Results join before
+workers run through the command-owned `WorkExecutor`. Results return before
 deterministic publication. Worker count is scheduling policy only: one-worker
 and four-worker qualification compares product graphs, diagnostics, semantic
 table sizes, and final LLVM bytes. Dynamic discovery still occurs only between
 waves, never by concurrent mutation of the semantic graph. A one-worker wave
-runs directly on the calling thread. Supported POSIX hosts create larger pools
-with an explicit eight-MiB stack per worker, matching the syntax-recursion
-budget available to the main compiler thread instead of inheriting macOS's
-smaller pthread default.
+runs directly on the calling thread. The first parallel wave starts one bounded
+pool with an explicit eight-MiB stack per worker; the same sleeping workers
+serve later semantic, LLVM, assembly, and artifact graphs until the command
+ends. The executor retains no syntax or compiler product between runs, so this
+is thread reuse rather than semantic memoization or a cross-command cache.
 
 Body selection is an explicit projection over immutable procedure products.
 Authored roots are always selected; a current external demand selects its exact
@@ -308,8 +310,9 @@ Ordinary package rows borrow their already emitted bytes without copying;
 the root's hosted-runtime row borrows immutable embedded bytes; package-assembly
 workers own private assembler paths. Relocatable object materialization skips
 that runtime row so its references remain for the final consumer. The explicit Clang oracle
-is the only later stage that consumes retained LLVM text. The main thread joins
-that set, selects diagnostics by lowest stable task ID, and only then publishes
+is the only later stage that consumes retained LLVM text. The command thread
+waits for that set, selects diagnostics by lowest stable task ID, and only then
+publishes
 files and linker inputs in task-ID order. Parallel
 scheduling changes elapsed time, never artifacts or diagnostics. Direct
 subsystem tests call the same complete-package emitter as compiler

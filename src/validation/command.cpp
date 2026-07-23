@@ -214,6 +214,7 @@ void initialize_claim(
     std::span<const ValidationInstrumentationKind> instrumentation,
     std::vector<ForeignProviderAudit> audits,
     TimingRecorder *timings,
+    const std::shared_ptr<WorkExecutor> &work_executor,
     DiagnosticSink &diagnostics) {
   CompileWorkspaceOptions options;
   options.target = target;
@@ -230,6 +231,7 @@ void initialize_claim(
   }
   options.emit_program_entry = true;
   options.timings = timings;
+  options.work_executor = work_executor;
   return compile_workspace_with_resolution(
       sources, package_directory.string(), std::move(options), diagnostics);
 }
@@ -292,6 +294,7 @@ void initialize_claim(
   native.foreign_providers = options.foreign_providers;
   native.runtime_assets = options.runtime_assets;
   native.timings = options.timings;
+  native.work_executor = options.work_executor;
   const NativeBuildResult built = build_native_executable(
       options.target, compiled, native, diagnostics);
   if (!built.ok) return result;
@@ -458,6 +461,7 @@ ValidationCommandResult execute_validation_command(
       options.instrumentation,
       options.foreign_provider_audits,
       options.timings,
+      options.work_executor,
       diagnostics);
   compilation_timing.finish();
   if (!compiled.ok) return {};

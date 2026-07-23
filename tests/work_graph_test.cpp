@@ -7,6 +7,8 @@
 
 #include "base/work_graph.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -14,6 +16,7 @@
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -62,7 +65,8 @@ void test_dependency_execution(TestState &state) {
   DependencyContext context(graph.tasks.size());
   draft::WorkGraphRunOptions options;
   options.worker_count = 4;
-  const draft::WorkGraphRunResult run = draft::run_work_graph(
+  draft::WorkExecutor executor;
+  const draft::WorkGraphRunResult run = executor.run(
       graph, options, run_dependency_task, &context);
   EXPECT(state, run.ok);
   EXPECT(state, run.workers_used == 4);
@@ -110,7 +114,8 @@ void test_independent_tasks_run_concurrently(TestState &state) {
   ParallelContext context;
   draft::WorkGraphRunOptions options;
   options.worker_count = 4;
-  const draft::WorkGraphRunResult run = draft::run_work_graph(
+  draft::WorkExecutor executor;
+  const draft::WorkGraphRunResult run = executor.run(
       graph, options, run_parallel_task, &context);
   EXPECT(state, run.ok);
   EXPECT(state, run.workers_used == 4);
@@ -142,7 +147,8 @@ void test_failure_blocks_only_consumers(TestState &state) {
   FailureContext context(graph.tasks.size());
   draft::WorkGraphRunOptions options;
   options.worker_count = 4;
-  const draft::WorkGraphRunResult run = draft::run_work_graph(
+  draft::WorkExecutor executor;
+  const draft::WorkGraphRunResult run = executor.run(
       graph, options, run_failing_task, &context);
   EXPECT(state, !run.ok);
   EXPECT(state, run.tasks[0].state == draft::WorkTaskState::Failed);
@@ -176,12 +182,65 @@ void test_graph_validation(TestState &state) {
   cycle.tasks = {{{1}}, {{0}}};
   EXPECT(state, !draft::validate_work_graph(cycle, reason));
   EXPECT(state, reason == "work graph contains a dependency cycle");
-  const draft::WorkGraphRunResult run = draft::run_work_graph(
+  draft::WorkExecutor executor;
+  const draft::WorkGraphRunResult run = executor.run(
       cycle, {}, no_op_task, nullptr);
   EXPECT(state, !run.ok);
   EXPECT(state, run.tasks[0].state == draft::WorkTaskState::Failed);
   EXPECT(state, run.tasks[0].failure ==
       "work graph contains a dependency cycle");
+}
+
+struct ReuseContext {
+  std::mutex mutex;
+  std::condition_variable changed;
+  std::size_t arrived = 0;
+  std::array<std::thread::id, 4> workers;
+};
+
+// The barrier makes every selected worker hold one task at once. Recording the
+// operating-system identities then distinguishes actual pool reuse from two
+// freshly created four-thread batches which happen to produce the same graph
+// result.
+bool record_reused_worker(
+    void *opaque,
+    draft::WorkTaskId task,
+    std::string &failure) {
+  auto &context = *static_cast<ReuseContext *>(opaque);
+  std::unique_lock lock(context.mutex);
+  context.workers[task] = std::this_thread::get_id();
+  ++context.arrived;
+  context.changed.notify_all();
+  if (!context.changed.wait_for(
+          lock,
+          std::chrono::seconds(5),
+          [&]() { return context.arrived == context.workers.size(); })) {
+    failure = "reusable executor did not run all selected workers";
+    context.changed.notify_all();
+    return false;
+  }
+  return true;
+}
+
+void test_executor_reuses_workers(TestState &state) {
+  draft::WorkGraph graph;
+  graph.tasks.resize(4);
+  draft::WorkExecutor executor;
+  draft::WorkGraphRunOptions options;
+  options.worker_count = 4;
+
+  ReuseContext first;
+  const draft::WorkGraphRunResult first_run = executor.run(
+      graph, options, record_reused_worker, &first);
+  ReuseContext second;
+  const draft::WorkGraphRunResult second_run = executor.run(
+      graph, options, record_reused_worker, &second);
+  EXPECT(state, first_run.ok);
+  EXPECT(state, second_run.ok);
+
+  std::sort(first.workers.begin(), first.workers.end());
+  std::sort(second.workers.begin(), second.workers.end());
+  EXPECT(state, first.workers == second.workers);
 }
 
 } // namespace
@@ -192,6 +251,7 @@ int main() {
   test_independent_tasks_run_concurrently(state);
   test_failure_blocks_only_consumers(state);
   test_graph_validation(state);
+  test_executor_reuses_workers(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " work graph expectation(s) failed\n";
     return EXIT_FAILURE;

@@ -1051,7 +1051,7 @@ NativeBuildResult build_native_artifact(
   execution.products = &products;
   WorkGraphRunOptions run_options;
   run_options.worker_count = options.object_worker_count;
-  const WorkGraphRunResult scheduled = run_work_graph(
+  const WorkGraphRunResult scheduled = options.work_executor->run(
       object_plan.graph,
       run_options,
       execute_native_object_task,

@@ -395,6 +395,7 @@ CompileWorkspaceOptions CompilerSession::compile_options() const {
   options.workspace.core_directory = DRAFT_CORE_DIRECTORY;
   options.workspace.core_content_identity = DRAFT_CORE_CONTENT_IDENTITY;
   options.emit_program_entry = true;
+  options.work_executor = work_executor_;
   return options;
 }
 
@@ -790,6 +791,7 @@ CheckResult CompilerSession::build_checked() {
   native.output_path = output_path_.string();
   native.artifact_kind = NativeArtifactKind::Executable;
   native.optimization = NativeOptimizationLevel::O0;
+  native.work_executor = options.work_executor;
   const NativeBuildResult built = build_native_executable(
       configuration_.target, compiled, native, diagnostics);
   if (!built.ok) {

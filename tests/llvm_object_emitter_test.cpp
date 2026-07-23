@@ -281,7 +281,8 @@ void test_parallel_emission_isolated_contexts(TestState &state) {
   graph.tasks.resize(context.results.size());
   draft::WorkGraphRunOptions options;
   options.worker_count = context.results.size();
-  const draft::WorkGraphRunResult run = draft::run_work_graph(
+  draft::WorkExecutor executor;
+  const draft::WorkGraphRunResult run = executor.run(
       graph, options, emit_parallel_module, &context);
   EXPECT(state, run.ok);
   for (std::size_t index = 1; index < context.results.size(); ++index) {

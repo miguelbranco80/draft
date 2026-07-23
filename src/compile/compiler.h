@@ -28,6 +28,7 @@
 #include "assembly/analyze.h"
 #include "backend/llvm_ir.h"
 #include "backend/llvm_object_emitter.h"
+#include "base/work_graph.h"
 #include "compile/body_work.h"
 #include "compile/configuration.h"
 #include "compile/semantic_work_graph.h"
@@ -52,6 +53,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -111,12 +113,19 @@ struct CompileWorkspaceOptions {
   // semantic configuration, resolved-program identity, or emitted artifacts.
   // The caller must keep it alive through this synchronous compilation.
   TimingRecorder *timings = nullptr;
+  // Resolution, semantic continuation, native lowering, and the later artifact
+  // adapter copy their option records while remaining one compiler command.
+  // Shared ownership is intentional here: every copy must keep exactly the same
+  // command executor alive, while no CompileWorkspaceResult or compiler product
+  // owns it. The executor retains threads only, never AST/HIR/MIR/object state.
+  std::shared_ptr<WorkExecutor> work_executor =
+      std::make_shared<WorkExecutor>();
   // Bounds independent semantic work in one frozen ready wave. Zero selects
   // host hardware concurrency with a one-worker fallback; the executor caps it
   // to the wave size. This is scheduling policy only and must not alter semantic
   // identity, diagnostics, HIR, MIR, or emitted bytes. Interface products,
-// declaration/type products, procedure bodies, and every later frozen semantic
-// wave use the same bound.
+  // Declaration/type products, procedure bodies, and every later frozen
+  // semantic wave use the same bound.
   std::size_t semantic_worker_count = 0;
 };
 

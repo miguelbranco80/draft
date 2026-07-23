@@ -516,7 +516,9 @@ constant never rewrites a declaration merely to recover an inferred type.
 
 The compiler closes procedure work through workspace-wide ready waves. Once
 package interfaces are complete, import order does not serialize independent
-authored bodies: pending roots from every package share one bounded worker set.
+authored bodies: pending roots from every package share the command-owned
+worker pool. The same pool serves every later semantic and native ready graph
+and keeps only sleeping operating-system workers between synchronous runs.
 Checking a caller can still demand a concrete public generic body from its
 dependency. A portable procedure-demand packet contains canonical interface
 type graphs, exact value arguments, ordered static-pack types, the full semantic

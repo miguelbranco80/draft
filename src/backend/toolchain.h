@@ -29,6 +29,7 @@
 #include "target/profile.h"
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -109,6 +110,12 @@ struct NativeBuildOptions {
   // Native timing includes parent wait time and, where the host exposes it,
   // separately reports user/system CPU consumed by child tools.
   TimingRecorder *timings = nullptr;
+  // The driver installs the CompileWorkspaceOptions executor here so semantic,
+  // LLVM, package-assembly, and artifact work reuse one command-owned pool. A
+  // standalone backend caller receives its own pool by default. No compiler
+  // product or completed task is retained by this execution resource.
+  std::shared_ptr<WorkExecutor> work_executor =
+      std::make_shared<WorkExecutor>();
 };
 
 // NativeBuildResult describes only products published by this invocation. ok

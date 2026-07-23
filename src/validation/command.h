@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -40,6 +41,10 @@ struct ValidationCommandOptions {
   // Command-owned timing recorder shared across compilation, native harness
   // construction, execution, and evidence commit. It is observation only.
   TimingRecorder *timings = nullptr;
+  // One validation command compiles and emits its harness through the same
+  // command-owned workers. The executor stores no validation or native result.
+  std::shared_ptr<WorkExecutor> work_executor =
+      std::make_shared<WorkExecutor>();
 };
 
 struct ValidationCommandResult {

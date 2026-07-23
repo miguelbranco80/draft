@@ -568,7 +568,7 @@ struct ResolvedStage {
     TimingScope provider_timing = options.compile.timings != nullptr
         ? options.compile.timings->scope("provider synthesis")
         : TimingScope{};
-    const WorkGraphRunResult wave = run_work_graph(
+    const WorkGraphRunResult wave = options.compile.work_executor->run(
         graph,
         WorkGraphRunOptions{options.provider.maximum_parallel_calls},
         invoke_provider_task,

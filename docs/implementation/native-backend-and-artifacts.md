@@ -216,7 +216,8 @@ verified object bytes are the task result. The coordinator owns only the
 canonical cross-object publication and linker order, so it never reconstructs
 or guesses LLVM's internal section graph.
 
-The dependency-ready native executor uses bounded workers. Each package LLVM
+The dependency-ready native graph uses the same command-owned bounded executor
+as semantic compilation. Each package LLVM
 unit owns a fresh context, module, target machine, and in-memory output buffer;
 its object/assembly bytes remain an owned command-local product after the task
 joins. The later artifact scheduler borrows those bytes without copying. Each
@@ -225,7 +226,7 @@ through `posix_spawnp`, avoiding unsafe post-`fork` C++ work in a multithreaded
 process. Workers mutate only their matching result slots and never touch the
 diagnostic sink or timing recorder.
 
-After every started task joins, the command thread replays timing records,
+After every started task returns, the command thread replays timing records,
 selects the lowest-ID failure, and publishes successful products in task-ID
 order. Detailed LLVM rows are replayed during target lowering and retain
 task-local durations for target initialization,

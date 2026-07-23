@@ -228,6 +228,13 @@ private:
   std::vector<SourceOption> source_options_;
   std::size_t selected_root_ = 0;
 
+  // The session invokes many compiler commands, but only one synchronously at
+  // a time. Keeping the execution resource here avoids recreating operating-
+  // system workers after each edit while retaining no checked-program product
+  // in the executor itself.
+  std::shared_ptr<WorkExecutor> work_executor_ =
+      std::make_shared<WorkExecutor>();
+
   SourceManager last_good_sources_;
   std::optional<CompileWorkspaceResult> last_good_;
   std::vector<SyntaxSpan> syntax_spans_;

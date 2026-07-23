@@ -63,18 +63,20 @@ explicitly restricted to a task's local suffix. No retained semantic table is
 copied into a body task. Ready body tasks share one frozen prefix; deterministic
 publication remaps task suffix IDs, interns structural types, and canonicalizes
 equal procedure and nominal type specializations. The bootstrap driver invokes
-the isolated tasks through its bounded closed-wave executor; task-indexed
-diagnostics and products publish only after join. Interface waves also use that
+the isolated tasks through its command-owned `WorkExecutor`; task-indexed
+diagnostics and products publish only after the synchronous run. Interface
+waves also use that
 executor: different package owners run concurrently, and generic-owner tasks
 return `SemanticTaskAppend` packets so same-package demands are independent.
 Authored declaration-type products return the same append packet plus exact
 patches for their collected `TypeId`/`SymbolId`, so independent same-package
 declarations also share a ready wave. Name-set and interface tasks are isolated
 after read-only work because validation loading may extend the shared source
-table. One-worker runs avoid thread creation; larger pools on the supported
-POSIX hosts use an
-explicit eight-MiB worker stack so authored syntax recursion has the same
-practical budget in sequential and parallel execution.
+table. One-worker runs stay on the command thread. The first larger run starts a
+bounded pool with an explicit eight-MiB worker stack so authored syntax
+recursion has the same practical budget in sequential and parallel execution.
+Later compiler and backend graphs reuse those workers; the executor retains no
+semantic table, task result, or artifact between runs.
 Workspace packages retain the live body publication state after finalization,
 so a newly demanded external specialization appends to the existing work and
 product prefix rather than reconstructing an extension scheduler. Authored,
@@ -88,7 +90,7 @@ rebuild, or declaration-generation body work key. All packages now contribute
 their pending procedure products to one workspace-wide frozen ready set. New
 external owner bodies depend on the exact completed consumer product which
 requested them; package-local semantic suffixes still publish in PackageId/work
-order after the whole worker set joins. No semantic-wave payload imposes a
+order after the ready wave returns. No semantic-wave payload imposes a
 package-local execution chain; only source-loading name/interface barriers are
 serialized after read-only task slots join.
 Final effect/interface closure likewise uses dependency-ready package fronts.
