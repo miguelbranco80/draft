@@ -1,8 +1,12 @@
 // This file owns deterministic ANSI diff rendering for one TUI Surface. A
 // Renderer contains the desired surface, the last completely published surface,
 // and one reusable output byte buffer. present scans glyphs in row-major order,
-// emits only contiguous changed runs, writes complete UTF-8 graphemes through
-// core/terminal once, and advances previous only after the write succeeds.
+// emits only contiguous changed runs, frames every nonempty publication in the
+// terminal's optional synchronized-update mode, writes complete UTF-8 graphemes
+// through core/terminal once, and advances previous only after the write
+// succeeds. Terminals which implement DEC mode 2026 reveal the completed frame
+// atomically; terminals which do not implement it ignore the markers and retain
+// the same correct diff.
 //
 // A partial or failed terminal write invalidates the remembered display. The
 // next present then clears and repaints the complete desired surface, because
@@ -271,6 +275,10 @@ append_style :: proc(output: ^Byte_Array, style: Style) {
 // starts from default style because every successful update ends with reset.
 build_render_bytes :: proc(renderer: ^Renderer) -> []u8 {
     array.clear(&renderer^.output)
+    // Start optimistically, then erase the marker again for an empty diff.
+    // This keeps the changed-cell scan single-pass and guarantees that every
+    // actual cursor/style run lives inside one balanced synchronized update.
+    append_text(&renderer^.output, terminal.synchronized_update_begin)
     full := !renderer^.previous_valid
     if full {
         append_text(&renderer^.output, terminal.reset_style)
@@ -333,6 +341,11 @@ build_render_bytes :: proc(renderer: ^Renderer) -> []u8 {
     // additional bytes.
     if emitted_cells {
         append_text(&renderer^.output, terminal.reset_style)
+    }
+    if full || emitted_cells {
+        append_text(&renderer^.output, terminal.synchronized_update_end)
+    } else {
+        array.clear(&renderer^.output)
     }
     return array.view(&renderer^.output)
 }

@@ -203,8 +203,11 @@ write may already have published a state-changing prefix. Its matching
 inactive/active/suspended states let an application leave the alternate screen
 before yielding terminal control and re-enter it afterward. Applications build
 their own complete frame bytes and publish them through `write_screen`; small
-public cursor-home and erase fragments support that construction without
-introducing a layout engine or fixed library buffer.
+public cursor-home, erase, and synchronized-update fragments support that
+construction without introducing a layout engine or fixed library buffer.
+Entering, suspending, resuming, or leaving a Screen first emits the synchronized
+update end marker, so a renderer write which failed after only its begin marker
+cannot retain a hidden terminal frame across job control or cleanup.
 
 An application coordinating both owners acquires Session then Screen, suspends
 Screen then Session, resumes Session then Screen, and restores Screen then
@@ -301,10 +304,14 @@ The zero style maps to terminal defaults; colors are either default or one ANSI
 `core/tui.Renderer` owns desired and last-published Surfaces of equal size plus
 one reusable output byte array. Rendering scans in row-major order, groups each
 maximal contiguous changed run behind one absolute cursor position, and emits
-style transitions only when cell style changes. Every successful update ends
-in default style. The first frame, a resize, explicit invalidation, or a failed
-possibly-partial terminal write forces the next update to reset, home, clear,
-and repaint the complete desired surface. Previous cells advance only after
+style transitions only when cell style changes. Every nonempty update is
+enclosed by DEC synchronized-update markers and ends in default style. A
+supporting terminal therefore reveals a moved window and its erased old shadow
+as one frame rather than painting individual cursor runs; an unsupported
+terminal ignores the optional private mode and receives the same correct diff.
+The first frame, a resize, explicit invalidation, or a failed possibly-partial
+terminal write forces the next update to reset, home, clear, and repaint the
+complete desired surface. Previous cells advance only after
 `terminal.write_screen` completes, so an I/O error never publishes speculative
 diff state.
 

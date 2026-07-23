@@ -578,6 +578,8 @@ terminal.cursor_home
 terminal.erase_line_tail
 terminal.erase_screen_tail
 terminal.reset_style
+terminal.synchronized_update_begin
+terminal.synchronized_update_end
 ```
 
 Session owns a saved native input mode but borrows the descriptor. Keep a
@@ -596,8 +598,12 @@ obligation. Pair every non-inactive Screen with `restore_screen`.
 A failed begin or resume may leave Screen active because a control-sequence
 prefix may already have changed terminal state. Applications construct frame
 bytes in their own storage and publish them through `write_screen`. Public
-`cursor_home`, `erase_line_tail`, `erase_screen_tail`, and `reset_style` byte
-strings are available for fixed-buffer frame construction.
+`cursor_home`, `erase_line_tail`, `erase_screen_tail`, `reset_style`, and the
+balanced synchronized-update byte strings are available for fixed-buffer frame
+construction. DEC mode 2026 lets a supporting terminal reveal one completed
+frame atomically; an unsupported terminal ignores the optional markers. Screen
+enter, suspend, resume, and restore end any interrupted synchronized update
+before changing the visible buffer.
 
 When coordinating both resources, acquire Session then Screen; suspend Screen
 then Session; resume Session then Screen; and restore Screen then Session.
@@ -704,7 +710,8 @@ clears the complete old glyph. `cell_at` exposes the first scalar, width, style,
 and continuation state but not the Surface's private grapheme bytes. The zero
 Style means terminal defaults; indexed colors cover ANSI palette entries
 0-255. Rendering emits maximal changed runs with absolute cursor positions,
-never splits a grapheme, and resets style at the update boundary.
+never splits a grapheme, resets style at the update boundary, and encloses each
+nonempty diff in one balanced synchronized update.
 
 There are no widgets, layout engine, text wrapping, clipping regions, input
 dispatch, focus, event loop, mouse support, normalization, shaping, bidi,

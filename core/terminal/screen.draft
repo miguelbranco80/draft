@@ -9,8 +9,10 @@
 // enter or resume may have written a prefix of its control sequence, so it still
 // records the active restoration obligation before output begins. This rule
 // lets callers clean up the terminal even after a partial native write. The
-// implementation depends only on core/io and core/os and uses widely supported
-// ANSI/VT bytes; it has no ncurses, terminfo, allocation, or target-specific ABI.
+// implementation depends only on core/io and core/os and uses ANSI/VT bytes.
+// Synchronized-update framing is an optional DEC mode: supporting terminals
+// delay display until its end marker, while other terminals ignore it. There is
+// no ncurses, terminfo, allocation, capability probe, or target-specific ABI.
 // When paired with Session, acquire Session first; suspend Screen first; resume
 // Session first; and restore Screen first. Both final restorations must still be
 // attempted when one fails, because their obligations are independent.
@@ -19,8 +21,12 @@ package terminal
 import core/io
 import core/os
 
-Enter_Screen_Sequence :: "\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l"
-Leave_Screen_Sequence :: "\x1b[0m\x1b[?25h\x1b[?1049l"
+// Enter and leave first end any interrupted synchronized update. A failed
+// renderer write may have published its begin marker but not its end marker;
+// screen suspension/restoration must therefore release the terminal's pending
+// frame before switching buffers or exposing the shell.
+Enter_Screen_Sequence :: "\x1b[?2026l\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l"
+Leave_Screen_Sequence :: "\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1049l"
 
 // These fragments are public so an application can construct one complete
 // frame in its own storage and publish it atomically at the application layer.
@@ -29,6 +35,8 @@ pub cursor_home :: "\x1b[H"
 pub erase_line_tail :: "\x1b[K"
 pub erase_screen_tail :: "\x1b[J"
 pub reset_style :: "\x1b[0m"
+pub synchronized_update_begin :: "\x1b[?2026h"
+pub synchronized_update_end :: "\x1b[?2026l"
 
 // Screen_State mirrors the visible lifetime of the alternate screen. suspended
 // retains the output borrow and the ability to re-enter, but the primary screen

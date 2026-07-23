@@ -114,7 +114,7 @@ test_unicode_graphemes :: proc(test: ^testing.Test) {
         continuation.columns == 0)
     testing.expect(test, bytes_equal_text(
         build_render_bytes(&renderer),
-        "\x1b[1;2Hé界\x1b[0m",
+        "\x1b[?2026h\x1b[1;2Hé界\x1b[0m\x1b[?2026l",
     ))
     commit_desired(&renderer)
     testing.expect(test, len(build_render_bytes(&renderer)) == 0)
@@ -130,7 +130,7 @@ test_unicode_graphemes :: proc(test: ^testing.Test) {
     ))
     testing.expect(test, bytes_equal_text(
         build_render_bytes(&renderer),
-        "\x1b[1;3H X\x1b[0m",
+        "\x1b[?2026h\x1b[1;3H X\x1b[0m\x1b[?2026l",
     ))
 
     // Validation finishes before mutation for nonprinting and overflowing
@@ -156,7 +156,7 @@ test_renderer_diff :: proc(test: ^testing.Test) {
     first := build_render_bytes(&renderer)
     testing.expect(test, bytes_equal_text(
         first,
-        "\x1b[0m\x1b[H\x1b[J\x1b[1;1H   \x1b[2;1H   \x1b[0m",
+        "\x1b[?2026h\x1b[0m\x1b[H\x1b[J\x1b[1;1H   \x1b[2;1H   \x1b[0m\x1b[?2026l",
     ))
     commit_desired(&renderer)
     testing.expect(test, len(build_render_bytes(&renderer)) == 0)
@@ -179,7 +179,7 @@ test_renderer_diff :: proc(test: ^testing.Test) {
     changed := build_render_bytes(&renderer)
     testing.expect(test, bytes_equal_text(
         changed,
-        "\x1b[1;2HX\x1b[0m",
+        "\x1b[?2026h\x1b[1;2HX\x1b[0m\x1b[?2026l",
     ))
     commit_desired(&renderer)
 
@@ -194,7 +194,34 @@ test_renderer_diff :: proc(test: ^testing.Test) {
     styled_change := build_render_bytes(&renderer)
     testing.expect(test, bytes_equal_text(
         styled_change,
-        "\x1b[1;3H\x1b[0m\x1b[2m\x1b[38;5;51mY\x1b[0m",
+        "\x1b[?2026h\x1b[1;3H\x1b[0m\x1b[2m\x1b[38;5;51mY\x1b[0m\x1b[?2026l",
+    ))
+    commit_desired(&renderer)
+
+    // Window shadows and desktop backgrounds are both space glyphs; their
+    // style is nevertheless visible terminal state. This exact diff proves
+    // that moving a shadow away publishes the replacement background cell
+    // inside the same synchronized frame rather than comparing rune alone.
+    shadow := Style{background = indexed_color(0)}
+    desktop := Style{background = indexed_color(1)}
+    testing.expect(test, put(
+        surface(&renderer),
+        0,
+        1,
+        cast[u8](' '),
+        shadow,
+    ))
+    commit_desired(&renderer)
+    testing.expect(test, put(
+        surface(&renderer),
+        0,
+        1,
+        cast[u8](' '),
+        desktop,
+    ))
+    testing.expect(test, bytes_equal_text(
+        build_render_bytes(&renderer),
+        "\x1b[?2026h\x1b[2;1H\x1b[0m\x1b[48;5;1m \x1b[0m\x1b[?2026l",
     ))
     commit_desired(&renderer)
 
@@ -228,7 +255,7 @@ test_renderer_diff :: proc(test: ^testing.Test) {
     resized := build_render_bytes(&renderer)
     testing.expect(test, bytes_equal_text(
         resized,
-        "\x1b[0m\x1b[H\x1b[J\x1b[1;1H  \x1b[0m",
+        "\x1b[?2026h\x1b[0m\x1b[H\x1b[J\x1b[1;1H  \x1b[0m\x1b[?2026l",
     ))
 
     renderer_destroy(&renderer)
