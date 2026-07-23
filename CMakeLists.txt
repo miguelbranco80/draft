@@ -377,7 +377,7 @@ if(DRAFTIDE_HOST_TARGET)
     OUTPUT "${DRAFTIDE_BUILD_STAMP}"
     BYPRODUCTS "${DRAFTIDE_EXECUTABLE}"
     COMMAND $<TARGET_FILE:draftc> build "${CMAKE_CURRENT_SOURCE_DIR}"
-      --root tools/draftide --target "${DRAFTIDE_HOST_TARGET}" -O2
+      --root tools/draftide --target "${DRAFTIDE_HOST_TARGET}" -O0
       --provider
         "draft_compiler_service=${DRAFTIDE_PROVIDER_KIND}:${DRAFTIDE_PROVIDER_PATH}"
       -o "${DRAFTIDE_EXECUTABLE}"

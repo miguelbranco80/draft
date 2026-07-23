@@ -157,8 +157,10 @@ Checking is synchronous and conservatively treats every edit as an interface
 change. The compiler service overlays one active source at a time, while the
 editor may retain several open and dirty buffers. `core/process` currently runs
 one exact executable path with inherited environment/current directory and no
-arguments, pipes, shell, or background lifetime. Native IDE builds use `-O2`;
-the compiler optimization selected for the open project remains independent.
+arguments, pipes, shell, or background lifetime. Native IDE builds use `-O0`:
+the current package-wide `-O2` pipeline makes routine IDE rebuilds take several
+minutes, while the event/repaint fixes keep the interactive path responsive.
+The compiler optimization selected for the open project remains independent.
 
 Identifier completion, background checking, broad Codex worktree editing,
 structured semantic navigation, richer build/run configurations, and body-only
