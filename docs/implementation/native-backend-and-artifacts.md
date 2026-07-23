@@ -31,14 +31,21 @@ represented by structural LLVM SSA. It may print the already-built module for
 inspection and passes that same mutable module to
 verification/optimization/native emission. A
 checked-source-to-object regression proves this path has no input-preparation or
-IR-parsing phase. Production dependency-package tasks now use this direct path;
-they also materialize only runtime-helper declarations actually referenced by
-their reachable MIR. The root package temporarily uses the complete textual
-emitter while hosted runtime support, entry/validation wrappers, and debug
-metadata move behind their final direct or prebuilt boundaries. This split is
-explicit at the root-module product rather than a failure fallback. The
-external textual entry remains useful as the explicit Clang/LLVM qualification
-oracle rather than as the intended package-construction architecture.
+IR-parsing phase. Every production package task, including roots, debug builds,
+and validation roots, uses this direct path. It materializes only runtime-helper
+declarations referenced by reachable MIR, constructs the small program or
+validation entry wrapper directly, and attaches source metadata through LLVM's
+`DIBuilder`. The external textual entry remains useful as the explicit
+Clang/LLVM qualification oracle rather than as the intended
+package-construction architecture.
+
+Invariant hosted process services are compiled once for every versioned target
+while building the compiler distribution. Their relocatable object and assembly
+bytes are embedded in `draftc` and selected by exact target identity. Final
+executables and libraries consume that separate artifact-layout input; they do
+not reconstruct allocators, process views, temporary-storage state, assertions,
+or threading support inside every root LLVM module. The runtime object is
+compiler distribution code built at O2, not a user-program cache or sidecar.
 
 The adapter exposes no LLVM reference outside its module. Its process-global
 AArch64 and X86 registries are initialized once, while contexts, modules, target machines,
@@ -145,9 +152,10 @@ Status: promoted scalar/pointer tails implemented for every current native ABI.
 
 Foreign declarations retain LLVM's real `(fixed, ...)` function type. At each
 call, MIR contains the fixed operands followed by already-promoted unnamed
-operands with their exact scalar or pointer types. The textual adapter prints
-the complete variadic function type at the call site, as LLVM requires, and
-does not attach fixed-parameter extension attributes to the unnamed tail.
+operands with their exact scalar or pointer types. The direct builder constructs
+the complete variadic call type and does not attach fixed-parameter extension
+attributes to the unnamed tail; the textual qualification adapter prints the
+same contract.
 LLVM's selected target lowering then owns the materially different Darwin,
 GNU AArch64, and SysV AMD64 register/stack placement. This removes the former per-target
 `open(2)` assembly shim without moving ABI policy into `core/os`.
@@ -187,6 +195,11 @@ package task immediately turns its module into the requested object or assembly
 bytes and retains text only for an explicit IR consumer or Clang qualification.
 Once those semantic products publish, the artifact backend freezes one task for
 every layout row.
+The root layout places the exact target hosted-runtime input immediately after
+its package module and before authored assembly. Relocatable `--kind object`
+deliberately omits that input and leaves runtime references unresolved for the
+eventual final consumer, just as it leaves foreign references unresolved.
+Executables, dynamic/static libraries, and assembly bundles include it.
 That later graph is intentionally edgeless: package bytes are already complete,
 and each selected assembly input can be assembled without another package.
 Final linking combines package and assembly objects.
@@ -266,14 +279,15 @@ literals cannot carry the initializer-specific packed type.
 
 ## Native artifact ownership and visibility
 
-Status: AArch64 Mach-O plus AArch64/x86-64 ELF artifact contracts implemented.
+Status: AArch64 Mach-O, AArch64/x86-64 ELF, and x86-64 PE/COFF artifact
+contracts implemented.
 
-The root package module owns runtime support for every final native artifact,
-but only executable compilation adds the hosted C `main`. This lets
-an exported C wrapper use `runtime.default_context` from an object, archive, or
-dylib without requiring a fake Draft entry procedure. Ordinary Draft procedures
-and globals have hidden native visibility; only explicit C exports retain
-default visibility.
+The root artifact layout owns the separate compiler-distributed hosted runtime
+for every final executable or library, while only executable compilation adds
+the small hosted C `main`/`wmain` wrapper to the root package module. A
+relocatable object intentionally carries unresolved runtime references for its
+eventual consumer. Ordinary Draft procedures and globals have hidden native
+visibility; only explicit C exports retain default visibility.
 
 Object output performs a relocatable link over all package and package-assembly
 objects. Static output always uses deterministic archive metadata: Apple
@@ -288,8 +302,9 @@ provider records `$ORIGIN` as a runtime search directory. This supports the
 repository's vendored sibling-library layout without encoding the provider's
 physical build path or requiring ambient `LD_LIBRARY_PATH`.
 Assembly output is a directory bundle with one compiler-produced source for
-each semantic package module plus exact copied external assembly inputs,
-avoiding local-label collisions that concatenation could create.
+each semantic package module, the selected hosted-runtime assembly, and exact
+copied external assembly inputs, avoiding local-label collisions that
+concatenation could create.
 Generated C headers cover root-package exports and transitively required C
 records, unions, enums, fixed-array fields, and callback types. Layout
 assertions make size, alignment, and field-offset disagreement a C compile error.
@@ -370,9 +385,11 @@ list. Argument conversion/quoting preserves the exact UTF-8 operational paths
 without a shell, and process timing uses Windows user/kernel time. This keeps
 parallel package-assembly tasks from leaking unrelated compiler handles.
 
-COFF provides no relocatable partial link. A one-input object graph can publish
-its exact `.obj`; a provider-free multi-package or package-assembly object set
-must be represented by `--kind static-library`. Mapped providers remain
+COFF provides no relocatable partial link. Relocatable object output excludes
+the separately bundled hosted runtime and leaves those references unresolved;
+a one-package/no-assembly graph can therefore publish its exact package `.obj`.
+A multi-package or package-assembly object set must be represented by
+`--kind static-library`. Mapped providers remain
 separate by the existing artifact contract and must instead participate in a
 final executable/DLL link or be supplied by the consumer. The adapter rejects
 impossible shapes rather than labeling archive bytes as an object.

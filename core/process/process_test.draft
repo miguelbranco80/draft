@@ -1,6 +1,27 @@
+// Native process integration tests for core/process.
+//
+// These tests execute exact platform paths and validate creation, waiting,
+// exit-status, and missing-program behavior. Temporary zero-terminated paths
+// are owned by one local memory.Owned_String for the complete synchronous call;
+// neither process.run nor the test retains a borrowed pointer or native handle.
+// The file depends only on core/memory and core/testing. It exercises the
+// explicit ownership and C-string rules of specification sections 5-7.
 package process
 
+import core/memory
 import core/testing
+
+// run_path constructs the zero-terminated storage required by cstring. A Draft
+// string is an exact immutable byte view, so raw_data(string) cannot be cast to
+// cstring merely because an emitter once placed an incidental zero afterward.
+// The process call borrows synchronously and the owner remains live until its
+// explicit deferred destruction.
+run_path :: proc(path: string) -> Result {
+    owned: memory.Owned_String
+    memory.owned_string_copy(&owned, path)
+    defer memory.owned_string_destroy(&owned)
+    return run(memory.owned_string_cstring(&owned))
+}
 
 // This native integration test launches an operating-system executable rather
 // than mocking the ABI. POSIX true proves a zero exit; Windows where.exe with no
@@ -9,24 +30,24 @@ import core/testing
 test_native_process_launch :: proc(test: ^testing.Test) {
     testing.expect(test, run(nil).error == .unavailable)
     when target.os == .windows {
-        result := run(cast[cstring](raw_data("C:\\Windows\\System32\\where.exe")))
+        result := run_path("C:\\Windows\\System32\\where.exe")
         testing.expect(test, result.error == .none)
         testing.expect(test, result.exited)
         testing.expect(test, result.exit_code != 0)
-        missing := run(cast[cstring](raw_data(
+        missing := run_path(
             "C:\\Windows\\System32\\draft-missing-program.exe",
-        )))
+        )
         testing.expect(test, missing.error == .unavailable)
     } else {
-        result := run(cast[cstring](raw_data("/usr/bin/true")))
+        result := run_path("/usr/bin/true")
         testing.expect(test, result.error == .none)
         testing.expect(test, result.exited)
         testing.expect(test, result.exit_code == 0)
-        failed := run(cast[cstring](raw_data("/usr/bin/false")))
+        failed := run_path("/usr/bin/false")
         testing.expect(test, failed.error == .none)
         testing.expect(test, failed.exited)
         testing.expect(test, failed.exit_code != 0)
-        missing := run(cast[cstring](raw_data("/draft-missing-program")))
+        missing := run_path("/draft-missing-program")
         testing.expect(test, missing.error == .none)
         testing.expect(test, missing.exited)
         testing.expect(test, missing.exit_code == 127)

@@ -129,8 +129,11 @@ LLVM and native lowering now follow artifact-live semantic products. Every
 authored body is checked, but each concrete runtime procedure first publishes a
 direct native-reference summary during complete semantic closure, including a
 non-artifact check. Parsed package assembly is also retained during that
-closure. One workspace reachability product later closes from
-entry/export/validation roots through calls, procedure values, and globals.
+closure. One workspace reachability product later closes from the authored root
+`main`, exports, or selected validation entries through calls, procedure values,
+and globals. Object, archive, and assembly output keep an authored `main` live
+even when only executable output contributes the hosted C `main`/`wmain`
+wrapper.
 Only its live rows receive independently owned MIR products. Once the complete
 projection is ready, one `PackageLlvmModule` per package borrows its MIR task
 payloads in canonical order and emits only live package globals and concrete
@@ -143,15 +146,13 @@ its assembly. The artifact planner consumes only that layout; no package-wide
 MIR container or alternative per-function LLVM representation remains in
 compiler state.
 
-Package LLVM construction still has one temporary bootstrap limitation. The
-complete production emitter serializes its task-local package module as LLVM
-text before the LLVM adapter parses it into the context used for verification
-and code generation. A separate direct builder now proves the final handle-free
-package API, nominal-type construction, ordinary scalar MIR lowering, retained
-inspection text, and native emission with zero parser work. It is not selected
-by production until it implements the complete runtime, constant, ABI, debug,
-and MIR surface; unsupported direct operations fail rather than silently
-falling back to the textual path.
+Every production package LLVM task now constructs its module directly through
+LLVM's C API, including root/validation wrappers and source debug metadata, and
+continues that same task-private module into verification, optimization, and
+native emission. The textual package emitter remains only an independent
+qualification/test oracle. The hosted runtime is a separately compiled object
+embedded for each exact target. There is no production print/reparse boundary
+or unsupported-operation fallback between the two emitters.
 
 ## Native host and instrumentation limits
 

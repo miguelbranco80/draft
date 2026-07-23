@@ -60,13 +60,25 @@ struct TestState {
 using ArtifactSnapshot =
     std::vector<std::pair<std::string, std::string>>;
 
+// Counts the exact rows selected by the public artifact kind. Relocatable
+// object output deliberately leaves hosted-runtime references unresolved, so
+// the compiler-owned runtime row remains in semantic layout but is not a
+// native task for that one artifact form.
 [[nodiscard]] std::size_t native_task_count(
-    const draft::CompileWorkspaceResult &compiled) {
+    const draft::CompileWorkspaceResult &compiled,
+    draft::NativeArtifactKind kind) {
   std::size_t count = 0;
   for (const std::optional<draft::CompiledPackage> &package :
        compiled.packages) {
     if (!package.has_value()) continue;
-    count += package->artifact_layout.inputs.size();
+    for (const draft::PackageArtifactInput &input :
+         package->artifact_layout.inputs) {
+      if (kind == draft::NativeArtifactKind::Object &&
+          input.kind == draft::PackageArtifactInputKind::HostedRuntime) {
+        continue;
+      }
+      ++count;
+    }
   }
   return count;
 }
@@ -187,7 +199,7 @@ void compare_repeated_artifact(
   // The same canonical task graph now runs with a wider ready set. The
   // multi-package executable below proves real overlap; one-package library
   // artifacts still prove that selecting a wider bound preserves behavior.
-  const std::size_t task_count = native_task_count(compiled);
+  const std::size_t task_count = native_task_count(compiled, kind);
   options.object_worker_count = 4;
   draft::DiagnosticSink second_diagnostics;
   const draft::NativeBuildResult second = draft::build_native_artifact(
@@ -258,7 +270,9 @@ void test_repeated_native_link_is_byte_identical(TestState &state) {
   EXPECT(state, executable.ok);
   EXPECT(state, library.ok);
   EXPECT(state, library_assembly.ok);
-  EXPECT(state, native_task_count(executable) > 1);
+  EXPECT(state,
+         native_task_count(
+             executable, draft::NativeArtifactKind::Executable) > 1);
   if (!executable.ok || !library.ok || !library_assembly.ok) return;
   struct ArtifactCase {
     std::string_view name;

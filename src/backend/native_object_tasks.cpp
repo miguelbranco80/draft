@@ -5,6 +5,7 @@
 
 #include "backend/native_object_tasks.h"
 
+#include "backend/hosted_runtime_bundle.h"
 #include "workspace/workspace.h"
 
 #include <cstddef>
@@ -65,6 +66,9 @@ bool prepare_native_object_plan(
   plan.tasks.reserve(task_count);
   plan.graph.tasks.reserve(task_count);
 
+  bool saw_root_package = false;
+  bool saw_root_runtime = false;
+
   for (std::size_t package_index = 0;
        package_index < compiled.packages.size();
        ++package_index) {
@@ -79,7 +83,11 @@ bool prepare_native_object_plan(
 
     const std::string package_stem =
         "package-" + std::to_string(package_index);
+    const bool is_root = compiled.graph.root_package.is_valid() &&
+        package_index == compiled.graph.root_package.value;
+    if (is_root) saw_root_package = true;
     bool saw_module = false;
+    bool saw_runtime = false;
     bool saw_assembly = false;
     std::size_t next_assembly = 0;
     for (const PackageArtifactInput &layout :
@@ -90,7 +98,7 @@ bool prepare_native_object_plan(
         return false;
       }
       if (layout.kind == PackageArtifactInputKind::PackageLlvmModule) {
-        if (saw_module || saw_assembly || layout.index != 0) {
+        if (saw_module || saw_runtime || saw_assembly || layout.index != 0) {
           reason = "package LLVM module layout is malformed";
           plan = NativeObjectPlan{};
           return false;
@@ -138,6 +146,54 @@ bool prepare_native_object_plan(
         saw_module = true;
         continue;
       }
+      if (layout.kind == PackageArtifactInputKind::HostedRuntime) {
+        if (!saw_module || saw_runtime || saw_assembly || layout.index != 0) {
+          reason = "hosted runtime layout is malformed";
+          plan = NativeObjectPlan{};
+          return false;
+        }
+        if (!compiled.graph.root_package.is_valid() ||
+            package_index != compiled.graph.root_package.value) {
+          reason = "hosted runtime is not owned by the root package layout";
+          plan = NativeObjectPlan{};
+          return false;
+        }
+        saw_runtime = true;
+        saw_root_runtime = true;
+        if (!options.include_hosted_runtime)
+          continue;
+        const EmbeddedHostedRuntimeObject *runtime =
+            embedded_hosted_runtime_object(target.facts.identity);
+        if (runtime == nullptr) {
+          reason = "compiler has no hosted runtime for target '" +
+              target.facts.identity + "'";
+          plan = NativeObjectPlan{};
+          return false;
+        }
+        NativeObjectTask task;
+        task.kind = NativeObjectTaskKind::HostedRuntime;
+        task.package_module_input =
+            NativePackageModuleInputKind::EmittedNativeBytes;
+        task.package_index = package_index;
+        task.producer = layout.producer;
+        task.display_name = target.facts.identity + " hosted runtime";
+        task.output_stem = "hosted-runtime";
+        if (options.expected_native_output.output_kind ==
+            LlvmNativeOutputKind::Assembly) {
+          task.source_extension = ".s";
+          task.input_bytes = runtime->assembly_bytes;
+        } else {
+          task.input_bytes = runtime->object_bytes;
+        }
+        if (task.input_bytes.empty()) {
+          reason = "compiler hosted runtime input is empty";
+          plan = NativeObjectPlan{};
+          return false;
+        }
+        plan.tasks.push_back(std::move(task));
+        plan.graph.tasks.emplace_back();
+        continue;
+      }
       saw_assembly = true;
       if (!saw_module || layout.index != next_assembly ||
           layout.index >= package->assembly_sources.size()) {
@@ -176,6 +232,17 @@ bool prepare_native_object_plan(
       plan = NativeObjectPlan{};
       return false;
     }
+  }
+  // Every complete compiler layout records the target runtime even when the
+  // caller is producing a relocatable object and intentionally omits that row
+  // from the resulting task plan. Requiring the row here prevents a malformed
+  // final executable/library plan from silently linking without the Context,
+  // process-state, and runtime-check definitions its package modules reference.
+  if (compiled.graph.root_package.is_valid() &&
+      (!saw_root_package || !saw_root_runtime)) {
+    reason = "root package artifact layout has no hosted runtime";
+    plan = NativeObjectPlan{};
+    return false;
   }
   return true;
 }

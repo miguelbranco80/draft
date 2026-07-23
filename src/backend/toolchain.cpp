@@ -1021,6 +1021,12 @@ NativeBuildResult build_native_artifact(
       options.instrumentation == NativeInstrumentationProfile::AddressSanitizer
       ? LlvmNativeInstrumentation::AddressSanitizer
       : LlvmNativeInstrumentation::None;
+  // A relocatable object is an intermediate unit: runtime and foreign symbols
+  // intentionally remain unresolved until its consumer builds a final image
+  // or archive. This also preserves COFF's honest one-object contract, because
+  // PE/COFF has no general multi-object `-r` partial link.
+  plan_options.include_hosted_runtime =
+      options.artifact_kind != NativeArtifactKind::Object;
   std::string plan_error;
   if (!prepare_native_object_plan(
           target, compiled, plan_options, object_plan, plan_error)) {

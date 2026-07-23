@@ -25,11 +25,13 @@ records each contain a procedure pointer and a provider-state pointer. The
 assertion callback is an ordinary Draft procedure pointer, so its physical call
 prepends the active Context pointer.
 
-Only the executable root module defines runtime failure helpers and root process
-state. Dependency modules reference those hidden link-unit symbols. This gives
-all ordinary calls one coherent Context and prevents per-package runtime state
-from emerging as a bootstrap artifact. Changing this layout or helper contract
-requires a new runtime ABI and core distribution identity.
+One target-selected compiler-distributed runtime object defines runtime failure
+helpers and root process state. Every package module, including the executable
+root, references those hidden link-unit symbols; only the root package module
+adds the small hosted `main`/`wmain` wrapper when building an executable. This
+gives all ordinary calls one coherent Context and prevents per-package runtime
+state from emerging as a bootstrap artifact. Changing this layout or helper
+contract requires a new runtime ABI and core distribution identity.
 
 `context` is a predeclared, addressable value in every ordinary Draft procedure.
 When `core/runtime` is imported, its type is exactly the public
@@ -70,10 +72,12 @@ call-boundary reset. The runtime installs a stderr logger. POSIX random bytes
 come from `arc4random_buf`; Windows fills exact byte ranges from UCRT `rand_s`
 words, including a bounded final partial word.
 
-The LLVM runtime bridge uses the selected libc's physical pthread typedefs.
-Darwin's `pthread_once_t` is a 16-byte signature record initialized with its
-fixed `PTHREAD_ONCE_INIT` value and `pthread_key_t` is 64 bits. Under the
-selected glibc contract, `pthread_once_t` is one zero-initialized 32-bit word
+The compiler-distributed runtime source is compiled for each target by the LLVM
+toolchain selected to build the bootstrap. It uses the selected libc's physical
+pthread typedefs. Darwin's `pthread_once_t` is a 16-byte signature record
+initialized with its fixed `PTHREAD_ONCE_INIT` value and `pthread_key_t` is 64
+bits. Under the selected glibc contract, `pthread_once_t` is one
+zero-initialized 32-bit word
 and `pthread_key_t` is 32 bits. Their declarations, globals, loads, and calls
 all use the matching type and alignment. Windows uses an atomic FLS-key state
 machine instead of fabricating a pthread layout. These target facts never enter

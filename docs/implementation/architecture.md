@@ -272,7 +272,11 @@ while actual source pointers retain their canonical semantic type.
 The LLVM adapter has one direct ownership operation: emit one complete module
 for one semantic package. The module contains artifact-live package globals,
 relocatable initializer storage, artifact-live concrete MIR procedures,
-runtime support when the package owns it, and any requested hosted entry point.
+referenced runtime declarations, directly constructed source debug metadata,
+and any requested hosted entry point. Invariant hosted runtime implementation
+is one separately compiled target object embedded in the compiler distribution;
+the root artifact layout selects it by exact target identity rather than
+reconstructing it inside the root module.
 Procedure MIR is not
 reassembled into an owning `MirProgram`; the emitter borrows the immutable
 payloads from their product side-table rows in canonical package order. This
@@ -294,7 +298,9 @@ ready waves and moves payloads into canonical rows in product order.
 
 Published layouts then form the independent artifact-materialization ready set.
 Ordinary package rows borrow their already emitted bytes without copying;
-package-assembly workers own private assembler paths. The explicit Clang oracle
+the root's hosted-runtime row borrows immutable embedded bytes; package-assembly
+workers own private assembler paths. Relocatable object materialization skips
+that runtime row so its references remain for the final consumer. The explicit Clang oracle
 is the only later stage that consumes retained LLVM text. The main thread joins
 that set, selects diagnostics by lowest stable task ID, and only then publishes
 files and linker inputs in task-ID order. Parallel

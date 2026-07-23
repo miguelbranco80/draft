@@ -2,8 +2,8 @@
 //
 // This module turns one closed workspace into dependency-ordered semantic
 // package rows, then optionally continues those same rows through validation
-// discovery, parsed assembly, Draft MIR, and LLVM text. Inputs are exact source
-// buffers owned by the caller's SourceManager plus explicit target,
+// discovery, parsed assembly, Draft MIR, and native LLVM products. Inputs are
+// exact source buffers owned by the caller's SourceManager plus explicit target,
 // configuration, attachment, and foreign-summary facts. The result owns the
 // workspace graph and every compiler representation but continues to borrow
 // source bytes through stable FileIds; callers therefore keep SourceManager
@@ -6699,26 +6699,48 @@ struct PackageClosureFinalizationExecution {
     }
   }
 
-  if (emit_program_entry && validation_kind == ValidationKind::None) {
+  // An authored main is an artifact root independently of whether this output
+  // kind contributes the hosted C main/wmain wrapper. Object, archive, and
+  // assembly output must still contain the program body so a later consumer
+  // can supply or inspect the platform entry. emit_program_entry controls only
+  // wrapper construction and therefore strengthens an absent main into an
+  // error; it must never decide whether an existing Draft main is live.
+  if (validation_kind == ValidationKind::None) {
     const std::size_t root = result.graph.root_package.value;
     if (root >= result.packages.size() || !result.packages[root].has_value()) {
       diagnostics.error(
           SourceRange::invalid(),
-          "native executable root has no retained semantic package");
+          "native artifact root has no retained semantic package");
       return false;
     }
     const SemanticPackage &semantic = result.packages[root]->bodies.package;
     const std::optional<SymbolId> main =
         semantic.symbols.lookup_direct(semantic.package_scope, "main");
-    if (!main.has_value()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "native executable root has no main procedure");
-      return false;
+    std::optional<NativeSymbolIdentity> concrete_main;
+    if (main.has_value()) {
+      NativeSymbolIdentity candidate = local_native_identity(
+          result.graph.packages[root].identity,
+          semantic.symbols.symbol(*main));
+      const auto checked_body = std::find_if(
+          input.procedures.begin(),
+          input.procedures.end(),
+          [&](const NativeProcedureReferenceSummary &summary) {
+            return summary.procedure == candidate;
+          });
+      if (checked_body != input.procedures.end()) {
+        concrete_main = std::move(candidate);
+      }
     }
-    input.procedure_roots.push_back(local_native_identity(
-        result.graph.packages[root].identity,
-        semantic.symbols.symbol(*main)));
+    if (!concrete_main.has_value()) {
+      if (emit_program_entry) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "native executable root has no main procedure");
+        return false;
+      }
+    } else {
+      input.procedure_roots.push_back(std::move(*concrete_main));
+    }
   }
   if (validation_kind != ValidationKind::None) {
     for (const ValidationEntry &entry : validation_entries) {
@@ -6870,11 +6892,11 @@ struct MirProcedureWaveExecution {
   return std::nullopt;
 }
 
-// One worker owns the complete LLVM module for one semantic package. Ordinary
-// dependency packages use the direct LLVM builder and never materialize a text
-// buffer merely to feed it back into LLVM. The root package temporarily keeps
-// the textual oracle only while its hosted-runtime, entry, validation, and
-// debug products are moved behind their final direct/prebuilt boundaries.
+// One worker owns the complete LLVM module for one semantic package. Every
+// production package uses the direct LLVM builder and never materializes a
+// text buffer merely to feed it back into LLVM. Root entry/validation wrappers
+// are constructed in the same module; invariant process services come from the
+// separate compiler-bundled target runtime object.
 // The procedure pointer vector borrows immutable results in the closed native
 // executor's fixed-size MIR slot array. Exact WorkGraph edges ensure those
 // results are complete before this task starts; the array remains stable until
@@ -6895,7 +6917,6 @@ struct PackageLlvmModuleTaskSlot {
   LlvmIrResult llvm;
   PackageNativeOutput native;
   LlvmPackageEmissionPhaseTimings direct_phase_timings;
-  bool used_direct_builder = false;
   std::uint64_t elapsed_nanoseconds = 0;
 };
 
@@ -6970,74 +6991,36 @@ struct PackageLlvmModuleWaveExecution {
   }
   SemanticProductOutcome &outcome = (*context.outcomes)[index];
   const auto started = std::chrono::steady_clock::now();
-  const bool direct_module =
-      !slot.options.emit_debug_information &&
-      !slot.options.emit_runtime_support &&
-      !slot.options.emit_program_entry &&
-      slot.options.validation_kind == ValidationKind::None;
-  if (direct_module) {
-    LlvmPackageEmissionOptions direct_options;
-    direct_options.module = slot.options;
-    direct_options.retain_llvm_text = slot.retain_llvm_text;
-    direct_options.native_options = slot.native_options;
-    direct_options.collect_phase_timings = slot.collect_phase_timings;
-    LlvmPackageEmissionResult emitted = emit_llvm_package_direct(
-        *slot.target,
-        *slot.sources,
-        direct_options,
-        *slot.semantic,
-        *slot.abi,
-        *slot.global_initializers,
-        slot.globals,
-        slot.procedures,
-        outcome.diagnostics);
-    slot.used_direct_builder = true;
-    slot.direct_phase_timings = emitted.phase_timings;
-    slot.llvm.ok = emitted.ok;
-    slot.llvm.text = std::move(emitted.llvm_text);
-    if (emitted.ok && slot.native_options.has_value()) {
-      if (!emitted.native.ok) {
-        outcome.diagnostics.error(
-            SourceRange::invalid(), emitted.native.failure);
-      } else {
-        slot.native.ok = true;
-        slot.native.output_kind = slot.native_options->output_kind;
-        slot.native.optimization = slot.native_options->optimization;
-        slot.native.instrumentation = slot.native_options->instrumentation;
-        slot.native.bytes = std::move(emitted.native.bytes);
-        slot.native.phase_timings = emitted.native.phase_timings;
-      }
+  LlvmPackageEmissionOptions direct_options;
+  direct_options.module = slot.options;
+  direct_options.retain_llvm_text = slot.retain_llvm_text;
+  direct_options.native_options = slot.native_options;
+  direct_options.collect_phase_timings = slot.collect_phase_timings;
+  LlvmPackageEmissionResult emitted = emit_llvm_package_direct(
+      *slot.target,
+      *slot.sources,
+      direct_options,
+      *slot.semantic,
+      *slot.abi,
+      *slot.global_initializers,
+      slot.globals,
+      slot.procedures,
+      outcome.diagnostics);
+  slot.direct_phase_timings = emitted.phase_timings;
+  slot.llvm.ok = emitted.ok;
+  slot.llvm.text = std::move(emitted.llvm_text);
+  if (emitted.ok && slot.native_options.has_value()) {
+    if (!emitted.native.ok) {
+      outcome.diagnostics.error(
+          SourceRange::invalid(), emitted.native.failure);
+    } else {
+      slot.native.ok = true;
+      slot.native.output_kind = slot.native_options->output_kind;
+      slot.native.optimization = slot.native_options->optimization;
+      slot.native.instrumentation = slot.native_options->instrumentation;
+      slot.native.bytes = std::move(emitted.native.bytes);
+      slot.native.phase_timings = emitted.native.phase_timings;
     }
-  } else {
-    slot.llvm = emit_llvm_package_module(
-        *slot.target,
-        *slot.sources,
-        slot.options,
-        *slot.semantic,
-        *slot.abi,
-        *slot.global_initializers,
-        slot.globals,
-        slot.procedures,
-        outcome.diagnostics);
-    if (slot.llvm.ok && slot.native_options.has_value()) {
-      LlvmObjectEmissionResult emitted = emit_llvm_object_in_process(
-          *slot.target,
-          display_package_identity(slot.options.package),
-          slot.llvm.text,
-          *slot.native_options);
-      if (!emitted.ok) {
-        outcome.diagnostics.error(
-            SourceRange::invalid(), emitted.failure);
-      } else {
-        slot.native.ok = true;
-        slot.native.output_kind = slot.native_options->output_kind;
-        slot.native.optimization = slot.native_options->optimization;
-        slot.native.instrumentation = slot.native_options->instrumentation;
-        slot.native.bytes = std::move(emitted.bytes);
-        slot.native.phase_timings = emitted.phase_timings;
-      }
-    }
-    if (!slot.retain_llvm_text && slot.native.ok) slot.llvm.text.clear();
   }
   const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now() - started).count();
@@ -7080,7 +7063,9 @@ struct NativePipelineTask {
 struct NativePipelineLayoutTaskSlot {
   const LlvmIrResult *module = nullptr;
   std::size_t assembly_source_count = 0;
+  bool include_hosted_runtime = false;
   SemanticProductId module_product;
+  SemanticProductId runtime_product;
   SemanticProductId assembly_product;
   PackageArtifactLayout layout;
 };
@@ -7168,11 +7153,23 @@ struct NativePipelineExecution {
       failure = "native pipeline layout task has incomplete module inputs";
       return false;
     }
-    slot.layout.inputs.reserve(1 + slot.assembly_source_count);
+    slot.layout.inputs.reserve(
+        1 + (slot.include_hosted_runtime ? 1 : 0) +
+        slot.assembly_source_count);
     slot.layout.inputs.push_back({
         PackageArtifactInputKind::PackageLlvmModule,
         0,
         slot.module_product});
+    if (slot.include_hosted_runtime) {
+      if (!slot.runtime_product.is_valid()) {
+        failure = "native pipeline layout has no hosted-runtime producer";
+        return false;
+      }
+      slot.layout.inputs.push_back({
+          PackageArtifactInputKind::HostedRuntime,
+          0,
+          slot.runtime_product});
+    }
     for (std::size_t assembly_index = 0;
          assembly_index < slot.assembly_source_count;
          ++assembly_index) {
@@ -7404,11 +7401,16 @@ struct NativePipelineExecution {
       if (emit_native_output) {
         slot.native_options = native_output;
       }
-      slot.options.emit_runtime_support =
+      const bool is_root =
           package_index == result.graph.root_package.value;
+      // Process services are a separate compiler-distributed target object in
+      // every build mode. Debug information describes authored package code;
+      // it never changes runtime ownership or forces the root module through a
+      // textual LLVM serialization boundary.
+      slot.options.emit_runtime_support = false;
       slot.options.emit_program_entry =
-          emit_program_entry && slot.options.emit_runtime_support;
-      if (slot.options.emit_runtime_support) {
+          emit_program_entry && is_root;
+      if (is_root) {
         slot.options.validation_kind = validation_kind;
         slot.options.validation_entries.assign(
             validation_entries.begin(), validation_entries.end());
@@ -7427,9 +7429,13 @@ struct NativePipelineExecution {
       CompiledPackage &package = *result.packages[package_index];
       PackageSemanticProducts &products =
           result.semantic_products.packages[package_index];
-      const std::array dependencies{
+      const bool include_hosted_runtime =
+          package_index == result.graph.root_package.value;
+      std::vector<SemanticProductId> dependencies{
           products.package_llvm_module,
           products.package_assembly};
+      if (include_hosted_runtime)
+        dependencies.push_back(result.semantic_products.target);
       const PackageId owner{static_cast<std::uint32_t>(package_index)};
       products.artifact_layout = append_workspace_semantic_product(
           result,
@@ -7442,7 +7448,9 @@ struct NativePipelineExecution {
       NativePipelineLayoutTaskSlot &slot = layout_slots[package_index];
       slot.module = &module_slots[package_index].llvm;
       slot.assembly_source_count = package.assembly_sources.size();
+      slot.include_hosted_runtime = include_hosted_runtime;
       slot.module_product = products.package_llvm_module;
+      slot.runtime_product = result.semantic_products.target;
       slot.assembly_product = products.package_assembly;
       append_execution_task(
           NativePipelineTaskKind::ArtifactLayout,
@@ -7635,11 +7643,7 @@ struct NativePipelineExecution {
             std::move(module_slots[task.slot].native);
         if (timings != nullptr) {
           timings->add_counter("LLVM package modules emitted", 1);
-          timings->add_counter(
-              module_slots[task.slot].used_direct_builder
-                  ? "direct LLVM package modules"
-                  : "textual LLVM package modules",
-              1);
+          timings->add_counter("direct LLVM package modules", 1);
           timings->add_counter(
               "LLVM IR bytes",
               static_cast<std::uint64_t>(package.llvm_module.text.size()));

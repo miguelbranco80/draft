@@ -33,6 +33,7 @@ struct TestState {
 draft::CompileWorkspaceResult make_compiled_fixture() {
   draft::CompileWorkspaceResult compiled;
   compiled.ok = true;
+  compiled.graph.root_package = {0};
   compiled.packages.resize(2);
 
   draft::CompiledPackage root;
@@ -42,8 +43,10 @@ draft::CompileWorkspaceResult make_compiled_fixture() {
   root.native_output.ok = true;
   root.native_output.bytes = "root object";
   root.artifact_layout.ok = true;
-  root.artifact_layout.inputs.push_back({
-      draft::PackageArtifactInputKind::PackageLlvmModule, 0, {0}});
+  root.artifact_layout.inputs = {
+      {draft::PackageArtifactInputKind::PackageLlvmModule, 0, {0}},
+      {draft::PackageArtifactInputKind::HostedRuntime, 0, {2}},
+  };
   compiled.packages[0] = std::move(root);
 
   draft::CompiledPackage dependency;
@@ -65,8 +68,8 @@ draft::CompileWorkspaceResult make_compiled_fixture() {
 }
 
 // Planning must preserve one simple, inspectable order regardless of future
-// completion order: the package module and then its selected assembly sources
-// before advancing to the next package.
+// completion order: root module, its compiler-distributed runtime, and then
+// each later package module followed by its selected assembly sources.
 void test_canonical_task_order(TestState &state) {
   const draft::CompileWorkspaceResult compiled = make_compiled_fixture();
   draft::NativeObjectPlan plan;
@@ -75,7 +78,7 @@ void test_canonical_task_order(TestState &state) {
   EXPECT(state, draft::prepare_native_object_plan(
       draft::make_aarch64_macos_profile(), compiled, options, plan, reason));
   EXPECT(state, reason.empty());
-  EXPECT(state, plan.tasks.size() == 4);
+  EXPECT(state, plan.tasks.size() == 5);
   EXPECT(state, plan.graph.tasks.size() == plan.tasks.size());
   for (const draft::WorkTask &task : plan.graph.tasks) {
     EXPECT(state, task.dependencies.empty());
@@ -93,19 +96,33 @@ void test_canonical_task_order(TestState &state) {
   EXPECT(state, plan.tasks[0].input_bytes == "root object");
 
   EXPECT(state,
-      plan.tasks[1].kind == draft::NativeObjectTaskKind::PackageLlvmModule);
-  EXPECT(state, plan.tasks[1].package_index == 1);
-  EXPECT(state, plan.tasks[1].output_stem == "package-1-module");
+      plan.tasks[1].kind == draft::NativeObjectTaskKind::HostedRuntime);
+  EXPECT(state, plan.tasks[1].package_index == 0);
+  EXPECT(state, plan.tasks[1].producer == draft::SemanticProductId{2});
   EXPECT(state,
-      plan.tasks[2].kind == draft::NativeObjectTaskKind::PackageAssembly);
+      plan.tasks[1].package_module_input ==
+          draft::NativePackageModuleInputKind::EmittedNativeBytes);
+  EXPECT(state,
+      plan.tasks[1].display_name ==
+          "draft-aarch64-macos-v5 hosted runtime");
+  EXPECT(state, plan.tasks[1].output_stem == "hosted-runtime");
+  EXPECT(state, plan.tasks[1].source_extension.empty());
+  EXPECT(state, !plan.tasks[1].input_bytes.empty());
+
+  EXPECT(state,
+      plan.tasks[2].kind == draft::NativeObjectTaskKind::PackageLlvmModule);
   EXPECT(state, plan.tasks[2].package_index == 1);
-  EXPECT(state, plan.tasks[2].input_index == 0);
-  EXPECT(state, plan.tasks[2].producer == draft::SemanticProductId{3});
-  EXPECT(state, plan.tasks[2].output_stem == "package-1-assembly-0");
-  EXPECT(state, plan.tasks[2].source_extension == ".s");
-  EXPECT(state, plan.tasks[3].input_index == 1);
-  EXPECT(state, plan.tasks[3].output_stem == "package-1-assembly-1");
-  EXPECT(state, plan.tasks[3].source_extension == ".S");
+  EXPECT(state, plan.tasks[2].output_stem == "package-1-module");
+  EXPECT(state,
+      plan.tasks[3].kind == draft::NativeObjectTaskKind::PackageAssembly);
+  EXPECT(state, plan.tasks[3].package_index == 1);
+  EXPECT(state, plan.tasks[3].input_index == 0);
+  EXPECT(state, plan.tasks[3].producer == draft::SemanticProductId{3});
+  EXPECT(state, plan.tasks[3].output_stem == "package-1-assembly-0");
+  EXPECT(state, plan.tasks[3].source_extension == ".s");
+  EXPECT(state, plan.tasks[4].input_index == 1);
+  EXPECT(state, plan.tasks[4].output_stem == "package-1-assembly-1");
+  EXPECT(state, plan.tasks[4].source_extension == ".S");
 }
 
 // The artifact layer must consume exactly the representation requested by its
@@ -134,12 +151,61 @@ void test_plan_selects_one_exact_package_representation(TestState &state) {
   EXPECT(state, draft::prepare_native_object_plan(
       draft::make_aarch64_macos_profile(), compiled, oracle, plan, reason));
   EXPECT(state, reason.empty());
-  EXPECT(state, !plan.tasks.empty());
-  if (!plan.tasks.empty()) {
+  EXPECT(state, plan.tasks.size() >= 2);
+  if (plan.tasks.size() >= 2) {
     EXPECT(state,
         plan.tasks.front().package_module_input ==
             draft::NativePackageModuleInputKind::LlvmTextOracle);
     EXPECT(state, plan.tasks.front().input_bytes == "; root module\n");
+    // The external oracle applies only to package LLVM. The runtime has
+    // already been compiled for the exact target and remains native bytes.
+    EXPECT(state,
+        plan.tasks[1].kind == draft::NativeObjectTaskKind::HostedRuntime);
+    EXPECT(state,
+        plan.tasks[1].package_module_input ==
+            draft::NativePackageModuleInputKind::EmittedNativeBytes);
+    EXPECT(state, !plan.tasks[1].input_bytes.empty());
+  }
+
+  draft::NativeObjectPlanOptions relocatable;
+  relocatable.include_hosted_runtime = false;
+  EXPECT(state, draft::prepare_native_object_plan(
+      draft::make_aarch64_macos_profile(),
+      compiled,
+      relocatable,
+      plan,
+      reason));
+  EXPECT(state, reason.empty());
+  EXPECT(state, plan.tasks.size() == 4);
+  for (const draft::NativeObjectTask &task : plan.tasks) {
+    EXPECT(state, task.kind != draft::NativeObjectTaskKind::HostedRuntime);
+  }
+
+  draft::NativeObjectPlanOptions assembly;
+  assembly.expected_native_output.output_kind =
+      draft::LlvmNativeOutputKind::Assembly;
+  for (std::optional<draft::CompiledPackage> &package : compiled.packages) {
+    if (!package.has_value()) continue;
+    package->native_output.output_kind =
+        draft::LlvmNativeOutputKind::Assembly;
+    package->native_output.bytes = "package assembly";
+  }
+  EXPECT(state, draft::prepare_native_object_plan(
+      draft::make_aarch64_macos_profile(),
+      compiled,
+      assembly,
+      plan,
+      reason));
+  EXPECT(state, reason.empty());
+  EXPECT(state, plan.tasks.size() >= 2);
+  if (plan.tasks.size() >= 2) {
+    EXPECT(state,
+        plan.tasks[1].kind == draft::NativeObjectTaskKind::HostedRuntime);
+    EXPECT(state, plan.tasks[1].source_extension == ".s");
+    EXPECT(state, !plan.tasks[1].input_bytes.empty());
+    EXPECT(state,
+        plan.tasks[1].input_bytes.find("__draft.runtime.initialize_process") !=
+            std::string_view::npos);
   }
 }
 
@@ -170,6 +236,18 @@ void test_plan_rejects_incomplete_or_unknown_input(TestState &state) {
       "package artifact layout does not cover every native input");
   EXPECT(state, plan.tasks.empty());
 
+  draft::CompileWorkspaceResult missing_runtime = make_compiled_fixture();
+  missing_runtime.packages[0]->artifact_layout.inputs.pop_back();
+  EXPECT(state, !draft::prepare_native_object_plan(
+      draft::make_aarch64_macos_profile(),
+      missing_runtime,
+      options,
+      plan,
+      reason));
+  EXPECT(state, reason ==
+      "root package artifact layout has no hosted runtime");
+  EXPECT(state, plan.tasks.empty());
+
   draft::CompileWorkspaceResult unknown = make_compiled_fixture();
   unknown.packages[1]->assembly_sources[0].relative_name = "first.asm-unknown";
   EXPECT(state, !draft::prepare_native_object_plan(
@@ -177,6 +255,35 @@ void test_plan_rejects_incomplete_or_unknown_input(TestState &state) {
   EXPECT(state, reason ==
       "package assembly input 'first.asm-unknown' has no exact "
       "non-preprocessed target rule");
+  EXPECT(state, plan.tasks.empty());
+
+  draft::CompileWorkspaceResult misplaced_runtime = make_compiled_fixture();
+  misplaced_runtime.packages[0]->artifact_layout.inputs.pop_back();
+  misplaced_runtime.packages[1]->artifact_layout.inputs.insert(
+      misplaced_runtime.packages[1]->artifact_layout.inputs.begin() + 1,
+      {draft::PackageArtifactInputKind::HostedRuntime, 0, {2}});
+  EXPECT(state, !draft::prepare_native_object_plan(
+      draft::make_aarch64_macos_profile(),
+      misplaced_runtime,
+      options,
+      plan,
+      reason));
+  EXPECT(state, reason ==
+      "hosted runtime is not owned by the root package layout");
+  EXPECT(state, plan.tasks.empty());
+
+  draft::TargetProfile unavailable_target =
+      draft::make_aarch64_macos_profile();
+  unavailable_target.facts.identity = "draft-unbundled-test-target-v1";
+  EXPECT(state, !draft::prepare_native_object_plan(
+      unavailable_target,
+      make_compiled_fixture(),
+      options,
+      plan,
+      reason));
+  EXPECT(state, reason ==
+      "compiler has no hosted runtime for target "
+      "'draft-unbundled-test-target-v1'");
   EXPECT(state, plan.tasks.empty());
 }
 

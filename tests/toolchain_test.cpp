@@ -291,9 +291,11 @@ void test_all_native_artifact_kinds(TestState &state) {
   }
   const std::string &llvm = compiled.packages.front()->llvm_module.text;
   EXPECT(state, llvm.find("define i32 @main(") == std::string::npos);
-  EXPECT(state, llvm.find(
-      "define hidden void @\"__draft.runtime.default_context\"") !=
-      std::string::npos);
+  // A library module contains only helpers reached by its authored code. The
+  // invariant hosted runtime is a separate artifact input, not an unconditional
+  // block of definitions inside every root LLVM module.
+  EXPECT(state, llvm.find("define hidden void @__draft.runtime.default_context") ==
+                    std::string::npos);
 
   const std::filesystem::path log = temporary / "arguments.log";
   const std::filesystem::path fake_clang = temporary / "record-clang";

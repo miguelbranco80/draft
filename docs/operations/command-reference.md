@@ -85,10 +85,11 @@ lexing/parsing, import-graph resolution, and each visible event's exclusive
 `self` duration. Declaration semantics is divided into ready-wave selection,
 task preparation, bounded task execution, and coordinator publication. Effect
 closure separates procedure-flow convergence, SCC construction, transitive
-effect propagation, and call-site composition. Each parallel LLVM package row
-separates context/input preparation, textual IR parsing, target validation,
-one-time verification, target-machine setup, optional O2/ASan passes, machine
-code emission, and output copying.
+effect propagation, and call-site composition. Each parallel production LLVM
+package row separates direct module construction, target validation, one-time
+verification, target-machine setup, optional O2/ASan passes, machine-code
+emission, and output copying. Input preparation and textual IR parsing appear
+only when the explicit external-oracle route is exercised.
 
 Reports are diagnostic observations only: the flag does not enter compiler
 configuration, resolved-program identity, manifests, or emitted artifacts.
@@ -148,7 +149,9 @@ a provider. Target-specific parsed assembly is checked and retained with its
 owning procedure bodies. `emit-llvm` additionally lowers MIR and prints one
 complete LLVM module per semantic package in package order. Each module
 contains that package's globals and source-ordered concrete procedure
-definitions.
+definitions. A root module also contains its small entry/validation wrapper,
+but not the invariant hosted runtime implementation, which is embedded in the
+compiler as a separate exact-target object.
 
 ## Expand checked source
 
@@ -260,10 +263,13 @@ independent default paths.
 
 For non-assembly native builds, the native adapter emits one internal linker-
 input object per semantic package through the LLVM 22 library linked into
-`draftc`. On Mach-O and ELF, `--kind object` publishes one relocatably linked
-whole-graph object. COFF has no partial-link equivalent: it publishes a
-single-input `.obj` and requires `--kind static-library` for a multi-input
-Draft-owned graph. Mapped providers cannot be embedded in that archive; use a
+`draftc`. Final executables and libraries also consume the exact target's
+compiler-embedded hosted-runtime object. Relocatable `--kind object` omits that
+runtime input and leaves its symbols unresolved for the eventual final link.
+On Mach-O and ELF it publishes one relocatably linked whole-package-graph
+object. COFF has no partial-link equivalent: it publishes a single-package
+`.obj` and requires `--kind static-library` for a multi-package or
+package-assembly graph. Mapped providers cannot be embedded in that archive; use a
 final executable/DLL link or supply them when consuming the Draft object or
 archive. Clang, `dsymutil`, and LLVM utilities default to the matching tools
 directory selected while building the compiler.
@@ -296,8 +302,9 @@ reports `native object tasks` and `native object workers` counters. Worker
 scheduling never changes diagnostics or artifact identity.
 
 Assembly output is a directory containing one `.s` file per semantic package
-module and one exact copied source per package assembly input.
-Object output performs a relocatable link over the complete package graph.
+module, the hosted runtime assembly, and one exact copied source per package
+assembly input. Object output performs a relocatable link over the package
+graph while deliberately leaving runtime and foreign references unresolved.
 Static archives use
 deterministic metadata, shared libraries receive a platform install name or
 SONAME, and executables add hosted entry glue.

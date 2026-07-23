@@ -21,6 +21,7 @@
 
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Core.h>
+#include <llvm-c/DebugInfo.h>
 
 #include <algorithm>
 #include <cassert>
@@ -69,6 +70,55 @@ struct BuilderOwner {
   BuilderOwner(const BuilderOwner &) = delete;
   BuilderOwner &operator=(const BuilderOwner &) = delete;
   BuilderOwner() = default;
+};
+
+// DIBuilder owns temporary metadata nodes until Finalize resolves their graph.
+// The direct package path must finalize before verification, printing, or
+// machine-code emission; the destructor repeats that operation only on an
+// early return so partially constructed debug state is still disposed in the
+// LLVM-required order while the module remains alive.
+struct DebugBuilderOwner {
+  LLVMDIBuilderRef value = nullptr;
+  bool finalized = false;
+
+  void finalize() {
+    if (value == nullptr || finalized)
+      return;
+    LLVMDIBuilderFinalize(value);
+    finalized = true;
+  }
+
+  ~DebugBuilderOwner() {
+    finalize();
+    if (value != nullptr)
+      LLVMDisposeDIBuilder(value);
+  }
+  DebugBuilderOwner(const DebugBuilderOwner &) = delete;
+  DebugBuilderOwner &operator=(const DebugBuilderOwner &) = delete;
+  DebugBuilderOwner() = default;
+};
+
+// Debug files and cross-file lexical scopes are tiny task-local lookup tables.
+// Names are logical package/source names, never physical checkout paths.
+// Metadata pointers live in the task's LLVM context and die with the module.
+struct DirectDebugFile {
+  std::string name;
+  LLVMMetadataRef metadata = nullptr;
+};
+
+struct DirectDebugScope {
+  LLVMMetadataRef subprogram = nullptr;
+  LLVMMetadataRef file = nullptr;
+  LLVMMetadataRef metadata = nullptr;
+};
+
+// One source coordinate selects the authored file/location for ordinary code
+// and the surface synthesis site for generated source. The generated position
+// remains available to diagnostics, while native line tables intentionally
+// lead the debugger to code the programmer can edit.
+struct DirectDebugCoordinate {
+  std::string file_name;
+  LineColumn location;
 };
 
 // One linker relocation leaf inside an otherwise byte-exact Draft aggregate.
@@ -172,13 +222,9 @@ public:
             "ABI classification table does not match package and target");
       return result;
     }
-    if (options_.module.emit_debug_information ||
-        options_.module.emit_runtime_support ||
-        options_.module.emit_program_entry ||
-        options_.module.validation_kind != ValidationKind::None) {
+    if (options_.module.emit_runtime_support) {
       error(SourceRange::invalid(),
-            "direct package builder has not yet implemented runtime, entry, "
-            "validation, or debug module products");
+            "direct package builder does not embed a hosted runtime");
       return result;
     }
 
@@ -204,12 +250,22 @@ public:
                           source_name.size());
     LLVMSetTarget(module_.value, target_.llvm_triple.c_str());
     LLVMSetDataLayout(module_.value, target_.llvm_data_layout.c_str());
+    if (options_.module.emit_debug_information)
+      initialize_debug_metadata();
 
     create_nominal_type_identities();
     define_nominal_type_bodies();
     declare_procedures();
     emit_globals();
     emit_procedures();
+    if (options_.module.emit_program_entry) {
+      if (options_.module.validation_kind == ValidationKind::None) {
+        emit_program_entry();
+      } else {
+        emit_validation_entry();
+      }
+    }
+    debug_builder_.finalize();
     construction_timing.finish();
     if (diagnostics_.error_count() != initial_errors_)
       return result;
@@ -262,6 +318,154 @@ private:
     return semantic_.types.type(id);
   }
 
+  [[nodiscard]] std::string debug_directory() const {
+    // Debug paths are deliberately virtual and reproducible. The package
+    // identity disambiguates same-named files without leaking a checkout path
+    // into native artifacts.
+    return "draft/" + encoded_name(options_.module.package.root_identity) +
+        "/" + encoded_name(options_.module.package.root_relative_path);
+  }
+
+  [[nodiscard]] static std::string debug_file_name(std::string path) {
+    static constexpr std::string_view resolved_suffix = " [resolved]";
+    if (path.size() >= resolved_suffix.size() &&
+        std::string_view(path).substr(path.size() - resolved_suffix.size()) ==
+            resolved_suffix) {
+      path.resize(path.size() - resolved_suffix.size());
+    }
+    const std::size_t separator = path.find_last_of("/\\");
+    if (separator != std::string::npos)
+      path.erase(0, separator + 1);
+    return path.empty() ? std::string("source.draft") : std::move(path);
+  }
+
+  [[nodiscard]] DirectDebugCoordinate debug_coordinate(
+      SourceRange range) const {
+    DirectDebugCoordinate result;
+    if (!range.is_valid()) {
+      result.file_name = "compiler.draft";
+      return result;
+    }
+    result.file_name =
+        debug_file_name(sources_.file(range.begin.file).display_path);
+    result.location = sources_.line_column(range.begin);
+    if (const SourceExpansionMap *expansion =
+            sources_.expansion_map(range.begin)) {
+      result.file_name = debug_file_name(expansion->surface_display_path);
+      result.location = expansion->surface_begin;
+    }
+    return result;
+  }
+
+  [[nodiscard]] LLVMMetadataRef debug_file(std::string name) {
+    for (const DirectDebugFile &file : debug_files_) {
+      if (file.name == name)
+        return file.metadata;
+    }
+    const std::string directory = debug_directory();
+    LLVMMetadataRef metadata = LLVMDIBuilderCreateFile(
+        debug_builder_.value, name.data(), name.size(), directory.data(),
+        directory.size());
+    debug_files_.push_back({std::move(name), metadata});
+    return metadata;
+  }
+
+  void add_debug_module_flag(std::string_view name, std::uint32_t value) {
+    LLVMValueRef integer = LLVMConstInt(
+        LLVMInt32TypeInContext(context_.value), value, 0);
+    LLVMAddModuleFlag(
+        module_.value, LLVMModuleFlagBehaviorWarning, name.data(), name.size(),
+        LLVMValueAsMetadata(integer));
+  }
+
+  // The debug graph is intentionally line-table oriented: it gives each Draft
+  // procedure a source subprogram and each emitted instruction the authored
+  // location, while semantic type inspection remains the compiler/tooling
+  // index's job. This matches the useful information provided by the previous
+  // textual emitter without reintroducing a textual metadata construction
+  // boundary.
+  void initialize_debug_metadata() {
+    debug_builder_.value = LLVMCreateDIBuilder(module_.value);
+    if (debug_builder_.value == nullptr) {
+      error(SourceRange::invalid(), "could not allocate an LLVM DIBuilder");
+      return;
+    }
+    LLVMMetadataRef compile_file = debug_file("package.draft");
+    constexpr std::string_view producer = "Draft bootstrap compiler";
+    const bool optimized =
+        options_.native_options.has_value() &&
+        options_.native_options->optimization == NativeOptimizationLevel::O2;
+    debug_compile_unit_ = LLVMDIBuilderCreateCompileUnit(
+        debug_builder_.value, LLVMDWARFSourceLanguageC11, compile_file,
+        producer.data(), producer.size(), optimized, nullptr, 0, 0, nullptr, 0,
+        LLVMDWARFEmissionFull, 0, 0, 0, nullptr, 0, nullptr, 0);
+    LLVMMetadataRef unspecified_types[]{nullptr};
+    debug_subroutine_type_ = LLVMDIBuilderCreateSubroutineType(
+        debug_builder_.value, compile_file, unspecified_types, 1,
+        LLVMDIFlagZero);
+
+    if (target_.facts.object_format == "coff") {
+      add_debug_module_flag("CodeView", 1);
+    } else {
+      add_debug_module_flag("Dwarf Version", 4);
+    }
+    add_debug_module_flag("Debug Info Version", LLVMDebugMetadataVersion());
+  }
+
+  [[nodiscard]] LLVMMetadataRef debug_subprogram(
+      const MirProcedure &procedure,
+      LLVMValueRef function) {
+    if (debug_builder_.value == nullptr)
+      return nullptr;
+    const DirectDebugCoordinate coordinate =
+        debug_coordinate(procedure.range);
+    LLVMMetadataRef file = debug_file(coordinate.file_name);
+    const Symbol &symbol = semantic_.symbols.symbol(procedure.symbol);
+    const std::string linkage_name = symbol_name(procedure.symbol);
+    LLVMMetadataRef subprogram = LLVMDIBuilderCreateFunction(
+        debug_builder_.value, file, symbol.name.data(), symbol.name.size(),
+        linkage_name.data(), linkage_name.size(), file, coordinate.location.line,
+        debug_subroutine_type_, 0, 1, coordinate.location.line,
+        LLVMDIFlagZero,
+        options_.native_options.has_value() &&
+            options_.native_options->optimization ==
+                NativeOptimizationLevel::O2);
+    LLVMSetSubprogram(function, subprogram);
+    return subprogram;
+  }
+
+  [[nodiscard]] LLVMMetadataRef debug_scope(
+      LLVMMetadataRef subprogram,
+      LLVMMetadataRef file) {
+    for (const DirectDebugScope &scope : debug_scopes_) {
+      if (scope.subprogram == subprogram && scope.file == file)
+        return scope.metadata;
+    }
+    LLVMMetadataRef metadata = LLVMDIBuilderCreateLexicalBlockFile(
+        debug_builder_.value, subprogram, file, 0);
+    debug_scopes_.push_back({subprogram, file, metadata});
+    return metadata;
+  }
+
+  void set_debug_location(SourceRange range) {
+    if (debug_builder_.value == nullptr || current_debug_subprogram_ == nullptr ||
+        !range.is_valid()) {
+      LLVMSetCurrentDebugLocation2(builder_.value, nullptr);
+      return;
+    }
+    const DirectDebugCoordinate coordinate = debug_coordinate(range);
+    LLVMMetadataRef file = debug_file(coordinate.file_name);
+    LLVMMetadataRef scope = debug_scope(current_debug_subprogram_, file);
+    LLVMMetadataRef location = LLVMDIBuilderCreateDebugLocation(
+        context_.value, coordinate.location.line, coordinate.location.column,
+        scope, nullptr);
+    LLVMSetCurrentDebugLocation2(builder_.value, location);
+  }
+
+  void clear_debug_location() {
+    LLVMSetCurrentDebugLocation2(builder_.value, nullptr);
+  }
+
   [[nodiscard]] TypeId runtime_scalar_id(TypeId id) const {
     while (type(id).kind == TypeKind::Distinct)
       id = type(id).element;
@@ -298,6 +502,39 @@ private:
     }
     return value.kind == TypeKind::SignedInteger ||
            value.kind == TypeKind::Rune;
+  }
+
+  [[nodiscard]] bool endian_requires_swap(TypeId id) const {
+    const Type &storage = type(runtime_scalar_id(id));
+    if (storage.kind != TypeKind::EndianScalar)
+      return false;
+    const bool target_is_little = target_.facts.byte_order == "little";
+    return (storage.scalar_byte_order == ScalarByteOrder::Little &&
+            !target_is_little) ||
+        (storage.scalar_byte_order == ScalarByteOrder::Big &&
+         target_is_little);
+  }
+
+  // LLVM byte-swap intrinsics are overloaded by integer width. Declaring the
+  // exact canonical intrinsic name lets the target optimizer fold constants
+  // and select one native instruction without routing through textual IR.
+  [[nodiscard]] LLVMValueRef byte_swap(
+      LLVMValueRef value,
+      std::uint32_t bit_width) {
+    LLVMTypeRef integer =
+        LLVMIntTypeInContext(context_.value, bit_width);
+    const std::string name = "llvm.bswap.i" + std::to_string(bit_width);
+    LLVMValueRef intrinsic = LLVMGetNamedFunction(module_.value, name.c_str());
+    if (intrinsic == nullptr) {
+      LLVMTypeRef parameters[]{integer};
+      intrinsic = LLVMAddFunction(
+          module_.value, name.c_str(),
+          LLVMFunctionType(integer, parameters, 1, 0));
+    }
+    LLVMValueRef arguments[]{value};
+    return LLVMBuildCall2(
+        builder_.value, LLVMGlobalGetValueType(intrinsic), intrinsic,
+        arguments, 1, "");
   }
 
   [[nodiscard]] LLVMAtomicOrdering atomic_order(AtomicMemoryOrder order) const {
@@ -2190,6 +2427,34 @@ private:
       return LLVMBuildICmp(builder_.value, LLVMIntNE, source,
                            LLVMConstNull(source_llvm), "");
     }
+
+    // Endian scalar values are integer-shaped storage even when their native
+    // counterpart is floating point. Conversions preserve the scalar's exact
+    // bit pattern and swap bytes only when the declared storage order differs
+    // from the selected target. Numeric FP/integer conversions would corrupt
+    // non-integral values such as 1.5 and are therefore never used here.
+    const TypeId source_runtime = runtime_scalar_id(source_type);
+    const TypeId target_runtime = runtime_scalar_id(instruction.type);
+    if (target_kind == TypeKind::EndianScalar &&
+        type(target_runtime).element == source_runtime) {
+      const std::uint32_t bits = type(target_runtime).bit_width;
+      LLVMValueRef stored_bits = source_kind == TypeKind::Float
+          ? LLVMBuildBitCast(builder_.value, source, target_llvm, "")
+          : source;
+      if (endian_requires_swap(target_runtime))
+        stored_bits = byte_swap(stored_bits, bits);
+      return stored_bits;
+    }
+    if (source_kind == TypeKind::EndianScalar &&
+        type(source_runtime).element == target_runtime) {
+      const std::uint32_t bits = type(source_runtime).bit_width;
+      LLVMValueRef native_bits = source;
+      if (endian_requires_swap(source_runtime))
+        native_bits = byte_swap(native_bits, bits);
+      return target_kind == TypeKind::Float
+          ? LLVMBuildBitCast(builder_.value, native_bits, target_llvm, "")
+          : native_bits;
+    }
     if (source_llvm == target_llvm)
       return source;
 
@@ -3397,6 +3662,8 @@ private:
     LLVMValueRef function = function_for_symbol(procedure.symbol);
     if (function == nullptr)
       return;
+    current_debug_subprogram_ = debug_subprogram(procedure, function);
+    set_debug_location(procedure.range);
     std::vector<LLVMBasicBlockRef> blocks;
     blocks.reserve(procedure.blocks.size());
     for (std::size_t index = 0; index < procedure.blocks.size(); ++index) {
@@ -3454,14 +3721,19 @@ private:
       LLVMPositionBuilderAtEnd(builder_.value, blocks[block_index]);
       const MirBlock &block = procedure.blocks[block_index];
       for (MirInstructionId instruction_id : block.instructions) {
-        emit_instruction(procedure, instruction_id.value,
-                         procedure.instruction(instruction_id), values,
+        const MirInstruction &instruction =
+            procedure.instruction(instruction_id);
+        set_debug_location(instruction.range);
+        emit_instruction(procedure, instruction_id.value, instruction, values,
                          context_parameter, locals, aggregate_scratch,
                          abi_scratch);
       }
+      set_debug_location(block.terminator.range);
       emit_terminator(procedure, block.terminator, values, blocks, function,
                       abi_scratch);
     }
+    clear_debug_location();
+    current_debug_subprogram_ = nullptr;
   }
 
   void emit_procedures() {
@@ -3469,6 +3741,215 @@ private:
       if (procedure != nullptr)
         emit_procedure(*procedure);
     }
+  }
+
+  [[nodiscard]] bool has_body(SymbolId symbol) const {
+    return std::any_of(
+        procedures_.begin(), procedures_.end(), [symbol](const auto *body) {
+          return body != nullptr && body->valid && body->symbol == symbol;
+        });
+  }
+
+  [[nodiscard]] std::optional<SymbolId> main_symbol() const {
+    const std::optional<SymbolId> found =
+        semantic_.symbols.lookup_direct(semantic_.package_scope, "main");
+    if (!found.has_value())
+      return std::nullopt;
+    const Symbol &symbol = semantic_.symbols.symbol(*found);
+    if (symbol.kind != SymbolKind::Procedure || !has_body(*found))
+      return std::nullopt;
+    return found;
+  }
+
+  // The program-specific entry is intentionally tiny. The bundled target
+  // runtime owns process views, root Context state, and shutdown; this module
+  // contributes only the checked call to the selected Draft main and the
+  // language-defined exit-value conversion.
+  void emit_program_entry() {
+    const std::optional<SymbolId> entry = main_symbol();
+    if (!entry.has_value()) {
+      error(SourceRange::invalid(),
+            "executable root package has no defined main procedure");
+      return;
+    }
+    const Symbol &symbol = semantic_.symbols.symbol(*entry);
+    const Type &signature = type(symbol.type);
+    const std::size_t parameter_count =
+        signature.members.empty() ? 0 : signature.members.size() - 1;
+    if (parameter_count != 0 || signature.c_calling_convention ||
+        symbol.flags.parametric) {
+      error(symbol.name_range,
+            "Draft main must be a non-parametric ordinary zero-parameter "
+            "procedure");
+      return;
+    }
+    const TypeId result_type = function_result(symbol.type);
+    if (result_type != semantic_.types.builtins().void_type &&
+        result_type != semantic_.types.builtins().int_type) {
+      error(symbol.name_range, "Draft main result must be void or int");
+      return;
+    }
+
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(context_.value);
+    LLVMTypeRef pointer = LLVMPointerTypeInContext(context_.value, 0);
+    LLVMTypeRef entry_parameters[]{i32, pointer, pointer};
+    LLVMTypeRef entry_type = LLVMFunctionType(i32, entry_parameters, 3, 0);
+    const char *entry_name =
+        target_.facts.os == "windows" ? "wmain" : "main";
+    LLVMValueRef hosted_entry =
+        LLVMAddFunction(module_.value, entry_name, entry_type);
+    LLVMBasicBlockRef block = LLVMAppendBasicBlockInContext(
+        context_.value, hosted_entry, "entry");
+    LLVMPositionBuilderAtEnd(builder_.value, block);
+
+    LLVMTypeRef initialize_parameters[]{i32, pointer, pointer};
+    LLVMValueRef initialize = runtime_helper(
+        "__draft.runtime.initialize_process", pointer,
+        initialize_parameters);
+    LLVMValueRef initialize_arguments[]{LLVMGetParam(hosted_entry, 0),
+                                        LLVMGetParam(hosted_entry, 1),
+                                        LLVMGetParam(hosted_entry, 2)};
+    LLVMValueRef runtime_context = LLVMBuildCall2(
+        builder_.value, LLVMGlobalGetValueType(initialize), initialize,
+        initialize_arguments, 3, "draft.context");
+
+    LLVMValueRef main = function_for_symbol(*entry);
+    LLVMValueRef main_arguments[]{runtime_context};
+    LLVMValueRef draft_result = LLVMBuildCall2(
+        builder_.value, LLVMGlobalGetValueType(main), main, main_arguments, 1,
+        result_type == semantic_.types.builtins().void_type ? ""
+                                                            : "draft.result");
+    LLVMValueRef shutdown = runtime_helper(
+        "__draft.runtime.shutdown_process",
+        LLVMVoidTypeInContext(context_.value), {});
+    (void)LLVMBuildCall2(
+        builder_.value, LLVMGlobalGetValueType(shutdown), shutdown, nullptr, 0,
+        "");
+    if (result_type == semantic_.types.builtins().void_type) {
+      LLVMBuildRet(builder_.value, LLVMConstInt(i32, 0, 0));
+    } else {
+      LLVMBuildRet(
+          builder_.value,
+          LLVMBuildTrunc(builder_.value, draft_result, i32, "exit.result"));
+    }
+  }
+
+  [[nodiscard]] LLVMValueRef validation_function(
+      const ValidationEntry &entry) {
+    const std::string name =
+        package_symbol_name(entry.package, entry.procedure);
+    LLVMValueRef function = LLVMGetNamedFunction(module_.value, name.c_str());
+    if (function != nullptr)
+      return function;
+    LLVMTypeRef pointer = LLVMPointerTypeInContext(context_.value, 0);
+    LLVMTypeRef parameters[]{pointer, pointer};
+    function = LLVMAddFunction(
+        module_.value, name.c_str(),
+        LLVMFunctionType(LLVMVoidTypeInContext(context_.value), parameters, 2,
+                         0));
+    LLVMSetVisibility(function, LLVMHiddenVisibility);
+    return function;
+  }
+
+  // Validation retains one straight-line wrapper in the root package because
+  // the selected procedure list and state layouts are program products. The
+  // invariant process setup/reporting/reset services remain in the bundled
+  // runtime object.
+  void emit_validation_entry() {
+    LLVMTypeRef i1 = LLVMInt1TypeInContext(context_.value);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(context_.value);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(context_.value);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(context_.value);
+    LLVMTypeRef pointer = LLVMPointerTypeInContext(context_.value, 0);
+    LLVMTypeRef entry_parameters[]{i32, pointer, pointer};
+    LLVMTypeRef entry_type = LLVMFunctionType(i32, entry_parameters, 3, 0);
+    const char *entry_name =
+        target_.facts.os == "windows" ? "wmain" : "main";
+    LLVMValueRef hosted_entry =
+        LLVMAddFunction(module_.value, entry_name, entry_type);
+    LLVMBasicBlockRef block = LLVMAppendBasicBlockInContext(
+        context_.value, hosted_entry, "entry");
+    LLVMPositionBuilderAtEnd(builder_.value, block);
+
+    LLVMTypeRef initialize_parameters[]{i32, pointer, pointer};
+    LLVMValueRef initialize = runtime_helper(
+        "__draft.runtime.initialize_process", pointer,
+        initialize_parameters);
+    LLVMValueRef initialize_arguments[]{LLVMGetParam(hosted_entry, 0),
+                                        LLVMGetParam(hosted_entry, 1),
+                                        LLVMGetParam(hosted_entry, 2)};
+    LLVMValueRef runtime_context = LLVMBuildCall2(
+        builder_.value, LLVMGlobalGetValueType(initialize), initialize,
+        initialize_arguments, 3, "draft.context");
+    LLVMValueRef any_failed = LLVMConstInt(i1, 0, 0);
+    LLVMTypeRef report_parameters[]{pointer, i64};
+    LLVMValueRef report = runtime_helper(
+        "__draft.runtime.validation_report",
+        LLVMVoidTypeInContext(context_.value), report_parameters);
+    LLVMValueRef reset = runtime_helper(
+        "__draft.runtime.reset_temporary_allocator",
+        LLVMVoidTypeInContext(context_.value), {});
+
+    for (std::size_t index = 0;
+         index < options_.module.validation_entries.size(); ++index) {
+      const ValidationEntry &entry =
+          options_.module.validation_entries[index];
+      if (entry.state_alignment >
+          std::numeric_limits<unsigned>::max()) {
+        error(SourceRange::invalid(),
+              "validation state alignment exceeds LLVM's alignment domain");
+        return;
+      }
+      const unsigned state_alignment =
+          static_cast<unsigned>(entry.state_alignment);
+      LLVMTypeRef state_type = LLVMArrayType2(i8, entry.state_size);
+      LLVMValueRef state = LLVMBuildAlloca(
+          builder_.value, state_type,
+          ("validation.state." + std::to_string(index)).c_str());
+      LLVMSetAlignment(state, state_alignment);
+      (void)LLVMBuildMemSet(
+          builder_.value, state, LLVMConstInt(i8, 0, 0),
+          LLVMConstInt(i64, entry.state_size, 0), state_alignment);
+      LLVMValueRef validation = validation_function(entry);
+      LLVMValueRef validation_arguments[]{runtime_context, state};
+      (void)LLVMBuildCall2(
+          builder_.value, LLVMGlobalGetValueType(validation), validation,
+          validation_arguments, 2, "");
+
+      LLVMValueRef failure_offset =
+          LLVMConstInt(i64, entry.failure_offset, 0);
+      LLVMValueRef failure_address = LLVMBuildGEP2(
+          builder_.value, i8, state, &failure_offset, 1,
+          ("validation.failures.address." + std::to_string(index)).c_str());
+      LLVMValueRef failures = LLVMBuildLoad2(
+          builder_.value, i64, failure_address,
+          ("validation.failures." + std::to_string(index)).c_str());
+      LLVMSetAlignment(failures, 8);
+      LLVMValueRef failed = LLVMBuildICmp(
+          builder_.value, LLVMIntNE, failures, LLVMConstInt(i64, 0, 0),
+          ("validation.failed." + std::to_string(index)).c_str());
+      any_failed = LLVMBuildOr(
+          builder_.value, any_failed, failed,
+          ("validation.any_failed." + std::to_string(index)).c_str());
+      LLVMValueRef report_arguments[]{
+          state, LLVMConstInt(i64, entry.report_size, 0)};
+      (void)LLVMBuildCall2(
+          builder_.value, LLVMGlobalGetValueType(report), report,
+          report_arguments, 2, "");
+      (void)LLVMBuildCall2(
+          builder_.value, LLVMGlobalGetValueType(reset), reset, nullptr, 0,
+          "");
+    }
+
+    LLVMValueRef shutdown = runtime_helper(
+        "__draft.runtime.shutdown_process",
+        LLVMVoidTypeInContext(context_.value), {});
+    (void)LLVMBuildCall2(
+        builder_.value, LLVMGlobalGetValueType(shutdown), shutdown, nullptr, 0,
+        "");
+    LLVMBuildRet(
+        builder_.value,
+        LLVMBuildZExt(builder_.value, any_failed, i32, "validation.exit"));
   }
 
   const TargetProfile &target_;
@@ -3485,6 +3966,12 @@ private:
   ContextOwner context_;
   ModuleOwner module_;
   BuilderOwner builder_;
+  DebugBuilderOwner debug_builder_;
+  LLVMMetadataRef debug_compile_unit_ = nullptr;
+  LLVMMetadataRef debug_subroutine_type_ = nullptr;
+  LLVMMetadataRef current_debug_subprogram_ = nullptr;
+  std::vector<DirectDebugFile> debug_files_;
+  std::vector<DirectDebugScope> debug_scopes_;
   std::vector<LLVMTypeRef> llvm_types_;
   std::vector<LLVMValueRef> functions_;
   std::vector<LLVMValueRef> global_values_;

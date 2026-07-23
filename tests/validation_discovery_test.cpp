@@ -208,10 +208,10 @@ void test_checked_test_harness(TestState &state) {
       const std::string &llvm = root_package->llvm_module.text;
       EXPECT(state, llvm.find("define i32 @main") != std::string::npos);
       EXPECT(state, llvm.find(
-          "call void @\"draft.workspace.app.test_5Falpha\"") !=
+          "call void @draft.workspace.app.test_5Falpha") !=
           std::string::npos);
       EXPECT(state, llvm.find(
-          "call void @\"draft.workspace.app.main\"") ==
+          "call void @draft.workspace.app.main") ==
           std::string::npos);
       EXPECT(state, llvm.find("alloca [24 x i8], align 8") !=
           std::string::npos);
@@ -219,10 +219,10 @@ void test_checked_test_harness(TestState &state) {
           "getelementptr i8, ptr %validation.state.0, i64 8") !=
           std::string::npos);
       EXPECT(state, llvm.find(
-          "@\"__draft.runtime.reset_temporary_allocator\"()") !=
+          "call void @__draft.runtime.reset_temporary_allocator()") !=
           std::string::npos);
       EXPECT(state, llvm.find(
-          "call i64 @__draft.host_write(i32 3, "
+          "call void @__draft.runtime.validation_report("
           "ptr %validation.state.0, i64 16)") !=
           std::string::npos);
     }

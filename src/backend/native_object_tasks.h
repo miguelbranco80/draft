@@ -3,9 +3,10 @@
 // This module is the boundary between compiler-owned package products and an
 // artifact publisher. It converts every package layout row into one explicit
 // task. An ordinary package row borrows already emitted object/assembly bytes;
-// only the qualification oracle borrows retained LLVM text. Selected package
-// assembly remains source input for the platform assembler. Task IDs, stems,
-// and diagnostic names are fixed before execution; workers place products back
+// a hosted-runtime row borrows compiler-embedded target bytes; only the
+// qualification oracle borrows retained LLVM text. Selected package assembly
+// remains source input for the platform assembler. Task IDs, stems, and
+// diagnostic names are fixed before execution; workers place products back
 // into corresponding task-indexed result slots.
 //
 // Input byte views borrow CompileWorkspaceResult storage for the synchronous
@@ -38,6 +39,7 @@ namespace draft {
 // persistent semantic identity or content-hash field.
 enum class NativeObjectTaskKind {
   PackageLlvmModule,
+  HostedRuntime,
   PackageAssembly,
 };
 
@@ -59,15 +61,21 @@ struct NativeObjectPlanOptions {
   NativePackageModuleInputKind package_module_input =
       NativePackageModuleInputKind::EmittedNativeBytes;
   LlvmObjectEmissionOptions expected_native_output;
+  // Relocatable object output deliberately leaves hosted-runtime references
+  // unresolved for the eventual executable/library link, just as it leaves
+  // foreign references unresolved. Final artifacts and assembly bundles set
+  // this true and consume the compiler-distributed runtime input.
+  bool include_hosted_runtime = true;
 };
 
 // One task names one independently emittable native input. package_index is in
 // CompileWorkspaceResult::packages. input_index addresses the package's
-// assembly-source vector and is zero for its LLVM module. output_stem is
+// assembly-source vector and is zero for its LLVM module or hosted runtime.
+// output_stem is
 // collision-free within one native build directory and contains no physical
 // source path. source_extension is ".ll" for an oracle unit, ".s" for emitted
-// assembly, empty for an emitted object, or the exact selected extension for a
-// package source. producer is
+// package/runtime assembly, empty for an emitted object, or the exact selected
+// extension for a package source. producer is
 // the exact semantic product copied from PackageArtifactLayout; this preserves
 // graph-to-object identity without making workers inspect compiler side tables.
 struct NativeObjectTask {

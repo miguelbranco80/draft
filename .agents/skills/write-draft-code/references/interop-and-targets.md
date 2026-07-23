@@ -459,13 +459,16 @@ static and dynamic linking. Artifact kind selects how resolved symbols are
 packaged.
 
 For non-assembly native builds, the bootstrap emits one internal linker-input
-object per semantic package through its linked LLVM 22 C-API adapter.
-`--kind object` publishes one relocatably linked whole-graph object on Mach-O
-and ELF. COFF can publish one exact single-input `.obj`; a multi-package,
-or package-assembly object set must use `--kind static-library` because COFF
-has no relocatable partial link. Mapped providers remain separate and require a
-final executable/DLL link or consumer-side linking. `--kind assembly`
-publishes the package `.s` files instead.
+object per semantic package through its linked LLVM 22 C-API adapter. Final
+executables and libraries also include the exact target's hosted-runtime object
+embedded in `draftc`. `--kind object` deliberately leaves runtime and foreign
+references unresolved; it publishes one relocatably linked package-graph object
+on Mach-O and ELF. COFF can publish one exact single-package/no-assembly `.obj`;
+a multi-package or package-assembly object set must use
+`--kind static-library` because COFF has no relocatable partial link. Mapped
+providers remain separate and require a final executable/DLL link or
+consumer-side linking. `--kind assembly` publishes package and hosted-runtime
+`.s` files instead.
 macOS additionally requires the Apple linker/SDK and `libtool`; a
 `--debug-symbols` build also uses matching LLVM `dsymutil` and publishes a
 verified `.dSYM`. Linux uses the matching Clang/LLVM tools, `ld.lld`, `llvm-ar`,
@@ -479,9 +482,11 @@ also publishes its import `.lib` companion. Its bootstrap links `LLVM-C.dll`
 because LLVM's monolithic libLLVM dylib is unavailable on Windows.
 
 After complete lowering, one explicit artifact layout orders each package's
-complete LLVM module followed by its package-assembly inputs. Every row becomes
+complete LLVM module followed, for the root, by the exact compiler-embedded
+hosted runtime and then its package-assembly inputs. Every selected row becomes
 an independent native work-graph task. Workers own isolated LLVM contexts or
-private assembler paths and return task-indexed bytes.
+private assembler paths and return task-indexed bytes; the hosted-runtime row
+borrows immutable embedded bytes.
 Diagnostics and artifact publication occur only after the join, in stable
 task-ID order. Native changes must preserve the one-worker/four-worker
 determinism gate and the real embedded LLVM/external-Clang parity gate for all
@@ -489,6 +494,7 @@ artifact kinds.
 
 Assembly output is a directory bundle, not concatenated text. It contains
 `package-<package-index>-module.s` for each semantic package and
+`hosted-runtime.s` for the selected target, plus
 `package-<package-index>-assembly-<input-index><source-extension>` for each
 selected package-assembly input. Ordinary source locations remain in native
 debug information; no separate source-correlation artifact is emitted.

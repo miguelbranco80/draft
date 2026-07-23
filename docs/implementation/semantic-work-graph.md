@@ -189,7 +189,8 @@ supersedes rows only for affected packages and retains unchanged dependency
 rows. Only an artifact command continues those retained facts through one
 workspace projection rooted by:
 
-- the configured entry point and C exports;
+- an authored root-package `main`, whether or not the requested artifact kind
+  also contributes the hosted C `main`/`wmain` wrapper, and all C exports;
 - validation entries selected by the command;
 - procedure identities stored in reachable globals, constants, or static data;
 - the explicit foreign/export C-ABI boundary used by package assembly;

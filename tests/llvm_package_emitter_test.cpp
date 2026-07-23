@@ -50,7 +50,9 @@ struct DirectFixture {
 // binary operation, and return so the test cannot pass with an empty hand-made
 // LLVM module.
 [[nodiscard]] DirectFixture
-emit_increment_package(const draft::TargetProfile &target) {
+emit_increment_package(
+    const draft::TargetProfile &target,
+    bool emit_debug_information = false) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   draft::LoadedPackage loaded;
@@ -268,6 +270,7 @@ call_host_variadic :: proc(value: i8) -> i32 {
   }
   draft::LlvmPackageEmissionOptions options;
   options.module.package = {"workspace", "direct"};
+  options.module.emit_debug_information = emit_debug_information;
   options.retain_llvm_text = true;
   options.collect_phase_timings = true;
   options.native_options.emplace();
@@ -281,6 +284,31 @@ call_host_variadic :: proc(value: i8) -> i32 {
   }
   result.diagnostics = draft::render_diagnostics(sources, diagnostics);
   return result;
+}
+
+// Debug information is another product of the same constructed module, not a
+// reason to print and parse it. This test checks both the readable metadata
+// graph and the zero textual-parser timings on the native path.
+void test_direct_debug_module_emits_native_object(TestState &state) {
+  const DirectFixture fixture = emit_increment_package(
+      draft::make_aarch64_macos_profile(), true);
+  if (!fixture.diagnostics.empty())
+    std::cerr << fixture.diagnostics;
+  EXPECT(state, fixture.emitted.ok);
+  EXPECT(state, fixture.diagnostics.empty());
+  EXPECT(state,
+      fixture.emitted.llvm_text.find("!DICompileUnit") != std::string::npos);
+  EXPECT(state,
+      fixture.emitted.llvm_text.find("!DISubprogram") != std::string::npos);
+  EXPECT(state,
+      fixture.emitted.llvm_text.find("!DILocation") != std::string::npos);
+  EXPECT(state, fixture.emitted.llvm_text.find("!dbg !") != std::string::npos);
+  EXPECT(state, fixture.emitted.native.ok);
+  EXPECT(state, !fixture.emitted.native.bytes.empty());
+  EXPECT(state,
+      fixture.emitted.native.phase_timings.input_preparation_nanoseconds == 0);
+  EXPECT(state,
+      fixture.emitted.native.phase_timings.ir_parsing_nanoseconds == 0);
 }
 
 void test_direct_scalar_package_emits_native_object(TestState &state) {
@@ -359,6 +387,7 @@ void test_direct_c_abi_modules_cover_every_target(TestState &state) {
 int main() {
   TestState state;
   test_direct_scalar_package_emits_native_object(state);
+  test_direct_debug_module_emits_native_object(state);
   test_direct_c_abi_modules_cover_every_target(state);
   if (state.failures != 0) {
     std::cerr << state.failures

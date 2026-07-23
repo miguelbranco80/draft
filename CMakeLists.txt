@@ -81,6 +81,114 @@ else()
   )
 endif()
 
+# The hosted runtime is invariant for one versioned target profile. Compile it
+# once while building the compiler distribution and embed the resulting object
+# bytes in draftc. Ordinary Draft builds can then link the runtime directly
+# without reconstructing or optimizing a large target-only LLVM module and
+# without depending on an installed sidecar directory.
+find_program(
+  DRAFT_RUNTIME_CLANG
+  NAMES clang clang.exe
+  HINTS "${LLVM_TOOLS_BINARY_DIR}"
+  NO_DEFAULT_PATH
+  REQUIRED
+)
+set(DRAFT_RUNTIME_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/runtime/hosted_runtime.c")
+set(DRAFT_RUNTIME_OUTPUT_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/hosted-runtime")
+set(DRAFT_RUNTIME_AARCH64_MACOS
+    "${DRAFT_RUNTIME_OUTPUT_DIRECTORY}/aarch64-macos.o")
+set(DRAFT_RUNTIME_AARCH64_MACOS_ASSEMBLY
+    "${DRAFT_RUNTIME_OUTPUT_DIRECTORY}/aarch64-macos.s")
+set(DRAFT_RUNTIME_AARCH64_LINUX
+    "${DRAFT_RUNTIME_OUTPUT_DIRECTORY}/aarch64-linux.o")
+set(DRAFT_RUNTIME_AARCH64_LINUX_ASSEMBLY
+    "${DRAFT_RUNTIME_OUTPUT_DIRECTORY}/aarch64-linux.s")
+set(DRAFT_RUNTIME_X86_64_LINUX
+    "${DRAFT_RUNTIME_OUTPUT_DIRECTORY}/x86_64-linux.o")
+set(DRAFT_RUNTIME_X86_64_LINUX_ASSEMBLY
+    "${DRAFT_RUNTIME_OUTPUT_DIRECTORY}/x86_64-linux.s")
+set(DRAFT_RUNTIME_X86_64_WINDOWS
+    "${DRAFT_RUNTIME_OUTPUT_DIRECTORY}/x86_64-windows.obj")
+set(DRAFT_RUNTIME_X86_64_WINDOWS_ASSEMBLY
+    "${DRAFT_RUNTIME_OUTPUT_DIRECTORY}/x86_64-windows.s")
+
+function(draft_compile_hosted_runtime output assembly triple)
+  add_custom_command(
+    OUTPUT "${output}" "${assembly}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${DRAFT_RUNTIME_OUTPUT_DIRECTORY}"
+    COMMAND "${DRAFT_RUNTIME_CLANG}"
+            "--target=${triple}"
+            -std=c11 -O2 -ffreestanding -fno-stack-protector
+            -Wall -Wextra -Werror
+            ${ARGN}
+            -c "${DRAFT_RUNTIME_SOURCE}" -o "${output}"
+    COMMAND "${DRAFT_RUNTIME_CLANG}"
+            "--target=${triple}"
+            -std=c11 -O2 -ffreestanding -fno-stack-protector
+            -Wall -Wextra -Werror
+            ${ARGN}
+            -S "${DRAFT_RUNTIME_SOURCE}" -o "${assembly}"
+    DEPENDS "${DRAFT_RUNTIME_SOURCE}"
+    VERBATIM
+  )
+endfunction()
+
+draft_compile_hosted_runtime(
+  "${DRAFT_RUNTIME_AARCH64_MACOS}"
+  "${DRAFT_RUNTIME_AARCH64_MACOS_ASSEMBLY}"
+  "arm64-apple-macosx14.0.0"
+  -fPIC -DDRAFT_RUNTIME_POSIX=1 -DDRAFT_RUNTIME_DARWIN=1
+)
+draft_compile_hosted_runtime(
+  "${DRAFT_RUNTIME_AARCH64_LINUX}"
+  "${DRAFT_RUNTIME_AARCH64_LINUX_ASSEMBLY}"
+  "aarch64-unknown-linux-gnu"
+  -fPIC -DDRAFT_RUNTIME_POSIX=1 -DDRAFT_RUNTIME_LINUX=1
+)
+draft_compile_hosted_runtime(
+  "${DRAFT_RUNTIME_X86_64_LINUX}"
+  "${DRAFT_RUNTIME_X86_64_LINUX_ASSEMBLY}"
+  "x86_64-unknown-linux-gnu"
+  -fPIC -DDRAFT_RUNTIME_POSIX=1 -DDRAFT_RUNTIME_LINUX=1
+)
+draft_compile_hosted_runtime(
+  "${DRAFT_RUNTIME_X86_64_WINDOWS}"
+  "${DRAFT_RUNTIME_X86_64_WINDOWS_ASSEMBLY}"
+  "x86_64-pc-windows-msvc"
+  -DDRAFT_RUNTIME_WINDOWS=1
+)
+
+set(DRAFT_RUNTIME_BUNDLE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/hosted_runtime_bundle.cpp")
+add_custom_command(
+  OUTPUT "${DRAFT_RUNTIME_BUNDLE}"
+  COMMAND
+    "${CMAKE_COMMAND}"
+    "-DDRAFT_RUNTIME_BUNDLE_OUTPUT=${DRAFT_RUNTIME_BUNDLE}"
+    "-DDRAFT_RUNTIME_AARCH64_MACOS=${DRAFT_RUNTIME_AARCH64_MACOS}"
+    "-DDRAFT_RUNTIME_AARCH64_MACOS_ASSEMBLY=${DRAFT_RUNTIME_AARCH64_MACOS_ASSEMBLY}"
+    "-DDRAFT_RUNTIME_AARCH64_LINUX=${DRAFT_RUNTIME_AARCH64_LINUX}"
+    "-DDRAFT_RUNTIME_AARCH64_LINUX_ASSEMBLY=${DRAFT_RUNTIME_AARCH64_LINUX_ASSEMBLY}"
+    "-DDRAFT_RUNTIME_X86_64_LINUX=${DRAFT_RUNTIME_X86_64_LINUX}"
+    "-DDRAFT_RUNTIME_X86_64_LINUX_ASSEMBLY=${DRAFT_RUNTIME_X86_64_LINUX_ASSEMBLY}"
+    "-DDRAFT_RUNTIME_X86_64_WINDOWS=${DRAFT_RUNTIME_X86_64_WINDOWS}"
+    "-DDRAFT_RUNTIME_X86_64_WINDOWS_ASSEMBLY=${DRAFT_RUNTIME_X86_64_WINDOWS_ASSEMBLY}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_hosted_runtime.cmake"
+  DEPENDS
+    "${DRAFT_RUNTIME_AARCH64_MACOS}"
+    "${DRAFT_RUNTIME_AARCH64_MACOS_ASSEMBLY}"
+    "${DRAFT_RUNTIME_AARCH64_LINUX}"
+    "${DRAFT_RUNTIME_AARCH64_LINUX_ASSEMBLY}"
+    "${DRAFT_RUNTIME_X86_64_LINUX}"
+    "${DRAFT_RUNTIME_X86_64_LINUX_ASSEMBLY}"
+    "${DRAFT_RUNTIME_X86_64_WINDOWS}"
+    "${DRAFT_RUNTIME_X86_64_WINDOWS_ASSEMBLY}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_hosted_runtime.cmake"
+  VERBATIM
+)
+
 # An interface target keeps the host-language policy identical for the compiler,
 # driver, and tests. Sanitizer link flags must reach final executables; placing
 # them only on the static compiler archive would instrument objects without
@@ -120,6 +228,7 @@ add_library(
   src/assembly/analyze.cpp
   src/backend/foreign_inputs.cpp
   src/backend/foreign_summaries.cpp
+  "${DRAFT_RUNTIME_BUNDLE}"
   src/backend/llvm_ir.cpp
   src/backend/native_object_tasks.cpp
   src/backend/runtime_assets.cpp
@@ -656,6 +765,16 @@ if(BUILD_TESTING)
   add_test(
     NAME draft_native_object_tasks_tests
     COMMAND draft_native_object_tasks_tests
+  )
+
+  add_executable(
+    draft_hosted_runtime_bundle_tests
+    tests/hosted_runtime_bundle_test.cpp
+  )
+  target_link_libraries(draft_hosted_runtime_bundle_tests PRIVATE draft_compiler)
+  add_test(
+    NAME draft_hosted_runtime_bundle_tests
+    COMMAND draft_hosted_runtime_bundle_tests
   )
 
   add_executable(draft_compiler_tests tests/compiler_test.cpp)

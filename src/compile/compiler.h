@@ -147,12 +147,15 @@ struct ExternalProcedureBodyProduct {
 
 // One compiler-owned native input in the exact order eventually presented to
 // object emission and the platform linker. index is zero for the package LLVM
-// module and addresses CompiledPackage::assembly_sources for PackageAssembly.
-// producer is the immutable semantic product which made the bytes ready. Rows
-// contain no physical paths and may be serialized or compared for command-local
-// determinism.
+// module and hosted runtime, and addresses CompiledPackage::assembly_sources
+// for PackageAssembly. A root runtime row names the target product as producer;
+// its immutable bytes live in the compiler distribution rather than this
+// result. producer is otherwise the semantic product which made the input
+// ready. Rows contain no physical paths and may be serialized or compared for
+// command-local determinism.
 enum class PackageArtifactInputKind {
   PackageLlvmModule,
+  HostedRuntime,
   PackageAssembly,
 };
 
