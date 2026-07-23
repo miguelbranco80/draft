@@ -44,6 +44,9 @@ currently selected root. F6 opens Project, with
 a selectable run-root list above the package/dependency graph. F7-F11 open
 declaration, reference, effect, denial, and diagnostic windows. Those semantic
 sections are currently read-only reports rather than source-jump navigation.
+Files lists the compiler-discovered workspace sources reachable from the active
+root; arrow keys browse without changing documents, and Enter opens a row.
+Buffers is the separate list of already-open documents and marks dirty rows.
 F12 changes root and Shift-F12 changes target. Alt-F3 closes the active tool
 window, Ctrl-F5 enters keyboard move/size mode, and Ctrl-F6 selects the next
 window. The Window menu also tiles or cascades ordinary windows while leaving

@@ -23,17 +23,21 @@ pub Span :: c struct {
     kind: u8,
 }
 
-pub Check_Proc :: c proc(
-    user: rawptr,
-    source: [^]u8,
-    length: usize,
-    result: ^Result,
-)
+// Overlay borrows one Buffer pathname and complete byte array for a synchronous
+// compiler transaction. Paths remain an ABI/file-I/O concern; the native
+// service resolves them to semantic package identities before checking.
+pub Overlay :: c struct {
+    path_data: rawptr,
+    path_length: usize,
+    source_data: rawptr,
+    source_length: usize,
+}
 
-pub Action_Proc :: c proc(
+pub Batch_Proc :: c proc(
     user: rawptr,
-    source: [^]u8,
-    length: usize,
+    overlays: ^Overlay,
+    overlay_count: usize,
+    active_overlay: usize,
     result: ^Result,
 )
 
@@ -77,12 +81,15 @@ pub Select_Value_Proc :: c proc(user: rawptr, value: u8) -> u8
 // service session owns its explicit destruction separately from the editor.
 pub Host_Api :: c struct {
     user: rawptr,
-    check: Check_Proc,
-    build: Action_Proc,
+    check: Batch_Proc,
+    build: Batch_Proc,
     span: Span_Proc,
     copy_diagnostics: Copy_Text_Proc,
     copy_tooling: Copy_Tooling_Proc,
     copy_source_path: Copy_Text_Proc,
+    source_count: Count_Proc,
+    copy_source_name: Copy_Indexed_Text_Proc,
+    copy_source_path_at: Copy_Indexed_Text_Proc,
     copy_artifact_path: Copy_Text_Proc,
     root_count: Count_Proc,
     selected_root: Index_Proc,

@@ -37,6 +37,21 @@ static_assert(sizeof(DraftCompilerServiceResult) == 16);
 static_assert(alignof(DraftCompilerServiceResult) == alignof(std::size_t));
 static_assert(sizeof(DraftCompilerServiceSpan) == 24);
 static_assert(alignof(DraftCompilerServiceSpan) == alignof(std::size_t));
+static_assert(sizeof(DraftCompilerServiceOverlay) == 32);
+static_assert(alignof(DraftCompilerServiceOverlay) == alignof(void *));
+
+// ServiceSession is the stable opaque C handle. Keeping the compiler behind
+// one extra owner lets Open Workspace replace a complete workspace session
+// transactionally without invalidating the Draft Host_Api.user value.
+struct ServiceSession {
+  std::unique_ptr<draft::ide::CompilerSession> compiler;
+};
+
+[[nodiscard]] draft::ide::CompilerSession *
+compiler_session(void *opaque_session) {
+  auto *service = static_cast<ServiceSession *>(opaque_session);
+  return service == nullptr ? nullptr : service->compiler.get();
+}
 
 [[nodiscard]] std::string_view borrowed_text(const void *data,
                                              std::size_t length) {
@@ -220,13 +235,29 @@ service_result(draft::ide::CompilerSession &session,
   };
 }
 
-[[nodiscard]] std::optional<std::string_view>
-checked_source(std::uint8_t *source, std::size_t length) {
-  if (length == 0)
-    return std::string_view{};
-  if (length != 0 && source == nullptr)
+[[nodiscard]] std::optional<std::vector<draft::ide::SourceOverlay>>
+checked_overlays(const DraftCompilerServiceOverlay *overlays, std::size_t count,
+                 std::size_t active) {
+  if (overlays == nullptr || count == 0 || active >= count)
     return std::nullopt;
-  return std::string_view{reinterpret_cast<const char *>(source), length};
+  std::vector<draft::ide::SourceOverlay> result;
+  result.reserve(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    const DraftCompilerServiceOverlay &overlay = overlays[index];
+    if (overlay.path_data == nullptr || overlay.path_length == 0 ||
+        (overlay.source_data == nullptr && overlay.source_length != 0)) {
+      return std::nullopt;
+    }
+    const std::string_view path =
+        borrowed_text(overlay.path_data, overlay.path_length);
+    if (path.find('\0') != std::string_view::npos)
+      return std::nullopt;
+    result.push_back({
+        std::filesystem::path(path),
+        borrowed_text(overlay.source_data, overlay.source_length),
+    });
+  }
+  return result;
 }
 
 } // namespace
@@ -249,37 +280,50 @@ void *draft_compiler_session_create(
   if (error_capacity != 0 && error_destination != nullptr) {
     error_destination[0] = 0;
   }
-  return session.release();
+  std::unique_ptr<ServiceSession> service{new (std::nothrow) ServiceSession};
+  if (service == nullptr) {
+    publish_create_error("cannot allocate compiler service handle",
+                         error_destination, error_capacity);
+    return nullptr;
+  }
+  service->compiler = std::move(session);
+  return service.release();
 }
 
 void draft_compiler_session_destroy(void *opaque_session) {
-  delete static_cast<draft::ide::CompilerSession *>(opaque_session);
+  delete static_cast<ServiceSession *>(opaque_session);
 }
 
-void draft_compiler_session_check(void *opaque_session, std::uint8_t *source,
-                                  std::size_t length,
+void draft_compiler_session_check(void *opaque_session,
+                                  const DraftCompilerServiceOverlay *overlays,
+                                  std::size_t overlay_count,
+                                  std::size_t active_overlay,
                                   DraftCompilerServiceResult *result) {
   if (result == nullptr)
     return;
   *result = {};
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
-  const std::optional<std::string_view> text = checked_source(source, length);
-  if (session == nullptr || !text.has_value())
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  const std::optional<std::vector<draft::ide::SourceOverlay>> checked =
+      checked_overlays(overlays, overlay_count, active_overlay);
+  if (session == nullptr || !checked.has_value())
     return;
-  *result = service_result(*session, session->check(*text));
+  *result = service_result(*session, session->check(*checked, active_overlay));
 }
 
-void draft_compiler_session_build(void *opaque_session, std::uint8_t *source,
-                                  std::size_t length,
+void draft_compiler_session_build(void *opaque_session,
+                                  const DraftCompilerServiceOverlay *overlays,
+                                  std::size_t overlay_count,
+                                  std::size_t active_overlay,
                                   DraftCompilerServiceResult *result) {
   if (result == nullptr)
     return;
   *result = {};
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
-  const std::optional<std::string_view> text = checked_source(source, length);
-  if (session == nullptr || !text.has_value())
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  const std::optional<std::vector<draft::ide::SourceOverlay>> checked =
+      checked_overlays(overlays, overlay_count, active_overlay);
+  if (session == nullptr || !checked.has_value())
     return;
-  *result = service_result(*session, session->build(*text));
+  *result = service_result(*session, session->build(*checked, active_overlay));
 }
 
 void draft_compiler_session_span(void *opaque_session, std::size_t index,
@@ -287,7 +331,7 @@ void draft_compiler_session_span(void *opaque_session, std::size_t index,
   if (result == nullptr)
     return;
   *result = {};
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
   if (session == nullptr || index >= session->syntax_spans().size())
     return;
   const draft::ide::SyntaxSpan &span = session->syntax_spans()[index];
@@ -301,7 +345,7 @@ void draft_compiler_session_span(void *opaque_session, std::size_t index,
 std::size_t draft_compiler_session_copy_diagnostics(void *opaque_session,
                                                     std::uint8_t *destination,
                                                     std::size_t capacity) {
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
   if (session == nullptr)
     return 0;
   return copy_text(session->diagnostics_text(), destination, capacity);
@@ -310,7 +354,7 @@ std::size_t draft_compiler_session_copy_diagnostics(void *opaque_session,
 std::size_t draft_compiler_session_copy_tooling_section(
     void *opaque_session, std::uint8_t section, std::uint8_t *destination,
     std::size_t capacity) {
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
   if (session == nullptr ||
       section >= static_cast<std::uint8_t>(draft::ide::ToolingSection::Count)) {
     if (capacity != 0 && destination != nullptr)
@@ -325,17 +369,41 @@ std::size_t draft_compiler_session_copy_tooling_section(
 std::size_t draft_compiler_session_copy_source_path(void *opaque_session,
                                                     std::uint8_t *destination,
                                                     std::size_t capacity) {
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
   if (session == nullptr)
     return 0;
   const std::string source_path = session->source_path().string();
   return copy_text(source_path, destination, capacity);
 }
 
+std::size_t draft_compiler_session_source_count(void *opaque_session) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  return session == nullptr ? 0 : session->source_count();
+}
+
+std::size_t draft_compiler_session_copy_source_name(void *opaque_session,
+                                                    std::size_t index,
+                                                    std::uint8_t *destination,
+                                                    std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr)
+    return 0;
+  return copy_text(session->source_name(index), destination, capacity);
+}
+
+std::size_t draft_compiler_session_copy_source_path_at(
+    void *opaque_session, std::size_t index, std::uint8_t *destination,
+    std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr)
+    return 0;
+  return copy_text(session->source_path(index).string(), destination, capacity);
+}
+
 std::size_t draft_compiler_session_copy_artifact_path(void *opaque_session,
                                                       std::uint8_t *destination,
                                                       std::size_t capacity) {
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
   if (session == nullptr)
     return 0;
   const std::string output_path = session->built_output_path().string();
@@ -343,12 +411,12 @@ std::size_t draft_compiler_session_copy_artifact_path(void *opaque_session,
 }
 
 std::size_t draft_compiler_session_root_count(void *opaque_session) {
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
   return session == nullptr ? 0 : session->root_count();
 }
 
 std::size_t draft_compiler_session_selected_root(void *opaque_session) {
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
   return session == nullptr ? 0 : session->selected_root();
 }
 
@@ -356,7 +424,7 @@ std::size_t draft_compiler_session_copy_root_name(void *opaque_session,
                                                   std::size_t index,
                                                   std::uint8_t *destination,
                                                   std::size_t capacity) {
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
   if (session == nullptr)
     return 0;
   return copy_text(session->root_name(index), destination, capacity);
@@ -364,7 +432,7 @@ std::size_t draft_compiler_session_copy_root_name(void *opaque_session,
 
 std::uint8_t draft_compiler_session_select_root(void *opaque_session,
                                                 std::size_t index) {
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
   if (session == nullptr)
     return 0;
   draft::DiagnosticSink diagnostics;
@@ -372,7 +440,7 @@ std::uint8_t draft_compiler_session_select_root(void *opaque_session,
 }
 
 std::uint8_t draft_compiler_session_target(void *opaque_session) {
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
   if (session == nullptr)
     return std::numeric_limits<std::uint8_t>::max();
   return target_ordinal(session->target());
@@ -380,7 +448,7 @@ std::uint8_t draft_compiler_session_target(void *opaque_session) {
 
 std::uint8_t draft_compiler_session_select_target(void *opaque_session,
                                                   std::uint8_t target) {
-  auto *session = static_cast<draft::ide::CompilerSession *>(opaque_session);
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
   const std::optional<draft::TargetProfile> selected = target_profile(target);
   if (session == nullptr || !selected.has_value())
     return 0;

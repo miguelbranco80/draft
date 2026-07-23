@@ -75,14 +75,18 @@ program imports. From this repository's `examples/` directory, for example,
 open `..` with root `examples/turbo-editor`; opening `.` with root
 `turbo-editor` would intentionally exclude the repository's top-level `lib/`.
 
-Source remains normal `.draft` files. `turbo_editor.Buffer` owns each open file
-and its unsaved bytes. Switching roots reuses an already-open buffer by path or
-opens another ordinary buffer; every buffer records the compiler root that owns
-it. Reactivating an older buffer first reselects that root, so Check or F5 cannot
-submit one root's source under another root's graph. Dirty buffers are neither
-overwritten nor merged. Saving writes the normal file, and polling reports an
-explicit conflict when disk and dirty memory diverge. There is no IDE source
-database, candidate workspace, revision history, or IDE state under `.draft/`.
+Source remains normal `.draft` files. After checking, the service publishes the
+target-selected workspace files in the reachable package graph as deterministic
+workspace-relative names plus canonical I/O paths. Files browses that table;
+Buffers separately lists the ordinary documents currently open in memory.
+`turbo_editor.Buffer` owns each open file and its unsaved bytes. Switching roots
+reuses an already-open buffer by path or opens another ordinary buffer; every
+buffer records the compiler root that owns it. Reactivating an older buffer
+first reselects that root, so Check or F5 cannot submit one root's bytes under
+another root's graph. Dirty buffers are neither overwritten nor merged. Saving
+writes the normal file, and polling reports an explicit conflict when disk and
+dirty memory diverge. There is no IDE source database, candidate workspace,
+revision history, or IDE state under `.draft/`.
 
 The manifest is operator configuration, not a language or dependency manifest.
 Later versions may add named build/run configurations, foreign provider
@@ -92,15 +96,20 @@ discovery, or become a dependency manager.
 
 ## Synchronous checking transaction
 
-Every changed editor buffer is checked synchronously in the first version. The
-service always asks the production lexer for tooling tokens, including comments
-and invalid ranges, so classic Turbo-style syntax colors describe the exact
-current bytes even when semantic checking fails. Declaration coloring is a
-small token-context classification over that same stream, not a second lexer.
+The active buffer plus every other dirty buffer belonging to the checked graph
+enters one synchronous source transaction. Clean inactive files remain ordinary
+disk inputs, avoiding conservative invalidation of unchanged packages. The
+active overlay separately selects which exact bytes the production lexer
+colors, including comments and invalid ranges, so classic
+Turbo-style syntax colors remain buffer-local even when semantic checking
+fails. Declaration coloring is a small token-context classification over that
+same stream, not a second lexer.
 
 After one successful compile, the common semantic path copies the retained
-command-local graph, applies the complete source-file override as a conservative
-interface change, and resumes semantic work. Success atomically replaces the
+command-local graph, applies all complete source-file overrides as conservative
+interface changes, and resumes semantic work. Physical paths are resolved
+against the service source table and converted to package identities before
+this compiler API is entered. Success atomically replaces the
 retained graph. Failure publishes the attempt's diagnostics while leaving the
 last successful graph available for inspection. If imports or packages change
 topology, the stable-PackageId transition rejects the update and the service
@@ -142,20 +151,20 @@ disturbing fixed dialogs.
 The semantic sections are currently read-only text projections, not trees with
 source-jump navigation.
 
-Build first checks the exact current buffer. Only a successful current check
-continues that retained graph through MIR, per-package LLVM modules, object
-emission, and native executable linking. The service returns the resulting path
-to Draft. Run then suspends mouse reporting, the alternate screen, and raw input
-in restoration order; Draft launches and waits through `core/process`; and the
+Build first checks the exact active-plus-dirty project buffer set. Only a
+successful check continues that retained graph through MIR, per-package LLVM
+modules, object emission, and native executable linking. The service returns
+the resulting path to Draft. Run then suspends mouse reporting, the alternate
+screen, and raw input in restoration order; Draft launches and waits through
+`core/process`; and the
 application resumes the terminal and invalidates the differential renderer.
 Consequently an invalid edit can never cause Run to execute the older retained
 program.
 
 ## Deliberate first-version limits
 
-Checking is synchronous and conservatively treats every edit as an interface
-change. The compiler service overlays one active source at a time, while the
-editor may retain several open and dirty buffers. `core/process` currently runs
+Checking is synchronous and conservatively treats every edited file as an
+interface change. `core/process` currently runs
 one exact executable path with inherited environment/current directory and no
 arguments, pipes, shell, or background lifetime. Native IDE builds use `-O0`:
 the current package-wide `-O2` pipeline makes routine IDE rebuilds take several
@@ -171,12 +180,13 @@ compiler-synthesis meaning.
 ## Verification boundary
 
 `draft_project` package tests cover the versioned manifest grammar and path
-constraints. `draft_compiler_service_tests` cover C ABI creation, canonical paths, production
-syntax spans, semantic views, invalid-overlay diagnostics, retained last-good
-state, topology changes, root/target switching, traversal rejection, and native
-Build. Draft package tests cover the application-side Host table and Draft-owned
-Run plus the buffer/root invariant. `draft_draftide_smoke` launches the real
-Draft-built executable without `--root`, reads the repository manifest, builds
-its selected program through the real shared compiler service, retrieves
+constraints. `draft_compiler_service_tests` cover C ABI creation, canonical
+paths, multi-file source transactions, source enumeration, production syntax
+spans, semantic views, invalid-overlay diagnostics, retained last-good state,
+topology changes, root/target switching, traversal rejection, and native Build.
+Draft package tests cover the application-side Host table, overlay assembly,
+Draft-owned Run, and the buffer/root invariant. `draft_draftide_smoke` launches
+the real Draft-built executable without `--root`, reads the repository manifest,
+builds its selected program through the real shared compiler service, retrieves
 syntax/semantic products, and paints a frame without entering an interactive
 terminal.

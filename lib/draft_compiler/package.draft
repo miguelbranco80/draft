@@ -42,15 +42,17 @@ foreign draft_compiler_service {
 
     pub check as "draft_compiler_session_check" :: c proc(
         session: rawptr,
-        source: [^]u8,
-        length: usize,
+        overlays: ^draft_compiler_api.Overlay,
+        overlay_count: usize,
+        active_overlay: usize,
         result: ^draft_compiler_api.Result,
     )
 
     pub build as "draft_compiler_session_build" :: c proc(
         session: rawptr,
-        source: [^]u8,
-        length: usize,
+        overlays: ^draft_compiler_api.Overlay,
+        overlay_count: usize,
+        active_overlay: usize,
         result: ^draft_compiler_api.Result,
     )
 
@@ -81,6 +83,24 @@ foreign draft_compiler_service {
 
     pub copy_artifact_path as "draft_compiler_session_copy_artifact_path" :: c proc(
         session: rawptr,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub source_count as "draft_compiler_session_source_count" :: c proc(
+        session: rawptr,
+    ) -> usize
+
+    pub copy_source_name as "draft_compiler_session_copy_source_name" :: c proc(
+        session: rawptr,
+        index: usize,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub copy_source_path_at as "draft_compiler_session_copy_source_path_at" :: c proc(
+        session: rawptr,
+        index: usize,
         destination: [^]u8,
         capacity: usize,
     ) -> usize
@@ -193,6 +213,9 @@ pub host_api :: proc(session: rawptr) -> draft_compiler_api.Host_Api {
         copy_diagnostics = copy_diagnostics,
         copy_tooling = copy_tooling,
         copy_source_path = copy_source_path,
+        source_count = source_count,
+        copy_source_name = copy_source_name,
+        copy_source_path_at = copy_source_path_at,
         copy_artifact_path = copy_artifact_path,
         root_count = root_count,
         selected_root = selected_root,

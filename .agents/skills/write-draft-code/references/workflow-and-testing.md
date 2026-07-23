@@ -99,6 +99,10 @@ optional direct-child `source` (default `package.draft`). This file selects the
 IDE's initial runnable package; it does not enumerate sources, alter imports, or
 replace the compiler's `.draft/` resolution and evidence state. F5 always
 checks/builds/runs the root associated with the active editor buffer.
+Files is populated from the compiler's target-selected reachable workspace
+graph, while Buffers lists open documents. Check and F5 submit the active buffer
+plus every other dirty buffer belonging to that graph as one transactional
+source-override set; the active buffer also chooses the syntax-span result.
 
 ## Choose the owning layer
 

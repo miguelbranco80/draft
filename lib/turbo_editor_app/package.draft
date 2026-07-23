@@ -60,17 +60,18 @@ Host_Path_Capacity :: 4096
 
 Maximum_Syntax_Spans :: 4096
 Maximum_Project_Roots :: 64
+Maximum_Project_Sources :: 512
 Project_Root_Name_Capacity :: 512
 Project_Root_Overflow_Label :: "<root path exceeds IDE display limit>"
+Project_Source_Copy_Capacity :: 4096
 
-// App owns every persistent document and window value. names borrow process
-// arguments (or one static literal), which outlive the event loop; Buffer owns
-// independent zero-terminated pathname copies for file operations.
+// App owns every persistent document and window value. Buffer owns independent
+// zero-terminated pathname copies for file operations; source-list names and
+// paths are separate copies of compiler-service rows.
 App :: struct {
     ui: turbo_ui.State,
     menus: turbo_ui.Menu_State,
     buffers: [Maximum_Buffers]turbo_editor.Buffer,
-    names: [Maximum_Buffers]string,
     buffer_count: usize,
     active: usize,
     buffer_root: [Maximum_Buffers]usize,
@@ -98,6 +99,12 @@ App :: struct {
     project_root_count: usize,
     project_root_cursor: usize,
     project_root_scroll: usize,
+    // Project source rows are compiler-discovered ordinary workspace files.
+    // Each label/path owner is independent because C ABI copy operations
+    // return variable-length bytes that cannot borrow compiler storage.
+    project_source_names: [Maximum_Project_Sources]memory.Owned_String,
+    project_source_paths: [Maximum_Project_Sources]memory.Owned_String,
+    project_source_count: usize,
     run_requested: bool,
     quit_discard_mask: u64,
 }
@@ -172,7 +179,6 @@ init_one_buffer :: proc(app: ^App, path: string) -> bool {
         turbo_editor.buffer_destroy(&app^.buffers[index])
         return false
     }
-    app^.names[index] = path
     app^.buffer_count += 1
     return true
 }
@@ -188,9 +194,6 @@ init_one_buffer_bytes :: proc(app: ^App, path: []u8) -> bool {
         turbo_editor.buffer_destroy(&app^.buffers[index])
         return false
     }
-    // Embedded mode does not need an immutable label: Files/Buffers paint the
-    // path only in standalone mode, while draftide supplies semantic windows.
-    app^.names[index] = "project source"
     app^.buffer_count += 1
     return true
 }
@@ -219,6 +222,11 @@ destroy_app :: proc(app: ^App) {
         turbo_editor.buffer_destroy(&app^.buffers[index])
     }
     app^.buffer_count = 0
+    for index: usize = 0; index < app^.project_source_count; index += 1 {
+        memory.owned_string_destroy(&app^.project_source_names[index])
+        memory.owned_string_destroy(&app^.project_source_paths[index])
+    }
+    app^.project_source_count = 0
 }
 
 active_buffer :: proc(app: ^App) -> ^turbo_editor.Buffer {
@@ -244,10 +252,10 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
                 return false
             }
             refresh_project_roots(app)
+            refresh_project_sources(app)
         }
     }
     app^.active = index
-    app^.file_selection = index
     app^.buffer_selection = index
     app^.ui.focused_id = cast[turbo_ui.Widget_Id](600 + app^.active)
     if app^.host.check != nil {
@@ -256,11 +264,124 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
     return true
 }
 
-source_pointer :: proc(buffer: ^turbo_editor.Buffer) -> [^]u8 {
-    if buffer^.bytes.length == 0 {
-        return nil
+// refresh_project_sources copies the compiler's deterministic editable-source
+// table into Draft ownership. The fixed copy buffer is an explicit UI/path
+// bound; an overflowing row stops publication rather than retaining a
+// truncated path that could name a different file.
+refresh_project_sources :: proc(app: ^App) {
+    for index: usize = 0; index < app^.project_source_count; index += 1 {
+        memory.owned_string_destroy(&app^.project_source_names[index])
+        memory.owned_string_destroy(&app^.project_source_paths[index])
     }
-    return cast[[^]u8](&buffer^.bytes.data[0])
+    app^.project_source_count = 0
+    if app^.host.source_count == nil || app^.host.copy_source_name == nil ||
+        app^.host.copy_source_path_at == nil {
+        return
+    }
+    count := app^.host.source_count(app^.host.user)
+    if count > Maximum_Project_Sources {
+        count = Maximum_Project_Sources
+    }
+    name_storage: [Project_Source_Copy_Capacity]u8
+    path_storage: [Project_Source_Copy_Capacity]u8
+    for index: usize = 0; index < count; index += 1 {
+        name_length := app^.host.copy_source_name(
+            app^.host.user,
+            index,
+            cast[[^]u8](&name_storage[0]),
+            len(name_storage),
+        )
+        path_length := app^.host.copy_source_path_at(
+            app^.host.user,
+            index,
+            cast[[^]u8](&path_storage[0]),
+            len(path_storage),
+        )
+        if name_length == 0 || name_length >= len(name_storage) ||
+            path_length == 0 || path_length >= len(path_storage) {
+            break
+        }
+        memory.owned_string_copy_bytes(
+            &app^.project_source_names[index],
+            name_storage[:name_length],
+        )
+        memory.owned_string_copy_bytes(
+            &app^.project_source_paths[index],
+            path_storage[:path_length],
+        )
+        app^.project_source_count += 1
+    }
+    if app^.file_selection >= app^.project_source_count {
+        app^.file_selection = 0
+        app^.file_scroll = 0
+    }
+}
+
+buffer_in_project :: proc(app: ^App, index: usize) -> bool {
+    if index >= app^.buffer_count {
+        return false
+    }
+    path := turbo_editor.path_bytes(&app^.buffers[index])
+    for source_index: usize = 0;
+        source_index < app^.project_source_count;
+        source_index += 1 {
+        if byte_views_equal(
+            path,
+            memory.owned_string_bytes(&app^.project_source_paths[source_index]),
+        ) {
+            return true
+        }
+    }
+    return false
+}
+
+// collect_host_overlays snapshots the active buffer plus every other dirty
+// buffer belonging to the active checked graph. Clean inactive files remain on
+// disk inputs; resubmitting them would make the compiler conservatively
+// invalidate packages whose bytes did not change. Buffers and path owners
+// outlive the synchronous call. active_overlay is an index in this compact
+// output table, not the application's buffer table.
+collect_host_overlays :: proc(
+    app: ^App,
+    overlays: []draft_compiler_api.Overlay,
+) -> (usize, usize, bool) {
+    count: usize
+    active_overlay: usize
+    found_active := false
+    filter_project := app^.host.source_count != nil
+    for index: usize = 0; index < app^.buffer_count; index += 1 {
+        if index != app^.active && !app^.buffers[index].dirty {
+            continue
+        }
+        if filter_project && !buffer_in_project(app, index) {
+            continue
+        }
+        if count == len(overlays) {
+            return (0, 0, false)
+        }
+        buffer := &app^.buffers[index]
+        path := turbo_editor.path_bytes(buffer)
+        path_data: rawptr = nil
+        if len(path) != 0 {
+            path_data = cast[rawptr](&path[0])
+        }
+        source_data: rawptr = nil
+        if buffer^.bytes.length != 0 {
+            source_data = cast[rawptr](&buffer^.bytes.data[0])
+        }
+        overlays[count] = draft_compiler_api.Overlay{
+            path_data = path_data,
+            path_length = len(path),
+            source_data = source_data,
+            source_length = buffer^.bytes.length,
+        }
+        if index == app^.active {
+            active_overlay = count
+            found_active = true
+        }
+        count += 1
+    }
+    return (count, active_overlay, found_active)
 }
 
 text_destination :: proc(app: ^App, index: usize) -> [^]u8 {
@@ -380,11 +501,22 @@ refresh_host :: proc(app: ^App) {
         return
     }
     buffer := active_buffer(app)
+    overlays: [Maximum_Buffers]draft_compiler_api.Overlay
+    (overlay_count, active_overlay, valid_overlays) := collect_host_overlays(
+        app,
+        overlays[:],
+    )
+    if !valid_overlays {
+        app^.syntax_span_count = 0
+        app^.status = "Active buffer is not in the checked project source graph"
+        return
+    }
     result: draft_compiler_api.Result
     app^.host.check(
         app^.host.user,
-        source_pointer(buffer),
-        buffer^.bytes.length,
+        &overlays[0],
+        overlay_count,
+        active_overlay,
         &result,
     )
     app^.diagnostic_count = result.diagnostic_count
@@ -413,6 +545,10 @@ refresh_host :: proc(app: ^App) {
     }
     if result.success != 0 {
         app^.status = "Checked  F6-F11 semantic views  F12 root  Shift-F12 target"
+        if app^.host.source_count != nil &&
+            app^.host.source_count(app^.host.user) != app^.project_source_count {
+            refresh_project_sources(app)
+        }
     } else {
         app^.status = "Check failed: diagnostics retain the last good program"
     }
@@ -425,12 +561,21 @@ execute_host_action :: proc(app: ^App, run: bool) {
         app^.status = "No compiler host is attached"
         return
     }
-    buffer := active_buffer(app)
+    overlays: [Maximum_Buffers]draft_compiler_api.Overlay
+    (overlay_count, active_overlay, valid_overlays) := collect_host_overlays(
+        app,
+        overlays[:],
+    )
+    if !valid_overlays {
+        app^.status = "Active buffer is not in the checked project source graph"
+        return
+    }
     result: draft_compiler_api.Result
     procedure(
         app^.host.user,
-        source_pointer(buffer),
-        buffer^.bytes.length,
+        &overlays[0],
+        overlay_count,
+        active_overlay,
         &result,
     )
     app^.diagnostic_count = result.diagnostic_count
@@ -500,6 +645,44 @@ byte_views_equal :: proc(left, right: []u8) -> bool {
     return true
 }
 
+project_source_index :: proc(app: ^App, path: []u8) -> usize {
+    for index: usize = 0; index < app^.project_source_count; index += 1 {
+        if byte_views_equal(
+            path,
+            memory.owned_string_bytes(&app^.project_source_paths[index]),
+        ) {
+            return index
+        }
+    }
+    return app^.project_source_count
+}
+
+// open_project_source turns one compiler-discovered Files row into an ordinary
+// editor buffer. Reopening a path reuses its unsaved owner; a first open reads
+// the normal file and binds that buffer to the currently selected run root.
+open_project_source :: proc(app: ^App, source_index: usize) -> bool {
+    if source_index >= app^.project_source_count {
+        return false
+    }
+    path := memory.owned_string_bytes(&app^.project_source_paths[source_index])
+    for index: usize = 0; index < app^.buffer_count; index += 1 {
+        if byte_views_equal(turbo_editor.path_bytes(&app^.buffers[index]), path) {
+            app^.file_selection = source_index
+            return activate_buffer(app, index)
+        }
+    }
+    if !init_one_buffer_bytes(app, path) {
+        return false
+    }
+    app^.active = app^.buffer_count - 1
+    app^.buffer_selection = app^.active
+    app^.file_selection = source_index
+    bind_active_buffer_to_host_root(app)
+    app^.ui.focused_id = cast[turbo_ui.Widget_Id](600 + app^.active)
+    refresh_host(app)
+    return true
+}
+
 // open_selected_host_source synchronizes the editor's active buffer with the
 // source path selected by the compiler service. Existing dirty buffers remain
 // open and are reselected without reloading; a new root consumes one ordinary
@@ -522,8 +705,11 @@ open_selected_host_source :: proc(app: ^App) -> bool {
     for index: usize = 0; index < app^.buffer_count; index += 1 {
         if byte_views_equal(turbo_editor.path_bytes(&app^.buffers[index]), path) {
             app^.active = index
-            app^.file_selection = index
             app^.buffer_selection = index
+            source_index := project_source_index(app, path)
+            if source_index < app^.project_source_count {
+                app^.file_selection = source_index
+            }
             app^.buffer_root[index] = selected_root
             app^.buffer_has_root[index] = true
             refresh_host(app)
@@ -534,8 +720,11 @@ open_selected_host_source :: proc(app: ^App) -> bool {
         return false
     }
     app^.active = app^.buffer_count - 1
-    app^.file_selection = app^.active
     app^.buffer_selection = app^.active
+    source_index := project_source_index(app, path)
+    if source_index < app^.project_source_count {
+        app^.file_selection = source_index
+    }
     app^.buffer_root[app^.active] = selected_root
     app^.buffer_has_root[app^.active] = true
     refresh_host(app)
@@ -556,6 +745,7 @@ select_project_root :: proc(app: ^App, selected: usize) -> bool {
         return false
     }
     refresh_project_roots(app)
+    refresh_project_sources(app)
     if open_selected_host_source(app) {
         if selected < app^.project_root_count {
             app^.project_root_cursor = selected
@@ -566,6 +756,7 @@ select_project_root :: proc(app: ^App, selected: usize) -> bool {
         app^.host.select_root(app^.host.user, previous)
     }
     refresh_project_roots(app)
+    refresh_project_sources(app)
     return false
 }
 
@@ -604,9 +795,11 @@ cycle_project_target :: proc(app: ^App) {
         return
     }
     refresh_project_roots(app)
+    refresh_project_sources(app)
     if !open_selected_host_source(app) {
         app^.host.select_target(app^.host.user, previous)
         refresh_project_roots(app)
+        refresh_project_sources(app)
         app^.status = "Selected target could not be opened; selection restored"
         return
     }
@@ -923,26 +1116,224 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
     return false
 }
 
-paint_buffer_list :: proc(
+Path_List_Kind :: enum {
+    project_sources,
+    open_buffers,
+}
+
+path_list_count :: proc(app: ^App, kind: Path_List_Kind) -> usize {
+    if kind == .project_sources && app^.host.source_count != nil {
+        return app^.project_source_count
+    }
+    return app^.buffer_count
+}
+
+path_list_text :: proc(
+    app: ^App,
+    kind: Path_List_Kind,
+    index: usize,
+) -> []u8 {
+    if kind == .project_sources && app^.host.source_count != nil {
+        return memory.owned_string_bytes(&app^.project_source_names[index])
+    }
+    return turbo_editor.path_bytes(&app^.buffers[index])
+}
+
+activate_path_row :: proc(
+    app: ^App,
+    kind: Path_List_Kind,
+    index: usize,
+) -> bool {
+    if kind == .project_sources && app^.host.source_count != nil {
+        return open_project_source(app, index)
+    }
+    return activate_buffer(app, index)
+}
+
+// paint_path_list is the application-specific byte-label list used by Files
+// and Buffers. Arrow navigation moves only the list cursor; Enter or one
+// primary click opens the selected row. This separation prevents browsing the
+// project tree from continuously replacing the editor document. Files uses
+// compiler-owned workspace-relative labels, while Buffers shows the ordinary
+// pathname stored by each document owner.
+paint_path_list :: proc(
     app: ^App,
     content: turbo_ui.Rect,
     id: turbo_ui.Widget_Id,
+    kind: Path_List_Kind,
     selected: ^usize,
     scroll: ^usize,
 ) {
-    changed := turbo_ui.list(
-        &app^.ui,
-        id,
-        content,
-        app^.names[:app^.buffer_count],
-        selected,
-        scroll,
+    count := path_list_count(app, kind)
+    if content.width == 0 || content.height == 0 {
+        return
+    }
+    text_bounds := content
+    if text_bounds.width > 1 {
+        text_bounds.width -= 1
+    }
+    if count == 0 {
+        selected^ = 0
+        scroll^ = 0
+    } else if selected^ >= count {
+        selected^ = count - 1
+    }
+
+    activate := false
+    moved := false
+    interaction := turbo_ui.focus_area(&app^.ui, id, text_bounds)
+    if interaction.activated && app^.ui.event.kind == .mouse && count != 0 {
+        row := app^.ui.event.mouse.position.row - text_bounds.row
+        index := scroll^ + row
+        if index < count {
+            selected^ = index
+            activate = true
+        }
+    }
+    if !app^.ui.event_handled && turbo_ui.has_focus(&app^.ui, id) &&
+        app^.ui.event.kind == .key && count != 0 {
+        key := app^.ui.event.key
+        if key.code == .up && selected^ > 0 {
+            selected^ -= 1
+            moved = true
+        } else if key.code == .down && selected^ + 1 < count {
+            selected^ += 1
+            moved = true
+        } else if key.code == .home {
+            selected^ = 0
+            moved = true
+        } else if key.code == .end {
+            selected^ = count - 1
+            moved = true
+        } else if key.code == .page_up {
+            if selected^ > text_bounds.height {
+                selected^ -= text_bounds.height
+            } else {
+                selected^ = 0
+            }
+            moved = true
+        } else if key.code == .page_down {
+            selected^ += text_bounds.height
+            if selected^ >= count {
+                selected^ = count - 1
+            }
+            moved = true
+        } else if key.code == .enter {
+            activate = true
+            app^.ui.event_handled = true
+        }
+        if moved {
+            app^.ui.event_handled = true
+        }
+    }
+
+    if selected^ < scroll^ {
+        scroll^ = selected^
+    } else if text_bounds.height != 0 &&
+        selected^ >= scroll^ + text_bounds.height {
+        scroll^ = selected^ - text_bounds.height + 1
+    }
+    maximum_scroll: usize
+    if count > text_bounds.height {
+        maximum_scroll = count - text_bounds.height
+    }
+    if scroll^ > maximum_scroll {
+        scroll^ = maximum_scroll
+    }
+
+    turbo_ui.fill_rect(
+        app^.ui.surface,
+        app^.ui.clip,
+        text_bounds,
+        ' ',
+        app^.ui.theme.window,
     )
-    if changed && selected^ < app^.buffer_count {
-        if activate_buffer(app, selected^) {
-            app^.status = "Active buffer and project root changed"
+    active_path := turbo_editor.path_bytes(active_buffer(app))
+    for row: usize = 0; row < text_bounds.height; row += 1 {
+        index := scroll^ + row
+        if index >= count {
+            break
+        }
+        row_bounds := turbo_ui.Rect{
+            column = text_bounds.column,
+            row = text_bounds.row + row,
+            width = text_bounds.width,
+            height = 1,
+        }
+        style := app^.ui.theme.text
+        if index == selected^ {
+            style = app^.ui.theme.selected
+            turbo_ui.fill_rect(
+                app^.ui.surface,
+                app^.ui.clip,
+                row_bounds,
+                ' ',
+                style,
+            )
+        }
+        marker := "  "
+        if kind == .open_buffers && app^.buffers[index].dirty {
+            marker = "* "
+        } else if kind == .project_sources && app^.host.source_count != nil {
+            source_path := memory.owned_string_bytes(
+                &app^.project_source_paths[index],
+            )
+            if byte_views_equal(source_path, active_path) {
+                marker = "> "
+            }
+        }
+        turbo_ui.write_clipped(
+            app^.ui.surface,
+            turbo_ui.intersect(app^.ui.clip, row_bounds),
+            turbo_ui.Point{column = row_bounds.column, row = row_bounds.row},
+            marker,
+            style,
+        )
+        if row_bounds.width > 2 {
+            label_bounds := turbo_ui.Rect{
+                column = row_bounds.column + 2,
+                row = row_bounds.row,
+                width = row_bounds.width - 2,
+                height = 1,
+            }
+            turbo_ui.write_clipped_bytes(
+                app^.ui.surface,
+                turbo_ui.intersect(app^.ui.clip, label_bounds),
+                turbo_ui.Point{
+                    column = label_bounds.column,
+                    row = label_bounds.row,
+                },
+                path_list_text(app, kind, index),
+                style,
+            )
+        }
+    }
+    if content.width > text_bounds.width {
+        if turbo_ui.scrollbar_vertical(
+            &app^.ui,
+            id + 1,
+            turbo_ui.Rect{
+                column = content.column + content.width - 1,
+                row = content.row,
+                width = 1,
+                height = content.height,
+            },
+            count,
+            text_bounds.height,
+            scroll,
+        ) && count != 0 {
+            selected^ = scroll^
+        }
+    }
+    if activate && selected^ < count {
+        if activate_path_row(app, kind, selected^) {
+            if kind == .project_sources && app^.host.source_count != nil {
+                app^.status = "Project source opened"
+            } else {
+                app^.status = "Open buffer activated"
+            }
         } else {
-            app^.status = "Could not activate the buffer's project root"
+            app^.status = "Could not open the selected source"
         }
     }
 }
@@ -1588,18 +1979,20 @@ paint_app :: proc(
         if window_context.visible {
             switch index {
             case Window_Files:
-                paint_buffer_list(
+                paint_path_list(
                     app,
                     window_context.content,
                     530,
+                    .project_sources,
                     &app^.file_selection,
                     &app^.file_scroll,
                 )
             case Window_Buffers:
-                paint_buffer_list(
+                paint_path_list(
                     app,
                     window_context.content,
-                    531,
+                    532,
+                    .open_buffers,
                     &app^.buffer_selection,
                     &app^.buffer_scroll,
                 )
@@ -1931,6 +2324,7 @@ pub run_with_host :: proc(
     app.host = host
     bind_active_buffer_to_host_root(&app)
     refresh_project_roots(&app)
+    refresh_project_sources(&app)
     app.status = "Turbo Draft compiler session attached"
     refresh_host(&app)
     return run_app_terminal(&app)
@@ -1954,6 +2348,7 @@ pub run_with_host_bytes :: proc(
     app.host = host
     bind_active_buffer_to_host_root(&app)
     refresh_project_roots(&app)
+    refresh_project_sources(&app)
     app.status = "Turbo Draft compiler session attached"
     refresh_host(&app)
     if has_smoke_argument() {

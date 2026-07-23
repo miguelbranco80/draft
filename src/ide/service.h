@@ -55,6 +55,17 @@ typedef struct DraftCompilerServiceSpan {
   uint8_t kind;
 } DraftCompilerServiceSpan;
 
+// Overlay is one ordinary editor buffer. path names the physical source file
+// selected from the service source table; source contains its complete current
+// bytes. Both ranges are borrowed only for check/build. The ABI converts the
+// path to semantic package identity before compilation.
+typedef struct DraftCompilerServiceOverlay {
+  const void *path_data;
+  size_t path_length;
+  const void *source_data;
+  size_t source_length;
+} DraftCompilerServiceOverlay;
+
 // create validates and canonicalizes the borrowed configuration ranges, owns a
 // new compiler session on success, and returns NULL on failure. A nonempty
 // error destination is always NUL-terminated and may contain a truncated
@@ -65,15 +76,21 @@ DRAFT_COMPILER_SERVICE_API void *draft_compiler_session_create(
 
 DRAFT_COMPILER_SERVICE_API void draft_compiler_session_destroy(void *session);
 
-// check/build borrow one complete source-file replacement synchronously and
-// write a zero result for a nil handle or invalid byte range. Build always
-// performs check first and publishes an artifact path only for current bytes.
+// check/build borrow a complete set of open project buffers synchronously.
+// active_overlay selects the row whose syntax spans are published. A nil row,
+// invalid range, duplicate path, unknown path, or out-of-range active index
+// writes a failed result. Build always checks the exact set first and publishes
+// an artifact path only for those current bytes.
 DRAFT_COMPILER_SERVICE_API void
-draft_compiler_session_check(void *session, uint8_t *source, size_t length,
+draft_compiler_session_check(void *session,
+                             const DraftCompilerServiceOverlay *overlays,
+                             size_t overlay_count, size_t active_overlay,
                              DraftCompilerServiceResult *result);
 
 DRAFT_COMPILER_SERVICE_API void
-draft_compiler_session_build(void *session, uint8_t *source, size_t length,
+draft_compiler_session_build(void *session,
+                             const DraftCompilerServiceOverlay *overlays,
+                             size_t overlay_count, size_t active_overlay,
                              DraftCompilerServiceResult *result);
 
 // span and copy_diagnostics inspect the latest attempt. Out-of-range span
@@ -97,6 +114,19 @@ DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_tooling_section(
 // diagnostics.
 DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_source_path(
     void *session, uint8_t *destination, size_t capacity);
+
+// Source rows enumerate target-selected, workspace-owned Draft files in the
+// active checked package graph. Before the first check they contain the direct
+// files of the selected root. name is a workspace-relative UI label; path is
+// the canonical file-I/O path accepted by Overlay.
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_source_count(void *session);
+
+DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_source_name(
+    void *session, size_t index, uint8_t *destination, size_t capacity);
+
+DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_source_path_at(
+    void *session, size_t index, uint8_t *destination, size_t capacity);
 
 DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_artifact_path(
     void *session, uint8_t *destination, size_t capacity);

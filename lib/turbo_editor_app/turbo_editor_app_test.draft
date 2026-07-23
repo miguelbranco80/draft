@@ -1,7 +1,9 @@
 package turbo_editor_app
 
+import core/memory
 import core/testing
 import lib/draft_compiler_api
+import lib/turbo_editor
 
 Fake_Root_State :: c struct {
     selected: usize,
@@ -22,15 +24,22 @@ fake_select_root :: c proc(user: rawptr, index: usize) -> u8 {
     return 1
 }
 
+fake_source_count :: c proc(user: rawptr) -> usize {
+    _ = user
+    return 2
+}
+
 fake_build :: c proc(
     user: rawptr,
-    source: [^]u8,
-    length: usize,
+    overlays: ^draft_compiler_api.Overlay,
+    overlay_count: usize,
+    active_overlay: usize,
     result: ^draft_compiler_api.Result,
 ) {
     _ = user
-    _ = source
-    _ = length
+    _ = overlays
+    _ = overlay_count
+    _ = active_overlay
     result^.success = 1
 }
 
@@ -135,4 +144,45 @@ test_buffer_activation_restores_compiler_root :: proc(test: ^testing.Test) {
     testing.expect(test, !activate_buffer(&app, 0))
     testing.expect(test, app.active == 1)
     testing.expect(test, roots.selected == 1)
+}
+
+// Check and Build must see every open project buffer in one call, while syntax
+// spans still belong to the active row. This test fixes the Draft-owned pointer
+// table and compact active index independently of the native service test.
+test_collects_all_open_project_overlays :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-overlay-first.draft"))
+    testing.expect(test, init_one_buffer(&app, "turbo-overlay-second.draft"))
+    defer destroy_app(&app)
+
+    app.host.source_count = fake_source_count
+    app.project_source_count = 2
+    memory.owned_string_copy_bytes(
+        &app.project_source_paths[0],
+        turbo_editor.path_bytes(&app.buffers[0]),
+    )
+    memory.owned_string_copy_bytes(
+        &app.project_source_paths[1],
+        turbo_editor.path_bytes(&app.buffers[1]),
+    )
+    memory.owned_string_copy(&app.project_source_names[0], "first.draft")
+    memory.owned_string_copy(&app.project_source_names[1], "second.draft")
+    app.buffers[0].dirty = true
+    app.buffers[1].dirty = true
+    app.active = 1
+
+    overlays: [Maximum_Buffers]draft_compiler_api.Overlay
+    (count, active, valid) := collect_host_overlays(&app, overlays[:])
+    testing.expect(test, valid)
+    testing.expect(test, count == 2)
+    testing.expect(test, active == 1)
+    testing.expect(
+        test,
+        overlays[0].path_length == len(turbo_editor.path_bytes(&app.buffers[0])),
+    )
+    testing.expect(
+        test,
+        overlays[1].path_length == len(turbo_editor.path_bytes(&app.buffers[1])),
+    )
 }

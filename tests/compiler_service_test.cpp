@@ -85,11 +85,21 @@ configuration(const std::string &workspace, const std::string &root,
   };
 }
 
-void check_source(void *session, std::string &source,
-                  DraftCompilerServiceResult &result) {
-  draft_compiler_session_check(session,
-                               reinterpret_cast<std::uint8_t *>(source.data()),
-                               source.size(), &result);
+[[nodiscard]] DraftCompilerServiceOverlay overlay(const std::string &path,
+                                                  const std::string &source) {
+  return {
+      path.data(),
+      path.size(),
+      source.data(),
+      source.size(),
+  };
+}
+
+void check_source(void *session, const std::filesystem::path &path,
+                  std::string &source, DraftCompilerServiceResult &result) {
+  const std::string path_text = path.string();
+  const DraftCompilerServiceOverlay source_overlay = overlay(path_text, source);
+  draft_compiler_session_check(session, &source_overlay, 1, 0, &result);
 }
 
 void test_service_transactions_and_native_build(TestState &state) {
@@ -144,7 +154,7 @@ void test_service_transactions_and_native_build(TestState &state) {
       "    return Answer + 1\n"
       "}\n";
   DraftCompilerServiceResult checked{};
-  check_source(session, valid, checked);
+  check_source(session, canonical_source, valid, checked);
   if (checked.success == 0) {
     std::array<std::uint8_t, 4096> bytes{};
     draft_compiler_session_copy_diagnostics(session, bytes.data(),
@@ -189,7 +199,7 @@ void test_service_transactions_and_native_build(TestState &state) {
                         "    return missing_name\n"
                         "}\n";
   DraftCompilerServiceResult rejected{};
-  check_source(session, invalid, rejected);
+  check_source(session, canonical_source, invalid, rejected);
   EXPECT(state, rejected.success == 0);
   EXPECT(state, rejected.diagnostic_count != 0);
   std::array<std::uint8_t, 2048> diagnostic_bytes{};
@@ -224,7 +234,7 @@ void test_service_transactions_and_native_build(TestState &state) {
                                 "    return lib.answer()\n"
                                 "}\n";
   DraftCompilerServiceResult reloaded{};
-  check_source(session, topology_change, reloaded);
+  check_source(session, canonical_source, topology_change, reloaded);
   if (reloaded.success == 0) {
     std::array<std::uint8_t, 4096> bytes{};
     draft_compiler_session_copy_diagnostics(session, bytes.data(),
@@ -234,10 +244,42 @@ void test_service_transactions_and_native_build(TestState &state) {
   EXPECT(state, reloaded.success == 1);
   EXPECT(state, reloaded.diagnostic_count == 0);
 
+  EXPECT(state, draft_compiler_session_source_count(session) == 2);
+  std::array<std::uint8_t, 256> source_name_bytes{};
+  EXPECT(state, draft_compiler_session_copy_source_name(
+                    session, 0, source_name_bytes.data(),
+                    source_name_bytes.size()) == 17);
+  EXPECT(state, std::string_view(reinterpret_cast<const char *>(
+                    source_name_bytes.data())) == "app/package.draft");
+
+  // Both unsaved files enter one semantic transaction. The app refers to a
+  // declaration that exists only in the library overlay, proving the service
+  // does not check merely the active editor buffer.
+  std::string multi_app = "package app\n"
+                          "import lib\n"
+                          "main :: proc() -> int {\n"
+                          "    return lib.answer_two()\n"
+                          "}\n";
+  std::string multi_library = "package lib\n"
+                              "pub answer_two :: proc() -> int {\n"
+                              "    return 42\n"
+                              "}\n";
+  const std::filesystem::path canonical_library =
+      std::filesystem::canonical(library / source_name);
+  const std::string canonical_source_text = canonical_source.string();
+  const std::string canonical_library_text = canonical_library.string();
+  const std::array<DraftCompilerServiceOverlay, 2> multi_overlays{
+      overlay(canonical_source_text, multi_app),
+      overlay(canonical_library_text, multi_library),
+  };
+  DraftCompilerServiceResult multi_checked{};
+  draft_compiler_session_check(session, multi_overlays.data(),
+                               multi_overlays.size(), 1, &multi_checked);
+  EXPECT(state, multi_checked.success == 1);
+
   DraftCompilerServiceResult built{};
-  draft_compiler_session_build(
-      session, reinterpret_cast<std::uint8_t *>(topology_change.data()),
-      topology_change.size(), &built);
+  draft_compiler_session_build(session, multi_overlays.data(),
+                               multi_overlays.size(), 0, &built);
   EXPECT(state, built.success == 1);
   EXPECT(state, built.diagnostic_count == 0);
   std::array<std::uint8_t, 4096> artifact_bytes{};
@@ -258,9 +300,9 @@ void test_service_transactions_and_native_build(TestState &state) {
   // previous file may still exist in private scratch, but clearing the service
   // path makes it unreachable to the Draft-owned Run operation.
   DraftCompilerServiceResult invalid_build{};
-  draft_compiler_session_build(session,
-                               reinterpret_cast<std::uint8_t *>(invalid.data()),
-                               invalid.size(), &invalid_build);
+  const DraftCompilerServiceOverlay invalid_overlay =
+      overlay(canonical_source_text, invalid);
+  draft_compiler_session_build(session, &invalid_overlay, 1, 0, &invalid_build);
   EXPECT(state, invalid_build.success == 0);
   EXPECT(state,
          draft_compiler_session_copy_artifact_path(
@@ -280,9 +322,12 @@ void test_service_transactions_and_native_build(TestState &state) {
                             "    return 9\n"
                             "}\n";
   DraftCompilerServiceResult tool_checked{};
-  check_source(session, tool_source, tool_checked);
+  const std::filesystem::path tool_path =
+      std::filesystem::canonical(workspace / "tool" / source_name);
+  check_source(session, tool_path, tool_source, tool_checked);
   EXPECT(state, tool_checked.success == 1);
   EXPECT(state, draft_compiler_session_select_root(session, 0) == 1);
+  EXPECT(state, draft_compiler_session_source_count(session) == 2);
 
   const std::uint8_t original_target = draft_compiler_session_target(session);
   const std::uint8_t other_target =

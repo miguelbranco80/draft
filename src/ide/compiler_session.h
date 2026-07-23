@@ -1,9 +1,10 @@
 // CompilerSession is the long-lived compiler boundary behind the native C ABI.
-// It binds one canonical workspace, selected root package, target, and active
-// complete source file to the last successful CompileWorkspaceResult.
-// Each check builds a private candidate through the existing complete-file
-// override API; success atomically replaces the stored source/graph pair, while
-// failure publishes diagnostics and leaves the previous checked program intact.
+// It binds one canonical workspace, selected root package, target, and set of
+// complete in-memory source overlays to the last successful
+// CompileWorkspaceResult. Each check builds a private candidate through the
+// existing complete-file override API; success atomically replaces the stored
+// source/graph pair, while failure publishes diagnostics and leaves the
+// previous checked program intact.
 //
 // The class owns no terminal, editor buffer, or Draft allocation. C ABI bridge
 // functions in service.cpp borrow source bytes synchronously and copy only
@@ -24,6 +25,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -60,6 +62,15 @@ struct CheckResult {
   std::uint32_t diagnostic_count = 0;
 };
 
+// SourceOverlay is one synchronously borrowed editor buffer. physical_path is
+// an I/O-boundary identity only: CompilerSession resolves it against the
+// deterministic source table and converts it to PackageIdentity plus relative
+// filename before entering workspace compilation. contents is never retained.
+struct SourceOverlay {
+  std::filesystem::path physical_path;
+  std::string_view contents;
+};
+
 // ToolingSection selects one read-only projection of the last successful
 // compiler graph. Text is rebuilt only when that graph is replaced and remains
 // valid until the next successful check or session destruction. Diagnostics
@@ -85,14 +96,28 @@ struct CompilerConfiguration {
   TargetProfile target;
 };
 
+// SourceOption is one editable, target-selected workspace Draft file reachable
+// from the current checked root. physical_path is exposed only for file I/O;
+// identity and relative_name are the semantic override key. display_name is a
+// stable workspace-relative label sorted for the Files window.
+struct SourceOption {
+  std::string display_name;
+  std::filesystem::path physical_path;
+  PackageIdentity identity;
+  std::string relative_name;
+};
+
 // RootOption is one valid workspace executable root available for the selected
-// target, plus the first selected Draft file used when the editor switches to
-// it. The explicitly opened root is retained even when it is a library without
-// main, so a workspace can still be used for focused library editing.
+// target, plus its current editable source set. Before that root has checked,
+// sources contains its direct package files; afterward it retains the complete
+// reachable workspace set so switching away and back cannot omit an unsaved
+// imported-package buffer. The explicitly opened root is retained even when it
+// is a library without main.
 struct RootOption {
   std::string root_relative_path;
   std::filesystem::path physical_directory;
   std::string source_relative_name;
+  std::vector<SourceOption> sources;
 };
 
 class CompilerSession {
@@ -106,16 +131,19 @@ public:
   CompilerSession(const CompilerSession &) = delete;
   CompilerSession &operator=(const CompilerSession &) = delete;
 
-  // Checks one complete in-memory replacement for the active source file.
-  // source is borrowed only for this call. Success replaces retained semantic
-  // products; failure replaces diagnostics/spans but preserves the last-good
-  // graph and all tooling projections derived from it.
-  [[nodiscard]] CheckResult check(std::string_view source);
+  // Checks a complete set of in-memory source replacements. Every range is
+  // borrowed only for this call. active_overlay selects the buffer whose
+  // lexical spans are published. Success replaces retained semantic products;
+  // failure replaces diagnostics/spans but preserves the last-good graph and
+  // all tooling projections derived from it.
+  [[nodiscard]] CheckResult check(std::span<const SourceOverlay> overlays,
+                                  std::size_t active_overlay);
 
   // Rechecks the exact current bytes, then continues only that successful graph
   // through MIR, LLVM, and native linking. A failure clears the published
   // artifact path, so callers cannot accidentally run an older program.
-  [[nodiscard]] CheckResult build(std::string_view source);
+  [[nodiscard]] CheckResult build(std::span<const SourceOverlay> overlays,
+                                  std::size_t active_overlay);
 
   // Discovers target-selected executable roots and establishes the stable root
   // list used by the Draft project UI. Selection replaces compiler products;
@@ -130,6 +158,14 @@ public:
                                    DiagnosticSink &diagnostics);
   [[nodiscard]] const TargetProfile &target() const;
 
+  // Source rows are refreshed from the successful checked graph and contain
+  // only ordinary workspace-owned Draft files. Before the first successful
+  // check, the selected root's direct target-applicable sources are available.
+  [[nodiscard]] std::size_t source_count() const;
+  [[nodiscard]] std::string_view source_name(std::size_t index) const;
+  [[nodiscard]] const std::filesystem::path &
+  source_path(std::size_t index) const;
+
   // Returned views borrow session-owned storage and remain valid only until the
   // next mutating session operation or destruction. C callers copy through the
   // fixed-buffer facade instead of observing these C++ representations.
@@ -141,28 +177,31 @@ public:
 
 private:
   [[nodiscard]] CompileWorkspaceOptions compile_options() const;
-  [[nodiscard]] WorkspaceSourceOverride
-  source_override(std::string_view source) const;
-  void collect_syntax_spans(std::string_view source);
+  [[nodiscard]] std::optional<std::vector<WorkspaceSourceOverride>>
+  source_overrides(std::span<const SourceOverlay> overlays,
+                   DiagnosticSink &diagnostics) const;
+  void collect_syntax_spans(const SourceOverlay &active);
+  void rebuild_source_options();
+  void select_root_sources(const RootOption &root);
   void rebuild_tooling_index();
   void publish_diagnostics(const SourceManager &sources,
                            const DiagnosticSink &diagnostics);
-  [[nodiscard]] bool fresh_check(std::string_view source,
-                                 SourceManager &candidate_sources,
-                                 CompileWorkspaceResult &candidate,
-                                 DiagnosticSink &diagnostics);
+  [[nodiscard]] bool
+  fresh_check(const std::vector<WorkspaceSourceOverride> &overrides,
+              SourceManager &candidate_sources,
+              CompileWorkspaceResult &candidate, DiagnosticSink &diagnostics);
   [[nodiscard]] CheckResult build_checked();
   [[nodiscard]] bool create_build_directory(DiagnosticSink &diagnostics);
   [[nodiscard]] bool refresh_root_options(DiagnosticSink &diagnostics);
   void reset_checked_program();
 
   CompilerConfiguration configuration_;
-  PackageIdentity root_identity_;
   std::filesystem::path source_path_;
   std::filesystem::path build_directory_;
   std::filesystem::path output_path_;
   std::filesystem::path built_output_path_;
   std::vector<RootOption> root_options_;
+  std::vector<SourceOption> source_options_;
   std::size_t selected_root_ = 0;
 
   SourceManager last_good_sources_;

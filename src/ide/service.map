@@ -8,6 +8,9 @@ DRAFT_COMPILER_SERVICE_0 {
     draft_compiler_session_copy_diagnostics;
     draft_compiler_session_copy_tooling_section;
     draft_compiler_session_copy_source_path;
+    draft_compiler_session_source_count;
+    draft_compiler_session_copy_source_name;
+    draft_compiler_session_copy_source_path_at;
     draft_compiler_session_copy_artifact_path;
     draft_compiler_session_root_count;
     draft_compiler_session_selected_root;

@@ -90,8 +90,6 @@ void append_location(std::string &output, const SourceManager &sources,
 
 CompilerSession::CompilerSession(CompilerConfiguration configuration)
     : configuration_(std::move(configuration)) {
-  root_identity_.root_identity = "workspace";
-  root_identity_.root_relative_path = configuration_.root_relative_path;
   source_path_ = configuration_.root_package_directory /
                  configuration_.source_relative_name;
 }
@@ -145,14 +143,28 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
       return false;
 
     std::string source_name;
+    std::vector<SourceOption> source_options;
     for (const LoadedPackageFile &file : loaded.package.files) {
       if (file.kind != PackageFileKind::DraftSource)
         continue;
+      std::string display_name;
+      if (selection.identity.root_relative_path == ".") {
+        display_name = file.relative_name;
+      } else {
+        display_name =
+            selection.identity.root_relative_path + "/" + file.relative_name;
+      }
+      source_options.push_back({
+          std::move(display_name),
+          selection.physical_directory / file.relative_name,
+          selection.identity,
+          file.relative_name,
+      });
       if (selection.identity.root_relative_path ==
               configuration_.root_relative_path &&
           file.relative_name == configuration_.source_relative_name) {
         source_name = file.relative_name;
-        break;
+        continue;
       }
       if (source_name.empty())
         source_name = file.relative_name;
@@ -172,6 +184,7 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
         selection.identity.root_relative_path,
         selection.physical_directory,
         std::move(source_name),
+        std::move(source_options),
     });
   }
 
@@ -183,6 +196,7 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
 bool CompilerSession::initialize(DiagnosticSink &diagnostics) {
   if (!refresh_root_options(diagnostics))
     return false;
+  select_root_sources(root_options_[selected_root_]);
   return create_build_directory(diagnostics);
 }
 
@@ -242,6 +256,48 @@ void CompilerSession::reset_checked_program() {
   built_output_path_.clear();
 }
 
+void CompilerSession::select_root_sources(const RootOption &root) {
+  source_options_ = root.sources;
+}
+
+void CompilerSession::rebuild_source_options() {
+  if (!last_good_.has_value())
+    return;
+  std::vector<SourceOption> sources;
+  for (const WorkspacePackage &package : last_good_->graph.packages) {
+    // Core and pinned dependency files are inspectable compiler inputs but are
+    // not editable members of this workspace. The Files window exposes only
+    // source paths whose semantic root is the user's open workspace.
+    if (package.identity.root_identity != "workspace")
+      continue;
+    for (const LoadedPackageFile &file : package.loaded.files) {
+      if (file.kind != PackageFileKind::DraftSource)
+        continue;
+      std::string display_name;
+      if (package.identity.root_relative_path == ".") {
+        display_name = file.relative_name;
+      } else {
+        display_name =
+            package.identity.root_relative_path + "/" + file.relative_name;
+      }
+      sources.push_back({
+          std::move(display_name),
+          std::filesystem::path(package.loaded.physical_directory) /
+              file.relative_name,
+          package.identity,
+          file.relative_name,
+      });
+    }
+  }
+  std::sort(sources.begin(), sources.end(),
+            [](const SourceOption &left, const SourceOption &right) {
+              return left.display_name < right.display_name;
+            });
+  source_options_ = std::move(sources);
+  if (selected_root_ < root_options_.size())
+    root_options_[selected_root_].sources = source_options_;
+}
+
 std::size_t CompilerSession::root_count() const { return root_options_.size(); }
 
 std::size_t CompilerSession::selected_root() const { return selected_root_; }
@@ -263,11 +319,10 @@ bool CompilerSession::select_root(std::size_t index,
   configuration_.root_relative_path = root.root_relative_path;
   configuration_.root_package_directory = root.physical_directory;
   configuration_.source_relative_name = root.source_relative_name;
-  root_identity_.root_identity = "workspace";
-  root_identity_.root_relative_path = root.root_relative_path;
   source_path_ = root.physical_directory / root.source_relative_name;
   selected_root_ = index;
   reset_checked_program();
+  select_root_sources(root);
   return true;
 }
 
@@ -287,15 +342,32 @@ bool CompilerSession::select_target(TargetProfile target,
   configuration_.root_relative_path = selected.root_relative_path;
   configuration_.root_package_directory = selected.physical_directory;
   configuration_.source_relative_name = selected.source_relative_name;
-  root_identity_.root_identity = "workspace";
-  root_identity_.root_relative_path = selected.root_relative_path;
   source_path_ = selected.physical_directory / selected.source_relative_name;
   reset_checked_program();
+  select_root_sources(selected);
   return true;
 }
 
 const TargetProfile &CompilerSession::target() const {
   return configuration_.target;
+}
+
+std::size_t CompilerSession::source_count() const {
+  return source_options_.size();
+}
+
+std::string_view CompilerSession::source_name(std::size_t index) const {
+  if (index >= source_options_.size())
+    return {};
+  return source_options_[index].display_name;
+}
+
+const std::filesystem::path &
+CompilerSession::source_path(std::size_t index) const {
+  static const std::filesystem::path empty;
+  if (index >= source_options_.size())
+    return empty;
+  return source_options_[index].physical_path;
 }
 
 CompileWorkspaceOptions CompilerSession::compile_options() const {
@@ -309,20 +381,58 @@ CompileWorkspaceOptions CompilerSession::compile_options() const {
   return options;
 }
 
-WorkspaceSourceOverride
-CompilerSession::source_override(std::string_view source) const {
-  WorkspaceSourceOverride result;
-  result.identity = root_identity_;
-  result.source.relative_name = configuration_.source_relative_name;
-  result.source.contents = std::string(source);
+std::optional<std::vector<WorkspaceSourceOverride>>
+CompilerSession::source_overrides(std::span<const SourceOverlay> overlays,
+                                  DiagnosticSink &diagnostics) const {
+  std::vector<WorkspaceSourceOverride> result;
+  result.reserve(overlays.size());
+  for (const SourceOverlay &overlay : overlays) {
+    std::error_code error;
+    const std::filesystem::path canonical =
+        std::filesystem::weakly_canonical(overlay.physical_path, error);
+    if (error) {
+      diagnostics.error(SourceRange::invalid(),
+                        "cannot identify an editor source path: " +
+                            error.message());
+      return std::nullopt;
+    }
+    const auto option =
+        std::find_if(source_options_.begin(), source_options_.end(),
+                     [&canonical](const SourceOption &source) {
+                       return source.physical_path == canonical;
+                     });
+    if (option == source_options_.end()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "editor source is not in the active checked package graph: " +
+              canonical.string());
+      return std::nullopt;
+    }
+    const bool duplicate = std::any_of(
+        result.begin(), result.end(),
+        [&option](const WorkspaceSourceOverride &existing) {
+          return existing.identity == option->identity &&
+                 existing.source.relative_name == option->relative_name;
+        });
+    if (duplicate) {
+      diagnostics.error(SourceRange::invalid(),
+                        "editor supplied the same source overlay twice");
+      return std::nullopt;
+    }
+    WorkspaceSourceOverride converted;
+    converted.identity = option->identity;
+    converted.source.relative_name = option->relative_name;
+    converted.source.contents = std::string(overlay.contents);
+    result.push_back(std::move(converted));
+  }
   return result;
 }
 
-void CompilerSession::collect_syntax_spans(std::string_view source) {
+void CompilerSession::collect_syntax_spans(const SourceOverlay &active) {
   syntax_spans_.clear();
   SourceManager sources;
-  const FileId file =
-      sources.add_source(source_path_.string(), std::string(source));
+  const FileId file = sources.add_source(active.physical_path.string(),
+                                         std::string(active.contents));
   DiagnosticSink ignored_diagnostics;
   const std::vector<ToolingToken> tokens =
       lex_source_for_tooling(sources, file, ignored_diagnostics);
@@ -521,32 +631,58 @@ void CompilerSession::publish_diagnostics(const SourceManager &sources,
       diagnostics.error_count(), std::numeric_limits<std::uint32_t>::max()));
 }
 
-bool CompilerSession::fresh_check(std::string_view source,
-                                  SourceManager &candidate_sources,
-                                  CompileWorkspaceResult &candidate,
-                                  DiagnosticSink &diagnostics) {
+bool CompilerSession::fresh_check(
+    const std::vector<WorkspaceSourceOverride> &overrides,
+    SourceManager &candidate_sources, CompileWorkspaceResult &candidate,
+    DiagnosticSink &diagnostics) {
   CompileWorkspaceOptions options = compile_options();
-  options.workspace.source_overrides.push_back(source_override(source));
+  options.workspace.source_overrides = overrides;
   candidate = compile_workspace_with_resolution(
       candidate_sources, configuration_.root_package_directory.string(),
       std::move(options), diagnostics);
   return candidate.ok && !diagnostics.has_errors();
 }
 
-CheckResult CompilerSession::check(std::string_view source) {
-  collect_syntax_spans(source);
+CheckResult CompilerSession::check(std::span<const SourceOverlay> overlays,
+                                   std::size_t active_overlay) {
+  if (overlays.empty() || active_overlay >= overlays.size()) {
+    syntax_spans_.clear();
+    SourceManager sources;
+    DiagnosticSink diagnostics;
+    diagnostics.error(SourceRange::invalid(),
+                      "compiler check requires one active source overlay");
+    publish_diagnostics(sources, diagnostics);
+    return {false, diagnostic_count_};
+  }
+
+  DiagnosticSink conversion_diagnostics;
+  const std::optional<std::vector<WorkspaceSourceOverride>> converted =
+      source_overrides(overlays, conversion_diagnostics);
+  if (!converted.has_value()) {
+    syntax_spans_.clear();
+    SourceManager sources;
+    publish_diagnostics(sources, conversion_diagnostics);
+    return {false, diagnostic_count_};
+  }
+  std::error_code active_error;
+  source_path_ = std::filesystem::weakly_canonical(
+      overlays[active_overlay].physical_path, active_error);
+  if (active_error)
+    source_path_ = overlays[active_overlay].physical_path;
+  collect_syntax_spans(overlays[active_overlay]);
 
   // The common path copies the last immutable command-local graph, installs
-  // one complete-file interface change, and resumes semantics. Diagnostics are
-  // private until this candidate is known to be the one shown to the user.
+  // every open complete-file interface change, and resumes semantics.
+  // Diagnostics are private until this candidate is known to be the one shown
+  // to the user.
   if (last_good_.has_value()) {
     SourceManager candidate_sources = last_good_sources_;
     CompileWorkspaceResult candidate = *last_good_;
     DiagnosticSink diagnostics;
     CompileWorkspaceOptions options = compile_options();
     const bool applied = apply_compiled_workspace_source_overrides(
-        candidate_sources, {source_override(source)},
-        WorkspaceSemanticChange::Interface, options, candidate, diagnostics);
+        candidate_sources, *converted, WorkspaceSemanticChange::Interface,
+        options, candidate, diagnostics);
     const bool completed =
         applied &&
         continue_compiled_workspace_semantics(
@@ -555,6 +691,7 @@ CheckResult CompilerSession::check(std::string_view source) {
     if (completed && candidate.ok && !diagnostics.has_errors()) {
       last_good_sources_ = std::move(candidate_sources);
       last_good_ = std::move(candidate);
+      rebuild_source_options();
       rebuild_tooling_index();
       publish_diagnostics(last_good_sources_, diagnostics);
       return {true, diagnostic_count_};
@@ -562,18 +699,15 @@ CheckResult CompilerSession::check(std::string_view source) {
   }
 
   // Import/package topology changes cannot mutate stable PackageIds in place.
-  // A fresh candidate with the same in-memory file override is the explicit
+  // A fresh candidate with the same in-memory file overrides is the explicit
   // slow path and is also used before the first successful program exists.
   SourceManager fresh_sources;
   CompileWorkspaceResult fresh;
   DiagnosticSink fresh_diagnostics;
-  if (fresh_check(source, fresh_sources, fresh, fresh_diagnostics)) {
-    const std::size_t root = fresh.graph.root_package.value;
-    if (root < fresh.graph.packages.size()) {
-      root_identity_ = fresh.graph.packages[root].identity;
-    }
+  if (fresh_check(*converted, fresh_sources, fresh, fresh_diagnostics)) {
     last_good_sources_ = std::move(fresh_sources);
     last_good_ = std::move(fresh);
+    rebuild_source_options();
     rebuild_tooling_index();
     publish_diagnostics(last_good_sources_, fresh_diagnostics);
     return {true, diagnostic_count_};
@@ -582,9 +716,10 @@ CheckResult CompilerSession::check(std::string_view source) {
   return {false, diagnostic_count_};
 }
 
-CheckResult CompilerSession::build(std::string_view source) {
+CheckResult CompilerSession::build(std::span<const SourceOverlay> overlays,
+                                   std::size_t active_overlay) {
   built_output_path_.clear();
-  const CheckResult checked = check(source);
+  const CheckResult checked = check(overlays, active_overlay);
   if (!checked.ok)
     return checked;
   return build_checked();
