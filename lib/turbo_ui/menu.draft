@@ -5,13 +5,19 @@
 // never clipped by, or hidden behind, the window which opened it.
 package turbo_ui
 
-// Menu_State belongs to the application. The first two fields persist between
-// frames. The remaining fields describe only the current menu-bar traversal;
-// menu_bar resets them before the first title and menu_bar_end completes any
-// left/right wrap requested by the open menu.
+// Menu_State belongs to the application. The first four fields persist between
+// frames. has_highlight distinguishes a real selected row from a pointer which
+// has left every menu item; row zero is therefore not overloaded as a sentinel.
+// mouse_tracking spans press-title/drag/release and press-item/drag/release
+// gestures, allowing a release over a different enabled row to choose that row
+// exactly like a classic desktop menu. The remaining fields describe only the
+// current menu-bar traversal; menu_bar resets them before the first title and
+// menu_bar_end completes any left/right wrap requested by the open menu.
 pub Menu_State :: struct {
     open_title: Widget_Id,
     highlighted: usize,
+    has_highlight: bool,
+    mouse_tracking: bool,
 
     first_title: Widget_Id,
     first_popup: Widget_Id,
@@ -45,6 +51,11 @@ pub Menu_Context :: struct {
     home: bool,
     end: bool,
     original_highlight: usize,
+    original_has_highlight: bool,
+    pointer_event: bool,
+    hovered_enabled: bool,
+    tracking_release: bool,
+    mouse_activated: bool,
 }
 
 ascii_lower :: proc(byte: u8) -> u8 {
@@ -63,6 +74,7 @@ open_menu_title :: proc(
     if popup_open(state, popup_id, popup_bounds) {
         menu^.open_title = title_id
         menu^.highlighted = 0
+        menu^.has_highlight = true
     }
 }
 
@@ -76,6 +88,8 @@ pub menu_bar :: proc(
     assert(state^.frame_open, "turbo_ui menu bar outside a frame")
     if menu^.open_title != No_Widget && state^.popup_id == No_Widget {
         menu^.open_title = No_Widget
+        menu^.has_highlight = false
+        menu^.mouse_tracking = false
     }
     menu^.first_title = No_Widget
     menu^.first_popup = No_Widget
@@ -128,12 +142,32 @@ pub menu_title :: proc(
             if open {
                 popup_close(state)
                 menu^.open_title = No_Widget
+                menu^.has_highlight = false
+                menu^.mouse_tracking = false
             } else {
                 open_menu_title(state, menu, id, popup_id, popup_bounds)
+                // A press which opened the title may either become an ordinary
+                // click when released on the title or continue directly into
+                // the drop-down. Do not preselect row zero while that physical
+                // gesture is still choosing a row.
+                menu^.has_highlight = false
+                menu^.mouse_tracking = true
             }
             state^.event_handled = true
         } else if mouse.action == .move && menu^.open_title != No_Widget && !open {
             open_menu_title(state, menu, id, popup_id, popup_bounds)
+            if menu^.mouse_tracking {
+                menu^.has_highlight = false
+            }
+            state^.event_handled = true
+        } else if mouse.action == .release && mouse.button == .primary &&
+            open && menu^.mouse_tracking {
+            // Releasing on the title completes a normal click-to-open. The
+            // menu remains open for a later item click; releasing anywhere
+            // else is resolved by the drop-down pass below.
+            menu^.mouse_tracking = false
+            menu^.highlighted = 0
+            menu^.has_highlight = true
             state^.event_handled = true
         }
     }
@@ -145,6 +179,8 @@ pub menu_title :: proc(
             if open {
                 popup_close(state)
                 menu^.open_title = No_Widget
+                menu^.has_highlight = false
+                menu^.mouse_tracking = false
             } else {
                 open_menu_title(state, menu, id, popup_id, popup_bounds)
             }
@@ -223,6 +259,7 @@ pub begin_menu :: proc(
     result.last_enabled = ~cast[usize](0)
     result.previous_enabled = ~cast[usize](0)
     result.original_highlight = menu^.highlighted
+    result.original_has_highlight = menu^.has_highlight
     if menu^.open_title != title_id || state^.popup_id != popup_id {
         return result
     }
@@ -234,6 +271,13 @@ pub begin_menu :: proc(
         return result
     }
     result.visible = true
+    if state^.event.kind == .mouse && !state^.event_handled {
+        mouse := state^.event.mouse
+        result.pointer_event = mouse.action == .move ||
+            mouse.action == .release
+        result.tracking_release = mouse.action == .release &&
+            mouse.button == .primary && menu^.mouse_tracking
+    }
     if !state^.event_handled && state^.event.kind == .key {
         key := state^.event.key
         if key.code == .down {
@@ -289,7 +333,7 @@ menu_row :: proc(
             menu^.highlighted = index
             menu_context^.moved = true
         }
-        if menu^.highlighted == index {
+        if menu^.has_highlight && menu^.highlighted == index {
             menu_context^.found_highlight = true
             if menu_context^.move == -1 && !menu_context^.moved &&
                 menu_context^.previous_enabled != ~cast[usize](0) {
@@ -303,21 +347,22 @@ menu_row :: proc(
     hovered := mouse_reaches_current_scope(state, row_bounds)
     if hovered && enabled {
         menu^.highlighted = index
+        menu^.has_highlight = true
+        menu_context^.hovered_enabled = true
         state^.hot_id = id
     }
-    selected := enabled && menu^.highlighted == index
+    selected := enabled && menu^.has_highlight && menu^.highlighted == index
     activated := false
     if enabled && !state^.event_handled && state^.event.kind == .mouse {
         mouse := state^.event.mouse
         if hovered && mouse.action == .press && mouse.button == .primary {
-            state^.active_id = id
-            state^.active_kind = .widget
+            menu^.mouse_tracking = true
             state^.event_handled = true
         } else if mouse.action == .release && mouse.button == .primary &&
-            state^.active_id == id && state^.active_kind == .widget {
+            menu^.mouse_tracking && hovered {
             activated = hovered
-            state^.active_id = No_Widget
-            state^.active_kind = .none
+            menu^.mouse_tracking = false
+            menu_context^.mouse_activated = true
             state^.event_handled = true
         }
     }
@@ -399,6 +444,8 @@ pub menu_action :: proc(
     }
     popup_close(state)
     menu^.open_title = No_Widget
+    menu^.has_highlight = false
+    menu^.mouse_tracking = false
     return true
 }
 
@@ -426,6 +473,8 @@ pub menu_check :: proc(
     value^ = !value^
     popup_close(state)
     menu^.open_title = No_Widget
+    menu^.has_highlight = false
+    menu^.mouse_tracking = false
     return true
 }
 
@@ -455,6 +504,8 @@ pub menu_radio :: proc(
     value^ = choice
     popup_close(state)
     menu^.open_title = No_Widget
+    menu^.has_highlight = false
+    menu^.mouse_tracking = false
     return changed
 }
 
@@ -497,11 +548,29 @@ pub end_menu :: proc(
             menu^.highlighted = menu_context.first_enabled
         } else if menu_context.move == -1 && !menu_context.moved {
             menu^.highlighted = menu_context.last_enabled
-        } else if !menu_context.found_highlight {
+        } else if !menu_context.found_highlight &&
+            !menu_context.pointer_event && !menu^.mouse_tracking {
             menu^.highlighted = menu_context.first_enabled
+            menu^.has_highlight = true
         }
     }
-    if menu^.highlighted != menu_context.original_highlight {
+    // Pointer movement outside every enabled row deliberately removes the
+    // highlight. A tracked release there cancels the complete gesture and
+    // closes the menu; release on the title was consumed in menu_title and
+    // therefore never reaches this branch.
+    if menu_context.pointer_event && !menu_context.hovered_enabled &&
+        !state^.event_handled {
+        menu^.has_highlight = false
+    }
+    if menu_context.tracking_release && !menu_context.mouse_activated &&
+        !state^.event_handled {
+        menu^.mouse_tracking = false
+        popup_close(state)
+        menu^.open_title = No_Widget
+        state^.event_handled = true
+    }
+    if menu^.highlighted != menu_context.original_highlight ||
+        menu^.has_highlight != menu_context.original_has_highlight {
         state^.repaint_requested = true
     }
     end_popup(state, menu_context.popup)

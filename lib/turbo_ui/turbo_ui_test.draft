@@ -429,7 +429,10 @@ submit_test_menu :: proc(
 }
 
 // test_menu_popup_navigation proves title access, separator/disabled skipping,
-// checked actions, and popup dismissal without any retained item collection.
+// checked actions, popup dismissal, and both classic mouse gestures: click a
+// title then click an item, or press the title and drag directly to an item.
+// Leaving and re-entering the popup must follow the pointer rather than revive
+// an unrelated retained row.
 test_menu_popup_navigation :: proc(test: ^testing.Test) {
     surface: tui.Surface
     tui.surface_init(&surface, 40, 14)
@@ -473,6 +476,73 @@ test_menu_popup_navigation :: proc(test: ^testing.Test) {
     }), theme)
     submit_test_menu(&state, &menu, &checked)
     end_frame(&state)
+    testing.expect(test, state.popup_id == No_Widget)
+
+    // A normal click releases on the title and leaves the menu open. Moving
+    // outside removes its row highlight; moving back selects the exact row
+    // under the pointer rather than row zero or the previous keyboard row.
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 0},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, menu.mouse_tracking && !menu.has_highlight)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 0},
+        action = .release,
+        button = .primary,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, popup_is_open(&state, 51))
+    testing.expect(test, !menu.mouse_tracking && menu.has_highlight)
+
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 30, row = 10},
+        action = .move,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, !menu.has_highlight)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 3, row = 5},
+        action = .move,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, menu.has_highlight && menu.highlighted == 3)
+
+    // One continuous press/drag/release activates the row where the gesture
+    // ends. No row-specific active ID is required because the menu owns the
+    // complete transient pointer session.
+    popup_close(&state)
+    menu.open_title = No_Widget
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 0},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 3, row = 5},
+        action = .move,
+        primary_down = true,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 3, row = 5},
+        action = .release,
+        button = .primary,
+    }), theme)
+    changed = submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, changed && !checked)
     testing.expect(test, state.popup_id == No_Widget)
 }
 
