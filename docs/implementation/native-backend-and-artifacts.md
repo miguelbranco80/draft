@@ -40,6 +40,12 @@ then creates code using `LLVMCodeGenLevelDefault`. AddressSanitizer, when
 selected by validation, runs after optimization so it instruments the memory
 operations which survive into code generation.
 
+The adapter verifies the complete input module once before either pipeline.
+Normal O2 builds do not enable LLVM's `VerifyEach` diagnostic mode, which would
+repeat whole-module verification after every pass. A malformed compiler output
+therefore still fails at the backend boundary, while valid production builds do
+not pay a verifier cost proportional to LLVM's pass count.
+
 Each native worker owns the module, target machine, pass options, and output
 buffer for the complete operation. Different packages therefore remain safe to
 optimize concurrently while procedures inside one package are visible to the

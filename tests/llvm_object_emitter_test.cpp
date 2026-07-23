@@ -145,9 +145,12 @@ void test_o0_and_o2_pipelines(TestState &state) {
   }
 }
 
-// Parse and profile failures must remain explicit result values. Invalid input
-// is treated as a compiler/backend boundary error and never reaches an LLVM
-// assertion or host process.
+// Parse, verification, and profile failures must remain explicit result
+// values. Invalid input is treated as a compiler/backend boundary error and
+// never reaches an LLVM assertion or host process. The dominance violation is
+// intentionally valid LLVM syntax: it proves the adapter still verifies the
+// complete input module once even though normal O2 no longer enables LLVM's
+// much more expensive per-pass VerifyEach diagnostic mode.
 void test_invalid_ir_and_target_mismatch(TestState &state) {
   const draft::TargetProfile macos = draft::make_aarch64_macos_profile();
   const draft::LlvmObjectEmissionResult invalid =
@@ -156,6 +159,29 @@ void test_invalid_ir_and_target_mismatch(TestState &state) {
   EXPECT(state, !invalid.ok);
   EXPECT(state, invalid.failure.find("IR parsing") != std::string::npos);
   EXPECT(state, invalid.failure.find("broken") != std::string::npos);
+
+  const std::string dominance_violation =
+      "target triple = \"" + macos.llvm_triple + "\"\n"
+      "target datalayout = \"" + macos.llvm_data_layout + "\"\n"
+      "define i32 @draft_invalid_dominance(i1 %condition) {\n"
+      "entry:\n"
+      "  br i1 %condition, label %defines, label %skips\n"
+      "defines:\n"
+      "  %value = add i32 1, 2\n"
+      "  br label %join\n"
+      "skips:\n"
+      "  br label %join\n"
+      "join:\n"
+      "  ret i32 %value\n"
+      "}\n";
+  draft::LlvmObjectEmissionOptions o2;
+  o2.optimization = draft::NativeOptimizationLevel::O2;
+  const draft::LlvmObjectEmissionResult unverified =
+      draft::emit_llvm_object_in_process(
+          macos, "unverified", dominance_violation, o2);
+  EXPECT(state, !unverified.ok);
+  EXPECT(state, unverified.failure.find("IR verification") != std::string::npos);
+  EXPECT(state, unverified.failure.find("unverified") != std::string::npos);
 
   const draft::TargetProfile linux = draft::make_aarch64_linux_profile();
   const draft::LlvmObjectEmissionResult mismatch =

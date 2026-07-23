@@ -325,8 +325,11 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
   // O2 is one stable compiler-owned pipeline over the complete semantic-package
   // module. Run it before instrumentation so sanitizer checks describe the
   // optimized memory operations which will actually reach code generation.
-  // O0 intentionally creates no pass manager and leaves the verified module
-  // byte-for-byte in its lowered form.
+  // The complete input module was verified once above. Ordinary compilation
+  // does not ask LLVM to repeat that whole-module check after every pass: that
+  // diagnostic mode changes an O2 pipeline from useful validation into work
+  // proportional to the number of passes. O0 intentionally creates no pass
+  // manager and leaves the verified module byte-for-byte in its lowered form.
   if (options.optimization == NativeOptimizationLevel::O2 ||
       options.instrumentation == LlvmNativeInstrumentation::AddressSanitizer) {
     PassOptionsOwner pass_options;
@@ -334,8 +337,6 @@ LlvmObjectEmissionResult emit_llvm_object_in_process(
     if (pass_options.value == nullptr) {
       return emission_failure(module_name, "pass option creation", {});
     }
-    LLVMPassBuilderOptionsSetVerifyEach(pass_options.value, 1);
-
     if (options.optimization == NativeOptimizationLevel::O2) {
       const std::string optimization_failure = take_llvm_error(LLVMRunPasses(
           module.value,
