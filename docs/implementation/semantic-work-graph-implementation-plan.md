@@ -338,10 +338,9 @@ gate.
 
 10. **Native product consumption — complete.** Preserve procedure-owned MIR while
     emitting one LLVM module per semantic package, keep package assembly
-    explicit, and publish linker inputs through deterministic artifact barriers.
-    Start conservatively by emitting every concrete procedure; any later
-    demand-only emission must use the roots defined by the semantic work graph
-    document.
+    explicit, emit only the artifact-reachable concrete procedure/global
+    projection, and publish linker inputs through deterministic artifact
+    barriers.
 
     Every concrete `MirProcedure` remains a live product with an immutable
     side-table payload. One `PackageLlvmModule` per package depends on the exact
@@ -349,7 +348,12 @@ gate.
     classifications, and denials. Its worker borrows those payloads and emits
     globals, relocatable constants, runtime/entry support when owned, and all
     concrete definitions in one module. One `ArtifactLayout` row per package
-    then publishes that module followed by selected assembly in canonical order.
+    then publishes that module followed by selected assembly in canonical
+    order. MIR, module construction, and layout share one closed dependency
+    executor: a module waits only for its package's MIR slots, and a layout
+    waits only for that module. The coordinator publishes the already-joined
+    results through ordinary semantic ready waves, deleting the former three
+    workspace-wide executor barriers.
     Native object planning consumes only those layouts and runs every package
     module or assembly source as one independent task. Tests prove exact product
     dependencies, one-/four-worker IR identity, cross-package ready sets,

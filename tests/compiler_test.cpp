@@ -652,21 +652,11 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
   EXPECT(state,
          parallel_report.find("package assembly worker slots: 1") !=
              std::string::npos);
-  EXPECT(state, sequential_report.find("MIR worker slots: 1") !=
-                    std::string::npos);
-  EXPECT(state, parallel_report.find("MIR worker slots: 4") !=
-                    std::string::npos);
   EXPECT(state,
-         sequential_report.find("package LLVM worker slots: 1") !=
+         sequential_report.find("native lowering worker slots: 1") !=
              std::string::npos);
   EXPECT(state,
-         parallel_report.find("package LLVM worker slots: 1") !=
-             std::string::npos);
-  EXPECT(state,
-         sequential_report.find("artifact-layout worker slots: 1") !=
-             std::string::npos);
-  EXPECT(state,
-         parallel_report.find("artifact-layout worker slots: 1") !=
+         parallel_report.find("native lowering worker slots: 4") !=
              std::string::npos);
 }
 
@@ -846,20 +836,16 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
                     std::string::npos);
   EXPECT(state, report.find("package assembly worker slots: 2") !=
                     std::string::npos);
-  EXPECT(state, report.find("MIR ready waves: 1") != std::string::npos);
   EXPECT(state, report.find("MIR procedure tasks: 2") != std::string::npos);
-  EXPECT(state, report.find("MIR worker slots: 2") != std::string::npos);
-  EXPECT(state, report.find("package LLVM ready waves: 1") !=
-                    std::string::npos);
   EXPECT(state, report.find("package LLVM module tasks: 2") !=
-                    std::string::npos);
-  EXPECT(state, report.find("package LLVM worker slots: 2") !=
-                    std::string::npos);
-  EXPECT(state, report.find("artifact-layout ready waves: 1") !=
                     std::string::npos);
   EXPECT(state, report.find("artifact-layout tasks: 2") !=
                     std::string::npos);
-  EXPECT(state, report.find("artifact-layout worker slots: 2") !=
+  EXPECT(state, report.find("native lowering tasks: 6") !=
+                    std::string::npos);
+  EXPECT(state, report.find("native lowering ready waves: 3") !=
+                    std::string::npos);
+  EXPECT(state, report.find("native lowering worker slots: 4") !=
                     std::string::npos);
 }
 
@@ -3023,6 +3009,84 @@ void test_multi_package_native_pipeline(TestState &state) {
   }
 }
 
+// A package with no artifact-live procedures has no MIR prerequisites for its
+// module. The unified native executor must therefore start that module in the
+// same initial ready set as another package's MIR instead of preserving the old
+// workspace-wide MIR-to-module barrier. The timing counters describe the
+// actual closed execution graph; output assertions prove the early task still
+// publishes an ordinary deterministic package module and layout.
+void test_native_pipeline_overlaps_empty_module_with_other_mir(
+    TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-native-pipeline-overlap-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  std::filesystem::create_directories(root / "lib" / "idle", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream idle(root / "lib" / "idle" / "package.draft",
+                     std::ios::binary);
+  idle << "package idle\n"
+          "pub Enabled :: true\n"
+          "pub never_called :: proc() -> i64 {\n"
+          "    return 99\n"
+          "}\n";
+  idle.close();
+  std::ofstream app(root / "app" / "package.draft", std::ios::binary);
+  app << "package app\n"
+         "import lib/idle as idle\n"
+         "when idle.Enabled {\n"
+         "    Result :: i64\n"
+         "} else {\n"
+         "    Result :: Missing\n"
+         "}\n"
+         "main :: proc() {\n"
+         "    value: Result = 1\n"
+         "    assert(value == 1)\n"
+         "}\n";
+  app.close();
+  EXPECT(state, idle.good() && app.good());
+
+  draft::TimingRecorder timings(draft::TimingOutput::Summary);
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  options.semantic_worker_count = 4;
+  options.timings = &timings;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources, (root / "app").string(), std::move(options), diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, result.packages.size() == 2);
+  if (result.packages.size() == 2 && result.packages[1].has_value()) {
+    EXPECT(state,
+           result.semantic_products.packages[1]
+               .native_live_body_work_indices.empty());
+    EXPECT(state, result.packages[1]->llvm_module.ok);
+    EXPECT(state, result.packages[1]->artifact_layout.ok);
+  }
+  const std::string report = timings.render();
+  EXPECT(state, report.find("MIR procedure tasks: 1") != std::string::npos);
+  EXPECT(state,
+         report.find("native lowering initial ready tasks: 2") !=
+             std::string::npos);
+  EXPECT(state,
+         report.find("package LLVM modules initially ready: 1") !=
+             std::string::npos);
+  EXPECT(state,
+         report.find("native lowering worker slots: 4") !=
+             std::string::npos);
+}
+
 // Proves the semantic/native split at the complete compiler boundary. Every
 // authored body must remain checked and own a direct-reference product, but the
 // artifact projection contains only main's transitive callback/global closure
@@ -4691,6 +4755,7 @@ int main() {
   test_body_work_graph_promotes_matching_local_instance(state);
   test_target_lowering_continues_checked_graph(state);
   test_multi_package_native_pipeline(state);
+  test_native_pipeline_overlaps_empty_module_with_other_mir(state);
   test_native_emission_uses_artifact_reachability(state);
   test_hosted_entry_contract(state);
   test_file_local_imports_share_one_llvm_declaration(state);

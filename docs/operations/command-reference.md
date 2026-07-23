@@ -64,6 +64,12 @@ waves`, `ABI classifications`, and `ABI classification worker slots`. These are
 the number of newly classified semantic type rows, the bounded workers actually
 used, and the single workspace-wide wave which owns them; later C and LLVM
 consumers do not repeat this work.
+Target lowering reports `native lowering tasks`, exact dependency edges, the
+initial ready-set size, worker slots, and semantic publication waves. MIR,
+package-module, and artifact-layout task counts are separate. A package module
+with no live MIR prerequisites appears in `package LLVM modules initially
+ready`; it can execute alongside another package's MIR rather than waiting at a
+workspace-wide phase barrier.
 Selection changes which reuse already completed products perform no body work
 and need no special “reuse” counter. All rows remain command-local; none is
 evidence of a persistent compiler cache.

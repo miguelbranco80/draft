@@ -127,11 +127,14 @@ authored body is checked, but each concrete runtime procedure first publishes a
 direct native-reference summary. One workspace reachability product closes
 from entry/export/validation roots through calls, procedure values, and globals.
 Only its live rows receive independently owned MIR products. Once the complete
-projection is ready, one `PackageLlvmModule` borrows those payloads in canonical
-order and emits only live package globals and concrete definitions. Each package
-then publishes a deterministic `ArtifactLayout` over that module and its
-assembly. The object planner consumes only that layout; no per-function LLVM
-units or parallel package-module representation remain in compiler state.
+projection is ready, one `PackageLlvmModule` per package borrows its MIR task
+payloads in canonical order and emits only live package globals and concrete
+definitions. MIR, package modules, and layouts share one exact closed executor,
+so a package module waits only for its own MIR rather than a workspace barrier.
+Each package publishes a deterministic `ArtifactLayout` over that module and
+its assembly. The object planner consumes only that layout; no package-wide MIR
+container or alternative per-function LLVM representation remains in compiler
+state.
 
 ## Native host and instrumentation limits
 

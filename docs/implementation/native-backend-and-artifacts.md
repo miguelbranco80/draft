@@ -153,11 +153,13 @@ checking.
 
 Status: bounded parallel emission and ordered publication implemented.
 
-Once semantic closure, direct native-reference closure, and live MIR lowering
-have completed, each package owns one `PackageLlvmModule` product and an
-explicit `ArtifactLayout` product. Its canonical order is the complete live
-package module followed by selected package assembly. The backend freezes one
-task for every row in those package layouts.
+After artifact reachability, target lowering constructs live MIR,
+`PackageLlvmModule`, and `ArtifactLayout` products in one exact dependency
+executor. A module may start as soon as its own MIR inputs finish; its layout
+does not wait for unrelated packages. The layout's canonical order is the
+complete live package module followed by selected package assembly. Once those
+semantic products publish, the object backend freezes one task for every row in
+the package layouts.
 The native graph is intentionally edgeless: each package module defines its own
 storage and procedures, declares dependency imports, and can be emitted without
 another package module. Final linking combines package and assembly objects.

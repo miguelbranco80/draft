@@ -280,14 +280,21 @@ granular semantic checking and MIR lowering.
 
 Compiler orchestration publishes one `PackageLlvmModule` after all of that
 package's `MirProcedure` products complete. One `ArtifactLayout` product per
-package then publishes the canonical module/assembly input sequence. After
-every selected package reaches target lowering, those layout rows form one
-closed native ready set. Each worker owns an isolated LLVM context or private
-assembler paths and writes one result slot. The main thread joins the set,
-selects diagnostics by lowest stable task ID, and only then publishes files and
-linker inputs in task-ID order. Parallel scheduling changes elapsed time, never
-artifacts or diagnostics. Direct subsystem tests call the same complete-package
-emitter as compiler orchestration.
+package then publishes the canonical module/assembly input sequence. MIR,
+package-module construction, and layout no longer run as three workspace-wide
+batches. One closed native execution graph mirrors the exact semantic edges: a
+module starts when its own package's MIR slots finish, and its layout may finish
+while unrelated package MIR is still running. Workers write only fixed private
+slots. After the executor joins, the coordinator replays ordinary semantic
+ready waves and moves payloads into canonical rows in product order.
+
+Published layouts then form the independent object-emission ready set. Each
+object worker owns an isolated LLVM context or private assembler paths. The
+main thread joins that set, selects diagnostics by lowest stable task ID, and
+only then publishes files and linker inputs in task-ID order. Parallel
+scheduling changes elapsed time, never artifacts or diagnostics. Direct
+subsystem tests call the same complete-package emitter as compiler
+orchestration.
 
 ### Internal representations
 

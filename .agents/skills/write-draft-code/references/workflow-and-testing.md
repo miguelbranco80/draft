@@ -275,7 +275,10 @@ build/draftc build path/to/workspace --root package -o /tmp/program --timings=al
 import-graph resolution, declaration ready-wave execution/publication,
 procedure-flow and effect-closure stages, per-package LLVM
 parse/verify/optimize/code-generation stages, and exclusive `self` time. Native
-and validation commands also distinguish child-process CPU from wall time.
+lowering counters expose its exact MIR-to-package-module-to-layout task graph,
+including dependency edges, the initial ready set, worker slots, and modules
+which can start without a MIR prerequisite. Native and validation commands also
+distinguish child-process CPU from wall time.
 Compare phase structure and counters before comparing small durations, which
 vary with the host and warm filesystem caches. Timing is diagnostic only and
 never changes program identity or output.

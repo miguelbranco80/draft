@@ -84,6 +84,15 @@ expression, or name lookup.
 | Package LLVM module | One complete module consumes the package's ordered artifact-live MIR products and owns only its artifact-live globals and concrete definitions. |
 | Artifact layout | The package module and assembly link inputs are published in canonical order after their products complete. |
 
+After artifact reachability closes, these last three product kinds form one
+closed execution subgraph rather than three global phase barriers. Each MIR
+task is independent; one package-module task depends only on its package's MIR
+tasks; one layout task depends only on that package module. `WorkGraph` may
+therefore start a module or layout while unrelated MIR is unfinished. The
+dynamic semantic graph remains the authority: private results are published
+after join through canonical ready waves, so scheduling cannot reorder product
+state, diagnostics, or durable payloads.
+
 Type readiness is deliberately faceted: identity, members, member types, natural
 layout, and ABI classification are distinct facts. A pointer often needs only
 identity; an inline field needs layout. This removes the need for broad generic

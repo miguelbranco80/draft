@@ -26,14 +26,16 @@
 // requested it. Final interfaces close through dependency-ready package fronts;
 // direct effects and denials from every package in one front run as shared
 // procedure-owned waves, while legal flow/effect SCCs publish with their exact
-// component edges. Package static data and assembly are explicit barriers, and
-// all concrete runtime procedures lower in one bounded workspace MIR wave and
-// own product-indexed MIR payloads. Machine functions and artifact layouts then
-// publish in separate bounded native waves. Within an unchanged source
-// generation, CompileWorkspaceProgress advances so native lowering can continue
-// checked state without reloading source. A checked generated-source transition
-// appends a successor generation and supersedes only the affected interface
-// products while retaining unrelated products.
+// component edges. Package static data and assembly are explicit barriers.
+// After artifact reachability selects runtime work, one closed dependency
+// executor lowers procedure-owned MIR, constructs each package LLVM module as
+// soon as its own MIR completes, and constructs its artifact layout. The
+// coordinator publishes those private outputs through canonical semantic waves.
+// Within an unchanged source generation, CompileWorkspaceProgress advances so
+// native lowering can continue checked state without reloading source. A
+// checked generated-source transition appends a successor generation and
+// supersedes only the affected interface products while retaining unrelated
+// products.
 //
 // No state is process-global or persisted as a compiler cache. Resolution
 // orchestration consumes generated Draft only through ordinary source
@@ -6860,190 +6862,12 @@ struct MirProcedureWaveExecution {
   return std::nullopt;
 }
 
-// Appends and executes one MirProcedure product for every artifact-live
-// concrete runtime body. All authored bodies were already checked and own
-// semantic/effect products; native reachability is the sole projection allowed
-// to omit an otherwise-valid procedure here. Tasks read immutable
-// semantic/HIR/assembly inputs and own one private MIR procedure plus
-// diagnostics. After the global wave joins, the coordinator publishes each
-// procedure directly into the side-table row addressed by its semantic
-// product; no package MIR is composed.
-[[nodiscard]] bool run_workspace_mir_products(
-    RuntimeAssertionMode runtime_assertions,
-    std::size_t worker_count,
-    TimingRecorder *timings,
-    CompileWorkspaceResult &result,
-    DiagnosticSink &diagnostics) {
-  std::vector<SemanticProductId> expected_wave;
-  for (std::size_t package_index = 0;
-       package_index < result.packages.size(); ++package_index) {
-    if (!result.packages[package_index].has_value()) continue;
-    CompiledPackage &package = *result.packages[package_index];
-    PackageSemanticProducts &products =
-        result.semantic_products.packages[package_index];
-    if (!products.mir_procedures.empty()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "MIR product slice is not empty before scheduling");
-      return false;
-    }
-    const PackageId owner{static_cast<std::uint32_t>(package_index)};
-    for (std::size_t work_index : products.native_live_body_work_indices) {
-      if (work_index >= package.bodies.procedures.size()) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "selected MIR body is outside the HIR product table");
-        return false;
-      }
-      const std::vector<HirProcedure> &procedures =
-          package.bodies.procedures[work_index].program.procedures();
-      if (procedures.size() != 1) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "one procedure body product owns multiple MIR candidates");
-        return false;
-      }
-      const HirProcedure &procedure = procedures.front();
-      const std::optional<SemanticProductId> denial =
-          denial_product_for_body(products, work_index);
-      if (!denial.has_value()) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "runtime procedure has no denial result product");
-        return false;
-      }
-      const std::array dependencies{
-          products.procedure_bodies[work_index],
-          *denial,
-          products.package_assembly};
-      const SemanticProductId product = append_workspace_semantic_product(
-          result,
-          SemanticProductKind::MirProcedure,
-          dependencies,
-          owner,
-          false,
-          diagnostics);
-      if (!product.is_valid()) return false;
-      result.semantic_products.procedure_by_product[product.value] =
-          procedure.symbol;
-      products.mir_procedures.push_back(product);
-      expected_wave.push_back(product);
-    }
-  }
-  if (expected_wave.empty()) return true;
-
-  const SemanticReadyWave wave =
-      freeze_semantic_ready_wave(result.semantic_graph);
-  if (wave.status != SemanticReadyWaveStatus::Ready ||
-      wave.products != expected_wave) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "MIR products did not form their exact workspace ready wave" +
-            (wave.failure.empty() ? std::string{} : ": " + wave.failure));
-    return false;
-  }
-  std::vector<MirProcedureTaskSlot> slots(wave.products.size());
-  std::vector<SemanticProductOutcome> outcomes(wave.products.size());
-  for (std::size_t index = 0; index < wave.products.size(); ++index) {
-    const SemanticProductId product = wave.products[index];
-    const PackageId owner =
-        result.semantic_products.package_by_product[product.value];
-    if (!owner.is_valid() || owner.value >= result.packages.size() ||
-        !result.packages[owner.value].has_value()) {
-      diagnostics.error(
-          SourceRange::invalid(), "MIR product has no retained package owner");
-      return false;
-    }
-    CompiledPackage &package = *result.packages[owner.value];
-    const PackageSemanticProducts &products =
-        result.semantic_products.packages[owner.value];
-    const auto position = std::find(
-        products.mir_procedures.begin(),
-        products.mir_procedures.end(),
-        product);
-    if (position == products.mir_procedures.end()) {
-      diagnostics.error(
-          SourceRange::invalid(), "MIR product is absent from its package index");
-      return false;
-    }
-    const std::size_t local_index = static_cast<std::size_t>(
-        position - products.mir_procedures.begin());
-    const std::size_t work_index =
-        products.native_live_body_work_indices[local_index];
-    slots[index].semantic = &package.bodies.package;
-    slots[index].body = &package.bodies.procedures[work_index];
-    slots[index].assembly = &package.assembly;
-    slots[index].runtime_assertions = runtime_assertions;
-  }
-  WorkGraph execution_graph;
-  execution_graph.tasks.resize(slots.size());
-  MirProcedureWaveExecution execution{&slots, &outcomes};
-  const WorkGraphRunResult scheduled = run_work_graph(
-      execution_graph,
-      WorkGraphRunOptions{worker_count},
-      execute_mir_procedure_task,
-      &execution);
-  if (timings != nullptr) {
-    timings->add_counter("MIR ready waves", 1);
-    timings->add_counter("MIR procedure tasks", slots.size());
-    timings->add_counter("MIR worker slots", scheduled.workers_used);
-  }
-  if (!scheduled.ok) {
-    std::string failure = "MIR worker scheduling failed";
-    for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
-      if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
-      failure += " at task " + std::to_string(index) + ": " +
-          scheduled.tasks[index].failure;
-      break;
-    }
-    diagnostics.error(SourceRange::invalid(), std::move(failure));
-    return false;
-  }
-  bool mir_ok = true;
-  for (std::size_t index = 0; index < outcomes.size(); ++index) {
-    mir_ok = mir_ok &&
-        outcomes[index].kind == SemanticProductOutcomeKind::Complete;
-    if (slots[index].result.ok && slots[index].result.lowered &&
-        result.semantic_products
-            .mir_procedure_by_product[wave.products[index].value]
-            .has_value()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "MIR product already owns a procedure payload");
-      return false;
-    }
-  }
-  std::string publication_error;
-  if (!publish_semantic_ready_wave(
-          result.semantic_graph,
-          wave,
-          outcomes,
-          diagnostics,
-          publication_error)) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "cannot publish MIR procedure wave: " + publication_error);
-    return false;
-  }
-  for (std::size_t index = 0; index < wave.products.size(); ++index) {
-    if (slots[index].result.ok && slots[index].result.lowered) {
-      result.semantic_products
-          .mir_procedure_by_product[wave.products[index].value] =
-          std::move(slots[index].result.procedure);
-    }
-  }
-  if (timings != nullptr) {
-    timings->add_counter("MIR procedures lowered", wave.products.size());
-  }
-  return mir_ok;
-}
-
 // One worker owns the complete textual LLVM module for one semantic package.
-// The procedure pointer vector borrows immutable MIR side-table payloads for
-// the duration of the joined wave. Every product has already been appended
-// before these pointers are collected, so side-table growth cannot invalidate
-// them while workers run. Results and diagnostics remain task-local until
-// product-ordered publication.
+// The procedure pointer vector borrows immutable results in the closed native
+// executor's fixed-size MIR slot array. Exact WorkGraph edges ensure those
+// results are complete before this task starts; the array remains stable until
+// every downstream task joins. Results and diagnostics remain task-local until
+// product-ordered semantic publication.
 struct PackageLlvmModuleTaskSlot {
   const SourceManager *sources = nullptr;
   const TargetProfile *target = nullptr;
@@ -7100,69 +6924,159 @@ struct PackageLlvmModuleWaveExecution {
   return true;
 }
 
-// Artifact layout is a publication barrier rather than an emitter. Its worker
-// validates the complete immutable input set and writes the canonical
-// module/assembly sequence into one private slot. Later native I/O is
-// allowed to consume only this sequence.
-struct ArtifactLayoutTaskSlot {
-  const CompiledPackage *package = nullptr;
-  const PackageSemanticProducts *products = nullptr;
+// NativePipelineTaskKind is the deliberately closed operation vocabulary for
+// post-reachability lowering. It is execution dispatch, not semantic identity:
+// every row also names its durable SemanticProductId, whose typed payload stays
+// in the phase-owned slot selected below.
+enum class NativePipelineTaskKind {
+  MirProcedure,
+  PackageLlvmModule,
+  ArtifactLayout,
+};
+
+// One row maps a compact WorkTaskId to a native operation slot and its durable
+// semantic product. Rows are appended in SemanticProductId order and never move
+// while workers run. slot indexes only the vector selected by kind.
+struct NativePipelineTask {
+  NativePipelineTaskKind kind = NativePipelineTaskKind::MirProcedure;
+  std::size_t slot = 0;
+  SemanticProductId product;
+};
+
+// ArtifactLayout needs only the module result produced by its exact preceding
+// task and the stable package assembly count. It deliberately does not read the
+// canonical CompiledPackage: module publication happens later, in semantic
+// product order, after the complete closed executor joins.
+struct NativePipelineLayoutTaskSlot {
+  const LlvmIrResult *module = nullptr;
+  std::size_t assembly_source_count = 0;
+  SemanticProductId module_product;
+  SemanticProductId assembly_product;
   PackageArtifactLayout layout;
 };
 
-struct ArtifactLayoutWaveExecution {
-  std::vector<ArtifactLayoutTaskSlot> *slots = nullptr;
-  std::vector<SemanticProductOutcome> *outcomes = nullptr;
+// NativePipelineExecution borrows every fixed-size slot/output vector for one
+// synchronous WorkGraph run. A worker may mutate only the slot selected by its
+// task row. Predecessor output reads are protected by WorkGraph dependencies;
+// no worker touches canonical CompiledPackage or SemanticProductGraph state.
+struct NativePipelineExecution {
+  const std::vector<NativePipelineTask> *tasks = nullptr;
+  MirProcedureWaveExecution mir;
+  PackageLlvmModuleWaveExecution modules;
+  std::vector<NativePipelineLayoutTaskSlot> *layouts = nullptr;
+  std::vector<SemanticProductOutcome> *layout_outcomes = nullptr;
 };
 
-[[nodiscard]] bool execute_artifact_layout_task(
-    void *opaque_context,
-    WorkTaskId task,
-    std::string &failure) {
-  auto &context =
-      *static_cast<ArtifactLayoutWaveExecution *>(opaque_context);
-  const std::size_t index = static_cast<std::size_t>(task);
-  if (context.slots == nullptr || context.outcomes == nullptr ||
-      index >= context.slots->size() || index >= context.outcomes->size()) {
-    failure = "artifact-layout worker received an invalid task slot";
-    return false;
+[[nodiscard]] SemanticProductOutcome *native_pipeline_outcome(
+    NativePipelineExecution &execution,
+    const NativePipelineTask &task) {
+  switch (task.kind) {
+  case NativePipelineTaskKind::MirProcedure:
+    if (execution.mir.outcomes == nullptr ||
+        task.slot >= execution.mir.outcomes->size()) {
+      return nullptr;
+    }
+    return &(*execution.mir.outcomes)[task.slot];
+  case NativePipelineTaskKind::PackageLlvmModule:
+    if (execution.modules.outcomes == nullptr ||
+        task.slot >= execution.modules.outcomes->size()) {
+      return nullptr;
+    }
+    return &(*execution.modules.outcomes)[task.slot];
+  case NativePipelineTaskKind::ArtifactLayout:
+    if (execution.layout_outcomes == nullptr ||
+        task.slot >= execution.layout_outcomes->size()) {
+      return nullptr;
+    }
+    return &(*execution.layout_outcomes)[task.slot];
   }
-  ArtifactLayoutTaskSlot &slot = (*context.slots)[index];
-  SemanticProductOutcome &outcome = (*context.outcomes)[index];
-  if (slot.package == nullptr || slot.products == nullptr ||
-      !slot.package->llvm_module.ok ||
-      !slot.products->package_llvm_module.is_valid()) {
-    failure = "artifact-layout worker received incomplete native products";
-    return false;
-  }
-
-  slot.layout.inputs.reserve(1 + slot.package->assembly_sources.size());
-  slot.layout.inputs.push_back({
-      PackageArtifactInputKind::PackageLlvmModule,
-      0,
-      slot.products->package_llvm_module});
-  for (std::size_t assembly_index = 0;
-       assembly_index < slot.package->assembly_sources.size();
-       ++assembly_index) {
-    slot.layout.inputs.push_back({
-        PackageArtifactInputKind::PackageAssembly,
-        assembly_index,
-        slot.products->package_assembly});
-  }
-  slot.layout.ok = true;
-  outcome.kind = SemanticProductOutcomeKind::Complete;
-  return true;
+  return nullptr;
 }
 
-// Publishes all backend-native semantic products in two explicit waves. First,
-// one PackageLlvmModule product per semantic package consumes its artifact-live
-// global set and ordered MIR procedure set. Second, one ArtifactLayout barrier
-// per package fixes linker input order. The module wave is workspace-wide, so
-// independent packages still emit in parallel without changing package-level
-// optimization granularity.
-[[nodiscard]] bool run_workspace_native_products(
+[[nodiscard]] bool execute_native_pipeline_task(
+    void *opaque_context,
+    WorkTaskId scheduled_task,
+    std::string &failure) {
+  auto &execution = *static_cast<NativePipelineExecution *>(opaque_context);
+  if (execution.tasks == nullptr ||
+      static_cast<std::size_t>(scheduled_task) >= execution.tasks->size()) {
+    failure = "native pipeline worker received an invalid task";
+    return false;
+  }
+  const NativePipelineTask &task =
+      (*execution.tasks)[static_cast<std::size_t>(scheduled_task)];
+  SemanticProductOutcome *outcome = native_pipeline_outcome(execution, task);
+  if (outcome == nullptr) {
+    failure = "native pipeline task has no outcome slot";
+    return false;
+  }
+
+  bool invoked = false;
+  switch (task.kind) {
+  case NativePipelineTaskKind::MirProcedure:
+    invoked = execute_mir_procedure_task(
+        &execution.mir,
+        static_cast<WorkTaskId>(task.slot),
+        failure);
+    break;
+  case NativePipelineTaskKind::PackageLlvmModule:
+    invoked = execute_package_llvm_module_task(
+        &execution.modules,
+        static_cast<WorkTaskId>(task.slot),
+        failure);
+    break;
+  case NativePipelineTaskKind::ArtifactLayout: {
+    if (execution.layouts == nullptr ||
+        task.slot >= execution.layouts->size()) {
+      failure = "native pipeline layout task has no input slot";
+      return false;
+    }
+    NativePipelineLayoutTaskSlot &slot = (*execution.layouts)[task.slot];
+    if (slot.module == nullptr || !slot.module->ok ||
+        !slot.module_product.is_valid() ||
+        !slot.assembly_product.is_valid()) {
+      failure = "native pipeline layout task has incomplete module inputs";
+      return false;
+    }
+    slot.layout.inputs.reserve(1 + slot.assembly_source_count);
+    slot.layout.inputs.push_back({
+        PackageArtifactInputKind::PackageLlvmModule,
+        0,
+        slot.module_product});
+    for (std::size_t assembly_index = 0;
+         assembly_index < slot.assembly_source_count;
+         ++assembly_index) {
+      slot.layout.inputs.push_back({
+          PackageArtifactInputKind::PackageAssembly,
+          assembly_index,
+          slot.assembly_product});
+    }
+    slot.layout.ok = true;
+    outcome->kind = SemanticProductOutcomeKind::Complete;
+    invoked = true;
+    break;
+  }
+  }
+  if (!invoked) return false;
+  if (outcome->kind == SemanticProductOutcomeKind::Complete) return true;
+  failure = outcome->failure.empty()
+      ? "native pipeline task produced an invalid semantic result"
+      : outcome->failure;
+  return false;
+}
+
+// Appends the complete artifact-live native subgraph, then executes it through
+// one dependency scheduler. A PackageLlvmModule task depends only on the MIR
+// procedures in its own semantic package, and its ArtifactLayout depends only
+// on that module. Consequently a small package may finish module construction
+// while another package is still lowering MIR. SemanticProductGraph outcomes
+// are nevertheless published through their ordinary frozen ready waves after
+// the executor joins, preserving canonical diagnostics and graph state.
+[[nodiscard]] bool run_workspace_native_pipeline_products(
     const SourceManager &sources,
     const TargetProfile &target,
+    RuntimeAssertionMode runtime_assertions,
+    bool emit_llvm,
     bool emit_program_entry,
     ValidationKind validation_kind,
     std::span<const ValidationEntry> validation_entries,
@@ -7170,131 +7084,186 @@ struct ArtifactLayoutWaveExecution {
     TimingRecorder *timings,
     CompileWorkspaceResult &result,
     DiagnosticSink &diagnostics) {
-  std::vector<SemanticProductId> expected_module_wave;
+  const std::size_t package_count = result.packages.size();
+  std::size_t mir_count = 0;
   for (std::size_t package_index = 0;
-       package_index < result.packages.size(); ++package_index) {
+       package_index < package_count; ++package_index) {
+    if (!result.packages[package_index].has_value()) continue;
+    mir_count += result.semantic_products.packages[package_index]
+                     .native_live_body_work_indices.size();
+  }
+
+  std::vector<MirProcedureTaskSlot> mir_slots(mir_count);
+  std::vector<SemanticProductOutcome> mir_outcomes(mir_count);
+  std::vector<std::vector<std::size_t>> mir_slots_by_package(package_count);
+  std::vector<std::vector<WorkTaskId>> mir_tasks_by_package(package_count);
+  std::vector<PackageLlvmModuleTaskSlot> module_slots(package_count);
+  std::vector<SemanticProductOutcome> module_outcomes(package_count);
+  std::vector<NativePipelineLayoutTaskSlot> layout_slots(package_count);
+  std::vector<SemanticProductOutcome> layout_outcomes(package_count);
+  std::vector<WorkTaskId> module_task_by_package(
+      package_count, std::numeric_limits<WorkTaskId>::max());
+  std::size_t module_count = 0;
+  std::size_t layout_count = 0;
+  std::vector<NativePipelineTask> tasks;
+  tasks.reserve(mir_count + (emit_llvm ? 2 * package_count : 0));
+  WorkGraph execution_graph;
+
+  const auto append_execution_task = [&tasks, &execution_graph](
+      NativePipelineTaskKind kind,
+      std::size_t slot,
+      SemanticProductId product,
+      std::vector<WorkTaskId> dependencies) -> WorkTaskId {
+    const WorkTaskId task = static_cast<WorkTaskId>(tasks.size());
+    tasks.push_back({kind, slot, product});
+    execution_graph.tasks.push_back({std::move(dependencies)});
+    return task;
+  };
+
+  std::size_t mir_slot_index = 0;
+  for (std::size_t package_index = 0;
+       package_index < package_count; ++package_index) {
     if (!result.packages[package_index].has_value()) continue;
     CompiledPackage &package = *result.packages[package_index];
     PackageSemanticProducts &products =
         result.semantic_products.packages[package_index];
-    if (products.package_llvm_module.is_valid() ||
-        products.artifact_layout.is_valid() || package.llvm_module.ok ||
-        package.artifact_layout.ok) {
+    if (!products.mir_procedures.empty()) {
       diagnostics.error(
           SourceRange::invalid(),
-          "native product slice is not empty before scheduling");
+          "MIR product slice is not empty before native scheduling");
       return false;
     }
-    for (SemanticProductId mir_product : products.mir_procedures) {
-      if (!mir_product.is_valid() ||
-          mir_product.value >=
-              result.semantic_products.mir_procedure_by_product.size() ||
-          !result.semantic_products
-               .mir_procedure_by_product[mir_product.value]
-               .has_value()) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "native products require one payload per MIR product");
-        return false;
-      }
-    }
-
-    std::vector<SemanticProductId> dependencies{
-        result.semantic_products.target,
-        products.package_interface,
-        products.package_assembly,
-        result.semantic_products.artifact_reachability};
-    dependencies.insert(
-        dependencies.end(),
-        products.abi_classifications.begin(),
-        products.abi_classifications.end());
-    for (std::size_t work_index : products.native_live_body_work_indices) {
-      const auto position = std::find(
-          products.checked_runtime_body_work_indices.begin(),
-          products.checked_runtime_body_work_indices.end(),
-          work_index);
-      if (position == products.checked_runtime_body_work_indices.end()) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "live native body is absent from the checked runtime projection");
-        return false;
-      }
-      const std::size_t reference_index = static_cast<std::size_t>(
-          position - products.checked_runtime_body_work_indices.begin());
-      if (reference_index >= products.native_reference_summaries.size()) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "live native body has no direct-reference product");
-        return false;
-      }
-      dependencies.push_back(
-          products.native_reference_summaries[reference_index]);
-    }
-    dependencies.insert(
-        dependencies.end(),
-        products.mir_procedures.begin(),
-        products.mir_procedures.end());
     const PackageId owner{static_cast<std::uint32_t>(package_index)};
-    products.package_llvm_module = append_workspace_semantic_product(
-        result,
-        SemanticProductKind::PackageLlvmModule,
-        dependencies,
-        owner,
-        false,
-        diagnostics);
-    if (!products.package_llvm_module.is_valid()) return false;
-    expected_module_wave.push_back(products.package_llvm_module);
+    for (std::size_t work_index : products.native_live_body_work_indices) {
+      if (work_index >= package.bodies.procedures.size()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "selected MIR body is outside the HIR product table");
+        return false;
+      }
+      const std::vector<HirProcedure> &procedures =
+          package.bodies.procedures[work_index].program.procedures();
+      if (procedures.size() != 1) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "one procedure body product owns multiple MIR candidates");
+        return false;
+      }
+      const std::optional<SemanticProductId> denial =
+          denial_product_for_body(products, work_index);
+      if (!denial.has_value()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "runtime procedure has no denial result product");
+        return false;
+      }
+      const std::array semantic_dependencies{
+          products.procedure_bodies[work_index],
+          *denial,
+          products.package_assembly};
+      const SemanticProductId product = append_workspace_semantic_product(
+          result,
+          SemanticProductKind::MirProcedure,
+          semantic_dependencies,
+          owner,
+          false,
+          diagnostics);
+      if (!product.is_valid()) return false;
+      result.semantic_products.procedure_by_product[product.value] =
+          procedures.front().symbol;
+      products.mir_procedures.push_back(product);
+
+      MirProcedureTaskSlot &slot = mir_slots[mir_slot_index];
+      slot.semantic = &package.bodies.package;
+      slot.body = &package.bodies.procedures[work_index];
+      slot.assembly = &package.assembly;
+      slot.runtime_assertions = runtime_assertions;
+      const WorkTaskId task = append_execution_task(
+          NativePipelineTaskKind::MirProcedure,
+          mir_slot_index,
+          product,
+          {});
+      mir_slots_by_package[package_index].push_back(mir_slot_index);
+      mir_tasks_by_package[package_index].push_back(task);
+      ++mir_slot_index;
+    }
   }
 
-  if (!expected_module_wave.empty()) {
-    const SemanticReadyWave wave =
-        freeze_semantic_ready_wave(result.semantic_graph);
-    if (wave.status != SemanticReadyWaveStatus::Ready ||
-        wave.products != expected_module_wave) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "package LLVM modules did not form their exact workspace ready wave" +
-              (wave.failure.empty() ? std::string{} : ": " + wave.failure));
-      return false;
-    }
-    std::vector<PackageLlvmModuleTaskSlot> slots(wave.products.size());
-    std::vector<SemanticProductOutcome> outcomes(wave.products.size());
-    for (std::size_t index = 0; index < wave.products.size(); ++index) {
-      const SemanticProductId product = wave.products[index];
-      const PackageId owner =
-          result.semantic_products.package_by_product[product.value];
-      if (!owner.is_valid() || owner.value >= result.packages.size() ||
-          !result.packages[owner.value].has_value()) {
+  if (emit_llvm) {
+    for (std::size_t package_index = 0;
+         package_index < package_count; ++package_index) {
+      if (!result.packages[package_index].has_value()) continue;
+      CompiledPackage &package = *result.packages[package_index];
+      PackageSemanticProducts &products =
+          result.semantic_products.packages[package_index];
+      if (products.package_llvm_module.is_valid() ||
+          products.artifact_layout.is_valid() || package.llvm_module.ok ||
+          package.artifact_layout.ok) {
         diagnostics.error(
             SourceRange::invalid(),
-            "package LLVM module has no retained package owner");
+            "native product slice is not empty before native scheduling");
         return false;
       }
-      CompiledPackage &package = *result.packages[owner.value];
-      const PackageSemanticProducts &products =
-          result.semantic_products.packages[owner.value];
-      if (products.package_llvm_module != product) {
-        diagnostics.error(
-            SourceRange::invalid(),
-            "package LLVM module is absent from its package index");
-        return false;
+
+      std::vector<SemanticProductId> dependencies{
+          result.semantic_products.target,
+          products.package_interface,
+          products.package_assembly,
+          result.semantic_products.artifact_reachability};
+      dependencies.insert(
+          dependencies.end(),
+          products.abi_classifications.begin(),
+          products.abi_classifications.end());
+      for (std::size_t work_index : products.native_live_body_work_indices) {
+        const auto position = std::find(
+            products.checked_runtime_body_work_indices.begin(),
+            products.checked_runtime_body_work_indices.end(),
+            work_index);
+        if (position == products.checked_runtime_body_work_indices.end()) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "live native body is absent from the checked runtime projection");
+          return false;
+        }
+        const std::size_t reference_index = static_cast<std::size_t>(
+            position - products.checked_runtime_body_work_indices.begin());
+        if (reference_index >= products.native_reference_summaries.size()) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "live native body has no direct-reference product");
+          return false;
+        }
+        dependencies.push_back(
+            products.native_reference_summaries[reference_index]);
       }
-      PackageLlvmModuleTaskSlot &slot = slots[index];
+      dependencies.insert(
+          dependencies.end(),
+          products.mir_procedures.begin(),
+          products.mir_procedures.end());
+      const PackageId owner{static_cast<std::uint32_t>(package_index)};
+      products.package_llvm_module = append_workspace_semantic_product(
+          result,
+          SemanticProductKind::PackageLlvmModule,
+          dependencies,
+          owner,
+          false,
+          diagnostics);
+      if (!products.package_llvm_module.is_valid()) return false;
+
+      PackageLlvmModuleTaskSlot &slot = module_slots[package_index];
       slot.sources = &sources;
       slot.target = &target;
       slot.semantic = &package.bodies.package;
       slot.abi = &package.c_abi;
       slot.global_initializers = &package.declarations.global_initializers;
       slot.globals = products.native_live_globals;
-      slot.procedures.reserve(products.mir_procedures.size());
-      for (SemanticProductId mir_product : products.mir_procedures) {
-        slot.procedures.push_back(
-            &*result.semantic_products
-                .mir_procedure_by_product[mir_product.value]);
+      slot.procedures.reserve(mir_slots_by_package[package_index].size());
+      for (std::size_t index : mir_slots_by_package[package_index]) {
+        slot.procedures.push_back(&mir_slots[index].result.procedure);
       }
-      slot.options.package = result.graph.packages[owner.value].identity;
+      slot.options.package = result.graph.packages[package_index].identity;
       slot.options.emit_runtime_support =
-          owner.value == result.graph.root_package.value;
+          package_index == result.graph.root_package.value;
       slot.options.emit_program_entry =
           emit_program_entry && slot.options.emit_runtime_support;
       if (slot.options.emit_runtime_support) {
@@ -7302,166 +7271,255 @@ struct ArtifactLayoutWaveExecution {
         slot.options.validation_entries.assign(
             validation_entries.begin(), validation_entries.end());
       }
+      module_task_by_package[package_index] = append_execution_task(
+          NativePipelineTaskKind::PackageLlvmModule,
+          package_index,
+          products.package_llvm_module,
+          mir_tasks_by_package[package_index]);
+      ++module_count;
     }
-    WorkGraph execution_graph;
-    execution_graph.tasks.resize(slots.size());
-    PackageLlvmModuleWaveExecution execution{&slots, &outcomes};
-    const WorkGraphRunResult scheduled = run_work_graph(
-        execution_graph,
-        WorkGraphRunOptions{worker_count},
-        execute_package_llvm_module_task,
-        &execution);
-    if (timings != nullptr) {
-      timings->add_counter("package LLVM ready waves", 1);
-      timings->add_counter("package LLVM module tasks", slots.size());
-      timings->add_counter(
-          "package LLVM worker slots", scheduled.workers_used);
+
+    for (std::size_t package_index = 0;
+         package_index < package_count; ++package_index) {
+      if (!result.packages[package_index].has_value()) continue;
+      CompiledPackage &package = *result.packages[package_index];
+      PackageSemanticProducts &products =
+          result.semantic_products.packages[package_index];
+      const std::array dependencies{
+          products.package_llvm_module,
+          products.package_assembly};
+      const PackageId owner{static_cast<std::uint32_t>(package_index)};
+      products.artifact_layout = append_workspace_semantic_product(
+          result,
+          SemanticProductKind::ArtifactLayout,
+          dependencies,
+          owner,
+          false,
+          diagnostics);
+      if (!products.artifact_layout.is_valid()) return false;
+      NativePipelineLayoutTaskSlot &slot = layout_slots[package_index];
+      slot.module = &module_slots[package_index].llvm;
+      slot.assembly_source_count = package.assembly_sources.size();
+      slot.module_product = products.package_llvm_module;
+      slot.assembly_product = products.package_assembly;
+      append_execution_task(
+          NativePipelineTaskKind::ArtifactLayout,
+          package_index,
+          products.artifact_layout,
+          {module_task_by_package[package_index]});
+      ++layout_count;
     }
-    if (!scheduled.ok) {
-      std::string failure = "package LLVM worker scheduling failed";
-      for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
-        if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
-        failure += " at task " + std::to_string(index) + ": " +
-            scheduled.tasks[index].failure;
-        break;
-      }
-      diagnostics.error(SourceRange::invalid(), std::move(failure));
+  }
+
+  if (tasks.empty()) return true;
+  std::vector<WorkTaskId> task_by_product(
+      result.semantic_graph.products.size(),
+      std::numeric_limits<WorkTaskId>::max());
+  for (std::size_t task_index = 0; task_index < tasks.size(); ++task_index) {
+    const SemanticProductId product = tasks[task_index].product;
+    if (!product.is_valid() || product.value >= task_by_product.size() ||
+        task_by_product[product.value] !=
+            std::numeric_limits<WorkTaskId>::max()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "native execution graph has an invalid product projection");
       return false;
     }
-    bool modules_ok = true;
-    for (const SemanticProductOutcome &outcome : outcomes) {
-      modules_ok = modules_ok &&
-          outcome.kind == SemanticProductOutcomeKind::Complete;
+    task_by_product[product.value] = static_cast<WorkTaskId>(task_index);
+  }
+
+  // Freeze the semantic graph before work starts. Later native tasks execute
+  // privately when their WorkGraph dependencies finish, but they cannot become
+  // visible until earlier semantic waves publish below.
+  SemanticReadyWave semantic_wave =
+      freeze_semantic_ready_wave(result.semantic_graph);
+  std::vector<SemanticProductId> expected_first_wave;
+  for (std::size_t task_index = 0;
+       task_index < execution_graph.tasks.size(); ++task_index) {
+    if (execution_graph.tasks[task_index].dependencies.empty()) {
+      expected_first_wave.push_back(tasks[task_index].product);
+    }
+  }
+  std::sort(
+      expected_first_wave.begin(),
+      expected_first_wave.end(),
+      [](SemanticProductId left, SemanticProductId right) {
+        return left.value < right.value;
+      });
+  if (semantic_wave.status != SemanticReadyWaveStatus::Ready ||
+      semantic_wave.products != expected_first_wave) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "native products did not expose their exact initial ready set" +
+            (semantic_wave.failure.empty()
+                 ? std::string{}
+                 : ": " + semantic_wave.failure));
+    return false;
+  }
+
+  NativePipelineExecution execution;
+  execution.tasks = &tasks;
+  execution.mir = {&mir_slots, &mir_outcomes};
+  execution.modules = {&module_slots, &module_outcomes};
+  execution.layouts = &layout_slots;
+  execution.layout_outcomes = &layout_outcomes;
+  const WorkGraphRunResult scheduled = run_work_graph(
+      execution_graph,
+      WorkGraphRunOptions{worker_count},
+      execute_native_pipeline_task,
+      &execution);
+
+  // A semantic error intentionally fails its closed executor task so exact
+  // downstream work is skipped. A failed task without a semantic Error outcome
+  // is instead an internal scheduler/slot failure and cannot be published as a
+  // source diagnostic.
+  for (std::size_t task_index = 0;
+       task_index < scheduled.tasks.size(); ++task_index) {
+    if (scheduled.tasks[task_index].state != WorkTaskState::Failed) continue;
+    SemanticProductOutcome *outcome =
+        native_pipeline_outcome(execution, tasks[task_index]);
+    if (outcome != nullptr &&
+        outcome->kind == SemanticProductOutcomeKind::Error) {
+      continue;
+    }
+    diagnostics.error(
+        SourceRange::invalid(),
+        "native pipeline worker scheduling failed at task " +
+            std::to_string(task_index) + ": " +
+            scheduled.tasks[task_index].failure);
+    return false;
+  }
+
+  if (timings != nullptr) {
+    std::size_t dependency_edge_count = 0;
+    std::size_t initially_ready_module_count = 0;
+    for (std::size_t task_index = 0;
+         task_index < execution_graph.tasks.size(); ++task_index) {
+      dependency_edge_count +=
+          execution_graph.tasks[task_index].dependencies.size();
+      if (execution_graph.tasks[task_index].dependencies.empty() &&
+          tasks[task_index].kind ==
+              NativePipelineTaskKind::PackageLlvmModule) {
+        ++initially_ready_module_count;
+      }
+    }
+    timings->add_counter("native lowering tasks", tasks.size());
+    timings->add_counter(
+        "native lowering worker slots", scheduled.workers_used);
+    timings->add_counter(
+        "native lowering dependency edges", dependency_edge_count);
+    timings->add_counter(
+        "native lowering initial ready tasks", expected_first_wave.size());
+    timings->add_counter(
+        "package LLVM modules initially ready", initially_ready_module_count);
+    timings->add_counter("MIR procedure tasks", mir_slots.size());
+    if (emit_llvm) {
+      timings->add_counter("package LLVM module tasks", module_count);
+      timings->add_counter("artifact-layout tasks", layout_count);
+    }
+  }
+
+  bool pipeline_ok = true;
+  std::size_t ready_wave_count = 0;
+  while (semantic_wave.status == SemanticReadyWaveStatus::Ready) {
+    ++ready_wave_count;
+    std::vector<SemanticProductOutcome> outcomes;
+    outcomes.reserve(semantic_wave.products.size());
+    std::vector<WorkTaskId> wave_tasks;
+    wave_tasks.reserve(semantic_wave.products.size());
+    for (SemanticProductId product : semantic_wave.products) {
+      if (product.value >= task_by_product.size() ||
+          task_by_product[product.value] ==
+              std::numeric_limits<WorkTaskId>::max()) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "native semantic wave contains a non-pipeline product");
+        return false;
+      }
+      const WorkTaskId task_id = task_by_product[product.value];
+      const WorkTaskState state = scheduled.tasks[task_id].state;
+      SemanticProductOutcome *outcome =
+          native_pipeline_outcome(execution, tasks[task_id]);
+      if (outcome == nullptr ||
+          (state != WorkTaskState::Succeeded &&
+           state != WorkTaskState::Failed)) {
+        diagnostics.error(
+            SourceRange::invalid(),
+            "native semantic wave has no completed executor result");
+        return false;
+      }
+      if (state == WorkTaskState::Failed) pipeline_ok = false;
+      outcomes.push_back(std::move(*outcome));
+      wave_tasks.push_back(task_id);
     }
     std::string publication_error;
     if (!publish_semantic_ready_wave(
             result.semantic_graph,
-            wave,
+            semantic_wave,
             outcomes,
             diagnostics,
             publication_error)) {
       diagnostics.error(
           SourceRange::invalid(),
-          "cannot publish package LLVM module wave: " + publication_error);
+          "cannot publish native pipeline wave: " + publication_error);
       return false;
     }
-    for (std::size_t index = 0; index < wave.products.size(); ++index) {
-      const PackageId owner = result.semantic_products.package_by_product[
-          wave.products[index].value];
-      CompiledPackage &package = *result.packages[owner.value];
-      package.llvm_module = std::move(slots[index].llvm);
-      if (timings != nullptr) {
-        timings->add_counter("LLVM package modules emitted", 1);
-        timings->add_counter(
-            "LLVM IR bytes",
-            static_cast<std::uint64_t>(package.llvm_module.text.size()));
-      }
-    }
-    if (!modules_ok) return false;
-  }
 
-  std::vector<SemanticProductId> expected_layout_wave;
-  for (std::size_t package_index = 0;
-       package_index < result.packages.size(); ++package_index) {
-    if (!result.packages[package_index].has_value()) continue;
-    PackageSemanticProducts &products =
-        result.semantic_products.packages[package_index];
-    const std::array dependencies{
-        products.package_llvm_module,
-        products.package_assembly};
-    const PackageId owner{static_cast<std::uint32_t>(package_index)};
-    products.artifact_layout = append_workspace_semantic_product(
-        result,
-        SemanticProductKind::ArtifactLayout,
-        dependencies,
-        owner,
-        false,
-        diagnostics);
-    if (!products.artifact_layout.is_valid()) return false;
-    expected_layout_wave.push_back(products.artifact_layout);
-  }
-  if (expected_layout_wave.empty()) return true;
-
-  const SemanticReadyWave layout_wave =
-      freeze_semantic_ready_wave(result.semantic_graph);
-  if (layout_wave.status != SemanticReadyWaveStatus::Ready ||
-      layout_wave.products != expected_layout_wave) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "artifact layouts did not form their exact workspace ready wave" +
-            (layout_wave.failure.empty()
-                 ? std::string{}
-                 : ": " + layout_wave.failure));
-    return false;
-  }
-  std::vector<ArtifactLayoutTaskSlot> layout_slots(
-      layout_wave.products.size());
-  std::vector<SemanticProductOutcome> layout_outcomes(
-      layout_wave.products.size());
-  for (std::size_t index = 0;
-       index < layout_wave.products.size(); ++index) {
-    const PackageId owner = result.semantic_products.package_by_product[
-        layout_wave.products[index].value];
-    if (!owner.is_valid() || owner.value >= result.packages.size() ||
-        !result.packages[owner.value].has_value()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "artifact layout has no retained package owner");
-      return false;
-    }
-    layout_slots[index].package = &*result.packages[owner.value];
-    layout_slots[index].products =
-        &result.semantic_products.packages[owner.value];
-  }
-  WorkGraph layout_execution_graph;
-  layout_execution_graph.tasks.resize(layout_slots.size());
-  ArtifactLayoutWaveExecution layout_execution{
-      &layout_slots, &layout_outcomes};
-  const WorkGraphRunResult layout_scheduled = run_work_graph(
-      layout_execution_graph,
-      WorkGraphRunOptions{worker_count},
-      execute_artifact_layout_task,
-      &layout_execution);
-  if (timings != nullptr) {
-    timings->add_counter("artifact-layout ready waves", 1);
-    timings->add_counter("artifact-layout tasks", layout_slots.size());
-    timings->add_counter(
-        "artifact-layout worker slots", layout_scheduled.workers_used);
-  }
-  if (!layout_scheduled.ok) {
-    std::string failure = "artifact-layout worker scheduling failed";
+    // The closed executor has already consumed every private predecessor, so
+    // moving completed payloads into their durable product/package rows cannot
+    // invalidate another worker pointer.
     for (std::size_t index = 0;
-         index < layout_scheduled.tasks.size(); ++index) {
-      if (layout_scheduled.tasks[index].state != WorkTaskState::Failed) {
+         index < semantic_wave.products.size(); ++index) {
+      const SemanticProductId product = semantic_wave.products[index];
+      if (result.semantic_graph.products[product.value].state !=
+          SemanticProductState::Complete) {
         continue;
       }
-      failure += " at task " + std::to_string(index) + ": " +
-          layout_scheduled.tasks[index].failure;
-      break;
+      const NativePipelineTask &task = tasks[wave_tasks[index]];
+      const PackageId owner =
+          result.semantic_products.package_by_product[product.value];
+      CompiledPackage &package = *result.packages[owner.value];
+      switch (task.kind) {
+      case NativePipelineTaskKind::MirProcedure:
+        result.semantic_products.mir_procedure_by_product[product.value] =
+            std::move(mir_slots[task.slot].result.procedure);
+        if (timings != nullptr) {
+          timings->add_counter("MIR procedures lowered", 1);
+        }
+        break;
+      case NativePipelineTaskKind::PackageLlvmModule:
+        package.llvm_module = std::move(module_slots[task.slot].llvm);
+        if (timings != nullptr) {
+          timings->add_counter("LLVM package modules emitted", 1);
+          timings->add_counter(
+              "LLVM IR bytes",
+              static_cast<std::uint64_t>(package.llvm_module.text.size()));
+        }
+        break;
+      case NativePipelineTaskKind::ArtifactLayout:
+        package.artifact_layout =
+            std::move(layout_slots[task.slot].layout);
+        break;
+      }
     }
-    diagnostics.error(SourceRange::invalid(), std::move(failure));
+    semantic_wave = freeze_semantic_ready_wave(result.semantic_graph);
+  }
+  if (timings != nullptr) {
+    timings->add_counter("native lowering ready waves", ready_wave_count);
+  }
+  if (semantic_wave.status == SemanticReadyWaveStatus::Failed) {
     return false;
   }
-  std::string layout_publication_error;
-  if (!publish_semantic_ready_wave(
-          result.semantic_graph,
-          layout_wave,
-          layout_outcomes,
-          diagnostics,
-          layout_publication_error)) {
+  if (semantic_wave.status != SemanticReadyWaveStatus::Complete) {
     diagnostics.error(
         SourceRange::invalid(),
-        "cannot publish artifact-layout wave: " + layout_publication_error);
+        "native pipeline did not close its semantic products" +
+            (semantic_wave.failure.empty()
+                 ? std::string{}
+                 : ": " + semantic_wave.failure));
     return false;
   }
-  for (std::size_t index = 0;
-       index < layout_wave.products.size(); ++index) {
-    const PackageId owner = result.semantic_products.package_by_product[
-        layout_wave.products[index].value];
-    CompiledPackage &package = *result.packages[owner.value];
-    package.artifact_layout = std::move(layout_slots[index].layout);
-  }
-  return true;
+  return pipeline_ok;
 }
 
 } // namespace
@@ -8422,29 +8480,20 @@ bool continue_compiled_workspace(
             options.timings,
             compiled,
             diagnostics) ||
-        !run_workspace_mir_products(
+        !run_workspace_native_pipeline_products(
+            sources,
+            options.target,
             options.configuration.runtime_assertions,
+            options.emit_llvm,
+            options.emit_program_entry,
+            options.validation_kind,
+            compiled.validation_entries,
             options.semantic_worker_count,
             options.timings,
             compiled,
             diagnostics)) {
       compiled.ok = false;
       return false;
-    }
-    if (options.emit_llvm) {
-      if (!run_workspace_native_products(
-              sources,
-              options.target,
-              options.emit_program_entry,
-              options.validation_kind,
-              compiled.validation_entries,
-              options.semantic_worker_count,
-              options.timings,
-              compiled,
-              diagnostics)) {
-        compiled.ok = false;
-        return false;
-      }
     }
   }
   lowering_timing.finish();
