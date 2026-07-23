@@ -18,7 +18,9 @@ pub Target :: enum u8 {
 }
 
 // Configuration points at immutable Draft strings for one create call. The
-// native service copies and canonicalizes every path before returning.
+// native service copies and canonicalizes every path before returning. An
+// empty root requests deterministic executable-root discovery; an empty source
+// prefers package.draft.
 pub Configuration :: c struct {
     workspace_data: rawptr,
     workspace_length: usize,
@@ -39,6 +41,20 @@ foreign draft_compiler_service {
     pub session_destroy as "draft_compiler_session_destroy" :: c proc(
         session: rawptr,
     )
+
+    pub open_workspace as "draft_compiler_session_open_workspace" :: c proc(
+        session: rawptr,
+        path_data: rawptr,
+        path_length: usize,
+        error_destination: [^]u8,
+        error_capacity: usize,
+    ) -> u8
+
+    pub copy_workspace_path as "draft_compiler_session_copy_workspace_path" :: c proc(
+        session: rawptr,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
 
     pub check as "draft_compiler_session_check" :: c proc(
         session: rawptr,
@@ -213,6 +229,8 @@ pub host_api :: proc(session: rawptr) -> draft_compiler_api.Host_Api {
         copy_diagnostics = copy_diagnostics,
         copy_tooling = copy_tooling,
         copy_source_path = copy_source_path,
+        open_workspace = open_workspace,
+        copy_workspace_path = copy_workspace_path,
         source_count = source_count,
         copy_source_name = copy_source_name,
         copy_source_path_at = copy_source_path_at,

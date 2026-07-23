@@ -67,14 +67,27 @@ typedef struct DraftCompilerServiceOverlay {
 } DraftCompilerServiceOverlay;
 
 // create validates and canonicalizes the borrowed configuration ranges, owns a
-// new compiler session on success, and returns NULL on failure. A nonempty
-// error destination is always NUL-terminated and may contain a truncated
-// message.
+// new compiler session on success, and returns NULL on failure. root may be
+// empty to select the first deterministically discovered executable root;
+// source may be empty to prefer package.draft. A nonempty error destination is
+// always NUL-terminated and may contain a truncated message.
 DRAFT_COMPILER_SERVICE_API void *draft_compiler_session_create(
     const DraftCompilerServiceConfiguration *configuration,
     uint8_t *error_destination, size_t error_capacity);
 
 DRAFT_COMPILER_SERVICE_API void draft_compiler_session_destroy(void *session);
+
+// open_workspace constructs a complete replacement compiler session first and
+// swaps it behind the stable opaque handle only on success. An empty root uses
+// deterministic executable-root discovery. The borrowed path may be relative
+// to the process current directory. Failures preserve the old workspace and
+// copy a possibly truncated NUL-terminated explanation.
+DRAFT_COMPILER_SERVICE_API uint8_t draft_compiler_session_open_workspace(
+    void *session, const void *workspace_data, size_t workspace_length,
+    uint8_t *error_destination, size_t error_capacity);
+
+DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_workspace_path(
+    void *session, uint8_t *destination, size_t capacity);
 
 // check/build borrow a complete set of open project buffers synchronously.
 // active_overlay selects the row whose syntax spans are published. A nil row,

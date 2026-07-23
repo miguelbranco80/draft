@@ -75,6 +75,13 @@ pub Copy_Indexed_Text_Proc :: c proc(
 pub Select_Index_Proc :: c proc(user: rawptr, index: usize) -> u8
 pub Value_Proc :: c proc(user: rawptr) -> u8
 pub Select_Value_Proc :: c proc(user: rawptr, value: u8) -> u8
+pub Open_Workspace_Proc :: c proc(
+    user: rawptr,
+    path_data: rawptr,
+    path_length: usize,
+    error_destination: [^]u8,
+    error_capacity: usize,
+) -> u8
 
 // Host_Api is a borrowed table. A zero value means that no compiler service is
 // attached. destroy is intentionally absent: the Draft root which creates a
@@ -87,6 +94,8 @@ pub Host_Api :: c struct {
     copy_diagnostics: Copy_Text_Proc,
     copy_tooling: Copy_Tooling_Proc,
     copy_source_path: Copy_Text_Proc,
+    open_workspace: Open_Workspace_Proc,
+    copy_workspace_path: Copy_Text_Proc,
     source_count: Count_Proc,
     copy_source_name: Copy_Indexed_Text_Proc,
     copy_source_path_at: Copy_Indexed_Text_Proc,

@@ -92,20 +92,19 @@ build/draftide path/to/workspace \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows]
 ```
 
-Without `--root`, Turbo Draft reads exactly `<workspace>/draft.project`. The
-versioned file requires `root = package/path` and may specify
-`source = package.draft`; the source otherwise defaults to `package.draft`.
-`--root` bypasses the manifest, while `--source` overrides its source. The
-target defaults to the native host. The source is one target-applicable file
-directly inside the selected package. The manifest is initial IDE operator
-configuration, not a source/package list or dependency manifest.
+Turbo Draft discovers executable roots without a manifest. Optional
+`<workspace>/draft.project` requires `root = package/path` and may specify
+`source = package.draft` to select the initial row; `--root` and `--source` are
+explicit overrides. The target defaults to the native host. The manifest is
+initial IDE operator configuration, not a source/package list or dependency
+manifest.
 
-Turbo Draft opens ordinary files; unsaved edits are in-memory compiler overlays
-and saving updates the same file. F5 checks, builds, and runs the currently
-selected root. F6 opens the selectable run-root list and package/dependency
-view; F7-F11 toggle other compiler-derived semantic windows. F12 cycles
-executable roots, and Shift-F12 cycles targets. Build and Run always check the
-current buffer first.
+Turbo Draft opens ordinary files; the active buffer and every other dirty
+project buffer form one in-memory compiler transaction, and saving updates the
+same files. File > Open Workspace swaps to another validated directory after
+explicit dirty-buffer handling. F5 checks, builds, and runs the selected root.
+F6 opens the root list and package/dependency view; F7-F11 toggle other
+compiler-derived semantic windows. F12 cycles roots, and Shift-F12 targets.
 
 The executable and `draft_compiler_service` shared library must remain
 discoverable as siblings. The build records a loader-relative lookup on macOS

@@ -42,7 +42,9 @@ Window_Declarations :: 6
 Window_References :: 7
 Window_Effects :: 8
 Window_Denials :: 9
-Window_Count :: 10
+Window_Open_Workspace :: 10
+Window_Workspace_Confirm :: 11
+Window_Count :: 12
 
 Menu_File :: 520
 Menu_File_Popup :: 521
@@ -85,6 +87,10 @@ App :: struct {
 
     search: [Search_Capacity]u8,
     search_box: turbo_ui.Text_Box_State,
+    workspace_path: [Host_Path_Capacity]u8,
+    workspace_box: turbo_ui.Text_Box_State,
+    workspace_error: [512]u8,
+    workspace_error_length: usize,
     status: string,
 
     host: draft_compiler_api.Host_Api,
@@ -159,6 +165,16 @@ init_windows :: proc(app: ^App) {
         409,
         turbo_ui.Rect{column = 14, row = 7, width = 64, height = 15},
         4,
+    )
+    app^.windows[Window_Open_Workspace] = turbo_ui.dialog_window_init(
+        410,
+        turbo_ui.Rect{column = 12, row = 6, width = 66, height = 9},
+        12,
+    )
+    app^.windows[Window_Workspace_Confirm] = turbo_ui.dialog_window_init(
+        411,
+        turbo_ui.Rect{column = 14, row = 7, width = 62, height = 8},
+        13,
     )
     app^.windows[Window_Buffers].visible = false
     app^.windows[Window_Search].visible = false
@@ -806,6 +822,163 @@ cycle_project_target :: proc(app: ^App) {
     app^.status = "Draft target changed; current graph was rebuilt"
 }
 
+has_dirty_buffers :: proc(app: ^App) -> bool {
+    for index: usize = 0; index < app^.buffer_count; index += 1 {
+        if app^.buffers[index].dirty {
+            return true
+        }
+    }
+    return false
+}
+
+save_all_dirty_buffers :: proc(app: ^App) -> bool {
+    for index: usize = 0; index < app^.buffer_count; index += 1 {
+        if app^.buffers[index].dirty &&
+            !turbo_editor.save(&app^.buffers[index]) {
+            return false
+        }
+    }
+    return true
+}
+
+close_workspace_dialogs :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Open_Workspace].id,
+    )
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Workspace_Confirm].id,
+    )
+}
+
+// open_workspace_now crosses the one mutable project boundary. The host first
+// constructs and validates a complete replacement compiler session behind its
+// stable user pointer. Only then are old Draft buffers destroyed and the new
+// selected source opened. A filesystem race after host validation falls back
+// to an ordinary empty buffer so the UI never retains zero documents.
+open_workspace_now :: proc(app: ^App) -> bool {
+    if app^.host.open_workspace == nil {
+        return false
+    }
+    path := turbo_ui.text_box_bytes(&app^.workspace_box, app^.workspace_path[:])
+    path_data: rawptr = nil
+    if len(path) != 0 {
+        path_data = cast[rawptr](&path[0])
+    }
+    app^.workspace_error_length = 0
+    opened := app^.host.open_workspace(
+        app^.host.user,
+        path_data,
+        len(path),
+        cast[[^]u8](&app^.workspace_error[0]),
+        len(app^.workspace_error),
+    )
+    if opened == 0 {
+        for app^.workspace_error_length < len(app^.workspace_error) &&
+            app^.workspace_error[app^.workspace_error_length] != 0 {
+            app^.workspace_error_length += 1
+        }
+        if app^.windows[Window_Workspace_Confirm].visible {
+            turbo_ui.hide_window(
+                &app^.ui,
+                app^.windows[:],
+                app^.windows[Window_Workspace_Confirm].id,
+            )
+            turbo_ui.show_modal_window(
+                &app^.ui,
+                app^.windows[:],
+                app^.windows[Window_Open_Workspace].id,
+            )
+            app^.ui.focused_id = 570
+        }
+        app^.status = "Could not open workspace"
+        return false
+    }
+
+    close_workspace_dialogs(app)
+    destroy_app(app)
+    app^.active = 0
+    app^.file_selection = 0
+    app^.file_scroll = 0
+    app^.buffer_selection = 0
+    app^.buffer_scroll = 0
+    refresh_project_roots(app)
+    refresh_project_sources(app)
+    if !open_selected_host_source(app) {
+        if !init_one_buffer(app, "untitled.draft") {
+            return false
+        }
+        app^.status = "Workspace opened, but its selected source disappeared"
+        return true
+    }
+    if app^.project_root_count > 1 {
+        turbo_ui.show_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Project].id,
+        )
+    }
+    app^.status = "Workspace opened"
+    return true
+}
+
+submit_open_workspace :: proc(app: ^App) {
+    if has_dirty_buffers(app) {
+        turbo_ui.hide_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Open_Workspace].id,
+        )
+        turbo_ui.show_modal_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Workspace_Confirm].id,
+        )
+        app^.status = "Choose how to handle dirty buffers"
+        return
+    }
+    _ = open_workspace_now(app)
+}
+
+request_open_workspace :: proc(app: ^App) {
+    if app^.host.open_workspace == nil || app^.host.copy_workspace_path == nil {
+        app^.status = "No workspace-opening host is attached"
+        return
+    }
+    app^.workspace_error_length = 0
+    length := app^.host.copy_workspace_path(
+        app^.host.user,
+        cast[[^]u8](&app^.workspace_path[0]),
+        len(app^.workspace_path),
+    )
+    if length >= len(app^.workspace_path) {
+        length = 0
+    }
+    if !turbo_ui.text_box_set(
+        &app^.workspace_box,
+        app^.workspace_path[:],
+        app^.workspace_path[:length],
+    ) {
+        app^.status = "Current workspace path cannot be edited"
+        return
+    }
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Workspace_Confirm].id,
+    )
+    turbo_ui.show_modal_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Open_Workspace].id,
+    )
+    app^.ui.focused_id = 570
+    app^.status = "Enter a workspace directory"
+}
+
 request_search :: proc(app: ^App) {
     turbo_ui.hide_window(
         &app^.ui,
@@ -900,7 +1073,9 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
     // desktop shortcut layer must not reinterpret those keys as editor acts.
     if app^.ui.popup_id != turbo_ui.No_Widget ||
         app^.windows[Window_Search].visible ||
-        app^.windows[Window_Quit].visible {
+        app^.windows[Window_Quit].visible ||
+        app^.windows[Window_Open_Workspace].visible ||
+        app^.windows[Window_Workspace_Confirm].visible {
         return (event, false)
     }
     if key.code == .escape {
@@ -1040,6 +1215,133 @@ paint_search :: proc(
             app^.windows[:],
             app^.windows[Window_Search].id,
         )
+    }
+}
+
+paint_open_workspace :: proc(app: ^App, content: turbo_ui.Rect) {
+    turbo_ui.write_clipped(
+        app^.ui.surface,
+        content,
+        turbo_ui.Point{column = content.column + 1, row = content.row},
+        "Workspace directory:",
+        app^.ui.theme.text,
+    )
+    submitted := false
+    if content.width > 2 && content.height > 2 {
+        result := turbo_ui.text_box(
+            &app^.ui,
+            570,
+            turbo_ui.Rect{
+                column = content.column + 1,
+                row = content.row + 2,
+                width = content.width - 2,
+                height = 1,
+            },
+            &app^.workspace_box,
+            app^.workspace_path[:],
+        )
+        submitted = result.submitted
+    }
+    if app^.workspace_error_length != 0 && content.height > 3 {
+        turbo_ui.write_clipped_bytes(
+            app^.ui.surface,
+            content,
+            turbo_ui.Point{column = content.column + 1, row = content.row + 3},
+            app^.workspace_error[:app^.workspace_error_length],
+            app^.ui.theme.hot,
+        )
+    }
+    if content.width > 2 && content.height > 5 {
+        buttons := turbo_ui.layout_begin(
+            turbo_ui.Rect{
+                column = content.column + 1,
+                row = content.row + 5,
+                width = content.width - 2,
+                height = 1,
+            },
+            .horizontal,
+            0,
+            1,
+        )
+        submitted = submitted || turbo_ui.button(
+            &app^.ui,
+            571,
+            turbo_ui.layout_next(&buttons, 8),
+            "Open",
+            true,
+            .default_action,
+        )
+        if turbo_ui.button(
+            &app^.ui,
+            572,
+            turbo_ui.layout_next(&buttons, 10),
+            "Cancel",
+            true,
+            .cancel_action,
+        ) {
+            close_workspace_dialogs(app)
+            app^.status = "Open Workspace cancelled"
+        }
+    }
+    if submitted {
+        submit_open_workspace(app)
+    }
+}
+
+paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
+    turbo_ui.write_clipped(
+        app^.ui.surface,
+        content,
+        turbo_ui.Point{column = content.column + 1, row = content.row + 1},
+        "Open another workspace with unsaved buffers?",
+        app^.ui.theme.text,
+    )
+    if content.width <= 2 || content.height < 5 {
+        return
+    }
+    buttons := turbo_ui.layout_begin(
+        turbo_ui.Rect{
+            column = content.column + 1,
+            row = content.row + 3,
+            width = content.width - 2,
+            height = 1,
+        },
+        .horizontal,
+        0,
+        1,
+    )
+    if turbo_ui.button(
+        &app^.ui,
+        573,
+        turbo_ui.layout_next(&buttons, 17),
+        "Save all + open",
+        true,
+        .default_action,
+    ) {
+        if save_all_dirty_buffers(app) {
+            _ = open_workspace_now(app)
+        } else {
+            app^.status = "Save all failed; disk conflicts are not overwritten"
+        }
+    }
+    if turbo_ui.button(
+        &app^.ui,
+        574,
+        turbo_ui.layout_next(&buttons, 18),
+        "Discard + open",
+    ) {
+        _ = open_workspace_now(app)
+    }
+    if turbo_ui.button(
+        &app^.ui,
+        575,
+        turbo_ui.layout_next(&buttons, 9),
+        "Cancel",
+        true,
+        .cancel_action,
+    ) {
+        close_workspace_dialogs(app)
+        app^.status = "Open Workspace cancelled"
     }
 }
 
@@ -1710,7 +2012,7 @@ paint_app_menu_bar :: proc(app: ^App, surface: ^tui.Surface) {
         Menu_File, Menu_File_Popup,
         turbo_ui.Rect{column = 1, width = 8, height = 1},
         "File", cast[u8]('f'),
-        turbo_ui.Rect{column = 1, row = 1, width = 27, height = 5},
+        turbo_ui.Rect{column = 1, row = 1, width = 31, height = 8},
     )
     turbo_ui.menu_title(
         &app^.ui, &app^.menus,
@@ -1724,7 +2026,7 @@ paint_app_menu_bar :: proc(app: ^App, surface: ^tui.Surface) {
         Menu_Project, Menu_Project_Popup,
         turbo_ui.Rect{column = 17, width = 11, height = 1},
         "Project", cast[u8]('p'),
-        turbo_ui.Rect{column = 17, row = 1, width = 31, height = 9},
+        turbo_ui.Rect{column = 17, row = 1, width = 31, height = 10},
     )
     turbo_ui.menu_title(
         &app^.ui, &app^.menus,
@@ -1776,8 +2078,27 @@ paint_app_menus :: proc(app: ^App) -> bool {
     file_menu := turbo_ui.begin_menu(
         &app^.ui, &app^.menus,
         Menu_File, Menu_File_Popup,
-        turbo_ui.Rect{column = 1, row = 1, width = 27, height = 5},
+        turbo_ui.Rect{column = 1, row = 1, width = 31, height = 8},
     )
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &file_menu,
+        536, "Open File...", "F2",
+    ) {
+        turbo_ui.show_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Files].id,
+        )
+        app^.ui.focused_id = 530
+        app^.status = "Choose a project source and press Enter"
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &file_menu,
+        537, "Open Workspace...", "", app^.host.open_workspace != nil,
+    ) {
+        request_open_workspace(app)
+    }
+    turbo_ui.menu_separator(&app^.ui, &file_menu)
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &file_menu,
         540, "Save", "Ctrl-S",
@@ -1814,7 +2135,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
     project_menu := turbo_ui.begin_menu(
         &app^.ui, &app^.menus,
         Menu_Project, Menu_Project_Popup,
-        turbo_ui.Rect{column = 17, row = 1, width = 31, height = 9},
+        turbo_ui.Rect{column = 17, row = 1, width = 31, height = 10},
     )
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &project_menu,
@@ -1835,6 +2156,17 @@ paint_app_menus :: proc(app: ^App) -> bool {
         host_action(app, true)
     }
     turbo_ui.menu_separator(&app^.ui, &project_menu)
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &project_menu,
+        549, "Select root...", "F6", app^.host.select_root != nil,
+    ) {
+        turbo_ui.show_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Project].id,
+        )
+        app^.ui.focused_id = 760
+    }
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &project_menu,
         547, "Next root", "F12", app^.host.select_root != nil,
@@ -1910,6 +2242,10 @@ paint_app :: proc(
         modal = app^.windows[Window_Quit].id
     } else if app^.windows[Window_Search].visible {
         modal = app^.windows[Window_Search].id
+    } else if app^.windows[Window_Workspace_Confirm].visible {
+        modal = app^.windows[Window_Workspace_Confirm].id
+    } else if app^.windows[Window_Open_Workspace].visible {
+        modal = app^.windows[Window_Open_Workspace].id
     }
     turbo_ui.begin_window_frame(
         &app^.ui,
@@ -1969,9 +2305,15 @@ paint_app :: proc(
             title = "Effects (F9)"
         } else if index == Window_Denials {
             title = "Denials (F10)"
+        } else if index == Window_Open_Workspace {
+            title = "Open Workspace"
+        } else if index == Window_Workspace_Confirm {
+            title = "Unsaved buffers"
         }
         window_context: turbo_ui.Window_Context
-        if index == Window_Search || index == Window_Quit {
+        if index == Window_Search || index == Window_Quit ||
+            index == Window_Open_Workspace ||
+            index == Window_Workspace_Confirm {
             window_context = turbo_ui.dialog_begin(&app^.ui, window, title)
         } else {
             window_context = turbo_ui.begin_window(&app^.ui, window, title)
@@ -2012,6 +2354,10 @@ paint_app :: proc(
                 paint_text_view(app, index, window_context.content)
             case Window_Denials:
                 paint_text_view(app, index, window_context.content)
+            case Window_Open_Workspace:
+                paint_open_workspace(app, window_context.content)
+            case Window_Workspace_Confirm:
+                paint_workspace_confirm(app, window_context.content)
             case:
             }
         }
@@ -2021,6 +2367,10 @@ paint_app :: proc(
                 close_search(app)
             } else if index == Window_Quit {
                 cancel_quit(app)
+            } else if index == Window_Open_Workspace ||
+                index == Window_Workspace_Confirm {
+                close_workspace_dialogs(app)
+                app^.status = "Open Workspace cancelled"
             } else {
                 turbo_ui.hide_window(&app^.ui, app^.windows[:], window^.id)
             }
@@ -2327,6 +2677,15 @@ pub run_with_host :: proc(
     refresh_project_sources(&app)
     app.status = "Turbo Draft compiler session attached"
     refresh_host(&app)
+    if app.project_root_count > 1 {
+        turbo_ui.show_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Project].id,
+        )
+        app.ui.focused_id = 760
+        app.status = "Choose the active Build/Run root in Project"
+    }
     return run_app_terminal(&app)
 }
 
@@ -2351,6 +2710,15 @@ pub run_with_host_bytes :: proc(
     refresh_project_sources(&app)
     app.status = "Turbo Draft compiler session attached"
     refresh_host(&app)
+    if app.project_root_count > 1 {
+        turbo_ui.show_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Project].id,
+        )
+        app.ui.focused_id = 760
+        app.status = "Choose the active Build/Run root in Project"
+    }
     if has_smoke_argument() {
         if app.diagnostic_count != 0 || app.syntax_span_count == 0 ||
             app.tooling_length[1] == 0 || app.tooling_length[2] == 0 {

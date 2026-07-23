@@ -2,6 +2,8 @@ DRAFT_COMPILER_SERVICE_0 {
   global:
     draft_compiler_session_create;
     draft_compiler_session_destroy;
+    draft_compiler_session_open_workspace;
+    draft_compiler_session_copy_workspace_path;
     draft_compiler_session_check;
     draft_compiler_session_build;
     draft_compiler_session_span;

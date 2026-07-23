@@ -12,8 +12,10 @@ cmake --build build --target draftide --parallel
 build/draftide .
 ```
 
-The first path is the workspace, not the current package. Without `--root`,
-Turbo Draft reads `<workspace>/draft.project`:
+The first path is the workspace, not the current package. Turbo Draft discovers
+packages containing `main`; if there are several, Project opens so you can
+choose the active Build/Run root. A workspace may optionally provide
+`<workspace>/draft.project` to choose the initial row:
 
 ```text
 draft-project-v1
@@ -21,9 +23,10 @@ root = examples/turbo-editor
 source = package.draft
 ```
 
-`root` selects one package relative to the workspace; `source` is optional and
-defaults to `package.draft`. A package-level `main` makes the root runnable.
-`--root` and `--source` are explicit command-line overrides. Imports such as
+When the file exists, `root` selects one package relative to the workspace;
+`source` is optional and defaults to `package.draft`. Without it, no project
+file is required. `--root` and `--source` are explicit command-line overrides.
+Imports such as
 `lib/turbo_editor_app` are resolved below the workspace, while `core/terminal`
 comes from the compiler's pinned core distribution. Thus, when launching from
 this repository's `examples/` directory, keep the repository as the workspace:
@@ -47,6 +50,10 @@ sections are currently read-only reports rather than source-jump navigation.
 Files lists the compiler-discovered workspace sources reachable from the active
 root; arrow keys browse without changing documents, and Enter opens a row.
 Buffers is the separate list of already-open documents and marks dirty rows.
+File > Open Workspace accepts another directory and requires Save all, Discard,
+or Cancel before replacing dirty buffers. File > Open File focuses Files; its
+first version selects compiler-known project sources rather than browsing the
+complete filesystem.
 F12 changes root and Shift-F12 changes target. Alt-F3 closes the active tool
 window, Ctrl-F5 enters keyboard move/size mode, and Ctrl-F6 selects the next
 window. The Window menu also tiles or cascades ordinary windows while leaving

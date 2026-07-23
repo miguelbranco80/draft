@@ -186,3 +186,22 @@ test_collects_all_open_project_overlays :: proc(test: ^testing.Test) {
         overlays[1].path_length == len(turbo_editor.path_bytes(&app.buffers[1])),
     )
 }
+
+// Open Workspace never discards dirty document owners directly. Submission
+// first enters the explicit Save all / Discard / Cancel modal, preserving the
+// candidate pathname while the user decides.
+test_open_workspace_requires_dirty_buffer_choice :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-workspace-dirty.draft"))
+    defer destroy_app(&app)
+    app.buffers[0].dirty = true
+
+    submit_open_workspace(&app)
+    testing.expect(test, app.windows[Window_Workspace_Confirm].visible)
+    testing.expect(test, !app.windows[Window_Open_Workspace].visible)
+    testing.expect(
+        test,
+        app.ui.active_window == app.windows[Window_Workspace_Confirm].id,
+    )
+}

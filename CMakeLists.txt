@@ -408,6 +408,18 @@ if(BUILD_TESTING)
     set_tests_properties(
       draft_draftide_smoke PROPERTIES LABELS "ide;integration"
     )
+    # examples/hello is itself a one-root workspace and intentionally contains
+    # no draft.project. This companion smoke proves the project file is an
+    # optional initial preference rather than a prerequisite for opening Draft.
+    add_test(
+      NAME draft_draftide_auto_root_smoke
+      COMMAND
+        "${DRAFTIDE_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/examples/hello" --smoke
+    )
+    set_tests_properties(
+      draft_draftide_auto_root_smoke PROPERTIES LABELS "ide;integration"
+    )
   endif()
 
   # The complete native matrix must execute the artifacts it just built. Keep

@@ -38,7 +38,7 @@ execute_process(
   ERROR_VARIABLE editor_error
 )
 if(NOT editor_status EQUAL 0 OR
-   NOT editor_output MATCHES "test passed: 28 selected procedures")
+   NOT editor_output MATCHES "test passed: 31 selected procedures")
   message(FATAL_ERROR
     "Turbo IDE library tests failed (${editor_status})\n"
     "stdout:\n${editor_output}\nstderr:\n${editor_error}")

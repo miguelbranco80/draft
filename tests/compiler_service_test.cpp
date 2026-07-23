@@ -338,6 +338,44 @@ void test_service_transactions_and_native_build(TestState &state) {
   EXPECT(state,
          draft_compiler_session_select_target(session, original_target) == 1);
   EXPECT(state, draft_compiler_session_target(session) == original_target);
+
+  // Workspace replacement is transactional behind the stable opaque handle.
+  // A failed replacement leaves the complete old session selectable; a valid
+  // workspace discovers its runnable root without a manifest or --root value.
+  std::array<std::uint8_t, 256> workspace_error{};
+  const std::string missing_workspace =
+      (temporary.path() / "missing-workspace").string();
+  EXPECT(state, draft_compiler_session_open_workspace(
+                    session, missing_workspace.data(), missing_workspace.size(),
+                    workspace_error.data(), workspace_error.size()) == 0);
+  EXPECT(state, draft_compiler_session_root_count(session) == 2);
+
+  const std::filesystem::path second_workspace =
+      temporary.path() / "second-workspace";
+  write_file(second_workspace / "program" / "package.draft",
+             "package program\n"
+             "main :: proc() -> int {\n"
+             "    return 0\n"
+             "}\n");
+  const std::string second_workspace_text = second_workspace.string();
+  const bool workspace_opened =
+      draft_compiler_session_open_workspace(
+          session, second_workspace_text.data(), second_workspace_text.size(),
+          workspace_error.data(), workspace_error.size()) == 1;
+  if (!workspace_opened)
+    std::cerr << reinterpret_cast<const char *>(workspace_error.data()) << '\n';
+  EXPECT(state, workspace_opened);
+  EXPECT(state, draft_compiler_session_root_count(session) == 1);
+  EXPECT(state, draft_compiler_session_source_count(session) == 1);
+  std::array<std::uint8_t, 4096> workspace_bytes{};
+  const std::size_t workspace_size = draft_compiler_session_copy_workspace_path(
+      session, workspace_bytes.data(), workspace_bytes.size());
+  const std::string canonical_second_workspace =
+      std::filesystem::canonical(second_workspace).string();
+  EXPECT(state, workspace_size == canonical_second_workspace.size());
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(workspace_bytes.data()),
+                    workspace_size) == canonical_second_workspace);
   draft_compiler_session_destroy(session);
   EXPECT(state, !std::filesystem::exists(artifact_path.parent_path()));
 }
@@ -360,11 +398,37 @@ void test_create_rejects_escaping_paths(TestState &state) {
   draft_compiler_session_destroy(session);
 }
 
+void test_create_discovers_root_when_omitted(TestState &state) {
+  draft::test::TemporaryDirectory temporary{"draft-compiler-auto-root-test"};
+  const std::filesystem::path workspace = temporary.path() / "workspace";
+  write_file(workspace / "app" / "package.draft", "package app\n"
+                                                  "main :: proc() -> int {\n"
+                                                  "    return 0\n"
+                                                  "}\n");
+  const std::string workspace_text = workspace.string();
+  const std::string root;
+  const std::string source = "package.draft";
+  const DraftCompilerServiceConfiguration input =
+      configuration(workspace_text, root, source);
+  std::array<std::uint8_t, 256> error{};
+  void *session =
+      draft_compiler_session_create(&input, error.data(), error.size());
+  if (session == nullptr)
+    std::cerr << reinterpret_cast<const char *>(error.data()) << '\n';
+  EXPECT(state, session != nullptr);
+  if (session != nullptr) {
+    EXPECT(state, draft_compiler_session_root_count(session) == 1);
+    EXPECT(state, draft_compiler_session_source_count(session) == 1);
+  }
+  draft_compiler_session_destroy(session);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_service_transactions_and_native_build(state);
   test_create_rejects_escaping_paths(state);
+  test_create_discovers_root_when_omitted(state);
   return state.failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

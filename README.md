@@ -126,9 +126,11 @@ through a narrow opaque C ABI:
 build/draftide .
 ```
 
-The repository's `draft.project` selects `examples/turbo-editor` initially;
-`--root` remains an explicit override. F5 checks, builds, and runs the selected
-root, while F6 opens its root selector and package/dependency view.
+The repository's optional `draft.project` selects `examples/turbo-editor`
+initially; without one, executable roots are discovered and selected in the
+Project window. `--root` remains an explicit override. F5 checks, builds, and
+runs the selected root, while F6 opens its root selector and package/dependency
+view.
 
 See [Turbo Draft](tools/draftide/README.md) for controls and
 [the implementation boundary](docs/implementation/turbo-draft.md) for the

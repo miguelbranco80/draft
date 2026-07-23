@@ -172,6 +172,7 @@ public:
   [[nodiscard]] const std::vector<SyntaxSpan> &syntax_spans() const;
   [[nodiscard]] std::string_view diagnostics_text() const;
   [[nodiscard]] std::string_view tooling_text(ToolingSection section) const;
+  [[nodiscard]] const std::filesystem::path &workspace_directory() const;
   [[nodiscard]] const std::filesystem::path &source_path() const;
   [[nodiscard]] const std::filesystem::path &built_output_path() const;
 

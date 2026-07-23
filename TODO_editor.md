@@ -67,14 +67,15 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
   fixed-layout C service over the C++ bootstrap compiler; Draft owns project
   selection, buffers, terminal/UI state, Build/Run policy, and the service
   handle lifetime. The service owns compiler products and never calls Draft.
-- [x] Open an ordinary workspace directory. Read its small versioned
-  `draft.project` to select the initial root/source unless `--root` explicitly
-  overrides it. Keep open buffers in Draft and the last successful
-  `SourceManager`/`CompileWorkspaceResult` pair in the compiler service.
-- [x] Check synchronously at first. Parse current text with recovery, compile a
-  temporary semantic graph using complete-file overrides, and replace the
-  stored graph only after success. A failed attempt publishes diagnostics but
-  is not a user-visible candidate system.
+- [x] Open an ordinary workspace directory. Discover executable roots without
+  requiring a project file; use an optional versioned `draft.project` or
+  `--root` only to select the initial root/source. Keep open buffers in Draft
+  and the last successful `SourceManager`/`CompileWorkspaceResult` pair in the
+  compiler service.
+- [x] Check synchronously at first. Submit the active buffer plus every other
+  dirty project buffer as one complete-file override transaction, and replace
+  the stored graph only after success. A failed attempt publishes diagnostics
+  but is not a user-visible candidate system.
 - [x] Expose the production lexer token ranges to the editor and add classic
   Turbo C/Pascal-style syntax coloring for keywords, comments, strings,
   numbers, declarations and invalid text. Keep the color theme in the editor;
@@ -100,6 +101,9 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
   buffer's owning root so F5 always checks/builds the right graph.
 - [x] Keep “open directory” as the project model. The manifest remembers only
   initial operator selection; it does not enumerate packages or dependencies.
+- [x] Make Files the compiler-discovered source browser and Buffers the open
+  document list. Add Open File through Files and transactional Open Workspace
+  with Save all / Discard / Cancel dirty-buffer policy.
 
 ## Explicitly later
 

@@ -139,13 +139,15 @@ create_session(const DraftCompilerServiceConfiguration &input,
       borrowed_text(input.workspace_data, input.workspace_length));
   const std::string root_text(
       borrowed_text(input.root_data, input.root_length));
-  const std::string source_text(
+  std::string source_text(
       borrowed_text(input.source_data, input.source_length));
-  if (workspace_text.empty() || root_text.empty() || source_text.empty() ||
+  if (source_text.empty())
+    source_text = "package.draft";
+  if (workspace_text.empty() ||
       workspace_text.find('\0') != std::string::npos ||
       root_text.find('\0') != std::string::npos ||
       source_text.find('\0') != std::string::npos) {
-    error_message = "workspace, root, and source must be nonempty paths";
+    error_message = "workspace and source must be valid paths";
     return nullptr;
   }
   const std::filesystem::path root_spelling(root_text);
@@ -174,37 +176,39 @@ create_session(const DraftCompilerServiceConfiguration &input,
     error_message = "workspace directory is unavailable";
     return nullptr;
   }
-  const std::filesystem::path root =
-      std::filesystem::weakly_canonical(workspace / root_spelling, path_error);
-  const bool root_is_directory =
-      !path_error && std::filesystem::is_directory(root, path_error);
-  if (path_error || !root_is_directory || !is_within(workspace, root)) {
-    error_message = "root package is unavailable or escapes the workspace";
-    return nullptr;
-  }
-  const std::filesystem::path source =
-      std::filesystem::weakly_canonical(root / source_spelling, path_error);
-  const bool source_is_file =
-      !path_error && std::filesystem::is_regular_file(source, path_error);
-  if (path_error || !source_is_file || !is_within(root, source)) {
-    error_message = "active source is unavailable or escapes the root package";
-    return nullptr;
-  }
-
-  const std::filesystem::path relative_root =
-      std::filesystem::relative(root, workspace, path_error);
-  if (path_error || relative_root.empty()) {
-    error_message = "cannot identify the selected root package";
-    return nullptr;
-  }
-
   draft::ide::CompilerConfiguration configuration;
   configuration.workspace_directory = workspace;
-  configuration.root_package_directory = root;
-  configuration.root_relative_path =
-      relative_root == "." ? "." : relative_root.generic_string();
   configuration.source_relative_name = source_spelling.generic_string();
   configuration.target = *target;
+  if (!root_text.empty()) {
+    const std::filesystem::path root = std::filesystem::weakly_canonical(
+        workspace / root_spelling, path_error);
+    const bool root_is_directory =
+        !path_error && std::filesystem::is_directory(root, path_error);
+    if (path_error || !root_is_directory || !is_within(workspace, root)) {
+      error_message = "root package is unavailable or escapes the workspace";
+      return nullptr;
+    }
+    const std::filesystem::path source =
+        std::filesystem::weakly_canonical(root / source_spelling, path_error);
+    const bool source_is_file =
+        !path_error && std::filesystem::is_regular_file(source, path_error);
+    if (path_error || !source_is_file || !is_within(root, source)) {
+      error_message =
+          "active source is unavailable or escapes the root package";
+      return nullptr;
+    }
+
+    const std::filesystem::path relative_root =
+        std::filesystem::relative(root, workspace, path_error);
+    if (path_error || relative_root.empty()) {
+      error_message = "cannot identify the selected root package";
+      return nullptr;
+    }
+    configuration.root_package_directory = root;
+    configuration.root_relative_path =
+        relative_root == "." ? "." : relative_root.generic_string();
+  }
 
   std::unique_ptr<draft::ide::CompilerSession> session{
       new (std::nothrow) draft::ide::CompilerSession(std::move(configuration))};
@@ -292,6 +296,52 @@ void *draft_compiler_session_create(
 
 void draft_compiler_session_destroy(void *opaque_session) {
   delete static_cast<ServiceSession *>(opaque_session);
+}
+
+std::uint8_t draft_compiler_session_open_workspace(
+    void *opaque_session, const void *workspace_data,
+    std::size_t workspace_length, std::uint8_t *error_destination,
+    std::size_t error_capacity) {
+  auto *service = static_cast<ServiceSession *>(opaque_session);
+  if (service == nullptr || service->compiler == nullptr) {
+    publish_create_error("compiler service session is nil", error_destination,
+                         error_capacity);
+    return 0;
+  }
+  const std::string_view workspace =
+      borrowed_text(workspace_data, workspace_length);
+  if (workspace.empty() || workspace.find('\0') != std::string_view::npos) {
+    publish_create_error("workspace path is empty or malformed",
+                         error_destination, error_capacity);
+    return 0;
+  }
+  const std::string root;
+  const std::string source = "package.draft";
+  const std::uint8_t target = target_ordinal(service->compiler->target());
+  const DraftCompilerServiceConfiguration configuration{
+      workspace.data(), workspace.size(), root.data(), root.size(),
+      source.data(),    source.size(),    target,
+  };
+  std::string error_message;
+  std::unique_ptr<draft::ide::CompilerSession> replacement =
+      create_session(configuration, error_message);
+  if (replacement == nullptr) {
+    publish_create_error(error_message, error_destination, error_capacity);
+    return 0;
+  }
+  service->compiler = std::move(replacement);
+  if (error_capacity != 0 && error_destination != nullptr)
+    error_destination[0] = 0;
+  return 1;
+}
+
+std::size_t draft_compiler_session_copy_workspace_path(
+    void *opaque_session, std::uint8_t *destination, std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr)
+    return 0;
+  return copy_text(session->workspace_directory().string(), destination,
+                   capacity);
 }
 
 void draft_compiler_session_check(void *opaque_session,

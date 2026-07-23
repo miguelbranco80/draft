@@ -110,13 +110,15 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
     return false;
 
   std::vector<WorkspacePackageSelection> selections = discovered.roots;
+  const bool has_configured_root = !configuration_.root_relative_path.empty();
   const bool contains_current =
+      has_configured_root &&
       std::any_of(selections.begin(), selections.end(),
                   [this](const WorkspacePackageSelection &selection) {
                     return selection.identity.root_relative_path ==
                            configuration_.root_relative_path;
                   });
-  if (!contains_current) {
+  if (has_configured_root && !contains_current) {
     WorkspacePackageSelection current;
     current.identity.root_identity = "workspace";
     current.identity.root_relative_path = configuration_.root_relative_path;
@@ -160,8 +162,10 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
           selection.identity,
           file.relative_name,
       });
-      if (selection.identity.root_relative_path ==
-              configuration_.root_relative_path &&
+      const bool source_preference_applies =
+          !has_configured_root || selection.identity.root_relative_path ==
+                                      configuration_.root_relative_path;
+      if (source_preference_applies &&
           file.relative_name == configuration_.source_relative_name) {
         source_name = file.relative_name;
         continue;
@@ -188,6 +192,13 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
     });
   }
 
+  if (options.empty()) {
+    diagnostics.error(SourceRange::invalid(),
+                      "workspace contains no executable Draft root; select a "
+                      "root explicitly when opening a library workspace");
+    return false;
+  }
+
   root_options_ = std::move(options);
   selected_root_ = selected;
   return true;
@@ -196,7 +207,12 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
 bool CompilerSession::initialize(DiagnosticSink &diagnostics) {
   if (!refresh_root_options(diagnostics))
     return false;
-  select_root_sources(root_options_[selected_root_]);
+  const RootOption &selected = root_options_[selected_root_];
+  configuration_.root_relative_path = selected.root_relative_path;
+  configuration_.root_package_directory = selected.physical_directory;
+  configuration_.source_relative_name = selected.source_relative_name;
+  source_path_ = selected.physical_directory / selected.source_relative_name;
+  select_root_sources(selected);
   return create_build_directory(diagnostics);
 }
 
@@ -768,6 +784,10 @@ std::string_view CompilerSession::tooling_text(ToolingSection section) const {
   if (index >= tooling_text_.size())
     return {};
   return tooling_text_[index];
+}
+
+const std::filesystem::path &CompilerSession::workspace_directory() const {
+  return configuration_.workspace_directory;
 }
 
 const std::filesystem::path &CompilerSession::source_path() const {
