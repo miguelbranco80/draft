@@ -108,6 +108,31 @@ emit_fixture(std::string text,
                                  std::move(expansion_maps));
 }
 
+// Default initialization is a storage operation, not construction of one
+// potentially enormous LLVM aggregate value. This regression uses enough
+// inline storage to expose that distinction while asserting only the stable
+// semantic facts: the exact Draft byte count and the local's known alignment.
+void test_large_aggregate_zero_uses_memset(TestState &state) {
+  const EmittedFixture emitted = emit_fixture(R"draft(package aggregate_zero
+
+Large :: struct {
+    bytes: [4096]u8,
+}
+
+first_byte :: proc() -> u8 {
+    value: Large
+    return value.bytes[0]
+}
+)draft");
+  if (!emitted.ok) std::cerr << emitted.diagnostics;
+  EXPECT(state, emitted.ok);
+  EXPECT(state, emitted.text.find(
+      "call void @llvm.memset.p0.i64(ptr align 1 %l0, i8 0, "
+      "i64 4096, i1 false)") != std::string::npos);
+  EXPECT(state, emitted.text.find(
+      "store %draft.type.0 zeroinitializer") == std::string::npos);
+}
+
 void test_generated_debug_locations_are_hermetic(TestState &state) {
   std::string source = R"draft(package generated_debug
 
@@ -1373,6 +1398,7 @@ main :: proc() -> int {
 
 int main() {
   TestState state;
+  test_large_aggregate_zero_uses_memset(state);
   test_agent_constructs_have_no_runtime_footprint(state);
   test_generated_debug_locations_are_hermetic(state);
   test_packed_field_access_uses_occurrence_alignment(state);

@@ -538,6 +538,19 @@ private:
     return id;
   }
 
+  // Reports whether a zero value is represented by addressable aggregate
+  // storage rather than one LLVM scalar or vector value. Draft specifies that
+  // default initialization clears every storage byte, so these kinds may be
+  // initialized directly in their destination. Procedure values and SIMD
+  // vectors deliberately remain ordinary LLVM value stores even when their
+  // current spelling happens to contain more than one machine component.
+  [[nodiscard]] bool memory_aggregate_kind(TypeKind kind) const {
+    return kind == TypeKind::String || kind == TypeKind::Slice ||
+        kind == TypeKind::Array || kind == TypeKind::Tuple ||
+        kind == TypeKind::Struct || kind == TypeKind::Variant ||
+        kind == TypeKind::Union;
+  }
+
   [[nodiscard]] bool struct_has_bit_fields(TypeId id) const {
     const Type &value = type(runtime_scalar_id(id));
     if (value.kind != TypeKind::Struct) return false;
@@ -875,7 +888,8 @@ private:
             << "declare i16 @llvm.bswap.i16(i16)\n"
             << "declare i32 @llvm.bswap.i32(i32)\n"
             << "declare i64 @llvm.bswap.i64(i64)\n"
-            << "declare i128 @llvm.bswap.i128(i128)\n\n";
+            << "declare i128 @llvm.bswap.i128(i128)\n"
+            << "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n\n";
     if (!owns_runtime_support()) {
       output_ << "declare hidden void @__draft.assert(ptr, i1, { ptr, i64 }, "
                  "{ ptr, i64 }, { ptr, i64 }, i64, i64)\n"
@@ -968,8 +982,7 @@ private:
             << "declare ptr @calloc(i64, i64)\n"
             << "declare void @free(ptr)\n"
             << "declare i64 @strlen(ptr)\n"
-            << "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n"
-            << "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n\n";
+            << "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n\n";
 
     if (is_windows) {
       output_ << "declare i32 @_write(i32, ptr, i32)\n"
@@ -4532,6 +4545,26 @@ private:
       break;
     case MirInstructionKind::Store: {
       const MirValueId value_id = instruction.operands[1];
+      const MirValue &value = procedure.value(value_id);
+      const MirInstruction &definition =
+          procedure.instruction(value.definition);
+      const Type &storage = type(runtime_scalar_id(value.type));
+      if (definition.kind == MirInstructionKind::Zero &&
+          memory_aggregate_kind(storage.kind)) {
+        // A literal aggregate store asks LLVM to legalize the aggregate as one
+        // enormous SSA value. For a large inline record that expands every
+        // member during instruction selection even though Draft's operation is
+        // simply byte clearing. Emit that operation directly. The destination
+        // alignment is an occurrence fact and can be lower than the natural
+        // type alignment for packed storage.
+        output_ << "  call void @llvm.memset.p0.i64(ptr align "
+                << instruction.alignment << ' '
+                << value_operand(
+                       operands, instruction.operands[0], instruction.range)
+                << ", i8 0, i64 " << storage.layout.size
+                << ", i1 false)\n";
+        break;
+      }
       output_ << "  store "
               << typed_operand(procedure, operands, value_id, instruction.range)
               << ", ptr "
