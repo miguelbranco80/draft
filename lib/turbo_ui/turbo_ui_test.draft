@@ -338,6 +338,31 @@ test_window_chrome_and_modality :: proc(test: ^testing.Test) {
         primary_down = true,
     }), theme, windows[:])
     frame := begin_window(&state, &windows[0], "Main")
+    chrome_right := rect_right(windows[0].bounds)
+    (zoom, zoom_valid) := tui.cell_at(
+        &surface,
+        chrome_right - 3,
+        windows[0].bounds.row,
+    )
+    (zoom_tail, zoom_tail_valid) := tui.cell_at(
+        &surface,
+        chrome_right - 2,
+        windows[0].bounds.row,
+    )
+    (corner, corner_valid) := tui.cell_at(
+        &surface,
+        chrome_right - 1,
+        windows[0].bounds.row,
+    )
+    testing.expect(test, zoom_valid && zoom.value == '↕' && zoom.columns == 2)
+    testing.expect(test, zoom_tail_valid && zoom_tail.continuation)
+    testing.expect(test, corner_valid && corner.value == '╗')
+    (shadow, shadow_valid) := tui.cell_at(
+        &surface,
+        chrome_right,
+        windows[0].bounds.row + 1,
+    )
+    testing.expect(test, shadow_valid && shadow.value == Shadow_Glyph)
     end_window(&state, frame)
     end_frame(&state)
     begin_window_frame(&state, &surface, mouse_event(Mouse_Event{
@@ -378,6 +403,8 @@ test_window_chrome_and_modality :: proc(test: ^testing.Test) {
     end_frame(&state)
 
     // The upper-right chrome toggles zoom and preserves an exact restore rect.
+    // The click intentionally lands on the continuation column of the wide
+    // arrow, proving its complete painted footprint is one control.
     original := windows[0].bounds
     zoom_point := Point{
         column = rect_right(windows[0].bounds) - 2,

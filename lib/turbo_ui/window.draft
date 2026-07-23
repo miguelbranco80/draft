@@ -49,6 +49,30 @@ pub Window_Context :: struct {
     previous_clip: Rect,
 }
 
+// The vertical and horizontal arrow scalars used for the zoom control belong
+// to Unicode's Extended_Pictographic set. Draft's pinned terminal-width policy
+// therefore assigns each one two columns. Keeping that fact beside the chrome
+// geometry prevents the leading arrow cell from consuming the upper-right
+// border corner, which is exactly what a one-column placement would do.
+Zoom_Glyph_Columns :: 2
+
+// zoom_control_rect returns the complete two-cell hit and paint rectangle
+// immediately before the upper-right corner. A narrow frame may have no room
+// for both a left corner, the control, and a right corner; the empty result
+// makes that control unavailable rather than allowing unsigned subtraction or
+// overlapping structural border cells.
+zoom_control_rect :: proc(bounds: Rect) -> Rect {
+    if bounds.width < Zoom_Glyph_Columns + 2 || bounds.height == 0 {
+        return Rect{}
+    }
+    return Rect{
+        column = rect_right(bounds) - 1 - Zoom_Glyph_Columns,
+        row = bounds.row,
+        width = Zoom_Glyph_Columns,
+        height = 1,
+    }
+}
+
 pub window_init :: proc(id: Widget_Id, bounds: Rect, z: u32) -> Window_State {
     assert(id != No_Widget, "turbo_ui window ID zero is reserved")
     return Window_State{
@@ -830,11 +854,12 @@ pub begin_window :: proc(
     right := rect_right(window^.bounds)
     bottom := rect_bottom(window^.bounds)
     close_point := Point{column = window^.bounds.column + 1, row = window^.bounds.row}
-    zoom_point := Point{column = right - 2, row = window^.bounds.row}
+    zoom_rect := zoom_control_rect(window^.bounds)
+    zoom_point := Point{column = zoom_rect.column, row = zoom_rect.row}
     resize_point := Point{column = right - 1, row = bottom - 1}
     close_visible := window^.flags.closable
-    zoom_visible := window^.flags.zoomable &&
-        (!close_visible || close_point.column != zoom_point.column)
+    zoom_visible := window^.flags.zoomable && !rect_empty(zoom_rect) &&
+        (!close_visible || !point_in_rect(close_point, zoom_rect))
     state^.current_window = window^.id
     state^.clip = state^.desktop
 
@@ -849,8 +874,7 @@ pub begin_window :: proc(
         mouse := state^.event.mouse
         on_close := close_visible && mouse.position.column == close_point.column &&
             mouse.position.row == close_point.row
-        on_zoom := zoom_visible && mouse.position.column == zoom_point.column &&
-            mouse.position.row == zoom_point.row
+        on_zoom := zoom_visible && point_in_rect(mouse.position, zoom_rect)
         on_resize := window^.flags.resizable && !window^.zoomed &&
             mouse.position.column == resize_point.column &&
             mouse.position.row == resize_point.row
@@ -860,7 +884,9 @@ pub begin_window :: proc(
         }
         title_end := right - 1
         if zoom_visible {
-            title_end -= 2
+            // Leave one horizontal border cell between a draggable title and
+            // the complete two-column zoom control.
+            title_end = zoom_rect.column - 1
         }
         on_title := window^.flags.movable && !window^.zoomed &&
             mouse.position.row == window^.bounds.row &&
@@ -937,11 +963,12 @@ pub begin_window :: proc(
     right = rect_right(window^.bounds)
     bottom = rect_bottom(window^.bounds)
     close_point = Point{column = window^.bounds.column + 1, row = window^.bounds.row}
-    zoom_point = Point{column = right - 2, row = window^.bounds.row}
+    zoom_rect = zoom_control_rect(window^.bounds)
+    zoom_point = Point{column = zoom_rect.column, row = zoom_rect.row}
     resize_point = Point{column = right - 1, row = bottom - 1}
     close_visible = window^.flags.closable
-    zoom_visible = window^.flags.zoomable &&
-        (!close_visible || close_point.column != zoom_point.column)
+    zoom_visible = window^.flags.zoomable && !rect_empty(zoom_rect) &&
+        (!close_visible || !point_in_rect(close_point, zoom_rect))
 
     result.visible = true
     result.previous_clip = state^.clip
@@ -980,16 +1007,16 @@ pub begin_window :: proc(
         put_clipped(state^.surface, state^.desktop, close_point, '■', title_style)
         title_column += 2
     }
-    title_end := right - 2
+    title_end := right - 1
     if zoom_visible {
         zoom_glyph := '↕'
         if window^.zoomed {
             zoom_glyph = '↔'
         }
         put_clipped(state^.surface, state^.desktop, zoom_point, zoom_glyph, title_style)
-        if title_end >= 2 {
-            title_end -= 2
-        }
+        // Keep the separator cell visible between title text and the arrow;
+        // zoom_rect already excludes the structural upper-right corner.
+        title_end = zoom_rect.column - 1
     }
     if title_end > title_column {
         title_clip := Rect{

@@ -156,6 +156,10 @@ non-zooming tool windows, fixed-size dialogs, and topmost popup scopes through
 plain capability records and balanced immediate-mode calls. Close is a request
 returned to Draft application policy; modal dialogs exclusively route mouse,
 keyboard, and focus; drop-down menus and combo lists share one popup capture.
+Window chrome uses the same pinned Unicode column widths as `core/tui`: the
+two-column zoom arrow reserves the upper-right corner, and shadows use explicit
+one-column shade cells so differential erasure changes glyph content as well as
+style.
 Menu titles and rows derive both their visible underlined mnemonic and their
 activation from one access-key value. Right-aligned command shortcuts remain
 application policy, so Turbo Draft handles them before focused controls and

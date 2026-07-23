@@ -7,6 +7,14 @@ package turbo_ui
 import core/tui
 import core/unicode
 
+// A shadow is intentionally a real one-column glyph rather than a styled
+// space. Its foreground and background remain the caller's shadow color, so it
+// still appears as a solid classic text-mode shadow. The explicit cell content
+// also means that moving or closing a window changes both glyph and style at
+// every old shadow position; terminal repaint correctness no longer relies on
+// a background-color transition applied to an otherwise identical space.
+Shadow_Glyph :: '░'
+
 surface_bounds :: proc(surface: ^tui.Surface) -> Rect {
     return Rect{width = surface^.columns, height = surface^.rows}
 }
@@ -258,7 +266,8 @@ pub draw_border :: proc(
 
 // draw_shadow paints the conventional one-cell right/bottom shadow outside a
 // window. The requested shadow is still clipped against the Surface and parent
-// clip, so windows at an edge remain harmless.
+// clip, so windows at an edge remain harmless. Shadow_Glyph has one column
+// under core/unicode's pinned width policy.
 pub draw_shadow :: proc(
     surface: ^tui.Surface,
     clip, rect: Rect,
@@ -276,6 +285,6 @@ pub draw_shadow :: proc(
         width = rect.width,
         height = 1,
     }
-    return fill_rect(surface, clip, right_shadow, ' ', style_value) &&
-        fill_rect(surface, clip, bottom_shadow, ' ', style_value)
+    return fill_rect(surface, clip, right_shadow, Shadow_Glyph, style_value) &&
+        fill_rect(surface, clip, bottom_shadow, Shadow_Glyph, style_value)
 }

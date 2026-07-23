@@ -38,6 +38,12 @@ visible lower-right resize handle. Alt-F3 requests close; Ctrl-F5 enters
 keyboard move/size mode, arrows move, Shift-arrows resize, Enter accepts, and
 Escape restores the entry rectangle.
 
+Chrome geometry follows `core/unicode`'s pinned terminal-width policy. The zoom
+arrow occupies two cells and reserves the upper-right border corner; either
+arrow cell is the same mouse target. Shadows use an explicit one-column shade
+glyph in the shadow color, so exposing an old shadow changes glyph content as
+well as background style during differential repainting.
+
 `tile_windows` and `cascade_windows` provide deterministic whole-desktop
 arrangement for visible windows whose independent `tileable` flag is set. Both
 deliberately leave fixed dialogs, auxiliary tool panes, and hidden windows
