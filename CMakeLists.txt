@@ -151,6 +151,7 @@ add_library(
   src/judgment/selection.cpp
   src/mir/lower.cpp
   src/mir/mir.cpp
+  src/mir/native_reachability.cpp
   src/mir/verify.cpp
   src/source/diagnostic.cpp
   src/source/source.cpp
@@ -609,6 +610,16 @@ if(BUILD_TESTING)
   add_executable(draft_mir_tests tests/mir_test.cpp)
   target_link_libraries(draft_mir_tests PRIVATE draft_compiler)
   add_test(NAME draft_mir_tests COMMAND draft_mir_tests)
+
+  add_executable(
+    draft_native_reachability_tests
+    tests/native_reachability_test.cpp
+  )
+  target_link_libraries(draft_native_reachability_tests PRIVATE draft_compiler)
+  add_test(
+    NAME draft_native_reachability_tests
+    COMMAND draft_native_reachability_tests
+  )
 
   add_executable(draft_llvm_ir_tests tests/llvm_ir_test.cpp)
   target_link_libraries(draft_llvm_ir_tests PRIVATE draft_compiler)
