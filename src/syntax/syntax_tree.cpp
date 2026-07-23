@@ -53,6 +53,29 @@ void SyntaxTree::set_root(NodeId root) {
   root_ = root;
 }
 
+void SyntaxTree::rebase_file(FileId file) {
+  assert(file.is_valid());
+  const FileId previous = file_;
+
+  // Tokens are the primary lexical ranges. Parser-created node ranges are
+  // derived from them, including zero-width recovery nodes, so both arenas
+  // must move together when their private source buffer receives its canonical
+  // command ID.
+  for (Token &token : tokens_) {
+    assert(token.range.is_valid());
+    assert(token.range.begin.file == previous);
+    token.range.begin.file = file;
+    token.range.end.file = file;
+  }
+  for (SyntaxNode &node : nodes_) {
+    assert(node.range.is_valid());
+    assert(node.range.begin.file == previous);
+    node.range.begin.file = file;
+    node.range.end.file = file;
+  }
+  file_ = file;
+}
+
 FileId SyntaxTree::file() const {
   return file_;
 }

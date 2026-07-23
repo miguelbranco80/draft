@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cassert>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <utility>
 
@@ -92,6 +93,20 @@ LoadFileResult SourceManager::load_file(const std::string &path) {
 
   FileId id = add_source(path, bytes.str());
   return {true, id, {}};
+}
+
+FileId SourceManager::append_sources(SourceManager &&source_island) {
+  assert(!source_island.files_.empty());
+  assert(files_.size() + source_island.files_.size() <=
+         static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()));
+
+  const FileId first{static_cast<std::uint32_t>(files_.size())};
+  files_.insert(
+      files_.end(),
+      std::make_move_iterator(source_island.files_.begin()),
+      std::make_move_iterator(source_island.files_.end()));
+  source_island.files_.clear();
+  return first;
 }
 
 const SourceFile &SourceManager::file(FileId id) const {

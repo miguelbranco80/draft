@@ -191,6 +191,13 @@ public:
 
   void set_root(NodeId root);
 
+  // Reattaches a complete tree to a new process-local source-file ID without
+  // changing byte offsets, token order, node IDs, or grammar structure. Every
+  // valid token and node range must currently name file(); this invariant is
+  // established by parsing one complete file. Package loading uses the method
+  // after moving a worker-private source island into the command SourceManager.
+  void rebase_file(FileId file);
+
   [[nodiscard]] FileId file() const;
   [[nodiscard]] NodeId root() const;
   [[nodiscard]] const SyntaxNode &node(NodeId id) const;

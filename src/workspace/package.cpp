@@ -10,11 +10,15 @@
 #include "workspace/package.h"
 
 #include "base/timing.h"
+#include "base/work_graph.h"
 #include "syntax/parser.h"
 
 #include <algorithm>
+#include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <limits>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -23,23 +27,129 @@
 namespace draft {
 namespace {
 
-// File detail is intentionally dormant outside --timings=all. The filename is
-// package-relative and safe to display, but formatting it on every ordinary
-// compile would make the diagnostic facility impose work while disabled.
-[[nodiscard]] TimingScope time_file_operation(
-    TimingRecorder *timings,
-    std::string_view operation,
-    std::string_view relative_name) {
-  if (timings == nullptr || timings->output() != TimingOutput::All) return {};
-  return timings->scope(
-      std::string(operation) + std::string(relative_name),
-      TimingVisibility::Detail);
-}
-
 struct SelectedFile {
   std::string name;
   PackageFileKind kind = PackageFileKind::DraftSource;
 };
+
+// PackageFileTask owns every mutable object touched while one complete file is
+// read, lexed, and parsed. Its SourceManager begins empty and contains exactly
+// one file after successful I/O. The worker never touches command-owned source
+// or diagnostic storage, which makes complete files independently schedulable
+// without locks. Coordinator publication later follows the vector's canonical
+// filename order, not worker completion order.
+struct PackageFileTask {
+  SelectedFile selected;
+  std::filesystem::path physical;
+  const PackageSourceOverride *source_override = nullptr;
+  SourceManager sources;
+  DiagnosticSink diagnostics;
+  std::optional<SyntaxTree> syntax;
+  // False retains a canonical publication slot for a configuration diagnostic
+  // but suppresses I/O, as for an illegal resolved assembly override.
+  bool process = true;
+  bool loaded = false;
+  std::uint64_t source_nanoseconds = 0;
+  std::uint64_t parse_nanoseconds = 0;
+};
+
+struct PackageFileTaskContext {
+  std::vector<PackageFileTask> *tasks = nullptr;
+  bool measure_detail = false;
+};
+
+using PackageFileClock = std::chrono::steady_clock;
+
+[[nodiscard]] std::uint64_t elapsed_nanoseconds(
+    PackageFileClock::time_point started) {
+  const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      PackageFileClock::now() - started).count();
+  assert(elapsed >= 0 && "source task duration must be nonnegative");
+  return static_cast<std::uint64_t>(elapsed);
+}
+
+// Executes the full front-end chain for one file. In particular, this is not a
+// token-range or parser-region task: one worker reads all bytes, lexes the whole
+// file through parse_source_file, and constructs its complete SyntaxTree. I/O
+// and syntax failures are ordinary task-local diagnostics and still count as a
+// successfully scheduled operation; only a broken task-ID invariant fails the
+// work graph itself.
+[[nodiscard]] bool execute_package_file_task(
+    void *opaque_context,
+    WorkTaskId task_id,
+    std::string &failure) {
+  auto *context = static_cast<PackageFileTaskContext *>(opaque_context);
+  if (context == nullptr || context->tasks == nullptr ||
+      static_cast<std::size_t>(task_id) >= context->tasks->size()) {
+    failure = "package file task ID is outside its result table";
+    return false;
+  }
+
+  PackageFileTask &task = (*context->tasks)[task_id];
+  if (!task.process) return true;
+  const PackageFileClock::time_point source_started = context->measure_detail
+      ? PackageFileClock::now()
+      : PackageFileClock::time_point{};
+  LoadFileResult load;
+  if (task.source_override != nullptr) {
+    load.ok = true;
+    load.file = task.sources.add_source(
+        task.physical.string() + " [resolved]",
+        task.source_override->contents,
+        task.source_override->expansion_maps);
+  } else {
+    load = task.sources.load_file(task.physical.string());
+  }
+  if (context->measure_detail) {
+    task.source_nanoseconds = elapsed_nanoseconds(source_started);
+  }
+  if (!load.ok) {
+    task.diagnostics.error(SourceRange::invalid(), std::move(load.error));
+    return true;
+  }
+
+  assert(load.file.value == 0);
+  assert(task.sources.file_count() == 1);
+  task.loaded = true;
+  if (task.selected.kind == PackageFileKind::DraftSource) {
+    const PackageFileClock::time_point parse_started = context->measure_detail
+        ? PackageFileClock::now()
+        : PackageFileClock::time_point{};
+    task.syntax.emplace(
+        parse_source_file(task.sources, load.file, task.diagnostics));
+    if (context->measure_detail) {
+      task.parse_nanoseconds = elapsed_nanoseconds(parse_started);
+    }
+  }
+  return true;
+}
+
+// Rebases a task-local diagnostic range after its sole source file has been
+// published into the command SourceManager. Invalid pre-source ranges remain
+// invalid. Valid ranges must name the worker's file zero by construction.
+[[nodiscard]] SourceRange rebase_task_range(
+    SourceRange range,
+    FileId published_file) {
+  if (!range.is_valid()) return range;
+  assert(published_file.is_valid());
+  assert(range.begin.file.value == 0);
+  assert(range.end.file.value == 0);
+  range.begin.file = published_file;
+  range.end.file = published_file;
+  return range;
+}
+
+void publish_task_diagnostics(
+    DiagnosticSink &destination,
+    const DiagnosticSink &source,
+    FileId published_file) {
+  for (const Diagnostic &diagnostic : source.diagnostics()) {
+    destination.report(
+        diagnostic.severity,
+        rebase_task_range(diagnostic.range, published_file),
+        diagnostic.message);
+  }
+}
 
 // Selects at most one exact-name in-memory replacement. A duplicate is a
 // caller/configuration error rather than a last-wins rule because choosing one
@@ -235,52 +345,131 @@ PackageLoadResult load_package(
   });
   discovery_timing.finish();
 
+  // Resolve overrides and reject impossible task rows before starting workers.
+  // This coordinator walk follows the same sorted filename order later used for
+  // publication, so configuration diagnostics remain deterministic too.
+  std::vector<PackageFileTask> file_tasks;
+  file_tasks.reserve(selected.size());
   bool saw_draft_source = false;
   std::vector<std::string> used_overrides;
   for (const SelectedFile &selected_file : selected) {
     const std::filesystem::path physical = directory_path / selected_file.name;
+    PackageFileTask task;
+    task.selected = selected_file;
+    task.physical = physical;
     const PackageSourceOverride *source_override = find_override(
-        options, selected_file.name, diagnostics);
+        options, selected_file.name, task.diagnostics);
     if (source_override != nullptr &&
         selected_file.kind != PackageFileKind::DraftSource) {
-      diagnostics.error(
+      task.diagnostics.error(
           SourceRange::invalid(),
           "resolved source cannot override assembly file '" +
               selected_file.name + "'");
-      continue;
+      task.process = false;
     }
-    LoadFileResult load;
-    TimingScope source_timing = time_file_operation(
-        options.timings,
-        source_override != nullptr
-            ? "resolved source install: "
-            : "source file I/O: ",
-        selected_file.name);
-    if (source_override != nullptr) {
-      load.ok = true;
-      load.file = sources.add_source(
-          physical.string() + " [resolved]",
-          source_override->contents,
-          source_override->expansion_maps);
+    if (task.process && source_override != nullptr) {
       used_overrides.push_back(source_override->relative_name);
-    } else {
-      load = sources.load_file(physical.string());
     }
-    source_timing.finish();
-    if (!load.ok) {
-      diagnostics.error(SourceRange::invalid(), std::move(load.error));
+    task.source_override = source_override;
+    file_tasks.push_back(std::move(task));
+  }
+
+  if (file_tasks.size() >
+      static_cast<std::size_t>(std::numeric_limits<WorkTaskId>::max())) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "package directory '" + directory + "' contains too many source files");
+    return result;
+  }
+
+  // Every graph row owns one whole file and has no dependency on another file.
+  // A one-file package stays on the calling thread; larger packages use the
+  // command executor's bounded pool. The synchronous join makes every task
+  // slot immutable before the coordinator publishes any source or diagnostic.
+  WorkGraph file_graph;
+  file_graph.tasks.resize(file_tasks.size());
+  PackageFileTaskContext task_context{
+      &file_tasks,
+      options.timings != nullptr &&
+          options.timings->output() == TimingOutput::All};
+  WorkExecutor local_executor;
+  WorkExecutor &executor = options.work_executor != nullptr
+      ? *options.work_executor
+      : local_executor;
+  WorkGraphRunResult scheduled;
+  if (!file_graph.tasks.empty()) {
+    scheduled = executor.run(
+        file_graph,
+        WorkGraphRunOptions{options.file_worker_count},
+        execute_package_file_task,
+        &task_context);
+    if (!scheduled.ok) {
+      std::string reason = "unknown scheduler failure";
+      for (const WorkTaskResult &task : scheduled.tasks) {
+        if (task.state == WorkTaskState::Failed && !task.failure.empty()) {
+          reason = task.failure;
+          break;
+        }
+      }
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot process package source files: " + reason);
+      return result;
+    }
+  }
+  if (options.timings != nullptr) {
+    options.timings->add_counter(
+        "source file tasks",
+        static_cast<std::uint64_t>(file_tasks.size()));
+    if (!file_tasks.empty()) {
+      options.timings->add_counter("source file task waves", 1);
+      options.timings->add_counter(
+          "source file worker slots",
+          static_cast<std::uint64_t>(scheduled.workers_used));
+    }
+  }
+
+  // Publish in canonical filename order. FileId assignment, diagnostic order,
+  // package-name selection, and the LoadedPackage file vector are therefore
+  // byte-for-byte independent of worker scheduling.
+  for (PackageFileTask &task : file_tasks) {
+    if (task_context.measure_detail && task.process) {
+      options.timings->record_completed_event(
+          std::string(task.source_override != nullptr
+                          ? "resolved source install: "
+                          : "source file I/O: ") + task.selected.name,
+          task.source_nanoseconds,
+          TimingVisibility::Detail);
+      if (task.loaded &&
+          task.selected.kind == PackageFileKind::DraftSource) {
+        options.timings->record_completed_event(
+            "lex and parse: " + task.selected.name,
+            task.parse_nanoseconds,
+            TimingVisibility::Detail);
+      }
+    }
+
+    if (!task.loaded) {
+      publish_task_diagnostics(diagnostics, task.diagnostics, FileId{});
       continue;
     }
 
+    const FileId published_file =
+        sources.append_sources(std::move(task.sources));
+    if (task.syntax.has_value()) {
+      task.syntax->rebase_file(published_file);
+    }
+    publish_task_diagnostics(
+        diagnostics, task.diagnostics, published_file);
+
     LoadedPackageFile file;
-    file.kind = selected_file.kind;
-    file.relative_name = selected_file.name;
-    file.source = load.file;
-    if (selected_file.kind == PackageFileKind::DraftSource) {
+    file.kind = task.selected.kind;
+    file.relative_name = task.selected.name;
+    file.source = published_file;
+    if (task.selected.kind == PackageFileKind::DraftSource) {
       saw_draft_source = true;
-      TimingScope parse_timing = time_file_operation(
-          options.timings, "lex and parse: ", selected_file.name);
-      file.syntax.emplace(parse_source_file(sources, load.file, diagnostics));
+      assert(task.syntax.has_value());
+      file.syntax.emplace(std::move(*task.syntax));
       const std::optional<std::string> name = package_name_from_tree(sources, *file.syntax);
       if (name.has_value()) {
         if (result.package.short_name.empty()) {

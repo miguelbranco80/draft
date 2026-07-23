@@ -61,7 +61,7 @@ expression, or name lookup.
 | --- | --- |
 | Target profile | One immutable set of semantic target facts precedes every target-dependent type, ABI, MIR, and native product. |
 | Source generation | One selected authored/generated source set owns the product slice derived from those exact bytes. |
-| Parsed file | Loading, lexing, and parsing are eager and independent per file. |
+| Parsed file | Loading, whole-file lexing, and whole-file parsing are eager and independent per file; canonical filename-order publication follows the join. |
 | Package imports | The acyclic package graph orders interface dependencies. |
 | Package name set | All authored declarations plus accepted declaration/member expansions are known before dependent lookup proceeds. |
 | Package interface | The package's exported names, concrete generic results, and closed effect/return/write contracts are immutable consumer inputs. |
@@ -229,6 +229,14 @@ product; LLVM emission consumes one or more deterministic units over the
 completed ordered live MIR/global set while retaining a complete package unit
 for O2; and deterministic parallel scheduling is qualified at one and four
 semantic workers.
+
+Initial parsed-file work uses the same bounded command executor as later
+products, but its task boundary is deliberately coarser than the syntax tree:
+one task owns the complete read/lex/parse chain for one file. Each task builds a
+private source island and diagnostic packet. The coordinator assigns stable
+command FileIds and publishes diagnostics only after joining all selected files
+in a package, in bytewise filename order. No parser invocation is split across
+workers.
 
 The bootstrap retains package-owned canonical semantic tables because stable
 SymbolId, ScopeId, and TypeId values need one publication domain. Workers never

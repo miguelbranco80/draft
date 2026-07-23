@@ -48,6 +48,15 @@ The compiler has four main layers:
    Draft MIR to LLVM IR, verifies the selected target contract at the in-process
    LLVM boundary, emits native objects, and performs the final platform link.
 
+The front end treats one complete selected file as its smallest scheduling
+unit. A worker privately reads all of that file, lexes its complete byte stream,
+and parses one complete syntax tree; the parser never divides a file into token
+or source regions. After the file tasks join, the coordinator moves their
+source buffers, trees, and diagnostics into command-owned tables in bytewise
+filename order. File IDs and diagnostic order are consequently identical with
+one or many workers, and neither `SourceManager` nor the parser requires shared
+mutation or locks.
+
 The semantic and native pipeline is complete without the elaborator. The
 elaborator closes typed holes in an otherwise ordinary program; it is not the
 foundation on which ordinary parsing, checking, or code generation depends.
@@ -227,9 +236,10 @@ table sizes, and final LLVM bytes. Dynamic discovery still occurs only between
 waves, never by concurrent mutation of the semantic graph. A one-worker wave
 runs directly on the calling thread. The first parallel wave starts one bounded
 pool with an explicit eight-MiB stack per worker; the same sleeping workers
-serve later semantic, LLVM, assembly, and artifact graphs until the command
-ends. The executor retains no syntax or compiler product between runs, so this
-is thread reuse rather than semantic memoization or a cross-command cache.
+serve complete-file front-end tasks and later semantic, LLVM, assembly, and
+artifact graphs until the command ends. The executor retains no syntax or
+compiler product between runs, so this is thread reuse rather than semantic
+memoization or a cross-command cache.
 
 Body selection is an explicit projection over immutable procedure products.
 Authored roots are always selected; a current external demand selects its exact

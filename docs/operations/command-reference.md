@@ -89,14 +89,18 @@ executables. In-process LLVM work contributes ordinary parent wall/CPU time.
 
 `--timings=all` adds package/tool-level events, source discovery and I/O,
 lexing/parsing, import-graph resolution, and each visible event's exclusive
-`self` duration. Declaration semantics is divided into ready-wave selection,
-task preparation, bounded task execution, and coordinator publication. Effect
-closure separates procedure-flow convergence, SCC construction, transitive
-effect propagation, and call-site composition. Each parallel production LLVM
-package row separates direct module construction, target validation, one-time
-verification, target-machine setup, optional O2/ASan passes, machine-code
-emission, and output copying. Input preparation and textual IR parsing appear
-only when the explicit external-oracle route is exercised.
+`self` duration. The `source file tasks`, `source file task waves`, and `source
+file worker slots` counters describe whole-file read/lex/parse scheduling;
+individual file events are replayed in canonical filename order after those
+tasks join, so their durations may overlap. Declaration semantics is divided
+into ready-wave selection, task preparation, bounded task execution, and
+coordinator publication. Effect closure separates procedure-flow convergence,
+SCC construction, transitive effect propagation, and call-site composition.
+Each parallel production LLVM package row separates direct module construction,
+target validation, one-time verification, target-machine setup, optional
+O2/ASan passes, machine-code emission, and output copying. Input preparation and
+textual IR parsing appear only when the explicit external-oracle route is
+exercised.
 
 Reports are diagnostic observations only: the flag does not enter compiler
 configuration, resolved-program identity, manifests, or emitted artifacts.

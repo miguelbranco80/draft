@@ -6,12 +6,14 @@
 // assembly participation, canonical sorting, parsing, and cross-file package
 // name consistency.
 
+#include "base/work_graph.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "workspace/package.h"
 
 #include "test_directory.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -158,6 +160,98 @@ void test_contextual_core_package_name(TestState &state) {
   EXPECT(state, result.package.short_name == "memory");
 }
 
+// The package loader's observable state must not expose worker completion
+// order. This runs the same malformed multi-file package through the inline
+// oracle and a four-worker executor, then compares source IDs, exact bytes,
+// complete trees, and rendered diagnostics.
+void test_complete_file_parallelism_preserves_publication(TestState &state) {
+  TemporaryPackage temporary;
+  write_file(
+      temporary.path / "00_package.draft",
+      "package demo\nRoot :: 1\n");
+  write_file(
+      temporary.path / "10_wrong_name.draft",
+      "package other\nOther :: 2\n");
+  write_file(
+      temporary.path / "20_bad_syntax.draft",
+      "package demo\nBroken ::\n");
+  write_file(
+      temporary.path / "30_extra.draft",
+      "package demo\nExtra :: 3\n");
+
+  draft::SourceManager sequential_sources;
+  draft::DiagnosticSink sequential_diagnostics;
+  draft::WorkExecutor sequential_executor;
+  draft::PackageLoadOptions sequential_options;
+  sequential_options.file_tag = "aarch64-macos";
+  sequential_options.work_executor = &sequential_executor;
+  sequential_options.file_worker_count = 1;
+  const draft::PackageLoadResult sequential = draft::load_package(
+      sequential_sources,
+      temporary.path.string(),
+      sequential_options,
+      sequential_diagnostics);
+
+  draft::SourceManager parallel_sources;
+  draft::DiagnosticSink parallel_diagnostics;
+  draft::WorkExecutor parallel_executor;
+  draft::PackageLoadOptions parallel_options;
+  parallel_options.file_tag = "aarch64-macos";
+  parallel_options.work_executor = &parallel_executor;
+  parallel_options.file_worker_count = 4;
+  const draft::PackageLoadResult parallel = draft::load_package(
+      parallel_sources,
+      temporary.path.string(),
+      parallel_options,
+      parallel_diagnostics);
+
+  EXPECT(state, !sequential.ok);
+  EXPECT(state, !parallel.ok);
+  EXPECT(state, sequential.package.short_name == parallel.package.short_name);
+  EXPECT(state, sequential.package.files.size() == parallel.package.files.size());
+  EXPECT(state, sequential_sources.file_count() == parallel_sources.file_count());
+  const std::size_t shared_file_count = std::min(
+      sequential.package.files.size(), parallel.package.files.size());
+  for (std::size_t index = 0; index < shared_file_count; ++index) {
+    const draft::LoadedPackageFile &sequential_file =
+        sequential.package.files[index];
+    const draft::LoadedPackageFile &parallel_file =
+        parallel.package.files[index];
+    EXPECT(state, sequential_file.relative_name == parallel_file.relative_name);
+    EXPECT(state, sequential_file.kind == parallel_file.kind);
+    EXPECT(state, sequential_file.source.value == index);
+    EXPECT(state, parallel_file.source.value == index);
+    EXPECT(
+        state,
+        sequential_sources.text(sequential_file.source) ==
+            parallel_sources.text(parallel_file.source));
+    EXPECT(
+        state,
+        sequential_file.syntax.has_value() == parallel_file.syntax.has_value());
+    if (sequential_file.syntax.has_value() &&
+        parallel_file.syntax.has_value()) {
+      EXPECT(state, sequential_file.syntax->file() == sequential_file.source);
+      EXPECT(state, parallel_file.syntax->file() == parallel_file.source);
+      EXPECT(
+          state,
+          draft::dump_syntax_tree(*sequential_file.syntax) ==
+              draft::dump_syntax_tree(*parallel_file.syntax));
+    }
+  }
+
+  // Both the package-name error and later parser error must remain in canonical
+  // filename order even though four workers may finish in any order.
+  const std::string sequential_rendered =
+      draft::render_diagnostics(sequential_sources, sequential_diagnostics);
+  const std::string parallel_rendered =
+      draft::render_diagnostics(parallel_sources, parallel_diagnostics);
+  EXPECT(state, sequential_rendered == parallel_rendered);
+  EXPECT(
+      state,
+      sequential_rendered.find("10_wrong_name.draft") <
+          sequential_rendered.find("20_bad_syntax.draft"));
+}
+
 } // namespace
 
 int main() {
@@ -166,6 +260,7 @@ int main() {
   test_validation_file_selection(state);
   test_mismatched_package_name(state);
   test_contextual_core_package_name(state);
+  test_complete_file_parallelism_preserves_publication(state);
 
   if (state.failures != 0) {
     std::cerr << state.failures << " package test expectation(s) failed\n";

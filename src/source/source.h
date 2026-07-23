@@ -117,6 +117,16 @@ public:
   // The function never throws and does not mutate the manager on failure.
   [[nodiscard]] LoadFileResult load_file(const std::string &path);
 
+  // Moves every file from one private source island into this manager and
+  // returns the new ID of the island's first file. The source island must be
+  // nonempty and becomes empty. Files retain their order and exact bytes, line
+  // tables, and expansion maps; only their process-local FileId changes by the
+  // returned offset. This is the deterministic publication boundary for
+  // complete files read and parsed by parallel workers: workers never mutate
+  // the command-owned manager, and the coordinator merges islands in canonical
+  // filename order after joining them.
+  [[nodiscard]] FileId append_sources(SourceManager &&source_island);
+
   [[nodiscard]] const SourceFile &file(FileId id) const;
   [[nodiscard]] std::string_view text(FileId id) const;
   [[nodiscard]] std::string_view text(SourceRange range) const;

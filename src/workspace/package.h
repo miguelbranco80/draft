@@ -19,6 +19,7 @@
 #include "source/source.h"
 #include "syntax/syntax_tree.h"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -27,6 +28,7 @@
 namespace draft {
 
 class TimingRecorder;
+class WorkExecutor;
 
 enum class PackageFileKind {
   DraftSource,
@@ -54,7 +56,10 @@ struct PackageSourceOverride {
 // validation commands may include either set. source_overrides is normally
 // empty and is populated by the resolved-program orchestrator only after it has
 // verified pins and generated-source hashes. timings changes none of those
-// choices and is never inspected by identity construction.
+// choices and is never inspected by identity construction. work_executor and
+// file_worker_count are likewise scheduling policy: each selected file remains
+// one indivisible read/lex/parse task, and the coordinator publishes completed
+// files afterward in canonical filename order.
 struct PackageLoadOptions {
   std::string file_tag;
   bool include_tests = false;
@@ -63,6 +68,14 @@ struct PackageLoadOptions {
   // Optional observer for file discovery, I/O, and parsing. It is not a
   // package-selection fact and never participates in source identity.
   TimingRecorder *timings = nullptr;
+  // Optional command-owned executor borrowed only for the synchronous call to
+  // load_package. A null pointer uses a local executor, which keeps standalone
+  // package-loader clients correct without creating persistent state.
+  WorkExecutor *work_executor = nullptr;
+  // Zero selects the executor's host bound. The executor caps the count to the
+  // number of complete-file tasks. This value never changes source selection,
+  // FileId assignment, syntax, or diagnostic order.
+  std::size_t file_worker_count = 0;
 };
 
 // LoadedPackageFile owns no source bytes; FileId points into the caller-owned

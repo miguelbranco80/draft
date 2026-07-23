@@ -39,7 +39,14 @@ order. Interface-synthesis discovery uses these same products; there is no
 aggregate declaration/constant discovery path. Aggregate-member conditions have
 independent products and exact dynamically discovered continuation edges.
 Member-name and member-type readiness are separate products with stable member
-identities between them. After the workspace body fixed point, every canonical
+identities between them.
+
+Every selected source file is read, lexed, and parsed as one independent task
+using a private source island. Publication into the command SourceManager
+remains serialized by canonical filename so FileIds and diagnostics are
+deterministic; the parser itself is not subdivided within one file.
+
+After the workspace body fixed point, every canonical
 source-semantic TypeId has one target-specific `TypeAbiClassification` product.
 Declaration-baseline rows depend on the package interface, while a type first
 published by a procedure depends on that exact procedure product. All packages
@@ -91,8 +98,11 @@ their pending procedure products to one workspace-wide frozen ready set. New
 external owner bodies depend on the exact completed consumer product which
 requested them; package-local semantic suffixes still publish in PackageId/work
 order after the ready wave returns. No semantic-wave payload imposes a
-package-local execution chain; only source-loading name/interface barriers are
-serialized after read-only task slots join.
+package-local execution chain; only package name/interface barriers which may
+load validation source are serialized after read-only task slots join. Those
+barriers may invoke the complete-file scheduler synchronously on the
+coordinator, so the command executor is never re-entered from one of its own
+workers.
 Final effect/interface closure likewise uses dependency-ready package fronts.
 Preparation and flow closure run as package tasks; direct effects and denials
 from every package in the front share procedure waves. Completed SCC products

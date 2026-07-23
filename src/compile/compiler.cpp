@@ -226,6 +226,9 @@ void configure_package_selection(CompileWorkspaceOptions &options) {
   }
   options.workspace.package_options.file_tag = options.target.facts.file_tag;
   options.workspace.package_options.timings = options.timings;
+  options.workspace.package_options.work_executor = options.work_executor.get();
+  options.workspace.package_options.file_worker_count =
+      options.semantic_worker_count;
 }
 
 // Builds every package-topology view in one linear edge pass, canonicalizes the
