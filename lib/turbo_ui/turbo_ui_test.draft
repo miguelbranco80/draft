@@ -487,10 +487,19 @@ submit_test_menu :: proc(
         state, menu, 50, 51,
         Rect{column = 1, row = 1, width = 22, height = 6},
     )
-    menu_action(state, menu, &popup, 52, "Open", "Ctrl-O")
+    menu_action(
+        state, menu, &popup, 52, "Open", "Ctrl-O",
+        access_key = cast[u8]('o'),
+    )
     menu_separator(state, &popup)
-    menu_action(state, menu, &popup, 53, "Disabled", "", false)
-    changed := menu_check(state, menu, &popup, 54, "Checked", checked)
+    menu_action(
+        state, menu, &popup, 53, "Disabled", "", false,
+        access_key = cast[u8]('d'),
+    )
+    changed := menu_check(
+        state, menu, &popup, 54, "Checked", checked,
+        access_key = cast[u8]('c'),
+    )
     end_menu(state, menu, popup)
     return changed
 }
@@ -515,6 +524,18 @@ test_menu_popup_navigation :: proc(test: ^testing.Test) {
     submit_test_menu(&state, &menu, &checked)
     end_frame(&state)
     testing.expect(test, popup_is_open(&state, 51))
+    (title_access, title_access_valid) := tui.cell_at(&surface, 2, 0)
+    (row_access, row_access_valid) := tui.cell_at(&surface, 4, 2)
+    testing.expect(
+        test,
+        title_access_valid && title_access.value == cast[rune]('F') &&
+            title_access.style.underline,
+    )
+    testing.expect(
+        test,
+        row_access_valid && row_access.value == cast[rune]('O') &&
+            row_access.style.underline,
+    )
 
     // One Down moves from row 0 past separator row 1 and disabled row 2 to the
     // checked action on row 3.
@@ -528,6 +549,21 @@ test_menu_popup_navigation :: proc(test: ^testing.Test) {
     changed := submit_test_menu(&state, &menu, &checked)
     end_frame(&state)
     testing.expect(test, changed && checked)
+    testing.expect(test, state.popup_id == No_Widget)
+
+    // A plain access letter activates the matching enabled row while its menu
+    // is open. It does not require the keyboard highlight to reach that row.
+    begin_frame(&state, &surface, key_event(Key_Event{
+        code = .character, byte_value = cast[u8]('f'), alt = true,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    begin_frame(&state, &surface, key_event(Key_Event{
+        code = .character, byte_value = cast[u8]('c'),
+    }), theme)
+    changed = submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, changed && !checked)
     testing.expect(test, state.popup_id == No_Widget)
 
     begin_frame(&state, &surface, key_event(Key_Event{
@@ -624,7 +660,7 @@ test_menu_popup_navigation :: proc(test: ^testing.Test) {
     }), theme)
     changed = submit_test_menu(&state, &menu, &checked)
     end_frame(&state)
-    testing.expect(test, changed && !checked)
+    testing.expect(test, changed && checked)
     testing.expect(test, state.popup_id == No_Widget)
 }
 

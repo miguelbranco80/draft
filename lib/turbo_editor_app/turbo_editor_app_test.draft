@@ -239,3 +239,39 @@ test_editor_is_a_normal_tileable_window :: proc(test: ^testing.Test) {
     testing.expect(test, app.ui.active_window == editor^.id)
     testing.expect(test, app.ui.focused_id == 600)
 }
+
+// Menu shortcut commands belong to the application rather than the currently
+// focused control. This regression starts outside the editor, proves that F2
+// opens instead of toggling Files closed, and proves Ctrl-F reaches the Find
+// modal even while the Files list owns keyboard focus.
+test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-shortcut-test.draft"))
+    defer destroy_app(&app)
+
+    turbo_ui.hide_window(
+        &app.ui,
+        app.windows[:],
+        app.windows[Window_Files].id,
+    )
+    (remaining, quit) := handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{code = .f2},
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, app.windows[Window_Files].visible)
+    testing.expect(test, app.ui.active_window == app.windows[Window_Files].id)
+    testing.expect(test, app.ui.focused_id == 530)
+
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{
+            code = .character,
+            byte_value = 6,
+            control = true,
+        },
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, app.windows[Window_Search].visible)
+    testing.expect(test, app.ui.active_window == app.windows[Window_Search].id)
+    testing.expect(test, app.ui.focused_id == 500)
+}

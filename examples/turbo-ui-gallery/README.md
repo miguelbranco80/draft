@@ -16,10 +16,10 @@ build/draftc build . --root examples/turbo-ui-gallery -o /tmp/turbo-ui-gallery
 ```
 
 Press Escape to quit when no menu or dialog owns it. Use Alt-F/Alt-O for menus,
-Alt-F3 to request closing the active window, or Ctrl-F5 followed by arrows to
-move it (Shift-arrows resize; Enter accepts; Escape restores). Drag a title or
-the visible lower-right handle with the mouse, and use Tab/Shift-Tab plus Enter
-to navigate controls.
+then an underlined command letter; F4 opens the dialog directly. Alt-F3 requests
+closing the active window. Ctrl-F5 followed by arrows moves it (Shift-arrows
+resize; Enter accepts; Escape restores). Drag a title or the visible lower-right
+handle with the mouse, and use Tab/Shift-Tab plus Enter to navigate controls.
 
 The deterministic noninteractive path is suitable for native smoke testing:
 

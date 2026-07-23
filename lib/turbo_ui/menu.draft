@@ -5,6 +5,8 @@
 // never clipped by, or hidden behind, the window which opened it.
 package turbo_ui
 
+import core/tui
+
 // Menu_State belongs to the application. The first four fields persist between
 // frames. has_highlight distinguishes a real selected row from a pointer which
 // has left every menu item; row zero is therefore not overloaded as a sentinel.
@@ -66,6 +68,38 @@ ascii_lower :: proc(byte: u8) -> u8 {
     return byte
 }
 
+// paint_menu_label is the title-bar counterpart of paint_label. It keeps the
+// generic widget label free of menu policy while painting the title's visible
+// access key from the same value used by menu_title's keyboard handling.
+paint_menu_label :: proc(
+    state: ^State,
+    bounds: Rect,
+    label_text: string,
+    access_key: u8,
+    style_value: tui.Style,
+) -> bool {
+    if !fill_rect(state^.surface, state^.clip, bounds, ' ', style_value) {
+        return false
+    }
+    if bounds.width < 2 || bounds.height == 0 {
+        return true
+    }
+    label_clip := Rect{
+        column = bounds.column + 1,
+        row = bounds.row,
+        width = bounds.width - 2,
+        height = 1,
+    }
+    return write_access_text(
+        state^.surface,
+        intersect(state^.clip, label_clip),
+        Point{column = label_clip.column, row = label_clip.row},
+        label_text,
+        access_key,
+        style_value,
+    )
+}
+
 open_menu_title :: proc(
     state: ^State,
     menu: ^Menu_State,
@@ -103,10 +137,11 @@ pub menu_bar :: proc(
     fill_rect(state^.surface, surface_bounds(state^.surface), bounds, ' ', state^.theme.menu)
 }
 
-// menu_title opens on a primary press or Alt+access_key. While a drop-down is
-// open, moving over another title switches menus without first dismissing the
-// popup. Left/Right traverse titles and wrap in menu_bar_end. popup_bounds is
-// the complete bordered drop-down rectangle, normally immediately below title.
+// menu_title opens on a primary press or Alt+access_key and underlines the same
+// letter in label_text. While a drop-down is open, moving over another title
+// switches menus without first dismissing the popup. Left/Right traverse titles
+// and wrap in menu_bar_end. popup_bounds is the complete bordered drop-down
+// rectangle, normally immediately below title.
 pub menu_title :: proc(
     state: ^State,
     menu: ^Menu_State,
@@ -118,6 +153,7 @@ pub menu_title :: proc(
 ) -> bool {
     assert(id != No_Widget && popup_id != No_Widget,
         "turbo_ui menu IDs zero are reserved")
+    assert(access_key != 0, "turbo_ui menu title requires an access key")
     if menu^.first_title == No_Widget {
         menu^.first_title = id
         menu^.first_popup = popup_id
@@ -209,7 +245,7 @@ pub menu_title :: proc(
     if open || hovered {
         style_value = state^.theme.menu_selected
     }
-    paint_label(state, bounds, label_text, style_value)
+    paint_menu_label(state, bounds, label_text, access_key, style_value)
 
     menu^.previous_title = id
     menu^.previous_popup = popup_id
@@ -306,6 +342,7 @@ menu_row :: proc(
     label_text, shortcut: string,
     marker: rune,
     enabled: bool,
+    access_key: u8,
 ) -> bool {
     assert(id != No_Widget, "turbo_ui menu item ID zero is reserved")
     if !menu_context^.visible {
@@ -372,6 +409,19 @@ menu_row :: proc(
         activated = true
         state^.event_handled = true
     }
+    // An open menu accepts the unmodified mnemonic directly. Shift is allowed
+    // because terminals commonly report an uppercase byte for Shift+letter;
+    // Alt remains reserved for choosing a top-level title and Control remains
+    // available to the application's global command shortcuts.
+    if enabled && access_key != 0 && !state^.event_handled &&
+        state^.event.kind == .key {
+        key := state^.event.key
+        if key.code == .character && !key.alt && !key.control &&
+            ascii_lower(key.byte_value) == ascii_lower(access_key) {
+            activated = true
+            state^.event_handled = true
+        }
+    }
 
     style_value := state^.theme.menu
     if !enabled {
@@ -396,11 +446,12 @@ menu_row :: proc(
             width = row_bounds.width - 2,
             height = 1,
         }
-        write_clipped(
+        write_access_text(
             state^.surface,
             intersect(state^.clip, label_bounds),
             Point{column = label_bounds.column, row = label_bounds.row},
             label_text,
+            access_key,
             style_value,
         )
     }
@@ -426,8 +477,11 @@ menu_row :: proc(
     return activated
 }
 
-// menu_action reports activation and closes the menu. It performs no callback;
-// the caller executes the operation in the surrounding direct control flow.
+// menu_action reports activation and closes the menu. access_key zero disables
+// a row mnemonic; otherwise it must name one printable ASCII label character,
+// which is underlined and activates the row without modifiers while open. The
+// procedure performs no callback; the caller executes the operation in the
+// surrounding direct control flow.
 pub menu_action :: proc(
     state: ^State,
     menu: ^Menu_State,
@@ -436,10 +490,11 @@ pub menu_action :: proc(
     label_text: string,
     shortcut: string = "",
     enabled: bool = true,
+    access_key: u8 = 0,
 ) -> bool {
     if !menu_row(
         state, menu, menu_context, id, label_text, shortcut,
-        cast[rune](0), enabled,
+        cast[rune](0), enabled, access_key,
     ) {
         return false
     }
@@ -451,7 +506,8 @@ pub menu_action :: proc(
 }
 
 // menu_check toggles one caller-owned boolean and closes after activation. Its
-// marker is derived every frame, so external changes appear immediately.
+// marker is derived every frame, so external changes appear immediately. Its
+// optional access_key has the same visible and keyboard contract as an action.
 pub menu_check :: proc(
     state: ^State,
     menu: ^Menu_State,
@@ -461,6 +517,7 @@ pub menu_check :: proc(
     value: ^bool,
     shortcut: string = "",
     enabled: bool = true,
+    access_key: u8 = 0,
 ) -> bool {
     marker: rune
     if value^ {
@@ -468,6 +525,7 @@ pub menu_check :: proc(
     }
     if !menu_row(
         state, menu, menu_context, id, label_text, shortcut, marker, enabled,
+        access_key,
     ) {
         return false
     }
@@ -481,6 +539,8 @@ pub menu_check :: proc(
 
 // menu_radio assigns one caller-owned choice and closes. The return value is a
 // value change, not mere activation; selecting the current choice returns false.
+// Its optional access_key has the same visible and keyboard contract as an
+// action.
 pub menu_radio :: proc(
     state: ^State,
     menu: ^Menu_State,
@@ -491,6 +551,7 @@ pub menu_radio :: proc(
     choice: usize,
     shortcut: string = "",
     enabled: bool = true,
+    access_key: u8 = 0,
 ) -> bool {
     marker: rune
     if value^ == choice {
@@ -498,6 +559,7 @@ pub menu_radio :: proc(
     }
     if !menu_row(
         state, menu, menu_context, id, label_text, shortcut, marker, enabled,
+        access_key,
     ) {
         return false
     }

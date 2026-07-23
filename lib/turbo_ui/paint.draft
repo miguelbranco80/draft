@@ -96,6 +96,64 @@ pub write_clipped :: proc(
     return true
 }
 
+// write_access_text paints a menu label and marks its first matching printable
+// ASCII access key with the terminal underline attribute. The label itself may
+// contain arbitrary UTF-8: grapheme traversal preserves the exact column of the
+// one-byte mnemonic even when wider Unicode text precedes it. A menu access key
+// is an application-authored contract, so a missing key is an assertion rather
+// than a silent invisible binding.
+write_access_text :: proc(
+    surface: ^tui.Surface,
+    clip: Rect,
+    origin: Point,
+    text: string,
+    access_key: u8,
+    style_value: tui.Style,
+) -> bool {
+    if !write_clipped(surface, clip, origin, text, style_value) {
+        return false
+    }
+    if access_key == 0 {
+        return true
+    }
+    assert(
+        access_key >= cast[u8](' ') && access_key <= cast[u8]('~'),
+        "turbo_ui menu access key must be printable ASCII",
+    )
+
+    column := origin.column
+    offset: usize
+    for offset < len(text) {
+        (end, columns, error) := unicode.next_grapheme(text, offset)
+        if error != .none {
+            return false
+        }
+        if end == offset + 1 &&
+            ascii_lower(text[offset]) == ascii_lower(access_key) {
+            access_style := style_value
+            access_style.underline = true
+            glyph_end := saturated_add(column, columns)
+            if column >= clip.column && glyph_end <= rect_right(clip) &&
+                column < surface^.columns && glyph_end <= surface^.columns &&
+                origin.row >= clip.row && origin.row < rect_bottom(clip) &&
+                origin.row < surface^.rows {
+                return tui.write_utf8(
+                    surface,
+                    column,
+                    origin.row,
+                    text[offset:end],
+                    access_style,
+                )
+            }
+            return true
+        }
+        column = saturated_add(column, columns)
+        offset = end
+    }
+    assert(false, "turbo_ui menu access key is absent from its label")
+    return false
+}
+
 // write_clipped_bytes is the byte-owning application counterpart. It retains
 // the exact grapheme/clipping policy of write_clipped while borrowing mutable
 // bytes only for this call; malformed UTF-8 returns false after earlier visible

@@ -127,24 +127,36 @@ file := turbo_ui.begin_menu(
     &ui, &menus, 100, 101,
     turbo_ui.Rect{column = 1, row = 1, width = 26, height = 6},
 )
-if turbo_ui.menu_action(&ui, &menus, &file, 102, "Save", "Ctrl-S") {
+if turbo_ui.menu_action(
+    &ui, &menus, &file, 102, "Save", "Ctrl-S",
+    access_key = cast[u8]('s'),
+) {
     save()
 }
 turbo_ui.menu_separator(&ui, &file)
-turbo_ui.menu_check(&ui, &menus, &file, 103, "Diagnostics", &show_diagnostics)
+turbo_ui.menu_check(
+    &ui, &menus, &file, 103, "Diagnostics", &show_diagnostics,
+    access_key = cast[u8]('d'),
+)
 turbo_ui.end_menu(&ui, &menus, file)
 ```
 
 Drop-down rows support actions, checked values, radio choices, disabled items,
-separators, and right-aligned shortcut labels. Alt+access-key opens a title;
-Left/Right switch titles; Up/Down/Home/End move over enabled rows; Enter acts;
-Escape or an outside press dismisses. With a mouse, either click a title and
-then click one item, or hold on the title, drag through the drop-down, and
-release on the intended item. Leaving the actionable rows and menu content
-clears the transient highlight; re-entering selects only the row actually under
-the pointer. Moving over an inert separator preserves the previous actionable
-row rather than selecting a different command. Menus and combo lists share the
-single explicit popup layer, so transient input capture has one inspectable rule.
+separators, underlined access keys, and right-aligned shortcut labels. The
+access key must be a printable ASCII letter present in its label. Alt+an
+underlined title letter opens that menu; pressing an underlined row letter acts
+while it is open. Left/Right switch titles; Up/Down/Home/End move over enabled
+rows; Enter acts; Escape or an outside press dismisses. Shortcut text such as
+`Ctrl-S` describes an application command and is deliberately not registered
+by the immediate-mode menu: the application handles that key at global scope
+and invokes the same direct operation as the menu branch. With a mouse, either
+click a title and then click one item, or hold on the title, drag through the
+drop-down, and release on the intended item. Leaving the actionable rows and
+menu content clears the transient highlight; re-entering selects only the row
+actually under the pointer. Moving over an inert separator preserves the
+previous actionable row rather than selecting a different command. Menus and
+combo lists share the single explicit popup layer, so transient input capture
+has one inspectable rule.
 
 Some immediate-mode decisions, such as keyboard focus traversal and a menu
 highlight that skips a separator, become known only after the affected row was

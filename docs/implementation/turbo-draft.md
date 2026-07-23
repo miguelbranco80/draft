@@ -156,6 +156,10 @@ non-zooming tool windows, fixed-size dialogs, and topmost popup scopes through
 plain capability records and balanced immediate-mode calls. Close is a request
 returned to Draft application policy; modal dialogs exclusively route mouse,
 keyboard, and focus; drop-down menus and combo lists share one popup capture.
+Menu titles and rows derive both their visible underlined mnemonic and their
+activation from one access-key value. Right-aligned command shortcuts remain
+application policy, so Turbo Draft handles them before focused controls and
+invokes the same direct operation as the corresponding menu branch.
 No retained widget tree, callback table, or editor pointer crosses that layer.
 
 F6 opens Project: its top list selects a runnable root by

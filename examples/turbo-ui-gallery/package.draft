@@ -324,6 +324,7 @@ paint_menus :: proc(gallery: ^Gallery_State) {
     if turbo_ui.menu_action(
         &gallery^.ui, &gallery^.menus, &file_menu,
         250, "Open dialog", "F4",
+        access_key = cast[u8]('o'),
     ) {
         open_dialog(gallery)
     }
@@ -331,11 +332,13 @@ paint_menus :: proc(gallery: ^Gallery_State) {
     turbo_ui.menu_action(
         &gallery^.ui, &gallery^.menus, &file_menu,
         251, "Unavailable action", "", false,
+        access_key = cast[u8]('u'),
     )
     if turbo_ui.menu_action(
         &gallery^.ui, &gallery^.menus, &file_menu,
         252, "Close active window", "Alt-F3",
         gallery^.ui.active_window != turbo_ui.No_Widget,
+        access_key = cast[u8]('c'),
     ) {
         turbo_ui.hide_window(
             &gallery^.ui,
@@ -355,15 +358,18 @@ paint_menus :: proc(gallery: ^Gallery_State) {
     turbo_ui.menu_check(
         &gallery^.ui, &gallery^.menus, &options_menu,
         253, "Diagnostics", &gallery^.checked,
+        access_key = cast[u8]('d'),
     )
     turbo_ui.menu_separator(&gallery^.ui, &options_menu)
     turbo_ui.menu_radio(
         &gallery^.ui, &gallery^.menus, &options_menu,
         254, "Compact", &gallery^.radio, 0,
+        access_key = cast[u8]('c'),
     )
     turbo_ui.menu_radio(
         &gallery^.ui, &gallery^.menus, &options_menu,
         255, "Roomy", &gallery^.radio, 1,
+        access_key = cast[u8]('r'),
     )
     turbo_ui.end_menu(&gallery^.ui, &gallery^.menus, options_menu)
 }
@@ -373,8 +379,20 @@ paint_menus :: proc(gallery: ^Gallery_State) {
 paint_gallery :: proc(
     gallery: ^Gallery_State,
     surface: ^tui.Surface,
-    event: turbo_ui.Event,
+    supplied_event: turbo_ui.Event,
 ) {
+    event := supplied_event
+    // F4 is the command shortcut printed beside File > Open dialog. Handle it
+    // at application scope so focused controls cannot accidentally disable the
+    // advertised command, while still giving an existing popup or modal first
+    // refusal over the same physical key.
+    if event.kind == .key && event.key.code == .f4 &&
+        !event.key.alt && !event.key.control &&
+        gallery^.ui.popup_id == turbo_ui.No_Widget &&
+        !gallery^.windows[Window_Dialog].visible {
+        open_dialog(gallery)
+        event = turbo_ui.no_event()
+    }
     theme := turbo_ui.turbo_theme()
     tui.clear(surface, theme.desktop)
     desktop := turbo_ui.Rect{row = 1, width = surface^.columns}
@@ -484,7 +502,7 @@ paint_gallery :: proc(
                 width = surface^.columns,
                 height = 1,
             },
-            "Alt-F menu  Alt-F3 close  Ctrl-F5 move/size  Tab focus",
+            "Alt-F menu  F4 dialog  Alt-F3 close  Ctrl-F5 move/size  Tab focus",
         )
     }
     turbo_ui.end_frame(&gallery^.ui)
@@ -536,6 +554,14 @@ run_smoke :: proc() -> int {
     tui.surface_init(&surface, 80, 28)
     defer tui.surface_destroy(&surface)
     paint_gallery(&gallery, &surface, turbo_ui.no_event())
+    paint_gallery(
+        &gallery,
+        &surface,
+        turbo_ui.key_event(turbo_ui.Key_Event{code = .f4}),
+    )
+    if !gallery.windows[Window_Dialog].visible {
+        return 1
+    }
     (cell, valid) := tui.cell_at(&surface, 0, 0)
     if !valid || cell.value == cast[rune](0) {
         return 1

@@ -41,9 +41,12 @@ it discovers packages containing `main` and F12 switches among those executable
 roots. The explicitly selected root may also be a library for focused editing,
 although it is not runnable.
 
-The top row contains real File, Edit, Project, and Window drop-down menus; use
-Alt-F/Alt-E/Alt-P/Alt-W as well as the mouse. F5 checks, builds, and runs the
-currently selected root. F6 opens Project, with
+The top row contains real File, Edit, Project, and Window drop-down menus. Their
+access letters are underlined: use Alt-F/Alt-E/Alt-P/Alt-W to open a menu, then
+press an underlined command letter, or use the mouse. The right-aligned command
+shortcuts are active application-wide rather than only when the editor owns
+focus: Ctrl-S saves, Ctrl-F opens Find, and F2 opens Files. F5 checks, builds,
+and runs the currently selected root. F6 opens Project, with
 a selectable run-root list above the package/dependency graph. F7-F11 open
 declaration, reference, effect, denial, and diagnostic windows. Those semantic
 sections are currently read-only reports rather than source-jump navigation.
