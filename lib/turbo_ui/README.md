@@ -140,10 +140,11 @@ separators, and right-aligned shortcut labels. Alt+access-key opens a title;
 Left/Right switch titles; Up/Down/Home/End move over enabled rows; Enter acts;
 Escape or an outside press dismisses. With a mouse, either click a title and
 then click one item, or hold on the title, drag through the drop-down, and
-release on the intended item. Leaving every item clears the transient
-highlight; re-entering selects only the row actually under the pointer. Menus
-and combo lists share the single explicit popup layer, so transient input
-capture has one inspectable rule.
+release on the intended item. Leaving the actionable rows and menu content
+clears the transient highlight; re-entering selects only the row actually under
+the pointer. Moving over an inert separator preserves the previous actionable
+row rather than selecting a different command. Menus and combo lists share the
+single explicit popup layer, so transient input capture has one inspectable rule.
 
 Some immediate-mode decisions, such as keyboard focus traversal and a menu
 highlight that skips a separator, become known only after the affected row was

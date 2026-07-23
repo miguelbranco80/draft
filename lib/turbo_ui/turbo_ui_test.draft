@@ -582,6 +582,21 @@ test_menu_popup_navigation :: proc(test: ^testing.Test) {
     end_frame(&state)
     testing.expect(test, menu.has_highlight && menu.highlighted == 3)
 
+    // Separators are inert menu content. Crossing one keeps the last enabled
+    // command selected, including through the no-event traversal a real app
+    // may use to publish late interaction-state changes.
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 3, row = 3},
+        action = .move,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, menu.has_highlight && menu.highlighted == 3)
+    begin_frame(&state, &surface, no_event(), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, menu.has_highlight && menu.highlighted == 3)
+
     // One continuous press/drag/release activates the row where the gesture
     // ends. No row-specific active ID is required because the menu owns the
     // complete transient pointer session.

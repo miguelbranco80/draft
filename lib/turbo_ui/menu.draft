@@ -54,6 +54,7 @@ pub Menu_Context :: struct {
     original_has_highlight: bool,
     pointer_event: bool,
     hovered_enabled: bool,
+    hovered_separator: bool,
     tracking_release: bool,
     mouse_activated: bool,
 }
@@ -526,6 +527,15 @@ pub menu_separator :: proc(state: ^State, menu_context: ^Menu_Context) {
         width = menu_context^.popup.content.width,
         height = 1,
     }
+    // A separator is part of the open menu but cannot become its selection.
+    // Remembering that distinction prevents end_menu from treating the
+    // pointer as outside and clearing the previous command highlight. That
+    // clear would trigger a no-event repaint which legitimately initializes
+    // keyboard selection at the first row, producing a visible jump to top.
+    if menu_context^.pointer_event &&
+        mouse_reaches_current_scope(state, bounds) {
+        menu_context^.hovered_separator = true
+    }
     fill_rect(state^.surface, state^.clip, bounds, '─', state^.theme.menu_disabled)
 }
 
@@ -555,11 +565,12 @@ pub end_menu :: proc(
         }
     }
     // Pointer movement outside every enabled row deliberately removes the
-    // highlight. A tracked release there cancels the complete gesture and
-    // closes the menu; release on the title was consumed in menu_title and
-    // therefore never reaches this branch.
+    // highlight. A separator is the one inert exception: crossing it preserves
+    // the previous row rather than manufacturing a new selection. A tracked
+    // release without an enabled activation still cancels the complete gesture;
+    // release on the title was consumed in menu_title and never reaches here.
     if menu_context.pointer_event && !menu_context.hovered_enabled &&
-        !state^.event_handled {
+        !menu_context.hovered_separator && !state^.event_handled {
         menu^.has_highlight = false
     }
     if menu_context.tracking_release && !menu_context.mouse_activated &&
