@@ -28,9 +28,9 @@ pub Menu_State :: struct {
 
 // Menu_Context is the balanced drop-down traversal. row includes separators,
 // while the enabled-row fields let keyboard movement skip non-actions without
-// retaining an item array. A one-frame delay in repainting an arrow movement
-// is intentional: semantic selection changes immediately, and the next normal
-// frame displays it without a second hidden layout pass.
+// retaining an item array. original_highlight detects a selection resolved
+// after an earlier row painted; end_menu then requests one explicit event-free
+// application traversal so visible feedback never waits for another input.
 pub Menu_Context :: struct {
     visible: bool,
     popup: Popup_Context,
@@ -44,6 +44,7 @@ pub Menu_Context :: struct {
     move: i8,
     home: bool,
     end: bool,
+    original_highlight: usize,
 }
 
 ascii_lower :: proc(byte: u8) -> u8 {
@@ -221,6 +222,7 @@ pub begin_menu :: proc(
     result.first_enabled = ~cast[usize](0)
     result.last_enabled = ~cast[usize](0)
     result.previous_enabled = ~cast[usize](0)
+    result.original_highlight = menu^.highlighted
     if menu^.open_title != title_id || state^.popup_id != popup_id {
         return result
     }
@@ -498,6 +500,9 @@ pub end_menu :: proc(
         } else if !menu_context.found_highlight {
             menu^.highlighted = menu_context.first_enabled
         }
+    }
+    if menu^.highlighted != menu_context.original_highlight {
+        state^.repaint_requested = true
     }
     end_popup(state, menu_context.popup)
     if state^.popup_id == No_Widget {

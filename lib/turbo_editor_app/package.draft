@@ -294,8 +294,6 @@ store_root_overflow_label :: proc(app: ^App, index: usize) {
 // service count even when an unusually large workspace exceeds this view.
 refresh_project_roots :: proc(app: ^App) {
     app^.project_root_count = 0
-    app^.project_root_cursor = 0
-    app^.project_root_scroll = 0
     if app^.host.root_count == nil || app^.host.selected_root == nil ||
         app^.host.copy_root_name == nil {
         return
@@ -308,6 +306,8 @@ refresh_project_roots :: proc(app: ^App) {
     selected := app^.host.selected_root(app^.host.user)
     if selected < count {
         app^.project_root_cursor = selected
+    } else {
+        app^.project_root_cursor = 0
     }
     for index: usize = 0; index < count; index += 1 {
         required := app^.host.copy_root_name(
@@ -1340,7 +1340,7 @@ paint_app_menu_bar :: proc(app: ^App, surface: ^tui.Surface) {
         Menu_Window, Menu_Window_Popup,
         turbo_ui.Rect{column = 28, width = 10, height = 1},
         "Window", cast[u8]('w'),
-        turbo_ui.Rect{column = 28, row = 1, width = 35, height = 13},
+        turbo_ui.Rect{column = 28, row = 1, width = 35, height = 16},
     )
     turbo_ui.menu_bar_end(&app^.ui, &app^.menus)
 }
@@ -1461,7 +1461,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
     window_menu := turbo_ui.begin_menu(
         &app^.ui, &app^.menus,
         Menu_Window, Menu_Window_Popup,
-        turbo_ui.Rect{column = 28, row = 1, width = 35, height = 13},
+        turbo_ui.Rect{column = 28, row = 1, width = 35, height = 16},
     )
     menu_window_toggle(app, &window_menu, 550, Window_Files, "Files", "F2")
     menu_window_toggle(app, &window_menu, 551, Window_Buffers, "Buffers", "F3")
@@ -1475,7 +1475,20 @@ paint_app_menus :: proc(app: ^App) -> bool {
     turbo_ui.menu_separator(&app^.ui, &window_menu)
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &window_menu,
-        558, "Next window", "Ctrl-F6",
+        558, "Tile", "",
+    ) {
+        turbo_ui.tile_windows(app^.windows[:], app^.ui.desktop)
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &window_menu,
+        559, "Cascade", "",
+    ) {
+        turbo_ui.cascade_windows(app^.windows[:], app^.ui.desktop)
+    }
+    turbo_ui.menu_separator(&app^.ui, &window_menu)
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &window_menu,
+        560, "Next window", "Ctrl-F6",
     ) {
         turbo_ui.activate_next_window(&app^.ui, app^.windows[:])
     }
@@ -1631,6 +1644,13 @@ paint_app :: proc(
         )
     }
     turbo_ui.end_frame(&app^.ui)
+    if turbo_ui.needs_repaint(&app^.ui) {
+        // Some immediate controls resolve focus or menu selection after the
+        // affected row has painted. Repaint once without reapplying the input
+        // event so the desired surface and persistent interaction state agree
+        // before the renderer publishes either one.
+        return paint_app(app, surface, turbo_ui.no_event())
+    }
     return should_quit
 }
 
@@ -1755,12 +1775,36 @@ run_interactive :: proc(
             return read_error
         }
         repaint := changed
+        pending_motion: turbo_ui.Event
+        motion_pending := false
         for index: usize = 0; index < count; index += 1 {
             event := turbo_ui_terminal.decode(&decoder, input[index])
             if event.kind == .none {
                 continue
             }
+            if event.kind == .mouse && event.mouse.action == .move {
+                // Xterm all-motion reporting can place many obsolete pointer
+                // positions in one native read. Only the final consecutive
+                // position affects hover state; retain drag ordering by
+                // flushing it before every press, release, wheel, or key.
+                pending_motion = event
+                motion_pending = true
+                continue
+            }
+            if motion_pending {
+                if paint_app(app, tui.surface(&renderer), pending_motion) {
+                    return .none
+                }
+                repaint = true
+                motion_pending = false
+            }
             if paint_app(app, tui.surface(&renderer), event) {
+                return .none
+            }
+            repaint = true
+        }
+        if motion_pending {
+            if paint_app(app, tui.surface(&renderer), pending_motion) {
                 return .none
             }
             repaint = true

@@ -137,6 +137,8 @@ F6 opens Project: its top list selects a runnable root by
 mouse or Enter and its lower section displays the checked package/dependency
 graph. F7 through F11 toggle declaration, reference/call, effect, denial, and
 diagnostic views. F12 remains a quick root cycle and Shift-F12 cycles targets.
+The Window menu tiles or cascades ordinary movable/resizable windows without
+disturbing fixed dialogs.
 The semantic sections are currently read-only text projections, not trees with
 source-jump navigation.
 
@@ -155,7 +157,8 @@ Checking is synchronous and conservatively treats every edit as an interface
 change. The compiler service overlays one active source at a time, while the
 editor may retain several open and dirty buffers. `core/process` currently runs
 one exact executable path with inherited environment/current directory and no
-arguments, pipes, shell, or background lifetime. Native IDE builds use `-O0`.
+arguments, pipes, shell, or background lifetime. Native IDE builds use `-O2`;
+the compiler optimization selected for the open project remains independent.
 
 Identifier completion, background checking, broad Codex worktree editing,
 structured semantic navigation, richer build/run configurations, and body-only

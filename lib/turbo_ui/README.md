@@ -38,6 +38,11 @@ visible lower-right resize handle. Alt-F3 requests close; Ctrl-F5 enters
 keyboard move/size mode, arrows move, Shift-arrows resize, Enter accepts, and
 Escape restores the entry rectangle.
 
+`tile_windows` and `cascade_windows` provide deterministic whole-desktop
+arrangement for visible movable/resizable windows. Both deliberately leave
+fixed dialogs and hidden windows untouched; the application still controls
+participation through each window's capability flags.
+
 ```draft
 desktop := turbo_ui.Rect{row = 1, width = surface.columns}
 if surface.rows > 2 {
@@ -128,6 +133,12 @@ separators, and right-aligned shortcut labels. Alt+access-key opens a title;
 Left/Right switch titles; Up/Down/Home/End move over enabled rows; Enter acts;
 Escape or an outside press dismisses. Menus and combo lists share the single
 explicit popup layer, so transient input capture has one inspectable rule.
+
+Some immediate-mode decisions, such as keyboard focus traversal and a menu
+highlight that skips a separator, become known only after the affected row was
+painted. After `end_frame`, call `needs_repaint`; when true, traverse once more
+with `no_event()` before presenting. This reconciles visible cells without
+reapplying the input event.
 
 The independent [`turbo-ui-gallery`](../../examples/turbo-ui-gallery/) is the
 complete interactive reference. Tests use in-memory surfaces and synthetic

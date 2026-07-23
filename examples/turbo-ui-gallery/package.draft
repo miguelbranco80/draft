@@ -488,6 +488,9 @@ paint_gallery :: proc(
         )
     }
     turbo_ui.end_frame(&gallery^.ui)
+    if turbo_ui.needs_repaint(&gallery^.ui) {
+        paint_gallery(gallery, surface, turbo_ui.no_event())
+    }
 }
 
 render_size :: proc(size: terminal.Size) -> (usize, usize, bool) {
@@ -601,10 +604,22 @@ run_interactive :: proc(
             return read_error
         }
         repaint := false
+        pending_motion: turbo_ui.Event
+        motion_pending := false
         for index: usize = 0; index < count; index += 1 {
             event := turbo_ui_terminal.decode(&decoder, input[index])
             if event.kind == .none {
                 continue
+            }
+            if event.kind == .mouse && event.mouse.action == .move {
+                pending_motion = event
+                motion_pending = true
+                continue
+            }
+            if motion_pending {
+                paint_gallery(&gallery, tui.surface(&renderer), pending_motion)
+                repaint = true
+                motion_pending = false
             }
             if event.kind == .key && event.key.code == .escape &&
                 gallery.ui.popup_id == turbo_ui.No_Widget &&
@@ -612,6 +627,10 @@ run_interactive :: proc(
                 return .none
             }
             paint_gallery(&gallery, tui.surface(&renderer), event)
+            repaint = true
+        }
+        if motion_pending {
+            paint_gallery(&gallery, tui.surface(&renderer), pending_motion)
             repaint = true
         }
         // Resolve an ambiguous lone Escape after one quiet input interval. CSI

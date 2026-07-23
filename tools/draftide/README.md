@@ -46,7 +46,8 @@ declaration, reference, effect, denial, and diagnostic windows. Those semantic
 sections are currently read-only reports rather than source-jump navigation.
 F12 changes root and Shift-F12 changes target. Alt-F3 closes the active tool
 window, Ctrl-F5 enters keyboard move/size mode, and Ctrl-F6 selects the next
-window. Editing, selection, search,
+window. The Window menu also tiles or cascades ordinary windows while leaving
+fixed dialogs untouched. Editing, selection, search,
 save, undo/redo, mouse input, and dirty-file conflict rules are inherited from
 `lib/turbo_editor_app` and `lib/turbo_editor`.
 

@@ -361,6 +361,112 @@ pub window_order :: proc(windows: []Window_State, output: []usize) -> usize {
     return count
 }
 
+// arrangeable_window identifies ordinary document and tool windows. Fixed
+// dialogs remain exactly where the application placed them: tiling a desktop
+// must never silently resize a confirmation or search dialog whose controls
+// were laid out for a deliberate size.
+arrangeable_window :: proc(window: Window_State) -> bool {
+    return window.visible && window.flags.movable && window.flags.resizable
+}
+
+// tile_windows partitions desktop into a near-square grid and places every
+// visible, movable, resizable window into one cell in stable slice order.
+// Hidden windows and fixed dialogs are untouched. Tiling ends zoom because the
+// arranged rectangle becomes the new ordinary restore position. The return
+// value is the number of windows placed, allowing an application to report a
+// no-op without rediscovering the eligible set.
+pub tile_windows :: proc(
+    windows: []Window_State,
+    desktop: Rect,
+) -> usize {
+    count: usize
+    for window in windows {
+        if arrangeable_window(window) {
+            count += 1
+        }
+    }
+    if count == 0 || rect_empty(desktop) {
+        return 0
+    }
+
+    // The smallest column count whose square contains all windows produces a
+    // compact grid without requiring floating-point square-root support.
+    columns: usize = 1
+    for columns < count && columns * columns < count {
+        columns += 1
+    }
+    rows := (count + columns - 1) / columns
+
+    ordinal: usize
+    for index: usize = 0; index < len(windows); index += 1 {
+        if !arrangeable_window(windows[index]) {
+            continue
+        }
+        column := ordinal % columns
+        row := ordinal / columns
+        left := desktop.width * column / columns
+        right := desktop.width * (column + 1) / columns
+        top := desktop.height * row / rows
+        bottom := desktop.height * (row + 1) / rows
+        bounds := Rect{
+            column = desktop.column + left,
+            row = desktop.row + top,
+            width = right - left,
+            height = bottom - top,
+        }
+        windows[index].bounds = bounds
+        windows[index].restore_bounds = bounds
+        windows[index].zoomed = false
+        windows[index].z = cast[u32](ordinal + 1)
+        ordinal += 1
+    }
+    return ordinal
+}
+
+// cascade_windows gives each visible ordinary window three quarters of the
+// desktop and offsets successive frames by two cells. Offsets wrap before the
+// frame would leave the desktop, so every title and resize corner remains
+// reachable. Fixed dialogs and hidden windows retain both geometry and z.
+pub cascade_windows :: proc(
+    windows: []Window_State,
+    desktop: Rect,
+) -> usize {
+    if rect_empty(desktop) {
+        return 0
+    }
+    width := desktop.width * 3 / 4
+    height := desktop.height * 3 / 4
+    if width == 0 {
+        width = desktop.width
+    }
+    if height == 0 {
+        height = desktop.height
+    }
+    maximum_column := desktop.width - width
+    maximum_row := desktop.height - height
+
+    ordinal: usize
+    for index: usize = 0; index < len(windows); index += 1 {
+        if !arrangeable_window(windows[index]) {
+            continue
+        }
+        column_offset := ordinal * 2 % (maximum_column + 1)
+        row_offset := ordinal * 2 % (maximum_row + 1)
+        bounds := Rect{
+            column = desktop.column + column_offset,
+            row = desktop.row + row_offset,
+            width = width,
+            height = height,
+        }
+        windows[index].bounds = bounds
+        windows[index].restore_bounds = bounds
+        windows[index].zoomed = false
+        windows[index].z = cast[u32](ordinal + 1)
+        ordinal += 1
+    }
+    return ordinal
+}
+
 moved_origin :: proc(pointer, offset: usize) -> usize {
     if pointer < offset {
         return 0

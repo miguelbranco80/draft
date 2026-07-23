@@ -71,6 +71,13 @@ pub State :: struct {
     drag_row_offset: usize,
     drag_start: Point,
     drag_start_rect: Rect,
+
+    // repaint_requested is frame output, not persistent application state.
+    // A control sets it when interaction can only be resolved after its row or
+    // focus traversal has already painted. The application then performs one
+    // event-free traversal before presenting, preserving immediate-mode state
+    // without leaving keyboard feedback one input event behind.
+    repaint_requested: bool,
 }
 
 // scope_accepts_keyboard is the single focus/modal/popup gate. Controls still
@@ -130,6 +137,16 @@ pub begin_frame :: proc(
     state^.previous_focus = No_Widget
     state^.next_focus = No_Widget
     state^.saw_focused = false
+    state^.repaint_requested = false
+}
+
+// needs_repaint reports whether the completed traversal changed interaction
+// state too late for that traversal's cells to represent it. Call only after
+// end_frame. The next begin_frame clears the request; applications satisfy it
+// by repainting once with no_event before publishing the desired Surface.
+pub needs_repaint :: proc(state: ^State) -> bool {
+    assert(!state^.frame_open, "turbo_ui repaint queried during a frame")
+    return state^.repaint_requested
 }
 
 // register_focus records one focusable control in deterministic call order.
@@ -266,6 +283,7 @@ pub focus_area :: proc(
 // scopes are then cleared; persistent interaction identity remains explicit.
 pub end_frame :: proc(state: ^State) {
     assert(state^.frame_open, "turbo_ui frame is not open")
+    focus_before := state^.focused_id
     if !state^.event_handled && state^.event.kind == .key &&
         state^.event.key.code == .tab && state^.first_focus != No_Widget {
         if state^.event.key.shift {
@@ -282,12 +300,16 @@ pub end_frame :: proc(state: ^State) {
             }
         }
     }
+    if state^.focused_id != focus_before {
+        state^.repaint_requested = true
+    }
 
     // A popup must be resubmitted every frame by the control which owns it.
     // If that control disappeared, closing here prevents a stale invisible
     // capture from blocking the desktop on later input.
     if state^.popup_id != No_Widget && !state^.popup_seen {
         popup_close(state)
+        state^.repaint_requested = true
     }
 
     state^.surface = nil

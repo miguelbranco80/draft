@@ -357,6 +357,50 @@ test_window_chrome_and_modality :: proc(test: ^testing.Test) {
     end_frame(&state)
 }
 
+// test_window_arrangement fixes the reusable desktop policy: ordinary windows
+// tile and cascade deterministically, while a fixed dialog retains the exact
+// application-selected geometry. Arrangement also converts a zoomed window
+// back into an ordinary restorable rectangle.
+test_window_arrangement :: proc(test: ^testing.Test) {
+    windows := [4]Window_State{
+        window_init(70, Rect{column = 1, row = 1, width = 20, height = 8}, 4),
+        window_init(71, Rect{column = 3, row = 2, width = 20, height = 8}, 3),
+        window_init(72, Rect{column = 5, row = 3, width = 20, height = 8}, 2),
+        dialog_window_init(73, Rect{column = 19, row = 8, width = 24, height = 7}, 9),
+    }
+    windows[0].zoomed = true
+    dialog_bounds := windows[3].bounds
+    desktop := Rect{column = 0, row = 1, width = 80, height = 22}
+
+    testing.expect(test, tile_windows(windows[:], desktop) == 3)
+    testing.expect(test, rect_equal(
+        windows[0].bounds,
+        Rect{column = 0, row = 1, width = 40, height = 11},
+    ))
+    testing.expect(test, rect_equal(
+        windows[1].bounds,
+        Rect{column = 40, row = 1, width = 40, height = 11},
+    ))
+    testing.expect(test, rect_equal(
+        windows[2].bounds,
+        Rect{column = 0, row = 12, width = 40, height = 11},
+    ))
+    testing.expect(test, !windows[0].zoomed)
+    testing.expect(test, rect_equal(windows[0].restore_bounds, windows[0].bounds))
+    testing.expect(test, rect_equal(windows[3].bounds, dialog_bounds))
+
+    testing.expect(test, cascade_windows(windows[:], desktop) == 3)
+    testing.expect(test, windows[0].bounds.column == 0)
+    testing.expect(test, windows[0].bounds.row == 1)
+    testing.expect(test, windows[1].bounds.column == 2)
+    testing.expect(test, windows[1].bounds.row == 3)
+    testing.expect(test, windows[2].bounds.column == 4)
+    testing.expect(test, windows[2].bounds.row == 5)
+    testing.expect(test, windows[0].bounds.width == 60)
+    testing.expect(test, windows[0].bounds.height == 16)
+    testing.expect(test, rect_equal(windows[3].bounds, dialog_bounds))
+}
+
 // submit_test_menu is the deterministic two-pass spelling used by the menu
 // interaction test. It mirrors a real app: title before content, popup after.
 submit_test_menu :: proc(
@@ -408,6 +452,7 @@ test_menu_popup_navigation :: proc(test: ^testing.Test) {
     submit_test_menu(&state, &menu, &checked)
     end_frame(&state)
     testing.expect(test, menu.highlighted == 3)
+    testing.expect(test, needs_repaint(&state))
 
     begin_frame(&state, &surface, key_event(Key_Event{code = .enter}), theme)
     changed := submit_test_menu(&state, &menu, &checked)
