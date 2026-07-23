@@ -3,7 +3,7 @@
   "target": "draft-aarch64-linux-gnu-v1",
   "root_identity": "workspace",
   "root_package": "app",
-  "resolved_program": "79a5cd3cf190912d0e0005457a914ef01bb32b139c74b4c89ed0f4dfa6f0cc98",
+  "resolved_program": "e3a9adf7d1611a6b5e7c0bab27c36c43629550762c33e936cac6194284b90fd2",
   "sites": [
     {"site": "site-3935380269c5cd0c2dd36c641ee7d34857b4ab4648bfcceff871e677c1cd76d9", "kind": "member", "input": "f3dea1e24b1ef16fc8d7b9379511ef5664773d38bd7bf8bc01f1dc8b5293d86f", "expansion": "4e17ea297b4b9548eb049a561480a28246075a36b62b13dc4c00950caeb98dd8", "source_root": "workspace", "source_package": "app", "source_file": "package.draft", "surface_begin": 677, "surface_end": 771, "expansion_bytes": 11, "provider": "openai-codex-cli-v28", "model": "codex-configured-default", "configuration": "codex-config-f8057a4a7f6f2d57fc4bae166ce18197242b4e9a5f5376bde448567ca11fa307"},
     {"site": "site-5632f6e78736c25c3f001945c52131b4d82805f974e3b38918b3f82903033dfa", "kind": "declaration", "input": "f75a1beee96fe8124f42e538ccf973567b436e462429496821371769bcd60023", "expansion": "f8e689242948fb0e525309b6192c53e0a2434b3036cda3592903b6a87300d8fe", "source_root": "workspace", "source_package": "app", "source_file": "package.draft", "surface_begin": 250, "surface_end": 361, "expansion_bytes": 33, "provider": "openai-codex-cli-v28", "model": "codex-configured-default", "configuration": "codex-config-f8057a4a7f6f2d57fc4bae166ce18197242b4e9a5f5376bde448567ca11fa307"},
