@@ -263,9 +263,10 @@ compiler-only storage addresses use `rawptr` plus an explicit addressed TypeId,
 while actual source pointers retain their canonical semantic type.
 
 The LLVM adapter has one direct ownership operation: emit one complete module
-for one semantic package. The module contains package globals, relocatable
-initializer storage, every concrete MIR procedure, runtime support when the
-package owns it, and any requested hosted entry point. Procedure MIR is not
+for one semantic package. The module contains artifact-live package globals,
+relocatable initializer storage, artifact-live concrete MIR procedures,
+runtime support when the package owns it, and any requested hosted entry point.
+Procedure MIR is not
 reassembled into an owning `MirProgram`; the emitter borrows the immutable
 payloads from their product side-table rows in canonical package order. This
 gives LLVM the natural package optimization scope while retaining procedure-
@@ -307,13 +308,14 @@ emitter as compiler orchestration.
   `defer`, branch facts, judgments, and denial summaries.
 - **Draft MIR:** a small non-optimizing IR with explicit loads, stores, checks,
   context arguments, calls, aggregate operations, and source locations. One
-  checked runtime HIR procedure lowers to one privately verified MIR procedure;
-  workspace compilation stores that result only in the side-table row owned by
-  its `MirProcedure` product. Package rows retain ordered product IDs, not a
-  reconstructed `MirProgram`. Compilation publishes package assembly, then
-  lowers every independent runtime procedure in one bounded ready wave. A
-  package module borrows that completed ordered set only at LLVM emission time.
-  LLVM is an emission/optimization back end rather than Draft's semantic model.
+  artifact-live runtime HIR procedure lowers to one privately verified MIR
+  procedure; workspace compilation stores that result only in the side-table
+  row owned by its `MirProcedure` product. Package rows retain ordered product
+  IDs, not a reconstructed `MirProgram`. All authored bodies are checked first;
+  direct native-reference rows and one explicit artifact closure select the
+  independent runtime procedures lowered in one bounded ready wave. A package
+  module borrows that completed ordered set only at LLVM emission time. LLVM is
+  an emission/optimization back end rather than Draft's semantic model.
 
 HIR storage expressions retain the minimum alignment guaranteed by their exact
 occurrence, separately from logical type alignment. Member and index address

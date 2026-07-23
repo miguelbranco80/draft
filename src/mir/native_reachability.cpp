@@ -116,6 +116,13 @@ struct ResolvedReference {
         symbol.kind != SymbolKind::Variable) {
       return result;
     }
+    // A source template may remain as the syntactic callee operand after call
+    // checking has selected a concrete imported proxy. It has no runtime ABI
+    // or definition; the direct procedure-flow summary below contributes the
+    // exact concrete instance edge instead.
+    if (symbol.kind == SymbolKind::Procedure && symbol.flags.parametric) {
+      return result;
+    }
     result.kind = symbol.kind == SymbolKind::Procedure
         ? ResolvedReferenceKind::Procedure
         : ResolvedReferenceKind::Global;
@@ -134,6 +141,10 @@ struct ResolvedReference {
     return result;
   }
   if (symbol.kind == SymbolKind::Procedure) {
+    // The HIR call/value expression may still name a template declaration.
+    // Concrete instantiation owns a distinct non-parametric SymbolId and is
+    // recovered from direct effect/value-flow facts.
+    if (symbol.flags.parametric) return result;
     result.kind = ResolvedReferenceKind::Procedure;
     result.identity.package = package;
     result.identity.name = local_linkage_name(symbol);

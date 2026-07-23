@@ -283,6 +283,11 @@ main :: proc() -> int {
   for (const draft::MirProcedure &procedure : mir.procedures) {
     procedures.push_back(&procedure);
   }
+  const std::optional<draft::SymbolId> answer =
+      bodies.package.symbols.lookup_direct(
+          bodies.package.package_scope, "answer");
+  std::vector<draft::SymbolId> globals;
+  if (answer.has_value()) globals.push_back(*answer);
 
   draft::LlvmIrOptions options;
   options.package = {"workspace", "split-native"};
@@ -296,6 +301,7 @@ main :: proc() -> int {
           bodies.package,
           abi,
           semantics.global_initializers,
+          globals,
           procedures,
           diagnostics);
   EXPECT(state, package_module.ok);

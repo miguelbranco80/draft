@@ -268,11 +268,12 @@ public:
       const SemanticPackage &semantic,
       const CAbiTable &abi,
       const ConstantTable &global_initializers,
+      std::span<const SymbolId> globals,
       std::span<const MirProcedure *const> procedures,
       DiagnosticSink &diagnostics)
       : target_(target), sources_(sources), options_(options), semantic_(semantic),
         abi_(abi), global_initializers_(global_initializers),
-        procedures_(procedures), diagnostics_(diagnostics) {}
+        globals_(globals), procedures_(procedures), diagnostics_(diagnostics) {}
 
   [[nodiscard]] LlvmIrResult run() {
     LlvmIrResult result;
@@ -731,17 +732,17 @@ private:
   }
 
   void collect_strings() {
-    for (const ConstantBinding &binding : global_initializers_.bindings) {
-      const Symbol &symbol = semantic_.symbols.symbol(binding.symbol);
-      if (symbol.kind != SymbolKind::Variable || symbol.flags.foreign) {
-        continue;
-      }
+    for (SymbolId global : globals_) {
+      const Symbol &symbol = semantic_.symbols.symbol(global);
+      if (symbol.kind != SymbolKind::Variable || symbol.flags.foreign) continue;
+      const ConstantValue *initializer = global_initializers_.find(global);
+      if (initializer == nullptr) continue;
       std::vector<std::size_t> path;
       collect_constant_strings(
-          binding.value,
+          *initializer,
           std::numeric_limits<std::size_t>::max(),
           std::numeric_limits<std::size_t>::max(),
-          binding.symbol,
+          global,
           path);
     }
     for (std::size_t procedure_index = 0;
@@ -2480,9 +2481,7 @@ private:
   }
 
   void emit_globals() {
-    const Scope &package_scope =
-        semantic_.symbols.scope(semantic_.package_scope);
-    for (SymbolId symbol_id : package_scope.symbols) {
+    for (SymbolId symbol_id : globals_) {
       const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
       if (symbol.kind != SymbolKind::Variable || symbol.flags.foreign ||
           !symbol.type.is_valid()) {
@@ -5411,6 +5410,7 @@ private:
   const SemanticPackage &semantic_;
   const CAbiTable &abi_;
   const ConstantTable &global_initializers_;
+  std::span<const SymbolId> globals_;
   std::span<const MirProcedure *const> procedures_;
   DiagnosticSink &diagnostics_;
   std::ostringstream output_;
@@ -5443,6 +5443,7 @@ LlvmIrResult emit_llvm_package_module(
     const SemanticPackage &semantic,
     const CAbiTable &abi,
     const ConstantTable &global_initializers,
+    std::span<const SymbolId> globals,
     std::span<const MirProcedure *const> procedures,
     DiagnosticSink &diagnostics) {
   return Emitter(
@@ -5452,6 +5453,7 @@ LlvmIrResult emit_llvm_package_module(
       semantic,
       abi,
       global_initializers,
+      globals,
       procedures,
       diagnostics).run();
 }

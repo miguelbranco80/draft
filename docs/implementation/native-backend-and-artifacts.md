@@ -7,13 +7,14 @@ This document records the bootstrap compiler's target-independent MIR to LLVM re
 Status: LLVM 22 C-API object and assembly emission implemented and qualified.
 
 The bootstrap links the shared LLVM 22 distribution selected at CMake time.
-Each semantic package produces one complete LLVM module containing its globals
-and all concrete runtime procedures. That module is parsed and verified in a
-fresh `LLVMContext`, checked against the selected Draft target triple and fixed
-data-layout string, and emitted through a task-owned target machine into an
-in-memory object or assembly buffer. A disagreement between LLVM's computed
-layout and the versioned Draft profile is a compiler/toolchain error; LLVM never
-supplies missing language or ABI facts.
+Each semantic package produces one complete LLVM module containing only the
+globals and concrete runtime procedures selected by artifact reachability.
+Every authored body was still checked before that projection. The module is
+parsed and verified in a fresh `LLVMContext`, checked against the selected
+Draft target triple and fixed data-layout string, and emitted through a
+task-owned target machine into an in-memory object or assembly buffer. A
+disagreement between LLVM's computed layout and the versioned Draft profile is
+a compiler/toolchain error; LLVM never supplies missing language or ABI facts.
 
 The adapter exposes no LLVM reference outside its module. Its process-global
 AArch64 and X86 registries are initialized once, while contexts, modules, target machines,
@@ -152,10 +153,11 @@ checking.
 
 Status: bounded parallel emission and ordered publication implemented.
 
-Once semantic closure and MIR lowering have completed, each package owns one
-`PackageLlvmModule` product and an explicit `ArtifactLayout` product. Its
-canonical order is the complete package module followed by selected package
-assembly. The backend freezes one task for every row in those package layouts.
+Once semantic closure, direct native-reference closure, and live MIR lowering
+have completed, each package owns one `PackageLlvmModule` product and an
+explicit `ArtifactLayout` product. Its canonical order is the complete live
+package module followed by selected package assembly. The backend freezes one
+task for every row in those package layouts.
 The native graph is intentionally edgeless: each package module defines its own
 storage and procedures, declares dependency imports, and can be emitted without
 another package module. Final linking combines package and assembly objects.

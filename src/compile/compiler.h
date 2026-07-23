@@ -35,6 +35,7 @@
 #include "interop/c_abi.h"
 #include "interop/native.h"
 #include "mir/mir.h"
+#include "mir/native_reachability.h"
 #include "sema/agent_metadata.h"
 #include "sema/body_checker.h"
 #include "sema/effect.h"
@@ -77,7 +78,7 @@ struct CompileWorkspaceOptions {
   // Versioned identity of the compiler semantics and manifest algorithm. It is
   // a resolved-program input and must change when an implementation change can
   // alter accepted meaning or emitted behavior for the same other inputs.
-  std::string compiler_content_identity = "draft-bootstrap-cpp-v143";
+  std::string compiler_content_identity = "draft-bootstrap-cpp-v144";
   // Explicit build-time language choices are kept together and included in
   // resolved-program identity. They are not inferred from host environment or
   // optimization level.
@@ -209,11 +210,20 @@ struct CompiledPackage {
   EffectSummaryResult effects;
   PackageInterface interface;
   NativeInteropResult native_interop;
+  // Native reference rows are produced for every checked concrete runtime
+  // procedure before artifact roots are traversed. Global rows cover every
+  // defined package global. The live vectors are the artifact projection:
+  // bodies remain fully checked in bodies/procedure products even when absent
+  // here, while MIR and LLVM consume only these exact rows.
+  std::vector<NativeGlobalReferenceSummary> native_global_references;
+  std::vector<std::size_t> native_live_body_work_indices;
+  std::vector<SymbolId> native_live_globals;
   AssemblyProgram assembly;
-  // One complete LLVM module owns this semantic package's globals and every
-  // concrete runtime procedure. Procedure MIR remains independently owned by
-  // semantic-product side-table rows; this result is the package-level native
-  // lowering product consumed by LLVM verification and object emission.
+  // One complete LLVM module owns this semantic package's artifact-live
+  // globals and concrete runtime procedures. Procedure MIR remains
+  // independently owned by semantic-product side-table rows; this result is
+  // the package-level native lowering product consumed by LLVM verification
+  // and object emission.
   LlvmIrResult llvm_module;
   PackageArtifactLayout artifact_layout;
 };
@@ -387,19 +397,21 @@ struct PackageSemanticProducts {
   std::vector<SemanticProductId> direct_effect_summaries;
   std::vector<SemanticProductId> closed_effect_sccs;
   std::vector<SemanticProductId> denial_results;
-  // Target lowering begins with the package_assembly product, which owns the
-  // already captured package assembly source bytes plus parsed inline-assembly
-  // metadata for the selected HIR set. Each runtime HIR-bearing work row then
-  // maps one-to-one to a MirProcedure product through mir_body_work_indices.
-  // The payload lives in
-  // WorkspaceSemanticProducts::mir_procedure_by_product; symbolic and
-  // compile-time-only bodies intentionally have no runtime MIR product.
+  // Target lowering begins with package_assembly over every checked body. Each
+  // concrete runtime body then owns one NativeReferenceSummary product.
+  // ArtifactReachability selects native_live_body_work_indices without
+  // changing the complete checked body/effect sets above. Only those live rows
+  // map one-to-one to MirProcedure products. Symbolic, compile-time-only, and
+  // artifact-dead bodies intentionally have no runtime MIR product.
   SemanticProductId package_assembly;
-  std::vector<std::size_t> mir_body_work_indices;
+  std::vector<std::size_t> checked_runtime_body_work_indices;
+  std::vector<SemanticProductId> native_reference_summaries;
+  std::vector<std::size_t> native_live_body_work_indices;
+  std::vector<SymbolId> native_live_globals;
   std::vector<SemanticProductId> mir_procedures;
-  // package_llvm_module depends on every selected procedure's MIR together
-  // with package declarations, target ABI classifications, and denial facts.
-  // artifact_layout is the publication barrier over that complete module and
+  // package_llvm_module depends on the live procedure MIR and reference rows,
+  // package declarations, target ABI classifications, and package assembly.
+  // artifact_layout is the publication barrier over that reachable module and
   // the package assembly input.
   SemanticProductId package_llvm_module;
   SemanticProductId artifact_layout;
@@ -422,6 +434,10 @@ struct PackageSemanticProducts {
 struct WorkspaceSemanticProducts {
   SemanticProductId target;
   SemanticProductId source_generation;
+  // One workspace-owned product closes all concrete direct native-reference
+  // rows from command-selected artifact roots. It has no package owner because
+  // cross-package procedure/global edges are its semantic purpose.
+  SemanticProductId artifact_reachability;
   std::vector<PackageSemanticProducts> packages;
   std::vector<PackageId> package_by_product;
   // Parallel to SemanticProductGraph. Non-constant products contain an invalid
@@ -445,6 +461,10 @@ struct WorkspaceSemanticProducts {
   // name their GenericTypeDemand row; ordinary natural-layout products contain
   // an invalid ID.
   std::vector<GenericTypeDemandId> generic_type_demand_by_product;
+  // Parallel to SemanticProductGraph. Completed NativeReferenceSummary rows
+  // own one compact direct-reference payload; other rows are empty.
+  std::vector<std::optional<NativeProcedureReferenceSummary>>
+      native_reference_by_product;
   // Parallel to SemanticProductGraph. A completed MirProcedure row owns one
   // immutable procedure payload here; every other product has no value. This
   // is the authoritative MIR storage--packages retain only ordered product IDs
@@ -498,6 +518,10 @@ struct CompileWorkspaceResult {
   // Canonically ordered, target-checked procedures selected for a validation
   // command. These facts are also the semantic input to evidence generation.
   std::vector<ValidationEntry> validation_entries;
+  // Complete artifact-rooted liveness result. Input rows remain in package and
+  // semantic-product tables; these indices are retained for diagnostics,
+  // timings, and deterministic qualification of checked-versus-emitted work.
+  NativeReachabilityResult native_reachability;
 };
 
 // Minimal authored agent-site state retained while complete body source is

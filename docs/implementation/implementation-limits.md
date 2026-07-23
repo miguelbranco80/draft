@@ -117,13 +117,16 @@ Definite-initialization diagnostics and agent loop-range facts are produced by
 the isolated body task before its semantic suffix is published; package
 finalization no longer needs a temporary HIR projection.
 
-LLVM and native lowering now follow live semantic products. Each concrete MIR
-procedure retains its independently owned product payload. Once the complete
-package set is ready, one `PackageLlvmModule` borrows those payloads in canonical
-order and emits package globals plus all concrete definitions. Each package then
-publishes a deterministic `ArtifactLayout` over that module and its assembly.
-The object planner consumes only that layout; no per-function LLVM units or
-parallel package-module representation remain in compiler state.
+LLVM and native lowering now follow artifact-live semantic products. Every
+authored body is checked, but each concrete runtime procedure first publishes a
+direct native-reference summary. One workspace reachability product closes
+from entry/export/validation roots through calls, procedure values, and globals.
+Only its live rows receive independently owned MIR products. Once the complete
+projection is ready, one `PackageLlvmModule` borrows those payloads in canonical
+order and emits only live package globals and concrete definitions. Each package
+then publishes a deterministic `ArtifactLayout` over that module and its
+assembly. The object planner consumes only that layout; no per-function LLVM
+units or parallel package-module representation remain in compiler state.
 
 ## Native host and instrumentation limits
 

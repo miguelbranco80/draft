@@ -516,14 +516,37 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
       EXPECT(state, row.kind == draft::SemanticProductKind::PackageAssembly);
       EXPECT(state, row.state == draft::SemanticProductState::Complete);
     }
-    EXPECT(state, left_products.mir_body_work_indices.size() ==
+    EXPECT(state,
+           left_products.checked_runtime_body_work_indices.size() ==
+               left_products.native_reference_summaries.size());
+    EXPECT(state, left_products.native_live_body_work_indices.size() ==
                       left_products.mir_procedures.size());
+    EXPECT(state,
+           sequential.semantic_products.artifact_reachability.is_valid());
+    EXPECT(state, sequential.native_reachability.ok);
+    for (std::size_t reference_index = 0;
+         reference_index < left_products.native_reference_summaries.size();
+         ++reference_index) {
+      const draft::SemanticProductId product =
+          left_products.native_reference_summaries[reference_index];
+      const draft::SemanticProduct &row =
+          sequential.semantic_graph.products[product.value];
+      EXPECT(
+          state,
+          row.kind == draft::SemanticProductKind::NativeReferenceSummary);
+      EXPECT(state, row.state == draft::SemanticProductState::Complete);
+      EXPECT(
+          state,
+          sequential.semantic_products
+              .native_reference_by_product[product.value]
+              .has_value());
+    }
     EXPECT(state, left_products.package_llvm_module.is_valid());
     EXPECT(state, left.llvm_module.ok);
     for (std::size_t mir_index = 0;
          mir_index < left_products.mir_procedures.size(); ++mir_index) {
       const std::size_t work_index =
-          left_products.mir_body_work_indices[mir_index];
+          left_products.native_live_body_work_indices[mir_index];
       const draft::SemanticProductId product =
           left_products.mir_procedures[mir_index];
       const draft::SemanticProduct &row =
@@ -2878,6 +2901,89 @@ void test_multi_package_native_pipeline(TestState &state) {
   }
 }
 
+// Proves the semantic/native split at the complete compiler boundary. Every
+// authored body must remain checked and own a direct-reference product, but the
+// artifact projection contains only main's transitive callback/global closure
+// plus an otherwise-unused C export. An unreferenced valid body and global are
+// deliberately retained in semantic tables and absent from emitted LLVM.
+void test_native_emission_uses_artifact_reachability(TestState &state) {
+  draft::test::TemporaryDirectory temporary_directory{
+      "draft-bootstrap-artifact-reachability-test"};
+  const std::filesystem::path &root = temporary_directory.path();
+  std::error_code error;
+  std::filesystem::create_directories(root / "app", error);
+  EXPECT(state, !error);
+  if (error) return;
+
+  std::ofstream source(root / "app" / "package.draft", std::ios::binary);
+  source <<
+      "package app\n"
+      "dead_value: i64 = 99\n"
+      "increment :: proc(value: u32) -> u32 {\n"
+      "    return value + 1\n"
+      "}\n"
+      "Increment_Callback :: increment\n"
+      "live_callback: proc(value: u32) -> u32 = Increment_Callback\n"
+      "dead :: proc() -> i64 {\n"
+      "    return dead_value\n"
+      "}\n"
+      "export artifact_api as \"draft_artifact_api\" :: c proc() -> i32 {\n"
+      "    return 7\n"
+      "}\n"
+      "main :: proc() -> int {\n"
+      "    return cast[int](live_callback(41))\n"
+      "}\n";
+  source.close();
+  EXPECT(state, source.good());
+
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory = root.string();
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources, (root / "app").string(), std::move(options), diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, result.graph.root_package.is_valid());
+  if (!result.ok || !result.graph.root_package.is_valid()) return;
+
+  const draft::PackageId root_package = result.graph.root_package;
+  EXPECT(state, root_package.value < result.packages.size());
+  if (root_package.value >= result.packages.size() ||
+      !result.packages[root_package.value].has_value()) {
+    return;
+  }
+  const draft::CompiledPackage &package =
+      *result.packages[root_package.value];
+  const draft::PackageSemanticProducts &products =
+      result.semantic_products.packages[root_package.value];
+  EXPECT(state, package.bodies.checked_procedures == 4);
+  EXPECT(state, products.checked_runtime_body_work_indices.size() == 4);
+  EXPECT(state, products.native_reference_summaries.size() == 4);
+  EXPECT(state, products.native_live_body_work_indices.size() == 3);
+  EXPECT(state, products.mir_procedures.size() == 3);
+  EXPECT(state, package.native_live_globals.size() == 1);
+
+  const std::string &llvm = package.llvm_module.text;
+  EXPECT(state, llvm.find("draft.workspace.app.increment") !=
+                    std::string::npos);
+  EXPECT(state,
+         llvm.find("define i64 @\"draft.workspace.app.dead\"") ==
+             std::string::npos);
+  EXPECT(state, llvm.find("draft.workspace.app.live_5Fcallback") !=
+                    std::string::npos);
+  EXPECT(state, llvm.find("draft.workspace.app.dead_5Fvalue") ==
+                    std::string::npos);
+  EXPECT(state, llvm.find("define i32 @\"draft_artifact_api\"") !=
+                    std::string::npos);
+}
+
 void test_hosted_entry_contract(TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
       "draft-bootstrap-entry-test"};
@@ -2938,6 +3044,8 @@ void test_file_local_imports_share_one_llvm_declaration(TestState &state) {
 
   // Imports are intentionally repeated in different files. They create two
   // file-local semantic proxies but refer to one package-qualified LLVM symbol.
+  // `other` remains fully checked but is not rooted by the executable, so its
+  // second call must not survive artifact reachability into LLVM.
   std::ofstream main_source(
       root / "app" / "package.draft", std::ios::binary);
   main_source <<
@@ -2989,7 +3097,7 @@ void test_file_local_imports_share_one_llvm_declaration(TestState &state) {
       EXPECT(state,
           occurrence_count(
               package_llvm_text(*package),
-              "call i64 @\"draft.workspace.lib.base\"(ptr %context)") == 2);
+              "call i64 @\"draft.workspace.lib.base\"(ptr %context)") == 1);
     }
   }
 
@@ -4460,6 +4568,7 @@ int main() {
   test_body_work_graph_promotes_matching_local_instance(state);
   test_target_lowering_continues_checked_graph(state);
   test_multi_package_native_pipeline(state);
+  test_native_emission_uses_artifact_reachability(state);
   test_hosted_entry_contract(state);
   test_file_local_imports_share_one_llvm_declaration(state);
   test_compiler_distributed_core(state);

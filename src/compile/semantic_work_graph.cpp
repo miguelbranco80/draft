@@ -422,6 +422,10 @@ std::string_view semantic_product_kind_name(SemanticProductKind kind) {
     return "closed effect SCC";
   case SemanticProductKind::DenialResult:
     return "denial result";
+  case SemanticProductKind::NativeReferenceSummary:
+    return "native reference summary";
+  case SemanticProductKind::ArtifactReachability:
+    return "artifact reachability";
   case SemanticProductKind::MirProcedure:
     return "MIR procedure";
   case SemanticProductKind::PackageAssembly:

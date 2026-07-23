@@ -93,6 +93,14 @@ struct LoweredProcedureProducts {
   for (const MirProcedure &procedure : procedures) {
     procedure_pointers.push_back(&procedure);
   }
+  std::vector<SymbolId> globals;
+  for (SymbolId symbol :
+       semantic.symbols.symbols_in_scope(semantic.package_scope)) {
+    const Symbol &candidate = semantic.symbols.symbol(symbol);
+    if (candidate.kind == SymbolKind::Variable && !candidate.flags.foreign) {
+      globals.push_back(symbol);
+    }
+  }
   return emit_llvm_package_module(
       target,
       sources,
@@ -100,6 +108,7 @@ struct LoweredProcedureProducts {
       semantic,
       abi,
       global_initializers,
+      globals,
       procedure_pointers,
       diagnostics);
 }

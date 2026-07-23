@@ -195,9 +195,10 @@ build/draftc emit-c-header path/to/workspace --root package -o /tmp/package.h \
 ```
 
 `emit-llvm` prints one complete module per semantic package. Each block contains
-that package's globals and all concrete runtime procedure definitions and is an
-independent compiler input. Module granularity is an internal compiler
-invariant; there is no CLI option to change it.
+that package's artifact-live globals and concrete runtime procedure definitions
+and is an independent compiler input. Unreachable authored bodies are still
+checked; they simply do not become MIR or native definitions. Module granularity
+is an internal compiler invariant; there is no CLI option to change it.
 
 Pass an explicit target for target-sensitive work. A default-macOS check alone
 does not establish portability.
@@ -284,15 +285,17 @@ counts both `synthesis provider ready waves` and actual provider calls. Calls in
 one wave may overlap, so compare the enclosing wall time with the call count;
 do not add per-worker timing writes to the single-threaded recorder.
 
-Native lowering reports package-assembly, MIR, package-LLVM, and artifact-layout
-semantic waves separately. Each concrete `MirProcedure` payload lives in its
-workspace product side-table row rather than a package MIR program. After every
-selected package's MIR is ready, one workspace-wide wave runs one package-LLVM
-task per package; each task borrows its package's procedures in canonical order
-and emits the complete module. A later native ready set contains one module-
-object task per package plus any selected package-assembly tasks. Worker counts
-are internal/test options, not CLI flags. Repository determinism tests compare
-those counters across worker counts; do not invent `--workers` or `-j`.
+Native lowering reports package-assembly, direct native-reference, artifact-
+reachability, live MIR, package-LLVM, and artifact-layout semantic work
+separately. Each live `MirProcedure` payload lives in its workspace product
+side-table row rather than a package MIR program. After the reachability
+projection and every selected package's live MIR are ready, one workspace-wide
+wave runs one package-LLVM task per package; each task borrows its package's
+procedures and globals in canonical order and emits the complete live module. A
+later native ready set contains one module-object task per package plus any
+selected package-assembly tasks. Worker counts are internal/test options, not
+CLI flags. Repository determinism tests compare those counters across worker
+counts; do not invent `--workers` or `-j`.
 
 For resolved programs, distinguish `workspace loads` from `workspace source
 transitions`. A checked `...` expansion is reparsed into the existing

@@ -77,9 +77,11 @@ expression, or name lookup.
 | Direct effect summary | Facts local to one concrete body, before transitive call and pointer-flow closure. |
 | Closed effect SCC | Monotonic closure over one concrete call/flow strongly connected component. |
 | Denial result | Checked only after the summaries on which the denial depends are closed. |
+| Direct native-reference summary | One checked concrete runtime body records direct calls, procedure values and escapes, globals, foreign edges, and uncertain indirect targets without producing MIR. |
+| Artifact reachability | One command-selected root closure separates the complete checked procedure set from the procedure/global subset required by the requested artifact. |
 | MIR procedure | Lowering is owned by one checked concrete procedure and does not mutate semantic type tables. |
 | Package assembly | Captured and parsed assembly is an explicit package product consumed by MIR and native layout. |
-| Package LLVM module | One complete module consumes the package's ordered MIR products and owns its globals plus concrete definitions. |
+| Package LLVM module | One complete module consumes the package's ordered artifact-live MIR products and owns only its artifact-live globals and concrete definitions. |
 | Artifact layout | The package module and assembly link inputs are published in canonical order after their products complete. |
 
 Type readiness is deliberately faceted: identity, members, member types, natural
@@ -140,27 +142,42 @@ the coordinator in product order.
 
 ## Emission reachability
 
-Semantic checking and machine emission are separate questions. The first
-correct implementation may emit every concrete procedure. If emission later
-becomes demand-only, its conservative roots must include:
+Status: implemented for provider-free native lowering.
+
+Semantic checking and machine emission are separate questions. Every selected
+authored body and symbolic parametric template is checked first. Each checked
+concrete runtime body then publishes one compact direct native-reference row.
+Only after those rows and package assembly are complete does one workspace
+product compute the artifact projection rooted by:
 
 - the configured entry point and C exports;
 - validation entries selected by the command;
-- procedure identities stored in globals, constants, or static data;
-- requirements introduced by parsed assembly or generated source; and
+- procedure identities stored in reachable globals, constants, or static data;
+- the explicit foreign/export C-ABI boundary used by package assembly;
 - all transitive direct calls and finite procedure-pointer targets.
 
-An uncertain target is emitted, not silently discarded. This optimization must
-never weaken whole-program checking.
+Package assembly cannot name a private Draft symbol, so its Draft-side roots
+are the same explicit exports already included above. Parsed inline assembly is
+inside its owning live procedure. An uncertain indirect call is retained as an
+inspectable summary fact. Every concrete Draft procedure value that can supply
+such a call is itself an exact relocation edge at the value's originating body
+or global, so that definition is retained without guessing that every unrelated
+procedure is live.
+
+The closure maps its stable procedure/global identities back to package-local
+body and SymbolId rows. MIR and LLVM consume only that projection. The complete
+body, direct-effect, closed-effect, and denial products remain present, so this
+optimization cannot weaken whole-program checking or denial enforcement.
 
 ## Implemented boundary
 
 Package retry rounds and retained-package rechecking are gone. Generic instance
 and type-layout demand are explicit graph products; procedure workers publish
 isolated immutable bodies; effects and denials close through explicit SCCs; MIR
-is produced per concrete procedure; LLVM emission consumes one completed
-ordered MIR set per semantic package; and deterministic parallel scheduling is
-qualified at one and four semantic workers.
+is produced per artifact-live concrete procedure after a workspace reachability
+product; LLVM emission consumes one completed ordered live MIR/global set per
+semantic package; and deterministic parallel scheduling is qualified at one and
+four semantic workers.
 
 The bootstrap retains package-owned canonical semantic tables because stable
 SymbolId, ScopeId, and TypeId values need one publication domain. Workers never

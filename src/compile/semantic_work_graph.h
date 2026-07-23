@@ -74,6 +74,8 @@ enum class SemanticProductKind {
   DirectEffectSummary,
   ClosedEffectScc,
   DenialResult,
+  NativeReferenceSummary,
+  ArtifactReachability,
   MirProcedure,
   PackageAssembly,
   PackageLlvmModule,

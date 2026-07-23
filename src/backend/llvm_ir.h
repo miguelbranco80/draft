@@ -36,9 +36,9 @@ struct LlvmIrResult {
 };
 
 // Emits one complete LLVM module for one semantic package. procedures is the
-// canonical package-local MIR product order: the module defines every listed
-// concrete procedure together with the package's globals, relocatable
-// constants, and (when requested) its process support and hosted entry point.
+// canonical artifact-live package-local definition order: the module defines
+// every listed global and concrete procedure together with their relocatable
+// constants and (when requested) process support and the hosted entry point.
 //
 // The span borrows procedure-owned MIR payloads. Keeping those payloads in
 // their semantic-product side-table slots preserves the compiler's fine-grain
@@ -52,6 +52,7 @@ struct LlvmIrResult {
     const SemanticPackage &semantic,
     const CAbiTable &abi,
     const ConstantTable &global_initializers,
+    std::span<const SymbolId> globals,
     std::span<const MirProcedure *const> procedures,
     DiagnosticSink &diagnostics);
 

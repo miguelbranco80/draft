@@ -57,6 +57,7 @@ answer :: proc() -> i64 {
 }
 
 main :: proc() {
+    assert(answer() == 42)
 }
 )draft";
   }
