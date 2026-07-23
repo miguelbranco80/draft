@@ -82,6 +82,15 @@ struct RelocatableConstantField {
   LLVMValueRef value = nullptr;
 };
 
+// Entry-block storage used to translate logical Draft values to physical C ABI
+// carriers. Rows are indexed by MIR instruction and logical argument so a call
+// inside a loop reuses bounded storage rather than allocating on every trip.
+struct DirectAbiScratch {
+  std::vector<std::vector<LLVMValueRef>> call_arguments;
+  std::vector<LLVMValueRef> call_results;
+  LLVMValueRef procedure_result = nullptr;
+};
+
 // DirectPhaseTimer avoids steady-clock reads unless --timings=all requested the
 // package task's nested backend rows. finish is idempotent so failure paths can
 // publish the exact completed prefix without introducing a scope framework.
@@ -654,6 +663,204 @@ private:
         symbol.linkage_name.empty() ? symbol.name : symbol.linkage_name);
   }
 
+  [[nodiscard]] TypeId function_result(TypeId type_id) const {
+    const Type &signature = type(type_id);
+    return signature.members.empty() ? semantic_.types.builtins().void_type
+                                     : signature.members.back();
+  }
+
+  [[nodiscard]] CAbiType c_abi_type(TypeId type_id) const {
+    if (type_id == semantic_.runtime_context_type) {
+      const Type &context = type(type_id);
+      CAbiType abi;
+      abi.classification = CAbiClass::Indirect;
+      abi.size = context.layout.size;
+      abi.alignment = context.layout.alignment;
+      return abi;
+    }
+    const CAbiType *abi = abi_.find(type_id);
+    if (abi == nullptr) {
+      error(SourceRange::invalid(),
+            "C ABI query names a type outside the classified semantic prefix");
+      return {};
+    }
+    return *abi;
+  }
+
+  [[nodiscard]] CAbiFunctionPlan c_abi_function_plan(TypeId type_id) const {
+    CAbiFunctionPlan result =
+        plan_c_abi_function(semantic_.types, type_id, abi_, target_.facts);
+    if (result.ok)
+      return result;
+    const Type &signature = type(type_id);
+    if (signature.kind == TypeKind::Procedure &&
+        signature.c_calling_convention && signature.members.size() == 1 &&
+        signature.members.back() == semantic_.runtime_context_type) {
+      result.ok = true;
+      result.result = c_abi_type(signature.members.back());
+    }
+    return result;
+  }
+
+  [[nodiscard]] LLVMTypeRef homogeneous_llvm_type(const CAbiType &abi) {
+    LLVMTypeRef element = nullptr;
+    if (abi.homogeneous_element_bits == 16)
+      element = LLVMHalfTypeInContext(context_.value);
+    if (abi.homogeneous_element_bits == 32)
+      element = LLVMFloatTypeInContext(context_.value);
+    if (abi.homogeneous_element_bits == 64)
+      element = LLVMDoubleTypeInContext(context_.value);
+    if (element == nullptr) {
+      error(SourceRange::invalid(), "C ABI HFA has an invalid lane width");
+      element = LLVMInt8TypeInContext(context_.value);
+    }
+    return LLVMArrayType2(element, abi.homogeneous_element_count);
+  }
+
+  [[nodiscard]] LLVMTypeRef integer_container_type(std::uint32_t bits,
+                                                   std::uint32_t count) {
+    LLVMTypeRef integer = LLVMIntTypeInContext(context_.value, bits);
+    return count == 1 ? integer : LLVMArrayType2(integer, count);
+  }
+
+  [[nodiscard]] LLVMTypeRef
+  sysv_eightbyte_llvm_type(const CAbiEightbyte &component) {
+    if (component.classification == CAbiEightbyteClass::Integer)
+      return LLVMIntTypeInContext(context_.value, component.bits);
+    if (component.classification == CAbiEightbyteClass::Sse) {
+      if (component.bits <= 16)
+        return LLVMHalfTypeInContext(context_.value);
+      if (component.bits <= 32)
+        return LLVMFloatTypeInContext(context_.value);
+      return LLVMDoubleTypeInContext(context_.value);
+    }
+    error(SourceRange::invalid(), "C ABI has an invalid SysV eightbyte");
+    return LLVMInt8TypeInContext(context_.value);
+  }
+
+  [[nodiscard]] LLVMTypeRef sysv_aggregate_llvm_type(const CAbiType &abi) {
+    if (abi.eightbyte_count == 1)
+      return sysv_eightbyte_llvm_type(abi.eightbytes[0]);
+    if (abi.eightbyte_count == 2) {
+      LLVMTypeRef members[]{sysv_eightbyte_llvm_type(abi.eightbytes[0]),
+                            sysv_eightbyte_llvm_type(abi.eightbytes[1])};
+      return LLVMStructTypeInContext(context_.value, members, 2, 0);
+    }
+    error(SourceRange::invalid(), "C ABI has no SysV aggregate components");
+    return LLVMInt8TypeInContext(context_.value);
+  }
+
+  [[nodiscard]] LLVMTypeRef c_parameter_type(TypeId type_id) {
+    const CAbiType abi = c_abi_type(type_id);
+    switch (abi.classification) {
+    case CAbiClass::Direct:
+      return llvm_type(type_id);
+    case CAbiClass::HomogeneousFloatAggregate:
+      return homogeneous_llvm_type(abi);
+    case CAbiClass::SmallAggregate:
+      return integer_container_type(abi.argument_integer_bits,
+                                    abi.argument_integer_count);
+    case CAbiClass::EightbyteAggregate:
+      return sysv_aggregate_llvm_type(abi);
+    case CAbiClass::Indirect:
+    case CAbiClass::Win64WideInteger:
+      return LLVMPointerTypeInContext(context_.value, 0);
+    case CAbiClass::Illegal:
+      error(SourceRange::invalid(), "illegal C ABI parameter reached LLVM");
+      return LLVMInt8TypeInContext(context_.value);
+    }
+    return LLVMInt8TypeInContext(context_.value);
+  }
+
+  [[nodiscard]] LLVMTypeRef c_result_type(TypeId type_id) {
+    if (type_id == semantic_.types.builtins().void_type)
+      return LLVMVoidTypeInContext(context_.value);
+    const CAbiType abi = c_abi_type(type_id);
+    switch (abi.classification) {
+    case CAbiClass::Direct:
+      return llvm_type(type_id);
+    case CAbiClass::Win64WideInteger:
+      return LLVMVectorType(LLVMInt64TypeInContext(context_.value), 2);
+    case CAbiClass::HomogeneousFloatAggregate:
+      return homogeneous_llvm_type(abi);
+    case CAbiClass::SmallAggregate:
+      return integer_container_type(abi.result_integer_bits,
+                                    abi.result_integer_count);
+    case CAbiClass::EightbyteAggregate:
+      return sysv_aggregate_llvm_type(abi);
+    case CAbiClass::Indirect:
+      return LLVMVoidTypeInContext(context_.value);
+    case CAbiClass::Illegal:
+      error(SourceRange::invalid(), "illegal C ABI result reached LLVM");
+      return LLVMVoidTypeInContext(context_.value);
+    }
+    return LLVMVoidTypeInContext(context_.value);
+  }
+
+  [[nodiscard]] std::vector<LLVMTypeRef>
+  c_parameter_types(TypeId type_id, CAbiParameterMode mode) {
+    const CAbiType abi = c_abi_type(type_id);
+    if (mode == CAbiParameterMode::Indirect)
+      return {LLVMPointerTypeInContext(context_.value, 0)};
+    if (abi.classification == CAbiClass::EightbyteAggregate) {
+      std::vector<LLVMTypeRef> result;
+      result.reserve(abi.eightbyte_count);
+      for (std::size_t index = 0; index < abi.eightbyte_count; ++index)
+        result.push_back(sysv_eightbyte_llvm_type(abi.eightbytes[index]));
+      return result;
+    }
+    return {c_parameter_type(type_id)};
+  }
+
+  [[nodiscard]] std::uint64_t
+  abi_argument_storage_size(const CAbiType &abi) const {
+    if (abi.classification == CAbiClass::SmallAggregate) {
+      return static_cast<std::uint64_t>(abi.argument_integer_bits / 8U) *
+             abi.argument_integer_count;
+    }
+    if (abi.classification == CAbiClass::EightbyteAggregate)
+      return static_cast<std::uint64_t>(abi.eightbyte_count) * 8U;
+    return abi.size;
+  }
+
+  [[nodiscard]] std::uint64_t
+  abi_result_storage_size(const CAbiType &abi) const {
+    if (abi.classification == CAbiClass::SmallAggregate) {
+      return static_cast<std::uint64_t>(abi.result_integer_bits / 8U) *
+             abi.result_integer_count;
+    }
+    if (abi.classification == CAbiClass::EightbyteAggregate)
+      return static_cast<std::uint64_t>(abi.eightbyte_count) * 8U;
+    return abi.size;
+  }
+
+  [[nodiscard]] std::uint32_t
+  sysv_component_alignment(const CAbiType &abi, std::size_t component) const {
+    return component == 0 ? abi.alignment
+                          : std::min<std::uint32_t>(abi.alignment, 8U);
+  }
+
+  [[nodiscard]] std::optional<std::string_view>
+  c_integer_extension(TypeId type_id) const {
+    if (target_.facts.abi != "darwin_arm64" &&
+        target_.facts.abi != "sysv_amd64") {
+      return std::nullopt;
+    }
+    const Type &value = type(type_id);
+    if (value.kind == TypeKind::Enum && value.element.is_valid())
+      return c_integer_extension(value.element);
+    if (value.bit_width >= 32)
+      return std::nullopt;
+    if (value.kind == TypeKind::SignedInteger)
+      return "signext";
+    if (value.kind == TypeKind::UnsignedInteger ||
+        value.kind == TypeKind::BooleanStorage ||
+        value.kind == TypeKind::EndianScalar) {
+      return "zeroext";
+    }
+    return std::nullopt;
+  }
+
   [[nodiscard]] LLVMTypeRef function_type(TypeId type_id) {
     const Type &signature = type(type_id);
     if (signature.kind != TypeKind::Procedure || signature.members.empty()) {
@@ -661,19 +868,196 @@ private:
       return LLVMFunctionType(LLVMVoidTypeInContext(context_.value), nullptr, 0,
                               0);
     }
-    if (signature.c_calling_convention) {
-      error(signature.declaration,
-            "direct package builder has not yet implemented C ABI signatures");
-    }
     std::vector<LLVMTypeRef> parameters;
-    parameters.reserve(signature.members.size());
-    parameters.push_back(LLVMPointerTypeInContext(context_.value, 0));
-    for (std::size_t index = 0; index + 1 < signature.members.size(); ++index) {
-      parameters.push_back(llvm_type(signature.members[index]));
+    const TypeId result_id = function_result(type_id);
+    LLVMTypeRef result_type = llvm_type(result_id);
+    if (signature.c_calling_convention) {
+      const CAbiFunctionPlan plan = c_abi_function_plan(type_id);
+      if (!plan.ok || plan.parameters.size() + 1 != signature.members.size()) {
+        error(signature.declaration, "cannot plan C ABI function signature");
+      }
+      const CAbiType result_abi = plan.ok ? plan.result : c_abi_type(result_id);
+      result_type = c_result_type(result_id);
+      if (result_abi.classification == CAbiClass::Indirect) {
+        parameters.push_back(LLVMPointerTypeInContext(context_.value, 0));
+      }
+      for (std::size_t index = 0; index + 1 < signature.members.size();
+           ++index) {
+        const CAbiParameterMode mode =
+            plan.ok ? plan.parameters[index].mode : CAbiParameterMode::Expanded;
+        std::vector<LLVMTypeRef> physical =
+            c_parameter_types(signature.members[index], mode);
+        parameters.insert(parameters.end(), physical.begin(), physical.end());
+      }
+    } else {
+      parameters.reserve(signature.members.size());
+      parameters.push_back(LLVMPointerTypeInContext(context_.value, 0));
+      for (std::size_t index = 0; index + 1 < signature.members.size();
+           ++index) {
+        parameters.push_back(llvm_type(signature.members[index]));
+      }
     }
-    return LLVMFunctionType(llvm_type(signature.members.back()),
-                            parameters.data(),
-                            static_cast<unsigned>(parameters.size()), 0);
+    return LLVMFunctionType(
+        result_type, parameters.empty() ? nullptr : parameters.data(),
+        static_cast<unsigned>(parameters.size()),
+        signature.c_calling_convention && signature.c_variadic ? 1 : 0);
+  }
+
+  [[nodiscard]] bool is_c_export(SymbolId symbol_id) const {
+    for (const NativeBinding &binding : semantic_.native_bindings) {
+      if (binding.kind == NativeBindingKind::CExport &&
+          binding.symbol == symbol_id) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void add_enum_attribute(LLVMValueRef function, LLVMAttributeIndex index,
+                          std::string_view name, std::uint64_t value = 0) {
+    const unsigned kind =
+        LLVMGetEnumAttributeKindForName(name.data(), name.size());
+    if (kind == 0) {
+      error(SourceRange::invalid(),
+            "linked LLVM has no attribute '" + std::string(name) + "'");
+      return;
+    }
+    LLVMAddAttributeAtIndex(
+        function, index, LLVMCreateEnumAttribute(context_.value, kind, value));
+  }
+
+  void add_type_attribute(LLVMValueRef function, LLVMAttributeIndex index,
+                          std::string_view name, LLVMTypeRef type_value) {
+    const unsigned kind =
+        LLVMGetEnumAttributeKindForName(name.data(), name.size());
+    if (kind == 0) {
+      error(SourceRange::invalid(),
+            "linked LLVM has no type attribute '" + std::string(name) + "'");
+      return;
+    }
+    LLVMAddAttributeAtIndex(
+        function, index,
+        LLVMCreateTypeAttribute(context_.value, kind, type_value));
+  }
+
+  // Applies the target ABI facts which are not part of LLVM's function type:
+  // scalar extension, sret/byval pointee types, and promised alignment. The
+  // physical parameter cursor is one-based because LLVM index zero is return.
+  void apply_c_function_attributes(LLVMValueRef function, TypeId type_id) {
+    const Type &signature = type(type_id);
+    if (!signature.c_calling_convention)
+      return;
+    const CAbiFunctionPlan plan = c_abi_function_plan(type_id);
+    if (!plan.ok)
+      return;
+
+    const TypeId result_id = function_result(type_id);
+    if (const std::optional<std::string_view> extension =
+            c_integer_extension(result_id)) {
+      add_enum_attribute(function, LLVMAttributeReturnIndex, *extension);
+    }
+
+    LLVMAttributeIndex physical = 1;
+    if (plan.result.classification == CAbiClass::Indirect) {
+      add_type_attribute(function, physical, "sret", llvm_type(result_id));
+      add_enum_attribute(function, physical, "align", plan.result.alignment);
+      LLVMSetValueName2(LLVMGetParam(function, physical - 1), "sret", 4);
+      ++physical;
+    }
+    for (std::size_t logical = 0; logical < plan.parameters.size(); ++logical) {
+      const TypeId logical_type = signature.members[logical];
+      const CAbiParameterMode mode = plan.parameters[logical].mode;
+      const std::vector<LLVMTypeRef> types =
+          c_parameter_types(logical_type, mode);
+      const CAbiType abi = c_abi_type(logical_type);
+      for (std::size_t component = 0; component < types.size(); ++component) {
+        if (mode == CAbiParameterMode::Indirect) {
+          if (target_.facts.abi == "sysv_amd64") {
+            add_type_attribute(function, physical, "byval",
+                               llvm_type(logical_type));
+          }
+          add_enum_attribute(function, physical, "align", abi.alignment);
+        } else if (types.size() == 1) {
+          if (const std::optional<std::string_view> extension =
+                  c_integer_extension(logical_type)) {
+            add_enum_attribute(function, physical, *extension);
+          }
+        }
+        const std::string name = types.size() == 1
+                                     ? "arg" + std::to_string(logical)
+                                     : "arg" + std::to_string(logical) + "." +
+                                           std::to_string(component);
+        LLVMSetValueName2(LLVMGetParam(function, physical - 1), name.data(),
+                          name.size());
+        ++physical;
+      }
+    }
+  }
+
+  void add_call_enum_attribute(LLVMValueRef call, LLVMAttributeIndex index,
+                               std::string_view name, std::uint64_t value = 0) {
+    const unsigned kind =
+        LLVMGetEnumAttributeKindForName(name.data(), name.size());
+    if (kind == 0) {
+      error(SourceRange::invalid(),
+            "linked LLVM has no call attribute '" + std::string(name) + "'");
+      return;
+    }
+    LLVMAddCallSiteAttribute(
+        call, index, LLVMCreateEnumAttribute(context_.value, kind, value));
+  }
+
+  void add_call_type_attribute(LLVMValueRef call, LLVMAttributeIndex index,
+                               std::string_view name, LLVMTypeRef type_value) {
+    const unsigned kind =
+        LLVMGetEnumAttributeKindForName(name.data(), name.size());
+    if (kind == 0) {
+      error(SourceRange::invalid(), "linked LLVM has no call type attribute '" +
+                                        std::string(name) + "'");
+      return;
+    }
+    LLVMAddCallSiteAttribute(
+        call, index, LLVMCreateTypeAttribute(context_.value, kind, type_value));
+  }
+
+  void apply_c_call_attributes(LLVMValueRef call, TypeId type_id) {
+    const Type &signature = type(type_id);
+    const CAbiFunctionPlan plan = c_abi_function_plan(type_id);
+    if (!signature.c_calling_convention || !plan.ok)
+      return;
+    const TypeId result_id = function_result(type_id);
+    if (const std::optional<std::string_view> extension =
+            c_integer_extension(result_id)) {
+      add_call_enum_attribute(call, LLVMAttributeReturnIndex, *extension);
+    }
+    LLVMAttributeIndex physical = 1;
+    if (plan.result.classification == CAbiClass::Indirect) {
+      add_call_type_attribute(call, physical, "sret", llvm_type(result_id));
+      add_call_enum_attribute(call, physical, "align", plan.result.alignment);
+      ++physical;
+    }
+    for (std::size_t logical = 0; logical < plan.parameters.size(); ++logical) {
+      const TypeId logical_type = signature.members[logical];
+      const CAbiParameterMode mode = plan.parameters[logical].mode;
+      const std::vector<LLVMTypeRef> types =
+          c_parameter_types(logical_type, mode);
+      const CAbiType abi = c_abi_type(logical_type);
+      for (std::size_t component = 0; component < types.size(); ++component) {
+        if (mode == CAbiParameterMode::Indirect) {
+          if (target_.facts.abi == "sysv_amd64") {
+            add_call_type_attribute(call, physical, "byval",
+                                    llvm_type(logical_type));
+          }
+          add_call_enum_attribute(call, physical, "align", abi.alignment);
+        } else if (types.size() == 1) {
+          if (const std::optional<std::string_view> extension =
+                  c_integer_extension(logical_type)) {
+            add_call_enum_attribute(call, physical, *extension);
+          }
+        }
+        ++physical;
+      }
+    }
   }
 
   [[nodiscard]] LLVMValueRef function_for_symbol(SymbolId symbol_id) {
@@ -696,7 +1080,13 @@ private:
     }
     LLVMValueRef function = LLVMAddFunction(module_.value, name.c_str(),
                                             function_type(symbol.type));
-    LLVMSetVisibility(function, LLVMHiddenVisibility);
+    if (is_c_export(symbol_id)) {
+      if (target_.facts.object_format == "coff")
+        LLVMSetDLLStorageClass(function, LLVMDLLExportStorageClass);
+    } else if (!native_symbol_name(symbol_id).has_value()) {
+      LLVMSetVisibility(function, LLVMHiddenVisibility);
+    }
+    apply_c_function_attributes(function, symbol.type);
     functions_[symbol_id.value] = function;
     return function;
   }
@@ -2044,13 +2434,389 @@ private:
                          static_cast<unsigned>(value_count + 3U), "");
   }
 
+  [[nodiscard]] LLVMValueRef abi_scratch(std::uint64_t size,
+                                         std::uint32_t alignment,
+                                         std::string_view name) {
+    LLVMTypeRef storage =
+        LLVMArrayType2(LLVMInt8TypeInContext(context_.value), size);
+    const std::string owned_name(name);
+    LLVMValueRef allocation =
+        LLVMBuildAlloca(builder_.value, storage, owned_name.c_str());
+    LLVMSetAlignment(allocation, alignment);
+    return allocation;
+  }
+
+  [[nodiscard]] DirectAbiScratch
+  allocate_c_abi_scratch(const MirProcedure &procedure) {
+    DirectAbiScratch result;
+    result.call_arguments.resize(procedure.instructions.size());
+    result.call_results.resize(procedure.instructions.size(), nullptr);
+
+    const Type &own_signature = type(procedure.type);
+    if (own_signature.c_calling_convention) {
+      const CAbiFunctionPlan plan = c_abi_function_plan(procedure.type);
+      if (plan.ok &&
+          (plan.result.classification == CAbiClass::Win64WideInteger ||
+           plan.result.classification == CAbiClass::SmallAggregate ||
+           plan.result.classification == CAbiClass::HomogeneousFloatAggregate ||
+           plan.result.classification == CAbiClass::EightbyteAggregate)) {
+        result.procedure_result =
+            abi_scratch(abi_result_storage_size(plan.result),
+                        plan.result.alignment, "abi.return");
+      }
+    }
+
+    for (std::size_t instruction_index = 0;
+         instruction_index < procedure.instructions.size();
+         ++instruction_index) {
+      const MirInstruction &instruction =
+          procedure.instructions[instruction_index];
+      if (instruction.kind != MirInstructionKind::Call ||
+          instruction.operands.empty()) {
+        continue;
+      }
+      const MirValueId callee = instruction.operands.front();
+      if (!callee.is_valid() || callee.value >= procedure.values.size())
+        continue;
+      const TypeId signature_id = procedure.value(callee).type;
+      const Type &signature = type(signature_id);
+      if (signature.kind != TypeKind::Procedure ||
+          !signature.c_calling_convention || signature.members.empty()) {
+        continue;
+      }
+      const std::size_t parameter_count = signature.members.size() - 1;
+      const CAbiFunctionPlan plan = c_abi_function_plan(signature_id);
+      std::vector<LLVMValueRef> &arguments =
+          result.call_arguments[instruction_index];
+      arguments.resize(instruction.operands.size() - 1, nullptr);
+      for (std::size_t argument = 0;
+           argument < parameter_count && argument < arguments.size();
+           ++argument) {
+        const CAbiType abi = c_abi_type(signature.members[argument]);
+        const CAbiParameterMode mode =
+            plan.ok && argument < plan.parameters.size()
+                ? plan.parameters[argument].mode
+                : CAbiParameterMode::Expanded;
+        if (abi.classification == CAbiClass::Direct &&
+            mode == CAbiParameterMode::Expanded) {
+          continue;
+        }
+        arguments[argument] =
+            abi_scratch(abi_argument_storage_size(abi), abi.alignment,
+                        "abi.call." + std::to_string(instruction_index) +
+                            ".arg." + std::to_string(argument));
+      }
+      for (std::size_t operand = parameter_count + 1;
+           operand < instruction.operands.size(); ++operand) {
+        const TypeId logical_type =
+            procedure.value(instruction.operands[operand]).type;
+        const CAbiType abi = c_abi_type(logical_type);
+        if (abi.classification != CAbiClass::Win64WideInteger)
+          continue;
+        const std::size_t argument = operand - 1;
+        arguments[argument] =
+            abi_scratch(abi_argument_storage_size(abi), abi.alignment,
+                        "abi.call." + std::to_string(instruction_index) +
+                            ".arg." + std::to_string(argument));
+      }
+      const TypeId logical_result = function_result(signature_id);
+      if (logical_result == semantic_.types.builtins().void_type)
+        continue;
+      const CAbiType result_abi =
+          plan.ok ? plan.result : c_abi_type(logical_result);
+      if (result_abi.classification == CAbiClass::Win64WideInteger ||
+          result_abi.classification == CAbiClass::SmallAggregate ||
+          result_abi.classification == CAbiClass::HomogeneousFloatAggregate ||
+          result_abi.classification == CAbiClass::EightbyteAggregate ||
+          result_abi.classification == CAbiClass::Indirect) {
+        result.call_results[instruction_index] = abi_scratch(
+            abi_result_storage_size(result_abi), result_abi.alignment,
+            "abi.call." + std::to_string(instruction_index) + ".result");
+      }
+    }
+    return result;
+  }
+
+  [[nodiscard]] LLVMValueRef
+  emit_c_call(std::size_t instruction_index, const MirProcedure &procedure,
+              const MirInstruction &instruction,
+              const std::vector<LLVMValueRef> &values,
+              const DirectAbiScratch &scratch) {
+    const MirValueId callee_id = instruction.operands.front();
+    const TypeId signature_id = procedure.value(callee_id).type;
+    const Type &signature = type(signature_id);
+    const std::size_t parameter_count = signature.members.size() - 1;
+    const CAbiFunctionPlan plan = c_abi_function_plan(signature_id);
+    if (!plan.ok || plan.parameters.size() != parameter_count) {
+      error(instruction.range, "cannot plan C ABI call signature");
+      return LLVMGetPoison(llvm_type(instruction.type));
+    }
+
+    const TypeId logical_result = function_result(signature_id);
+    const bool returns_void =
+        logical_result == semantic_.types.builtins().void_type;
+    const CAbiType result_abi = returns_void ? CAbiType{} : plan.result;
+    std::vector<LLVMValueRef> arguments;
+    arguments.reserve(instruction.operands.size() + 2);
+    if (result_abi.classification == CAbiClass::Indirect) {
+      arguments.push_back(scratch.call_results[instruction_index]);
+    }
+
+    const std::vector<LLVMValueRef> &argument_scratch =
+        scratch.call_arguments[instruction_index];
+    for (std::size_t index = 0; index < parameter_count; ++index) {
+      const TypeId logical_type = signature.members[index];
+      const MirValueId value_id = instruction.operands[index + 1];
+      const CAbiType abi = c_abi_type(logical_type);
+      const CAbiParameterMode mode = plan.parameters[index].mode;
+      if (abi.classification == CAbiClass::Direct &&
+          mode == CAbiParameterMode::Expanded) {
+        arguments.push_back(value_operand(values, value_id, instruction.range));
+        continue;
+      }
+      if (abi.classification == CAbiClass::Illegal ||
+          index >= argument_scratch.size() ||
+          argument_scratch[index] == nullptr) {
+        error(instruction.range,
+              "illegal or unallocated C ABI call argument reached LLVM");
+        arguments.push_back(LLVMGetPoison(c_parameter_type(logical_type)));
+        continue;
+      }
+
+      LLVMValueRef storage = argument_scratch[index];
+      const std::uint64_t storage_size = abi_argument_storage_size(abi);
+      if (abi.classification == CAbiClass::SmallAggregate ||
+          abi.classification == CAbiClass::EightbyteAggregate) {
+        LLVMValueRef zero = LLVMBuildStore(
+            builder_.value,
+            LLVMConstNull(LLVMArrayType2(LLVMInt8TypeInContext(context_.value),
+                                         storage_size)),
+            storage);
+        LLVMSetAlignment(zero, abi.alignment);
+      }
+      LLVMValueRef logical_store = LLVMBuildStore(
+          builder_.value, value_operand(values, value_id, instruction.range),
+          storage);
+      LLVMSetAlignment(logical_store, abi.alignment);
+      if (mode == CAbiParameterMode::Indirect) {
+        arguments.push_back(storage);
+        continue;
+      }
+      if (abi.classification == CAbiClass::EightbyteAggregate) {
+        for (std::size_t component = 0; component < abi.eightbyte_count;
+             ++component) {
+          LLVMValueRef address = storage;
+          if (component != 0) {
+            LLVMValueRef offset = LLVMConstInt(
+                LLVMInt64TypeInContext(context_.value), component * 8U, 0);
+            address = LLVMBuildGEP2(builder_.value,
+                                    LLVMInt8TypeInContext(context_.value),
+                                    storage, &offset, 1, "");
+          }
+          LLVMTypeRef physical_type =
+              sysv_eightbyte_llvm_type(abi.eightbytes[component]);
+          LLVMValueRef physical =
+              LLVMBuildLoad2(builder_.value, physical_type, address, "");
+          LLVMSetAlignment(physical, sysv_component_alignment(abi, component));
+          arguments.push_back(physical);
+        }
+        continue;
+      }
+      LLVMTypeRef physical_type = c_parameter_type(logical_type);
+      LLVMValueRef physical =
+          LLVMBuildLoad2(builder_.value, physical_type, storage, "");
+      LLVMSetAlignment(physical, abi.alignment);
+      arguments.push_back(physical);
+    }
+
+    for (std::size_t operand = parameter_count + 1;
+         operand < instruction.operands.size(); ++operand) {
+      const MirValueId value_id = instruction.operands[operand];
+      const TypeId logical_type = procedure.value(value_id).type;
+      const CAbiType abi = c_abi_type(logical_type);
+      if (abi.classification == CAbiClass::Win64WideInteger) {
+        const std::size_t argument = operand - 1;
+        LLVMValueRef storage = argument < argument_scratch.size()
+                                   ? argument_scratch[argument]
+                                   : nullptr;
+        if (storage == nullptr) {
+          error(instruction.range,
+                "C variadic wide integer has no caller storage");
+          arguments.push_back(
+              LLVMGetPoison(LLVMPointerTypeInContext(context_.value, 0)));
+          continue;
+        }
+        LLVMValueRef store = LLVMBuildStore(
+            builder_.value, value_operand(values, value_id, instruction.range),
+            storage);
+        LLVMSetAlignment(store, abi.alignment);
+        arguments.push_back(storage);
+        continue;
+      }
+      if (abi.classification != CAbiClass::Direct) {
+        error(instruction.range,
+              "non-scalar C variadic argument reached LLVM emission");
+        arguments.push_back(LLVMGetPoison(llvm_type(logical_type)));
+        continue;
+      }
+      arguments.push_back(value_operand(values, value_id, instruction.range));
+    }
+
+    LLVMValueRef call =
+        LLVMBuildCall2(builder_.value, function_type(signature_id),
+                       value_operand(values, callee_id, instruction.range),
+                       arguments.empty() ? nullptr : arguments.data(),
+                       static_cast<unsigned>(arguments.size()), "");
+    apply_c_call_attributes(call, signature_id);
+    if (returns_void)
+      return nullptr;
+
+    if (result_abi.classification == CAbiClass::Win64WideInteger ||
+        result_abi.classification == CAbiClass::SmallAggregate ||
+        result_abi.classification == CAbiClass::HomogeneousFloatAggregate ||
+        result_abi.classification == CAbiClass::EightbyteAggregate) {
+      LLVMValueRef storage = scratch.call_results[instruction_index];
+      LLVMValueRef physical_store =
+          LLVMBuildStore(builder_.value, call, storage);
+      LLVMSetAlignment(physical_store, result_abi.alignment);
+      LLVMValueRef logical = LLVMBuildLoad2(
+          builder_.value, llvm_type(logical_result), storage, "");
+      LLVMSetAlignment(logical, result_abi.alignment);
+      return logical;
+    }
+    if (result_abi.classification == CAbiClass::Indirect) {
+      LLVMValueRef logical =
+          LLVMBuildLoad2(builder_.value, llvm_type(logical_result),
+                         scratch.call_results[instruction_index], "");
+      LLVMSetAlignment(logical, result_abi.alignment);
+      return logical;
+    }
+    if (result_abi.classification == CAbiClass::Illegal) {
+      error(instruction.range, "illegal C ABI call result reached LLVM");
+      return LLVMGetPoison(llvm_type(logical_result));
+    }
+    return call;
+  }
+
+  [[nodiscard]] std::size_t c_parameter_start(TypeId signature_id,
+                                              const CAbiFunctionPlan &plan,
+                                              std::size_t logical_parameter) {
+    std::size_t physical =
+        plan.result.classification == CAbiClass::Indirect ? 1U : 0U;
+    const Type &signature = type(signature_id);
+    for (std::size_t index = 0; index < logical_parameter; ++index) {
+      physical += c_parameter_types(signature.members[index],
+                                    plan.parameters[index].mode)
+                      .size();
+    }
+    return physical;
+  }
+
+  void initialize_parameter_local(LLVMValueRef function,
+                                  const MirProcedure &procedure,
+                                  const MirLocal &local,
+                                  LLVMValueRef allocation,
+                                  const CAbiFunctionPlan &plan) {
+    const Type &signature = type(procedure.type);
+    if (!signature.c_calling_convention) {
+      LLVMValueRef parameter =
+          LLVMGetParam(function, local.parameter_index + 1);
+      LLVMValueRef store =
+          LLVMBuildStore(builder_.value, parameter, allocation);
+      LLVMSetAlignment(store, type(local.type).layout.alignment);
+      return;
+    }
+    if (!plan.ok || local.parameter_index >= plan.parameters.size()) {
+      error(local.range, "C ABI procedure parameter has no physical plan");
+      return;
+    }
+
+    const CAbiType abi = c_abi_type(local.type);
+    const CAbiParameterMode mode = plan.parameters[local.parameter_index].mode;
+    const std::size_t physical_start =
+        c_parameter_start(procedure.type, plan, local.parameter_index);
+    const std::vector<LLVMTypeRef> physical_types =
+        c_parameter_types(local.type, mode);
+    if (mode == CAbiParameterMode::Indirect) {
+      LLVMValueRef logical = LLVMBuildLoad2(
+          builder_.value, llvm_type(local.type),
+          LLVMGetParam(function, static_cast<unsigned>(physical_start)), "");
+      LLVMSetAlignment(logical, abi.alignment);
+      LLVMValueRef store = LLVMBuildStore(builder_.value, logical, allocation);
+      LLVMSetAlignment(store, type(local.type).layout.alignment);
+      return;
+    }
+    if (abi.classification == CAbiClass::Direct) {
+      LLVMValueRef store = LLVMBuildStore(
+          builder_.value,
+          LLVMGetParam(function, static_cast<unsigned>(physical_start)),
+          allocation);
+      LLVMSetAlignment(store, type(local.type).layout.alignment);
+      return;
+    }
+    if (abi.classification == CAbiClass::HomogeneousFloatAggregate) {
+      LLVMValueRef store = LLVMBuildStore(
+          builder_.value,
+          LLVMGetParam(function, static_cast<unsigned>(physical_start)),
+          allocation);
+      LLVMSetAlignment(store, abi.alignment);
+      return;
+    }
+    if (abi.classification == CAbiClass::SmallAggregate ||
+        abi.classification == CAbiClass::EightbyteAggregate) {
+      const std::uint64_t storage_size = abi_argument_storage_size(abi);
+      LLVMValueRef storage =
+          abi_scratch(storage_size, abi.alignment,
+                      "abi.param." + std::to_string(local.parameter_index));
+      LLVMValueRef zero = LLVMBuildStore(
+          builder_.value,
+          LLVMConstNull(LLVMArrayType2(LLVMInt8TypeInContext(context_.value),
+                                       storage_size)),
+          storage);
+      LLVMSetAlignment(zero, abi.alignment);
+      if (abi.classification == CAbiClass::SmallAggregate) {
+        LLVMValueRef store = LLVMBuildStore(
+            builder_.value,
+            LLVMGetParam(function, static_cast<unsigned>(physical_start)),
+            storage);
+        LLVMSetAlignment(store, abi.alignment);
+      } else {
+        for (std::size_t component = 0; component < physical_types.size();
+             ++component) {
+          LLVMValueRef address = storage;
+          if (component != 0) {
+            LLVMValueRef offset = LLVMConstInt(
+                LLVMInt64TypeInContext(context_.value), component * 8U, 0);
+            address = LLVMBuildGEP2(builder_.value,
+                                    LLVMInt8TypeInContext(context_.value),
+                                    storage, &offset, 1, "");
+          }
+          LLVMValueRef store = LLVMBuildStore(
+              builder_.value,
+              LLVMGetParam(function,
+                           static_cast<unsigned>(physical_start + component)),
+              address);
+          LLVMSetAlignment(store, sysv_component_alignment(abi, component));
+        }
+      }
+      LLVMValueRef logical =
+          LLVMBuildLoad2(builder_.value, llvm_type(local.type), storage, "");
+      LLVMSetAlignment(logical, abi.alignment);
+      LLVMValueRef store = LLVMBuildStore(builder_.value, logical, allocation);
+      LLVMSetAlignment(store, type(local.type).layout.alignment);
+      return;
+    }
+    error(local.range, "illegal C ABI procedure parameter reached LLVM");
+  }
+
   void emit_instruction(const MirProcedure &procedure,
                         std::size_t instruction_index,
                         const MirInstruction &instruction,
                         std::vector<LLVMValueRef> &values,
                         LLVMValueRef context_parameter,
                         const std::vector<LLVMValueRef> &locals,
-                        const std::vector<LLVMValueRef> &aggregate_scratch) {
+                        const std::vector<LLVMValueRef> &aggregate_scratch,
+                        const DirectAbiScratch &abi_scratch) {
     LLVMValueRef result = nullptr;
     switch (instruction.kind) {
     case MirInstructionKind::Constant:
@@ -2238,8 +3004,16 @@ private:
           runtime_scalar_id(procedure.value(callee_id).type);
       const Type &signature = type(signature_id);
       if (signature.c_calling_convention) {
-        error(instruction.range, "direct C ABI calls are not yet implemented");
+        result = emit_c_call(instruction_index, procedure, instruction, values,
+                             abi_scratch);
         break;
+      }
+      if (instruction.establishes_thread_context) {
+        LLVMValueRef attach =
+            runtime_helper("__draft.runtime.attach_thread",
+                           LLVMVoidTypeInContext(context_.value), {});
+        (void)LLVMBuildCall2(builder_.value, LLVMGlobalGetValueType(attach),
+                             attach, nullptr, 0, "");
       }
       std::vector<LLVMValueRef> arguments;
       arguments.reserve(instruction.operands.size() - 1);
@@ -2525,12 +3299,45 @@ private:
   void emit_terminator(const MirProcedure &procedure,
                        const MirTerminator &terminator,
                        const std::vector<LLVMValueRef> &values,
-                       const std::vector<LLVMBasicBlockRef> &blocks) {
+                       const std::vector<LLVMBasicBlockRef> &blocks,
+                       LLVMValueRef function,
+                       const DirectAbiScratch &abi_scratch) {
     switch (terminator.kind) {
     case MirTerminatorKind::Return:
       if (terminator.value.is_valid()) {
-        LLVMBuildRet(builder_.value,
-                     value_operand(values, terminator.value, terminator.range));
+        const Type &signature = type(procedure.type);
+        const TypeId logical_result = procedure.value(terminator.value).type;
+        if (!signature.c_calling_convention) {
+          LLVMBuildRet(builder_.value, value_operand(values, terminator.value,
+                                                     terminator.range));
+          break;
+        }
+        const CAbiType abi = c_abi_function_plan(procedure.type).result;
+        if (abi.classification == CAbiClass::Indirect) {
+          LLVMValueRef store = LLVMBuildStore(
+              builder_.value,
+              value_operand(values, terminator.value, terminator.range),
+              LLVMGetParam(function, 0));
+          LLVMSetAlignment(store, abi.alignment);
+          LLVMBuildRetVoid(builder_.value);
+        } else if (abi.classification == CAbiClass::Win64WideInteger ||
+                   abi.classification == CAbiClass::SmallAggregate ||
+                   abi.classification == CAbiClass::HomogeneousFloatAggregate ||
+                   abi.classification == CAbiClass::EightbyteAggregate) {
+          LLVMValueRef store = LLVMBuildStore(
+              builder_.value,
+              value_operand(values, terminator.value, terminator.range),
+              abi_scratch.procedure_result);
+          LLVMSetAlignment(store, abi.alignment);
+          LLVMValueRef physical =
+              LLVMBuildLoad2(builder_.value, c_result_type(logical_result),
+                             abi_scratch.procedure_result, "");
+          LLVMSetAlignment(physical, abi.alignment);
+          LLVMBuildRet(builder_.value, physical);
+        } else {
+          LLVMBuildRet(builder_.value, value_operand(values, terminator.value,
+                                                     terminator.range));
+        }
       } else {
         LLVMBuildRetVoid(builder_.value);
       }
@@ -2572,9 +3379,11 @@ private:
     if (!procedure.valid)
       return;
     const Type &signature = type(procedure.type);
-    if (signature.c_calling_convention) {
-      error(procedure.range,
-            "direct C ABI procedure definitions are not implemented");
+    const CAbiFunctionPlan procedure_abi =
+        signature.c_calling_convention ? c_abi_function_plan(procedure.type)
+                                       : CAbiFunctionPlan{};
+    if (signature.c_calling_convention && !procedure_abi.ok) {
+      error(procedure.range, "cannot plan C ABI procedure definition");
       return;
     }
     LLVMValueRef function = function_for_symbol(procedure.symbol);
@@ -2603,11 +3412,8 @@ private:
       locals[index] = allocation;
       if (local.kind != MirLocalKind::Parameter)
         continue;
-      LLVMValueRef parameter =
-          LLVMGetParam(function, local.parameter_index + 1);
-      LLVMValueRef store =
-          LLVMBuildStore(builder_.value, parameter, allocation);
-      LLVMSetAlignment(store, type(local.type).layout.alignment);
+      initialize_parameter_local(function, procedure, local, allocation,
+                                 procedure_abi);
     }
 
     // Variant, union, and bit-field aggregate operations use one reusable
@@ -2630,8 +3436,10 @@ private:
       LLVMSetAlignment(allocation, type(*scratch_type).layout.alignment);
       aggregate_scratch[instruction_index] = allocation;
     }
+    DirectAbiScratch abi_scratch = allocate_c_abi_scratch(procedure);
 
-    LLVMValueRef context_parameter = LLVMGetParam(function, 0);
+    LLVMValueRef context_parameter =
+        signature.c_calling_convention ? nullptr : LLVMGetParam(function, 0);
     std::vector<LLVMValueRef> values(procedure.values.size(), nullptr);
     for (std::size_t block_index = 0; block_index < procedure.blocks.size();
          ++block_index) {
@@ -2640,9 +3448,11 @@ private:
       for (MirInstructionId instruction_id : block.instructions) {
         emit_instruction(procedure, instruction_id.value,
                          procedure.instruction(instruction_id), values,
-                         context_parameter, locals, aggregate_scratch);
+                         context_parameter, locals, aggregate_scratch,
+                         abi_scratch);
       }
-      emit_terminator(procedure, block.terminator, values, blocks);
+      emit_terminator(procedure, block.terminator, values, blocks, function,
+                      abi_scratch);
     }
   }
 

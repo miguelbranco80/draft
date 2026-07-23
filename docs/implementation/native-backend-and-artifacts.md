@@ -21,18 +21,20 @@ task-local builder creates nominal types, reachable globals, ordinary-ABI MIR,
 atomics, inline assembly, runtime aggregate values, exact selected-member
 constant bytes, and typed nested string/procedure relocations in an LLVM
 context. Assert, index-bounds, and slice-bounds rows construct their exact
-hidden runtime calls and source strings directly as well. The builder uses
-fixed entry-block scratch storage for variants, unions, and bit-field structs
-whose language layout cannot be represented by structural LLVM SSA. It may
-print the already-built module for inspection and passes that same mutable
-module to verification/optimization/native emission. A
+hidden runtime calls and source strings directly as well. C imports, exports,
+definitions, fixed and variadic calls consume the published target ABI plan for
+scalar extensions, aggregate carriers, indirect values, and results. The
+builder uses fixed entry-block scratch storage for those ABI translations and
+for variants, unions, and bit-field structs whose language layout cannot be
+represented by structural LLVM SSA. It may print the already-built module for
+inspection and passes that same mutable module to
+verification/optimization/native emission. A
 checked-source-to-object regression proves this path has no input-preparation or
 IR-parsing phase. Production package tasks still use the complete textual
-emitter until root runtime support, the full C ABI, debug metadata, and every
-remaining MIR operation reach parity; there is no partial production fallback.
-The external textual entry remains useful as the explicit Clang/LLVM
-qualification oracle rather than as the intended package-construction
-architecture.
+emitter until root runtime support, debug metadata, and every remaining module
+product reach parity; there is no partial production fallback. The external
+textual entry remains useful as the explicit Clang/LLVM qualification oracle
+rather than as the intended package-construction architecture.
 
 The adapter exposes no LLVM reference outside its module. Its process-global
 AArch64 and X86 registries are initialized once, while contexts, modules, target machines,

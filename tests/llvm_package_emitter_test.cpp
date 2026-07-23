@@ -49,7 +49,8 @@ struct DirectFixture {
 // path. The fixture deliberately has a local parameter, load, integer constant,
 // binary operation, and return so the test cannot pass with an empty hand-made
 // LLVM module.
-[[nodiscard]] DirectFixture emit_increment_package() {
+[[nodiscard]] DirectFixture
+emit_increment_package(const draft::TargetProfile &target) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   draft::LoadedPackage loaded;
@@ -95,6 +96,24 @@ Bit_Header :: struct {
     bits(3) kind: u8,
     bits(6) delta: i16,
     bits(1) active: bool,
+}
+
+C_Float_Pair :: c struct {
+    left: f32,
+    right: f32,
+}
+
+C_Large :: c struct {
+    values: [3]u64,
+}
+
+foreign host {
+    host_pair as "draft_test_host_pair" :: c proc(
+        value: C_Float_Pair,
+    ) -> C_Float_Pair
+    host_large as "draft_test_host_large" :: c proc(value: C_Large) -> C_Large
+    host_wide as "draft_test_host_wide" :: c proc(value: i128) -> i128
+    host_sum as "draft_test_host_sum" :: c proc(first: i32, ..) -> i32
 }
 
 base: i64 = 40
@@ -181,12 +200,47 @@ first_value :: proc(values: []i64) -> i64 {
 subview :: proc(values: []i64, low, high: usize) -> []i64 {
     return values[low:high]
 }
+
+export add_bytes as "draft_test_add_bytes" :: c proc(left, right: u8) -> u8 {
+    return left + right
+}
+
+export echo_pair as "draft_test_echo_pair" :: c proc(
+    value: C_Float_Pair,
+) -> C_Float_Pair {
+    return value
+}
+
+export echo_large as "draft_test_echo_large" :: c proc(
+    value: C_Large,
+) -> C_Large {
+    return value
+}
+
+export echo_wide as "draft_test_echo_wide" :: c proc(value: i128) -> i128 {
+    return value
+}
+
+call_host_pair :: proc(value: C_Float_Pair) -> C_Float_Pair {
+    return host_pair(value)
+}
+
+call_host_large :: proc(value: C_Large) -> C_Large {
+    return host_large(value)
+}
+
+call_host_wide :: proc(value: i128) -> i128 {
+    return host_wide(value)
+}
+
+call_host_variadic :: proc(value: i8) -> i32 {
+    return host_sum(1, value, 3.5)
+}
 )draft");
   file.syntax.emplace(
       draft::parse_source_file(sources, file.source, diagnostics));
   loaded.files.push_back(std::move(file));
 
-  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
   draft::SemanticAnalysisResult semantics = draft::analyze_package_semantics(
       sources, loaded, target.facts, diagnostics);
   draft::PackageBodyWorkState bodies = draft::check_package_bodies(
@@ -230,7 +284,8 @@ subview :: proc(values: []i64, low, high: usize) -> []i64 {
 }
 
 void test_direct_scalar_package_emits_native_object(TestState &state) {
-  const DirectFixture first = emit_increment_package();
+  const draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  const DirectFixture first = emit_increment_package(target);
   if (!first.diagnostics.empty())
     std::cerr << first.diagnostics;
   EXPECT(state, first.emitted.ok);
@@ -264,7 +319,7 @@ void test_direct_scalar_package_emits_native_object(TestState &state) {
          first.emitted.native.phase_timings.machine_code_emission_nanoseconds !=
              0);
 
-  const DirectFixture second = emit_increment_package();
+  const DirectFixture second = emit_increment_package(target);
   if (!second.diagnostics.empty())
     std::cerr << second.diagnostics;
   EXPECT(state, second.emitted.ok);
@@ -272,11 +327,39 @@ void test_direct_scalar_package_emits_native_object(TestState &state) {
   EXPECT(state, second.emitted.native.bytes == first.emitted.native.bytes);
 }
 
+void test_direct_c_abi_modules_cover_every_target(TestState &state) {
+  const std::vector<draft::TargetProfile> targets{
+      draft::make_aarch64_linux_profile(),
+      draft::make_x86_64_linux_profile(),
+      draft::make_x86_64_windows_profile(),
+  };
+  for (const draft::TargetProfile &target : targets) {
+    const DirectFixture fixture = emit_increment_package(target);
+    if (!fixture.diagnostics.empty())
+      std::cerr << target.facts.identity << ":\n" << fixture.diagnostics;
+    EXPECT(state, fixture.emitted.ok);
+    EXPECT(state, fixture.diagnostics.empty());
+    EXPECT(state, fixture.emitted.native.ok);
+    EXPECT(state, !fixture.emitted.native.bytes.empty());
+    EXPECT(state, fixture.emitted.llvm_text.find("draft_test_host_pair") !=
+                      std::string::npos);
+    EXPECT(state, fixture.emitted.llvm_text.find("draft_test_host_large") !=
+                      std::string::npos);
+    EXPECT(state, fixture.emitted.llvm_text.find("draft_test_host_sum") !=
+                      std::string::npos);
+    if (target.facts.abi == "win64") {
+      EXPECT(state,
+             fixture.emitted.llvm_text.find("<2 x i64>") != std::string::npos);
+    }
+  }
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_direct_scalar_package_emits_native_object(state);
+  test_direct_c_abi_modules_cover_every_target(state);
   if (state.failures != 0) {
     std::cerr << state.failures
               << " direct LLVM package expectation(s) failed\n";
