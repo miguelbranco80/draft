@@ -282,6 +282,9 @@ distinguish child-process CPU from wall time.
 Complete semantic closure reports a joined effect/reference executor: package
 flow closure occupies the first task rows while procedure-native-reference work
 uses the same ready worker pool.
+The earlier direct-semantic executor reports procedure direct-effect tasks and
+one parsed-assembly task per package; both consume immutable checked bodies and
+may overlap.
 Compare phase structure and counters before comparing small durations, which
 vary with the host and warm filesystem caches. Timing is diagnostic only and
 never changes program identity or output.

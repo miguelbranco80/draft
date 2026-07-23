@@ -295,6 +295,12 @@ gate.
    remaining ready worker capacity. Source transitions supersede only affected
    rows and retain unchanged dependency rows.
 
+   Parsed package assembly publishes in the earlier direct-semantic ready wave
+   beside direct-effect tasks. Both consume the checked-body frontier, so the
+   former workspace-wide package-assembly phase and its false dependencies on
+   denials and final package interfaces are deleted. A checked graph retains
+   the exact assembly product later consumed by artifact reachability and MIR.
+
 8. **Per-procedure MIR — complete.** Lower each checked concrete procedure into a private
    MIR result without mutating semantic type tables. Publish parsed package
    assembly separately. Delete package-wide MIR lowering and semantic type
@@ -310,10 +316,11 @@ gate.
    symbolic and compile-time-only procedures return an explicit successful
    non-runtime result. The package-wide MIR API and container are deleted;
    direct subsystem tests perform an explicit source-order loop over the same
-   product operation. Compiler orchestration publishes one `PackageAssembly`
-   product over captured standalone assembly plus parsed inline regions. It then
-   appends one `MirProcedure` row per selected concrete runtime body, depending
-   on that exact body, its denial result, and package assembly. The closed native
+   product operation. Compiler orchestration retains one `PackageAssembly`
+   product over captured standalone assembly plus parsed inline regions from
+   semantic closure. It then appends one `MirProcedure` row per selected
+   concrete runtime body, depending on that exact body, its denial result, and
+   package assembly. The closed native
    dependency executor lowers and verifies private MIR tasks while allowing a
    package module to start after only its own tasks finish; the coordinator
    publishes each immutable payload only into the

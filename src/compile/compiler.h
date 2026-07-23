@@ -397,12 +397,13 @@ struct PackageSemanticProducts {
   std::vector<SemanticProductId> direct_effect_summaries;
   std::vector<SemanticProductId> closed_effect_sccs;
   std::vector<SemanticProductId> denial_results;
-  // Target lowering begins with package_assembly over every checked body. Each
-  // concrete runtime body then owns one NativeReferenceSummary product.
-  // ArtifactReachability selects native_live_body_work_indices without
-  // changing the complete checked body/effect sets above. Only those live rows
-  // map one-to-one to MirProcedure products. Symbolic, compile-time-only, and
-  // artifact-dead bodies intentionally have no runtime MIR product.
+  // Semantic closure publishes package_assembly over every checked body beside
+  // direct effect discovery, and each concrete runtime body owns one
+  // NativeReferenceSummary product. ArtifactReachability later selects
+  // native_live_body_work_indices without changing the complete checked
+  // body/effect sets above. Only those live rows map one-to-one to MirProcedure
+  // products. Symbolic, compile-time-only, and artifact-dead bodies
+  // intentionally have no runtime MIR product.
   SemanticProductId package_assembly;
   std::vector<std::size_t> checked_runtime_body_work_indices;
   std::vector<SemanticProductId> native_reference_summaries;

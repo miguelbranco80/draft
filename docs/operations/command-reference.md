@@ -144,9 +144,11 @@ build/draftc target [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-wi
 
 `check` runs the provider-free front end and semantic pipeline. If the program
 contains saved `...` expansions, it loads and revalidates them. It never starts
-a provider. `emit-llvm` additionally lowers MIR and prints one complete LLVM
-module per semantic package in package order. Each module contains that
-package's globals and source-ordered concrete procedure definitions.
+a provider. Target-specific parsed assembly is checked and retained with its
+owning procedure bodies. `emit-llvm` additionally lowers MIR and prints one
+complete LLVM module per semantic package in package order. Each module
+contains that package's globals and source-ordered concrete procedure
+definitions.
 
 ## Expand checked source
 

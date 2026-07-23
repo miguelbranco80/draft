@@ -80,18 +80,20 @@ expression, or name lookup.
 | Direct native-reference summary | One checked concrete runtime body records direct calls, procedure values and escapes, globals, foreign edges, and uncertain indirect targets without producing MIR. |
 | Artifact reachability | One command-selected root closure separates the complete checked procedure set from the procedure/global subset required by the requested artifact. |
 | MIR procedure | Lowering is owned by one checked concrete procedure and does not mutate semantic type tables. |
-| Package assembly | Captured and parsed assembly is an explicit package product consumed by MIR and native layout. |
+| Package assembly | Captured and parsed assembly is an explicit checked-body product, published beside direct effects and consumed by MIR and native layout. |
 | Package LLVM module | One complete module consumes the package's ordered artifact-live MIR products and owns only its artifact-live globals and concrete definitions. |
 | Artifact layout | The package module and assembly link inputs are published in canonical order after their products complete. |
 
-After artifact reachability closes, these last three product kinds form one
-closed execution subgraph rather than three global phase barriers. Each MIR
-task is independent; one package-module task depends only on its package's MIR
-tasks; one layout task depends only on that package module. `WorkGraph` may
-therefore start a module or layout while unrelated MIR is unfinished. The
-dynamic semantic graph remains the authority: private results are published
-after join through canonical ready waves, so scheduling cannot reorder product
-state, diagnostics, or durable payloads.
+After artifact reachability closes, MIR procedures, package modules, and
+artifact layouts form one closed execution subgraph rather than three global
+phase barriers. Each MIR task is independent; one package-module task depends
+only on its package's MIR tasks; one layout task depends only on that package
+module. `WorkGraph` may therefore start a module or layout while unrelated MIR
+is unfinished. Package assembly has already published in the direct-semantic
+ready wave for its checked bodies. The dynamic semantic graph remains the
+authority: private results are published after join through canonical ready
+waves, so scheduling cannot reorder product state, diagnostics, or durable
+payloads.
 
 Type readiness is deliberately faceted: identity, members, member types, natural
 layout, and ABI classification are distinct facts. A pointer often needs only
@@ -180,10 +182,12 @@ closure implemented for provider-free native lowering.
 Semantic checking and machine emission are separate questions. Every selected
 authored body and symbolic parametric template is checked first. Each checked
 concrete runtime body then publishes one compact direct native-reference row as
-part of semantic closure, even when the command requests only `check`. A source
-transition supersedes rows only for affected packages and retains unchanged
-dependency rows. Only an artifact command continues those rows through package
-assembly and one workspace projection rooted by:
+part of semantic closure, even when the command requests only `check`. Parsed
+package assembly publishes beside direct-effect discovery because it depends
+only on the same checked-body frontier and target facts. A source transition
+supersedes rows only for affected packages and retains unchanged dependency
+rows. Only an artifact command continues those retained facts through one
+workspace projection rooted by:
 
 - the configured entry point and C exports;
 - validation entries selected by the command;

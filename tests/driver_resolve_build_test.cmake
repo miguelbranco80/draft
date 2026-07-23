@@ -6,8 +6,7 @@
 # the second performs a later provider-free build of the committed source. Both
 # requested output trees must contain byte-identical files. TEST_ROOT owns all
 # mutations and is removed on success. A final invalid-assembly case proves the
-# source transaction remains committed when the post-commit backend continuation
-# fails.
+# source transaction remains committed when post-commit artifact I/O fails.
 
 if(NOT DEFINED DRAFTC OR NOT DEFINED SOURCE_WORKSPACE OR
    NOT DEFINED TEST_ROOT OR NOT DEFINED TARGET_SELECTOR)
@@ -73,10 +72,12 @@ foreach(relative IN LISTS resolve_files)
 endforeach()
 
 # Backend failure occurs after resolution has accepted and committed ordinary
-# source. Add an assembly contract that survives semantic closure but fails the
-# AArch64 assembly validator because x1 is neither an output nor a clobber. The
-# revalidated manifest must change despite the command's nonzero build result,
-# and a later provider-free check must consume that committed source normally.
+# source. Add one valid checked declaration, then occupy the requested assembly
+# output path with a regular file. Parsed assembly is deliberately not used as
+# the failure oracle: it is now a checked-body product and therefore fails
+# before a source transaction can commit. The revalidated manifest must change
+# despite artifact-directory creation failing, and a later provider-free check
+# must consume that committed source normally.
 execute_process(
   COMMAND "${DRAFTC}" target --target "${TARGET_SELECTOR}"
   RESULT_VARIABLE target_status
@@ -97,29 +98,27 @@ if(NOT EXISTS "${manifest}")
     "selected app resolution manifest does not exist: ${manifest}")
 endif()
 file(SHA256 "${manifest}" manifest_before_backend_failure)
-file(WRITE "${package}/invalid_assembly.draft"
+file(WRITE "${package}/committed_source_change.draft"
   "package app\n\n"
-  "invalid_register_contract :: proc(value: u64) -> u64 {\n"
-  "    return asm aarch64 -> u64 {\n"
-  "        in x0 = value\n"
-  "        out x0\n"
-  "        add x1, x0, #1\n"
-  "    }\n"
+  "committed_after_backend_failure :: proc(value: u64) -> u64 {\n"
+  "    return value + 1\n"
   "}\n")
+set(blocked_output "${TEST_ROOT}/occupied-assembly-output")
+file(WRITE "${blocked_output}" "not a directory\n")
 
 execute_process(
   COMMAND "${DRAFTC}" resolve "${workspace}" --root app --revalidate --build
     --target "${TARGET_SELECTOR}" --kind assembly
-    -o "${TEST_ROOT}/invalid-assembly-output"
+    -o "${blocked_output}"
   RESULT_VARIABLE failed_build_status
   OUTPUT_VARIABLE failed_build_stdout
   ERROR_VARIABLE failed_build_stderr
 )
 if(failed_build_status EQUAL 0)
-  message(FATAL_ERROR "invalid assembly unexpectedly produced an artifact")
+  message(FATAL_ERROR "occupied output path unexpectedly produced an artifact")
 endif()
 if(NOT failed_build_stderr MATCHES
-   "must be declared as an output or clobber")
+   "cannot create assembly output directory")
   message(FATAL_ERROR
     "resolve --build failed for the wrong reason\n"
     "stdout:\n${failed_build_stdout}\nstderr:\n${failed_build_stderr}")

@@ -96,6 +96,9 @@ Preparation and flow closure run as package tasks; direct effects and denials
 from every package in the front share procedure waves; completed SCC products
 retain exact local and imported edges. Diagnostics publish only after join in
 PackageId and phase order, and an invalid dependency never unlocks its consumer.
+Parsed assembly consumes the same checked-body frontier as direct effects and
+runs in that ready executor rather than waiting for a workspace-wide native
+phase. It is therefore available to `check` as well as later artifact commands.
 Per-package phase and declaration-generation counters are deleted. Source
 transitions supersede exact product rows; body initialization and closure reuse
 are derived from retained product/payload invariants rather than a parallel
@@ -125,7 +128,8 @@ finalization no longer needs a temporary HIR projection.
 LLVM and native lowering now follow artifact-live semantic products. Every
 authored body is checked, but each concrete runtime procedure first publishes a
 direct native-reference summary during complete semantic closure, including a
-non-artifact check. One workspace reachability product later closes from
+non-artifact check. Parsed package assembly is also retained during that
+closure. One workspace reachability product later closes from
 entry/export/validation roots through calls, procedure values, and globals.
 Only its live rows receive independently owned MIR products. Once the complete
 projection is ready, one `PackageLlvmModule` per package borrows its MIR task

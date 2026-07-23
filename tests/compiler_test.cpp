@@ -43,7 +43,6 @@ struct TestState {
     const draft::CompiledPackage &package) {
   return package.llvm_module.text;
 }
-
 void test_procedure_demands_are_canonical_and_exact(TestState &state) {
   draft::ProcedureInstantiationDemand first;
   first.public_template_name = "render";
@@ -515,6 +514,39 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
           left_products.package_assembly.value];
       EXPECT(state, row.kind == draft::SemanticProductKind::PackageAssembly);
       EXPECT(state, row.state == draft::SemanticProductState::Complete);
+      EXPECT(
+          state,
+          std::find(
+              row.dependencies.begin(),
+              row.dependencies.end(),
+              sequential.semantic_products.target) != row.dependencies.end());
+      EXPECT(
+          state,
+          std::find(
+              row.dependencies.begin(),
+              row.dependencies.end(),
+              sequential.semantic_products.source_generation) !=
+              row.dependencies.end());
+      EXPECT(
+          state,
+          std::find(
+              row.dependencies.begin(),
+              row.dependencies.end(),
+              left_products.package_interface) == row.dependencies.end());
+      for (draft::SemanticProductId body :
+           left_products.selected_procedure_bodies) {
+        EXPECT(
+            state,
+            std::find(row.dependencies.begin(), row.dependencies.end(), body) !=
+                row.dependencies.end());
+      }
+      for (draft::SemanticProductId denial : left_products.denial_results) {
+        EXPECT(
+            state,
+            std::find(
+                row.dependencies.begin(), row.dependencies.end(), denial) ==
+                row.dependencies.end());
+      }
     }
     EXPECT(state,
            left_products.checked_runtime_body_work_indices.size() ==
@@ -638,20 +670,18 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
                     std::string::npos);
   EXPECT(state, parallel_report.find("procedure body worker slots: 5") !=
                     std::string::npos);
-  EXPECT(state, sequential_report.find("direct effect worker slots: 1") !=
+  EXPECT(state, sequential_report.find("direct semantic worker slots: 1") !=
                     std::string::npos);
-  EXPECT(state, parallel_report.find("direct effect worker slots: 4") !=
+  EXPECT(state, parallel_report.find("direct semantic worker slots: 4") !=
                     std::string::npos);
   EXPECT(state, sequential_report.find("denial worker slots: 1") !=
                     std::string::npos);
   EXPECT(state, parallel_report.find("denial worker slots: 4") !=
                     std::string::npos);
-  EXPECT(state,
-         sequential_report.find("package assembly worker slots: 1") !=
-             std::string::npos);
-  EXPECT(state,
-         parallel_report.find("package assembly worker slots: 1") !=
-             std::string::npos);
+  EXPECT(state, sequential_report.find("package assembly tasks: 1") !=
+                    std::string::npos);
+  EXPECT(state, parallel_report.find("package assembly tasks: 1") !=
+                    std::string::npos);
   EXPECT(state,
          sequential_report.find("native lowering worker slots: 1") !=
              std::string::npos);
@@ -832,9 +862,11 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
                     std::string::npos);
   EXPECT(state, report.find("ABI classification ready waves: 1") !=
                     std::string::npos);
-  EXPECT(state, report.find("package assembly ready waves: 1") !=
+  EXPECT(state, report.find("direct semantic ready waves: 2") !=
                     std::string::npos);
-  EXPECT(state, report.find("package assembly worker slots: 2") !=
+  EXPECT(state, report.find("package assembly tasks: 2") !=
+                    std::string::npos);
+  EXPECT(state, report.find("direct semantic worker slots: 4") !=
                     std::string::npos);
   EXPECT(state, report.find("MIR procedure tasks: 2") != std::string::npos);
   EXPECT(state, report.find("package LLVM module tasks: 2") !=
@@ -963,7 +995,7 @@ void test_independent_dependencies_share_closure_ready_wave(
                     std::string::npos);
   EXPECT(state, report.find("packages in shared closure waves: 2") !=
                     std::string::npos);
-  EXPECT(state, report.find("direct effect ready waves: 2") !=
+  EXPECT(state, report.find("direct semantic ready waves: 2") !=
                     std::string::npos);
   EXPECT(state, report.find("effect/reference ready waves: 2") !=
                     std::string::npos);
@@ -2149,6 +2181,10 @@ void test_body_source_update_reuses_closed_generic_dependency(
       initial_formatting_reference_products =
           compiled.semantic_products.packages[*formatting_index]
               .native_reference_summaries;
+  const draft::SemanticProductId initial_app_assembly_product =
+      compiled.semantic_products.packages[app_index].package_assembly;
+  const draft::SemanticProductId initial_formatting_assembly_product =
+      compiled.semantic_products.packages[*formatting_index].package_assembly;
   EXPECT(state, !initial_app_body_products.empty());
   EXPECT(state, !initial_formatting_body_products.empty());
   EXPECT(state, !initial_app_abi_products.empty());
@@ -2161,6 +2197,8 @@ void test_body_source_update_reuses_closed_generic_dependency(
   EXPECT(state, !initial_formatting_denial_products.empty());
   EXPECT(state, !initial_app_reference_products.empty());
   EXPECT(state, !initial_formatting_reference_products.empty());
+  EXPECT(state, initial_app_assembly_product.is_valid());
+  EXPECT(state, initial_formatting_assembly_product.is_valid());
   for (draft::SemanticProductId product : initial_app_direct_effect_products) {
     const std::vector<draft::SemanticProductId> &dependencies =
         compiled.semantic_graph.products[product.value].dependencies;
@@ -2249,6 +2287,12 @@ void test_body_source_update_reuses_closed_generic_dependency(
          compiled.semantic_products.packages[*formatting_index]
                  .native_reference_summaries ==
              initial_formatting_reference_products);
+  EXPECT(state,
+         compiled.semantic_products.packages[app_index].package_assembly !=
+             initial_app_assembly_product);
+  EXPECT(state,
+         compiled.semantic_products.packages[*formatting_index]
+                 .package_assembly == initial_formatting_assembly_product);
   EXPECT(state, updated_app.c_abi.complete_for(
                     updated_app.bodies.package.types, options.target.facts));
   EXPECT(state, updated_formatting.c_abi.complete_for(
@@ -2264,6 +2308,14 @@ void test_body_source_update_reuses_closed_generic_dependency(
            compiled.semantic_graph.products[product.value].state ==
                draft::SemanticProductState::Complete);
   }
+  EXPECT(state,
+         compiled.semantic_graph.products[initial_app_assembly_product.value]
+                 .state == draft::SemanticProductState::Superseded);
+  EXPECT(
+      state,
+      compiled.semantic_graph
+              .products[initial_formatting_assembly_product.value]
+              .state == draft::SemanticProductState::Complete);
   for (draft::SemanticProductId product : initial_app_abi_products) {
     EXPECT(state,
            compiled.semantic_graph.products[product.value].state ==
@@ -2935,6 +2987,22 @@ void test_target_lowering_continues_checked_graph(TestState &state) {
           continued_diagnostics));
   EXPECT(state,
       continued.progress == draft::CompileWorkspaceProgress::SemanticClosure);
+  std::vector<draft::SemanticProductId> checked_assembly_products;
+  for (std::size_t package_index = 0;
+       package_index < continued.packages.size(); ++package_index) {
+    if (!continued.packages[package_index].has_value()) continue;
+    const draft::SemanticProductId assembly =
+        continued.semantic_products.packages[package_index].package_assembly;
+    EXPECT(state, assembly.is_valid());
+    if (assembly.is_valid()) {
+      EXPECT(
+          state,
+          continued.semantic_graph.products[assembly.value].state ==
+              draft::SemanticProductState::Complete);
+    }
+    EXPECT(state, continued.packages[package_index]->assembly.ok);
+    checked_assembly_products.push_back(assembly);
+  }
 
   draft::CompileWorkspaceOptions lowering_options = check_options;
   lowering_options.lower_mir = true;
@@ -2949,6 +3017,18 @@ void test_target_lowering_continues_checked_graph(TestState &state) {
   EXPECT(state,
       continued.progress == draft::CompileWorkspaceProgress::TargetLowering);
   EXPECT(state, !continued_diagnostics.has_errors());
+  std::size_t checked_assembly_index = 0;
+  for (std::size_t package_index = 0;
+       package_index < continued.packages.size(); ++package_index) {
+    if (!continued.packages[package_index].has_value()) continue;
+    EXPECT(
+        state,
+        checked_assembly_index < checked_assembly_products.size() &&
+            continued.semantic_products.packages[package_index]
+                    .package_assembly ==
+                checked_assembly_products[checked_assembly_index]);
+    checked_assembly_index += 1;
+  }
 
   // A direct lowering request is the behavioral oracle for the explicit
   // continuation route. Both public routes must emit byte-identical modules in

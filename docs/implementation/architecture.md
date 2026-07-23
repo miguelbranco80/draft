@@ -152,7 +152,8 @@ visible. `--timings=all` adds package/tool scopes, file discovery and I/O,
 lexing/parsing, import-graph resolution, declaration ready-wave execution and
 publication, worker time and task count by semantic product kind,
 package-closure ready fronts, joined effect/reference work, procedure-flow
-subphases, and per-package LLVM parse/verify/optimize/code-generation phases.
+subphases, direct-semantic assembly work, and per-package LLVM
+parse/verify/optimize/code-generation phases.
 Exclusive time remains meaningful inside sequential groups; independently
 scheduled child durations may overlap their parent wall time. Child process CPU
 is reported separately from parent wall time.
@@ -326,11 +327,12 @@ orchestration.
   row owned by its `MirProcedure` product. Package rows retain ordered product
   IDs, not a reconstructed `MirProgram`. All authored bodies are checked first;
   semantic closure publishes direct native-reference rows for every concrete
-  runtime body, including non-artifact checks. One explicit artifact closure
-  later selects the runtime procedures admitted to the exact native dependency
-  executor. A package module borrows its completed ordered MIR slots only after
-  their executor edges complete. LLVM is an emission/optimization back end
-  rather than Draft's semantic model.
+  runtime body and validates parsed assembly beside direct-effect discovery,
+  including non-artifact checks. One explicit artifact closure later selects
+  the runtime procedures admitted to the exact native dependency executor. A
+  package module borrows its completed ordered MIR slots only after their
+  executor edges complete. LLVM is an emission/optimization back end rather
+  than Draft's semantic model.
 
 HIR storage expressions retain the minimum alignment guaranteed by their exact
 occurrence, separately from logical type alignment. Member and index address

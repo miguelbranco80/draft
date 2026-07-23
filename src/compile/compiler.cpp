@@ -27,11 +27,13 @@
 // direct effects and denials from every package in one front run as shared
 // procedure-owned waves. Package flow closure shares its executor with compact
 // native-reference extraction, while legal flow/effect SCCs publish with their
-// exact component edges. Package static data and assembly are explicit barriers.
-// After artifact reachability selects runtime work, one closed dependency
-// executor lowers procedure-owned MIR, constructs each package LLVM module as
-// soon as its own MIR completes, and constructs its artifact layout. The
-// coordinator publishes those private outputs through canonical semantic waves.
+// exact component edges. Parsed assembly shares the direct semantic executor
+// because it depends only on checked bodies and target facts, and is retained
+// before artifact selection. After artifact reachability selects runtime work,
+// one closed dependency executor lowers procedure-owned MIR, constructs each
+// package LLVM module as soon as its own MIR completes, and constructs its
+// artifact layout. The coordinator publishes those private outputs through
+// canonical semantic waves.
 // Within an unchanged source generation, CompileWorkspaceProgress advances so
 // native lowering can continue checked state without reloading source. A
 // checked generated-source transition appends a successor generation and
@@ -1043,6 +1045,28 @@ void bind_handwritten_program_identity(
           products.native_reference_summaries.begin(),
           products.native_reference_summaries.end(),
           complete_native_reference);
+}
+
+// Parsed assembly is a sibling product of direct semantic facts rather than a
+// prerequisite of effect closure. Keeping this predicate separate lets an
+// assembly diagnostic in one dependency coexist with the package's remaining
+// semantic diagnostics, while a successful Complete boundary still requires
+// every package's target-specific assembly validation to have published.
+[[nodiscard]] bool package_assembly_is_current(
+    const CompileWorkspaceResult &result,
+    std::size_t package_index) {
+  if (package_index >= result.packages.size() ||
+      package_index >= result.semantic_products.packages.size() ||
+      !result.packages[package_index].has_value()) {
+    return false;
+  }
+  const SemanticProductId product =
+      result.semantic_products.packages[package_index].package_assembly;
+  return product.is_valid() &&
+      product.value < result.semantic_graph.products.size() &&
+      result.semantic_graph.products[product.value].state ==
+          SemanticProductState::Complete &&
+      result.packages[package_index]->assembly.ok;
 }
 
 // Invalidates effect/obligation closure for one changed package and every
@@ -5214,6 +5238,21 @@ struct DirectEffectTaskSlot {
   DirectProcedureEffectSummary result;
 };
 
+// One task slot owns the parsed inline-assembly payload for one semantic
+// package. Captured standalone assembly bytes already live in
+// CompiledPackage::assembly_sources; this product validates and retains only
+// the parsed regions embedded in selected checked procedure bodies. The task
+// reads immutable HIR and target facts and never constructs a package-wide HIR
+// projection.
+struct PackageAssemblyTaskSlot {
+  const SourceManager *sources = nullptr;
+  const LoadedPackage *loaded = nullptr;
+  const TargetProfile *target = nullptr;
+  const CompiledPackage *package = nullptr;
+  std::size_t package_position = 0;
+  AssemblyProgram assembly;
+};
+
 // PackageClosureWork is the command-local row for one package admitted to the
 // current dependency-ready closure wave. It owns the immutable effect-analysis
 // context shared by that package's procedure tasks plus the diagnostics which
@@ -5234,27 +5273,37 @@ struct PackageClosureWork {
   DiagnosticSink preparation_diagnostics;
   DiagnosticSink native_diagnostics;
   DiagnosticSink denial_diagnostics;
+  DiagnosticSink assembly_diagnostics;
   DiagnosticSink interface_diagnostics;
 };
 
-struct DirectEffectWaveExecution {
-  std::vector<DirectEffectTaskSlot> *slots = nullptr;
-  std::vector<SemanticProductOutcome> *outcomes = nullptr;
+enum class DirectSemanticTaskKind {
+  DirectEffect,
+  PackageAssembly,
+};
+
+struct DirectSemanticTask {
+  DirectSemanticTaskKind kind = DirectSemanticTaskKind::DirectEffect;
+  std::size_t slot = 0;
+};
+
+// Direct effect discovery and parsed-assembly validation depend on the same
+// already checked body frontier but not on one another. One executor therefore
+// exposes both independent task families to the worker pool. Their semantic
+// products remain separate, and the coordinator publishes the combined ready
+// wave in product-ID order after all private task slots have joined.
+struct DirectSemanticWaveExecution {
+  const std::vector<DirectSemanticTask> *tasks = nullptr;
+  std::vector<DirectEffectTaskSlot> *effect_slots = nullptr;
+  std::vector<SemanticProductOutcome> *effect_outcomes = nullptr;
+  std::vector<PackageAssemblyTaskSlot> *assembly_slots = nullptr;
+  std::vector<SemanticProductOutcome> *assembly_outcomes = nullptr;
 };
 
 [[nodiscard]] bool execute_direct_effect_task(
-    void *opaque_context,
-    WorkTaskId task,
+    DirectEffectTaskSlot &slot,
+    SemanticProductOutcome &outcome,
     std::string &failure) {
-  auto &context =
-      *static_cast<DirectEffectWaveExecution *>(opaque_context);
-  const std::size_t index = static_cast<std::size_t>(task);
-  if (context.slots == nullptr || context.outcomes == nullptr ||
-      index >= context.slots->size() || index >= context.outcomes->size()) {
-    failure = "direct-effect worker received an invalid task slot";
-    return false;
-  }
-  DirectEffectTaskSlot &slot = (*context.slots)[index];
   if (slot.analysis == nullptr ||
       slot.selected_position >= slot.analysis->source_procedures.size()) {
     failure = "direct-effect worker received an invalid package projection";
@@ -5262,17 +5311,96 @@ struct DirectEffectWaveExecution {
   }
   slot.result = collect_direct_procedure_effect(
       *slot.analysis, slot.selected_position);
-  (*context.outcomes)[index].kind = SemanticProductOutcomeKind::Complete;
+  outcome.kind = SemanticProductOutcomeKind::Complete;
   return true;
 }
 
-// Publishes one DirectEffectSummary task per selected procedure across one
-// dependency-ready package wave. Every task reads one immutable package/source
-// domain and owns exactly one row; the bounded worker batch cannot observe or
-// enrich a sibling result. Products are appended in PackageId then selected-
-// body order, so the frozen semantic ready set and later payload publication
-// are deterministic even though tasks from independent packages may overlap.
+[[nodiscard]] bool execute_package_assembly_task(
+    PackageAssemblyTaskSlot &slot,
+    SemanticProductOutcome &outcome,
+    std::string &failure) {
+  if (slot.sources == nullptr || slot.loaded == nullptr ||
+      slot.target == nullptr || slot.package == nullptr) {
+    failure = "parsed-assembly worker received incomplete package inputs";
+    return false;
+  }
+
+  slot.assembly.ok = true;
+  for (std::size_t work_index : slot.package->selected_procedure_work) {
+    if (work_index >= slot.package->bodies.procedures.size()) {
+      failure = "parsed-assembly body index is outside the HIR product table";
+      return false;
+    }
+    AssemblyProgram local = analyze_target_assembly(
+        *slot.sources,
+        *slot.loaded,
+        *slot.target,
+        slot.package->bodies.package,
+        slot.package->bodies.procedures[work_index].program,
+        outcome.diagnostics);
+    slot.assembly.ok = slot.assembly.ok && local.ok;
+    slot.assembly.regions.insert(
+        slot.assembly.regions.end(),
+        std::make_move_iterator(local.regions.begin()),
+        std::make_move_iterator(local.regions.end()));
+  }
+  outcome.kind = slot.assembly.ok
+      ? SemanticProductOutcomeKind::Complete
+      : SemanticProductOutcomeKind::Error;
+  if (!slot.assembly.ok) {
+    outcome.failure = "package contains invalid parsed assembly";
+  }
+  return true;
+}
+
+[[nodiscard]] bool execute_direct_semantic_task(
+    void *opaque_context,
+    WorkTaskId scheduled_task,
+    std::string &failure) {
+  auto &context =
+      *static_cast<DirectSemanticWaveExecution *>(opaque_context);
+  if (context.tasks == nullptr ||
+      static_cast<std::size_t>(scheduled_task) >= context.tasks->size()) {
+    failure = "direct semantic worker received an invalid task";
+    return false;
+  }
+  const DirectSemanticTask &task =
+      (*context.tasks)[static_cast<std::size_t>(scheduled_task)];
+  if (task.kind == DirectSemanticTaskKind::DirectEffect) {
+    if (context.effect_slots == nullptr || context.effect_outcomes == nullptr ||
+        task.slot >= context.effect_slots->size() ||
+        task.slot >= context.effect_outcomes->size()) {
+      failure = "direct semantic worker received an invalid effect slot";
+      return false;
+    }
+    return execute_direct_effect_task(
+        (*context.effect_slots)[task.slot],
+        (*context.effect_outcomes)[task.slot],
+        failure);
+  }
+  if (context.assembly_slots == nullptr ||
+      context.assembly_outcomes == nullptr ||
+      task.slot >= context.assembly_slots->size() ||
+      task.slot >= context.assembly_outcomes->size()) {
+    failure = "direct semantic worker received an invalid assembly slot";
+    return false;
+  }
+  return execute_package_assembly_task(
+      (*context.assembly_slots)[task.slot],
+      (*context.assembly_outcomes)[task.slot],
+      failure);
+}
+
+// Publishes one DirectEffectSummary per selected procedure and one
+// PackageAssembly product per dependency-ready package. Both operations consume
+// the checked-body frontier directly, so delaying assembly until workspace-wide
+// target lowering would manufacture a false phase dependency. Direct-effect
+// rows are appended first because their closure is the semantic critical path;
+// package assembly then fills spare workers without changing canonical product
+// or diagnostic order.
 [[nodiscard]] bool run_ready_package_direct_effect_products(
+    const SourceManager &sources,
+    const TargetProfile &target,
     std::span<PackageClosureWork> ready_packages,
     const WorkspaceDependencyIndex &schedule,
     std::size_t worker_count,
@@ -5280,7 +5408,7 @@ struct DirectEffectWaveExecution {
     CompileWorkspaceResult &result,
     DiagnosticSink &diagnostics) {
   std::vector<SemanticProductId> expected_products;
-  std::vector<DirectEffectTaskSlot> slots;
+  std::vector<DirectEffectTaskSlot> effect_slots;
   for (std::size_t package_position = 0;
        package_position < ready_packages.size(); ++package_position) {
     PackageClosureWork &work = ready_packages[package_position];
@@ -5355,8 +5483,49 @@ struct DirectEffectWaveExecution {
       slot.analysis = &work.effect_analysis;
       slot.package_position = package_position;
       slot.selected_position = position;
-      slots.push_back(std::move(slot));
+      effect_slots.push_back(std::move(slot));
     }
+  }
+
+  std::vector<PackageAssemblyTaskSlot> assembly_slots;
+  assembly_slots.reserve(ready_packages.size());
+  for (std::size_t package_position = 0;
+       package_position < ready_packages.size(); ++package_position) {
+    const std::size_t package_index =
+        ready_packages[package_position].package_index;
+    CompiledPackage &package = *result.packages[package_index];
+    PackageSemanticProducts &products =
+        result.semantic_products.packages[package_index];
+    if (products.package_assembly.is_valid()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "package assembly product was already published");
+      return false;
+    }
+    std::vector<SemanticProductId> dependencies{
+        result.semantic_products.target,
+        result.semantic_products.source_generation};
+    dependencies.insert(
+        dependencies.end(),
+        products.selected_procedure_bodies.begin(),
+        products.selected_procedure_bodies.end());
+    const PackageId owner{static_cast<std::uint32_t>(package_index)};
+    products.package_assembly = append_workspace_semantic_product(
+        result,
+        SemanticProductKind::PackageAssembly,
+        dependencies,
+        owner,
+        false,
+        diagnostics);
+    if (!products.package_assembly.is_valid()) return false;
+    expected_products.push_back(products.package_assembly);
+    assembly_slots.push_back({
+        &sources,
+        &result.graph.packages[package_index].loaded,
+        &target,
+        &package,
+        package_position,
+        {}});
   }
   if (expected_products.empty()) return true;
 
@@ -5366,28 +5535,45 @@ struct DirectEffectWaveExecution {
       wave.products != expected_products) {
     diagnostics.error(
         SourceRange::invalid(),
-        "direct-effect products did not form their exact ready wave" +
+        "direct-effect and package-assembly products did not form their exact "
+        "ready wave" +
             (wave.failure.empty() ? std::string{} : ": " + wave.failure));
     return false;
   }
 
-  std::vector<SemanticProductOutcome> outcomes(wave.products.size());
+  std::vector<SemanticProductOutcome> effect_outcomes(effect_slots.size());
+  std::vector<SemanticProductOutcome> assembly_outcomes(
+      assembly_slots.size());
+  std::vector<DirectSemanticTask> tasks;
+  tasks.reserve(effect_slots.size() + assembly_slots.size());
+  for (std::size_t index = 0; index < effect_slots.size(); ++index) {
+    tasks.push_back({DirectSemanticTaskKind::DirectEffect, index});
+  }
+  for (std::size_t index = 0; index < assembly_slots.size(); ++index) {
+    tasks.push_back({DirectSemanticTaskKind::PackageAssembly, index});
+  }
   WorkGraph execution_graph;
-  execution_graph.tasks.resize(slots.size());
-  DirectEffectWaveExecution execution{&slots, &outcomes};
+  execution_graph.tasks.resize(tasks.size());
+  DirectSemanticWaveExecution execution{
+      &tasks,
+      &effect_slots,
+      &effect_outcomes,
+      &assembly_slots,
+      &assembly_outcomes};
   const WorkGraphRunResult scheduled = run_work_graph(
       execution_graph,
       WorkGraphRunOptions{worker_count},
-      execute_direct_effect_task,
+      execute_direct_semantic_task,
       &execution);
   if (timings != nullptr) {
-    timings->add_counter("direct effect ready waves", 1);
-    timings->add_counter("direct effect tasks", slots.size());
+    timings->add_counter("direct semantic ready waves", 1);
+    timings->add_counter("direct effect tasks", effect_slots.size());
+    timings->add_counter("package assembly tasks", assembly_slots.size());
     timings->add_counter(
-        "direct effect worker slots", scheduled.workers_used);
+        "direct semantic worker slots", scheduled.workers_used);
   }
   if (!scheduled.ok) {
-    std::string failure = "direct-effect worker scheduling failed";
+    std::string failure = "direct semantic worker scheduling failed";
     for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
       if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
       failure += " at task " + std::to_string(index) + ": " +
@@ -5397,11 +5583,34 @@ struct DirectEffectWaveExecution {
     diagnostics.error(SourceRange::invalid(), std::move(failure));
     return false;
   }
-  for (DirectEffectTaskSlot &slot : slots) {
+  for (DirectEffectTaskSlot &slot : effect_slots) {
     CompiledPackage &package = *result.packages[
         ready_packages[slot.package_position].package_index];
     package.direct_effects.procedures.push_back(std::move(slot.result));
   }
+  for (std::size_t index = 0; index < assembly_slots.size(); ++index) {
+    PackageAssemblyTaskSlot &slot = assembly_slots[index];
+    CompiledPackage &package = *result.packages[
+        ready_packages[slot.package_position].package_index];
+    package.assembly = std::move(slot.assembly);
+    append_diagnostics(
+        ready_packages[slot.package_position].assembly_diagnostics,
+        assembly_outcomes[index].diagnostics);
+    // Product state remains authoritative, but semantic diagnostics are
+    // replayed with the package's other closure diagnostics below. This keeps
+    // worker completion order from changing source diagnostic order.
+    assembly_outcomes[index].diagnostics = DiagnosticSink{};
+  }
+  std::vector<SemanticProductOutcome> outcomes;
+  outcomes.reserve(effect_outcomes.size() + assembly_outcomes.size());
+  outcomes.insert(
+      outcomes.end(),
+      std::make_move_iterator(effect_outcomes.begin()),
+      std::make_move_iterator(effect_outcomes.end()));
+  outcomes.insert(
+      outcomes.end(),
+      std::make_move_iterator(assembly_outcomes.begin()),
+      std::make_move_iterator(assembly_outcomes.end()));
   std::string publication_error;
   if (!publish_semantic_ready_wave(
           result.semantic_graph,
@@ -6383,208 +6592,6 @@ struct PackageClosureFinalizationExecution {
     }
   }
   return true;
-}
-
-// One task slot owns the complete parsed-assembly payload for one selected
-// package. Captured standalone assembly bytes already live in compiler state.
-// Inline-assembly analysis visits each procedure-owned HIR arena separately
-// and concatenates only its source-keyed AssemblyRegion rows; it never
-// constructs a package HIR program.
-struct PackageAssemblyTaskSlot {
-  const SourceManager *sources = nullptr;
-  const LoadedPackage *loaded = nullptr;
-  const TargetProfile *target = nullptr;
-  const CompiledPackage *package = nullptr;
-  AssemblyProgram assembly;
-};
-
-struct PackageAssemblyWaveExecution {
-  std::vector<PackageAssemblyTaskSlot> *slots = nullptr;
-  std::vector<SemanticProductOutcome> *outcomes = nullptr;
-};
-
-[[nodiscard]] bool execute_package_assembly_task(
-    void *opaque_context,
-    WorkTaskId task,
-    std::string &failure) {
-  auto &context =
-      *static_cast<PackageAssemblyWaveExecution *>(opaque_context);
-  const std::size_t index = static_cast<std::size_t>(task);
-  if (context.slots == nullptr || context.outcomes == nullptr ||
-      index >= context.slots->size() || index >= context.outcomes->size()) {
-    failure = "package-assembly worker received an invalid task slot";
-    return false;
-  }
-  PackageAssemblyTaskSlot &slot = (*context.slots)[index];
-  SemanticProductOutcome &outcome = (*context.outcomes)[index];
-  if (slot.sources == nullptr || slot.loaded == nullptr ||
-      slot.target == nullptr || slot.package == nullptr) {
-    failure = "parsed-assembly worker received incomplete package inputs";
-    return false;
-  }
-
-  slot.assembly.ok = true;
-  for (std::size_t work_index : slot.package->selected_procedure_work) {
-    if (work_index >= slot.package->bodies.procedures.size()) {
-      failure = "parsed-assembly body index is outside the HIR product table";
-      return false;
-    }
-    AssemblyProgram local = analyze_target_assembly(
-        *slot.sources,
-        *slot.loaded,
-        *slot.target,
-        slot.package->bodies.package,
-        slot.package->bodies.procedures[work_index].program,
-        outcome.diagnostics);
-    slot.assembly.ok = slot.assembly.ok && local.ok;
-    slot.assembly.regions.insert(
-        slot.assembly.regions.end(),
-        std::make_move_iterator(local.regions.begin()),
-        std::make_move_iterator(local.regions.end()));
-  }
-  outcome.kind = slot.assembly.ok
-      ? SemanticProductOutcomeKind::Complete
-      : SemanticProductOutcomeKind::Error;
-  if (!slot.assembly.ok) {
-    outcome.failure = "package contains invalid parsed assembly";
-  }
-  return true;
-}
-
-// Publishes one parsed-assembly product per package in a single workspace wave.
-// The product names the exact source generation, package interface, selected
-// bodies, denial results, and target. Independent packages may analyze their
-// assembly concurrently, while publication remains PackageId/product ordered.
-[[nodiscard]] bool run_workspace_package_assembly_products(
-    const SourceManager &sources,
-    const TargetProfile &target,
-    std::size_t worker_count,
-    TimingRecorder *timings,
-    CompileWorkspaceResult &result,
-    DiagnosticSink &diagnostics) {
-  std::vector<SemanticProductId> expected_wave;
-  for (std::size_t package_index = 0;
-       package_index < result.packages.size(); ++package_index) {
-    if (!result.packages[package_index].has_value()) continue;
-    PackageSemanticProducts &products =
-        result.semantic_products.packages[package_index];
-    if (products.package_assembly.is_valid()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "package assembly product was already published");
-      return false;
-    }
-    const PackageId owner{static_cast<std::uint32_t>(package_index)};
-    std::vector<SemanticProductId> assembly_dependencies{
-        result.semantic_products.target,
-        result.semantic_products.source_generation,
-        products.package_interface};
-    assembly_dependencies.insert(
-        assembly_dependencies.end(),
-        products.selected_procedure_bodies.begin(),
-        products.selected_procedure_bodies.end());
-    assembly_dependencies.insert(
-        assembly_dependencies.end(),
-        products.denial_results.begin(),
-        products.denial_results.end());
-    products.package_assembly = append_workspace_semantic_product(
-        result,
-        SemanticProductKind::PackageAssembly,
-        assembly_dependencies,
-        owner,
-        false,
-        diagnostics);
-    if (!products.package_assembly.is_valid()) return false;
-    expected_wave.push_back(products.package_assembly);
-  }
-  if (expected_wave.empty()) return true;
-
-  const SemanticReadyWave wave =
-      freeze_semantic_ready_wave(result.semantic_graph);
-  if (wave.status != SemanticReadyWaveStatus::Ready ||
-      wave.products != expected_wave) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "package assembly products did not form their exact ready wave" +
-            (wave.failure.empty() ? std::string{} : ": " + wave.failure));
-    return false;
-  }
-  std::vector<PackageAssemblyTaskSlot> slots(wave.products.size());
-  std::vector<SemanticProductOutcome> outcomes(wave.products.size());
-  for (std::size_t index = 0; index < wave.products.size(); ++index) {
-    const SemanticProductId product = wave.products[index];
-    const PackageId owner =
-        result.semantic_products.package_by_product[product.value];
-    if (!owner.is_valid() || owner.value >= result.packages.size() ||
-        !result.packages[owner.value].has_value()) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "package assembly product has no retained package owner");
-      return false;
-    }
-    const SemanticProductKind kind =
-        result.semantic_graph.products[product.value].kind;
-    if (kind != SemanticProductKind::PackageAssembly) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "package assembly wave contains another product kind");
-      return false;
-    }
-    slots[index].sources = &sources;
-    slots[index].loaded = &result.graph.packages[owner.value].loaded;
-    slots[index].target = &target;
-    slots[index].package = &*result.packages[owner.value];
-  }
-  WorkGraph execution_graph;
-  execution_graph.tasks.resize(slots.size());
-  PackageAssemblyWaveExecution execution{&slots, &outcomes};
-  const WorkGraphRunResult scheduled = run_work_graph(
-      execution_graph,
-      WorkGraphRunOptions{worker_count},
-      execute_package_assembly_task,
-      &execution);
-  if (timings != nullptr) {
-    timings->add_counter("package assembly ready waves", 1);
-    timings->add_counter("package assembly tasks", slots.size());
-    timings->add_counter(
-        "package assembly worker slots", scheduled.workers_used);
-  }
-  if (!scheduled.ok) {
-    std::string failure = "package assembly worker scheduling failed";
-    for (std::size_t index = 0; index < scheduled.tasks.size(); ++index) {
-      if (scheduled.tasks[index].state != WorkTaskState::Failed) continue;
-      failure += " at task " + std::to_string(index) + ": " +
-          scheduled.tasks[index].failure;
-      break;
-    }
-    diagnostics.error(SourceRange::invalid(), std::move(failure));
-    return false;
-  }
-  bool assembly_ok = true;
-  for (const SemanticProductOutcome &outcome : outcomes) {
-    assembly_ok = assembly_ok &&
-        outcome.kind == SemanticProductOutcomeKind::Complete;
-  }
-  std::string publication_error;
-  if (!publish_semantic_ready_wave(
-          result.semantic_graph,
-          wave,
-          outcomes,
-          diagnostics,
-          publication_error)) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "cannot publish package assembly wave: " +
-            publication_error);
-    return false;
-  }
-  for (std::size_t index = 0; index < wave.products.size(); ++index) {
-    const PackageId owner = result.semantic_products.package_by_product[
-        wave.products[index].value];
-    CompiledPackage &package = *result.packages[owner.value];
-    package.assembly = std::move(slots[index].assembly);
-  }
-  return assembly_ok;
 }
 
 [[nodiscard]] NativeSymbolIdentity local_native_identity(
@@ -8311,6 +8318,8 @@ bool continue_compiled_workspace_semantics(
       return false;
     }
     if (!run_ready_package_direct_effect_products(
+            sources,
+            options.target,
             ready_packages,
             schedule,
             options.semantic_worker_count,
@@ -8357,6 +8366,7 @@ bool continue_compiled_workspace_semantics(
       append_diagnostics(diagnostics, work.preparation_diagnostics);
       append_diagnostics(diagnostics, work.native_diagnostics);
       append_diagnostics(diagnostics, work.denial_diagnostics);
+      append_diagnostics(diagnostics, work.assembly_diagnostics);
       append_diagnostics(diagnostics, work.interface_diagnostics);
     }
     ready_wave_timing.finish();
@@ -8365,7 +8375,8 @@ bool continue_compiled_workspace_semantics(
   for (std::size_t package_index = 0;
        package_index < result.packages.size(); ++package_index) {
     every_package_closed = every_package_closed &&
-        package_semantic_closure_is_current(result, package_index);
+        package_semantic_closure_is_current(result, package_index) &&
+        package_assembly_is_current(result, package_index);
   }
   closure_timing.finish();
 
@@ -8454,22 +8465,14 @@ bool continue_compiled_workspace(
   }
 
   // Native-bound package facts and executable procedures now continue the
-  // same semantic graph. Semantic closure has already published one compact
-  // direct-reference product for every checked runtime body. Parsed assembly
-  // validates every checked body, then artifact reachability consumes those
-  // retained rows and publishes the exact procedure/global projection. MIR is
-  // one immutable task per live concrete runtime body rather than per checked
-  // body. No package HIR projection or semantic-table mutation participates in
-  // lowering.
+  // same semantic graph. Semantic closure has already published parsed package
+  // assembly and one compact direct-reference product for every checked runtime
+  // body. Artifact reachability consumes those retained rows and publishes the
+  // exact procedure/global projection. MIR is one immutable task per live
+  // concrete runtime body rather than per checked body. No package HIR
+  // projection or semantic-table mutation participates in lowering.
   if (options.lower_mir || options.emit_llvm) {
-    if (!run_workspace_package_assembly_products(
-            sources,
-            options.target,
-            options.semantic_worker_count,
-            options.timings,
-            compiled,
-            diagnostics) ||
-        !run_workspace_native_reachability_product(
+    if (!run_workspace_native_reachability_product(
             options.emit_program_entry,
             options.validation_kind,
             compiled.validation_entries,
