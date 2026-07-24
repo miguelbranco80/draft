@@ -108,6 +108,8 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
 - [x] Add reusable compound lists, proportional scrollbars, read-only text
   viewports and preorder trees; present the F6 package/dependency graph as an
   expandable compiler-backed tree without parsing its text report.
+- [x] Honor every relevant `draft.workspace` Build/Run field in the IDE through
+  the compiler driver's shared manifest contract rather than an IDE schema.
 
 ## Explicitly later
 
@@ -120,7 +122,5 @@ These are future additions, not incomplete first-version work:
 - Broad Codex editing through an ordinary Git worktree and explicit conflict
   handling. Ordinary Codex remains outside the keystroke loop, while Draft
   `...` retains its existing precise compiler-synthesis meaning.
-- Surface every relevant `draft.workspace` Build/Run field in the IDE. Reuse
-  the compiler driver's manifest contract rather than adding an IDE schema.
 - Replace the remaining declaration/reference/effect/denial text projections
   with selectable compiler-backed navigation when source-jump queries exist.
