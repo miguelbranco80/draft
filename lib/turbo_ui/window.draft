@@ -49,14 +49,14 @@ pub Window_Context :: struct {
     previous_clip: Rect,
 }
 
-// The vertical and horizontal arrow scalars used for the zoom control belong
-// to Unicode's Extended_Pictographic set. Draft's pinned terminal-width policy
-// therefore assigns each one two columns. Keeping that fact beside the chrome
-// geometry prevents the leading arrow cell from consuming the upper-right
-// border corner, which is exactly what a one-column placement would do.
-Zoom_Glyph_Columns :: 2
+// The vertical and horizontal arrows are text-default pictographs. Draft's
+// pinned width policy and ordinary terminals therefore assign each one one
+// column; emoji presentation would require an explicit VS16. Keeping the
+// measured width beside the chrome geometry prevents a model/terminal mismatch
+// from shifting the upper-right corner and leaving stale shadow cells behind.
+Zoom_Glyph_Columns :: 1
 
-// zoom_control_rect returns the complete two-cell hit and paint rectangle
+// zoom_control_rect returns the complete one-cell hit and paint rectangle
 // immediately before the upper-right corner. A narrow frame may have no room
 // for both a left corner, the control, and a right corner; the empty result
 // makes that control unavailable rather than allowing unsigned subtraction or
@@ -885,7 +885,7 @@ pub begin_window :: proc(
         title_end := right - 1
         if zoom_visible {
             // Leave one horizontal border cell between a draggable title and
-            // the complete two-column zoom control.
+            // the complete zoom control.
             title_end = zoom_rect.column - 1
         }
         on_title := window^.flags.movable && !window^.zoomed &&

@@ -741,7 +741,8 @@ unicode.next_grapheme_bytes(bytes, byte_offset)
 Both forms borrow strict UTF-8 and return one extended grapheme boundary
 using UAX #29, including Hangul, Indic conjuncts, emoji ZWJ sequences, and
 regional-indicator pairs. Width is deterministic across targets: East-Asian
-W/F, emoji, flags, and keycaps are two columns; ambiguous characters are one.
+W/F, emoji-presentation forms, flags, and keycaps are two columns; ambiguous
+and text-default pictographs are one.
 Controls and mark/format-only clusters return `nonprinting` after consuming the
 complete cluster. This is `core/tui` policy, not locale-sensitive font
 measurement. There is no normalization, shaping, bidi, or line breaking.

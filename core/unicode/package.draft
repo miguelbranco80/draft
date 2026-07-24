@@ -3,7 +3,7 @@
 // strict UTF-8 and assigns that cluster a deterministic display width of one or
 // two columns. The policy is pinned to Unicode 17.0.0: UAX #29 extended
 // grapheme boundaries, East_Asian_Width W/F as double-column, ambiguous width
-// as one, and emoji/flag/keycap clusters as double-column.
+// as one, and emoji-presentation/flag/keycap clusters as double-column.
 //
 // This is terminal layout policy, not a change to Draft's string type. Input is
 // an immutable borrowed byte view, byte offsets remain the public cursor, and
@@ -167,6 +167,15 @@ is_extended_pictographic :: proc(value: rune) -> bool {
     return in_ranges(value, Extended_Pictographic_Ranges[:])
 }
 
+// Emoji_Presentation is narrower than Extended_Pictographic. The latter is a
+// grapheme-boundary property and includes text-default symbols such as U+2195
+// UP DOWN ARROW. Treating every extended pictograph as wide made the Surface
+// advance two columns while ordinary terminals advanced one, so every later
+// glyph in that ANSI run landed in the wrong physical cell.
+is_emoji_presentation :: proc(value: rune) -> bool {
+    return in_ranges(value, Emoji_Presentation_Ranges[:])
+}
+
 is_break_control :: proc(property: Grapheme_Property) -> bool {
     return property == .carriage_return || property == .line_feed ||
         property == .control
@@ -279,8 +288,11 @@ advance_state :: proc(
 
 // observe_width records one scalar's contribution to the terminal width of
 // its complete grapheme. Marks and format controls do not create a base.
-// East-Asian W/F scalars, extended pictographs, regional indicators, emoji
-// variation selector U+FE0F, and combining keycap U+20E3 select two columns.
+// East-Asian W/F scalars, default emoji-presentation scalars, regional
+// indicators, emoji variation selector U+FE0F, and combining keycap U+20E3
+// select two columns. Extended_Pictographic alone affects grapheme boundaries,
+// not width: a text-default pictograph remains narrow unless its cluster also
+// contains an explicit emoji-presentation selector or another wide scalar.
 observe_width :: proc(
     value: rune,
     property: Grapheme_Property,
@@ -290,7 +302,7 @@ observe_width :: proc(
     if !is_zero_width_scalar(value) && !is_break_control(property) {
         has_base^ = true
     }
-    if is_wide_scalar(value) || is_extended_pictographic(value) ||
+    if is_wide_scalar(value) || is_emoji_presentation(value) ||
         property == .regional_indicator || value == '\u{fe0f}' ||
         value == '\u{20e3}' {
         wide^ = true
@@ -307,7 +319,7 @@ pub rune_columns :: proc(value: rune) -> (usize, bool) {
         is_break_control(property) {
         return (0, false)
     }
-    if is_wide_scalar(value) || is_extended_pictographic(value) ||
+    if is_wide_scalar(value) || is_emoji_presentation(value) ||
         property == .regional_indicator {
         return (2, true)
     }

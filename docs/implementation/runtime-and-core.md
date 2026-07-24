@@ -296,8 +296,8 @@ GraphemeBreakProperty, DerivedCoreProperties, emoji-data, and EastAsianWidth.
 One allocation-free state machine implements extended grapheme rules GB3-13,
 including Hangul, Indic conjunct, emoji-ZWJ, and regional-indicator context.
 Display width is deterministic rather than locale-dependent: East-Asian W/F
-and emoji forms are wide, ambiguous characters are narrow, and controls or
-zero-width-only clusters cannot own a cell.
+and emoji-presentation forms are wide, ambiguous and text-default pictographs
+are narrow, and controls or zero-width-only clusters cannot own a cell.
 
 `core/tui.Surface` owns one fixed row-major cell allocation plus one compact
 byte arena for multi-scalar graphemes. A leading cell records one or two

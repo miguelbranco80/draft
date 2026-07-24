@@ -141,6 +141,7 @@ def main() -> None:
     grapheme = parse_property(args.grapheme_break, set(grapheme_names))
     indic = parse_property(args.derived_core, set(indic_names))
     extended_pictographic = parse_property(args.emoji_data, {"Extended_Pictographic"})
+    emoji_presentation = parse_property(args.emoji_data, {"Emoji_Presentation"})
     wide = parse_property(args.east_asian_width, {"W", "F"})
     controls = parse_unicode_categories(args.unicode_data, {"Cc"})
     zero_width = parse_unicode_categories(args.unicode_data, {"Mn", "Me", "Cf"})
@@ -170,6 +171,8 @@ def main() -> None:
     emit_array("Wide_Ranges", "Scalar_Range", wide)
     print()
     emit_array("Extended_Pictographic_Ranges", "Scalar_Range", extended_pictographic)
+    print()
+    emit_array("Emoji_Presentation_Ranges", "Scalar_Range", emoji_presentation)
 
 
 if __name__ == "__main__":

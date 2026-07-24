@@ -22,8 +22,11 @@ expect_one_cluster :: proc(
         "grapheme must have its pinned terminal column width")
 }
 
-// test_unicode_scalar_widths fixes ordinary narrow, East-Asian wide, emoji,
-// combining, and control results at the standalone-scalar boundary.
+// test_unicode_scalar_widths fixes ordinary narrow, East-Asian wide, default
+// emoji presentation, text-default pictographs, combining, and control results
+// at the standalone-scalar boundary. U+2195 is deliberately Extended_Pictographic
+// but not Emoji_Presentation; keeping it narrow prevents terminal cursor drift
+// for ordinary text presentation.
 test_unicode_scalar_widths :: proc(test: ^testing.Test) {
     (ascii_columns, ascii_printable) := rune_columns('A')
     testing.expect(test, ascii_printable && ascii_columns == 1)
@@ -31,6 +34,8 @@ test_unicode_scalar_widths :: proc(test: ^testing.Test) {
     testing.expect(test, cjk_printable && cjk_columns == 2)
     (emoji_columns, emoji_printable) := rune_columns('😀')
     testing.expect(test, emoji_printable && emoji_columns == 2)
+    (text_symbol_columns, text_symbol_printable) := rune_columns('↕')
+    testing.expect(test, text_symbol_printable && text_symbol_columns == 1)
     (mark_columns, mark_printable) := rune_columns('\u{0301}')
     testing.expect(test, !mark_printable && mark_columns == 0)
     (control_columns, control_printable) := rune_columns('\n')
@@ -45,6 +50,10 @@ test_unicode_attached_sequences :: proc(test: ^testing.Test) {
     expect_one_cluster(test, "👩‍💻", 2)
     expect_one_cluster(test, "1️⃣", 2)
     expect_one_cluster(test, "각", 2)
+    // The same text-default pictograph remains one column with VS15 and
+    // becomes two columns only when VS16 explicitly selects emoji display.
+    expect_one_cluster(test, "↕︎", 1)
+    expect_one_cluster(test, "↕️", 2)
 }
 
 // test_unicode_contextual_sequences covers GB9c's Indic linker context and

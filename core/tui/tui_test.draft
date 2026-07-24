@@ -225,6 +225,19 @@ test_renderer_diff :: proc(test: ^testing.Test) {
     ))
     commit_desired(&renderer)
 
+    // U+2195 is an Extended_Pictographic text symbol, not a default emoji.
+    // The renderer must therefore emit the adjacent border corner immediately
+    // after it in one changed run. Modeling the arrow as two columns would
+    // omit that physical cell on ordinary terminals and let old shadow color
+    // remain visible there as a one-cell trail.
+    testing.expect(test, put_rune(surface(&renderer), 0, 1, '↕', Style{}))
+    testing.expect(test, put_rune(surface(&renderer), 1, 1, '╗', Style{}))
+    testing.expect(test, bytes_equal_text(
+        build_render_bytes(&renderer),
+        "\x1b[?2026h\x1b[2;1H↕╗\x1b[0m\x1b[?2026l",
+    ))
+    commit_desired(&renderer)
+
     // A changed frame cannot be written through an inactive Screen. present
     // returns terminal's explicit error and forgets previous correspondence,
     // because a real write failure could have published an unknown prefix.
