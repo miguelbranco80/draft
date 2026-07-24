@@ -214,3 +214,24 @@ for `draft-aarch64-linux-gnu-v2`,
 for `draft-x86_64-linux-gnu-v2`, and
 `ae06c1223d19fc49601f98bf94bcccb625f9dced7088bbd5af83f17f5b226745`
 for `draft-x86_64-windows-msvc-v2`.
+
+## Shared POSIX process implementation revalidation
+
+On 2026-07-24, the three byte-identical Darwin/AArch64-Linux/x86-64-Linux
+fork/exec/wait procedures were replaced by one compile-time-selected POSIX
+implementation. Darwin and glibc retain separate foreign groups and errno
+symbols; the public `core/process` behavior and generated source did not
+change. The resulting embedded core identity is
+`draft-core:c9afdc7a187dae44c381462e9e5f16f5315717de0122c4231194ab3f7efb3459`.
+Provider-free `resolve --revalidate` reused and rechecked all four expansions
+with zero synthesis calls for each target. The committed resolved-program
+digests are
+`7bfa92ab29bee84aa39d1c79e7040f09ac27361a1bad13f3e6732415f9d67cff`
+for `draft-aarch64-macos-v6`,
+`e64ed84b9dcd2f32f35184f1b7ae00fd0bbdd9c889c3add85d38afda146735d7`
+for `draft-aarch64-linux-gnu-v2`,
+`7d90a79b2a8aacc4e2969f1898ef8821ce7841cc13132f02280b8df548736f2f`
+for `draft-x86_64-linux-gnu-v2`, and
+`22186fba98f4f600a0f6856512e7a07f176528ae6a460a5865b9195522025828`
+for `draft-x86_64-windows-msvc-v2`. The native `core/process` integration test
+and all ten example/integration tests passed on the AArch64 macOS host.

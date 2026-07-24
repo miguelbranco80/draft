@@ -1,0 +1,155 @@
+// This file owns the common POSIX child-process implementation selected by
+// macOS and GNU/Linux. Its input is the already validated argument,
+// environment, and directory policy from package.draft; its output is the
+// public process.Result after one synchronous fork/exec/wait lifecycle. It
+// owns the temporary argv/envp pointer tables in the parent. After fork the
+// child performs only async-signal-safe native calls before exec or _exit.
+//
+// Darwin and glibc expose the same operations through different foreign
+// groups and different errno access symbols. The small compile-time branches
+// below retain those exact ABI facts while the state machine remains one
+// ordinary Draft procedure. Windows contributes its independent native_run
+// from its target-qualified file. Draft specification section 4 defines
+// compile-time `when`; native interoperation is specified in section 12.
+package process
+
+import core/c_abi
+import core/memory
+
+when target.os == .macos {
+    foreign darwin {
+        fork :: c proc() -> c_abi.int
+        execv :: c proc(path: cstring, arguments: [^]cstring) -> c_abi.int
+        execve :: c proc(
+            path: cstring,
+            arguments: [^]cstring,
+            environment: [^]cstring,
+        ) -> c_abi.int
+        chdir :: c proc(path: cstring) -> c_abi.int
+        waitpid :: c proc(
+            process: c_abi.int,
+            status: ^c_abi.int,
+            options: c_abi.int,
+        ) -> c_abi.int
+        process_exit as "_exit" :: c proc(status: c_abi.int)
+        errno_pointer as "__error" :: c proc() -> ^c_abi.int
+    }
+}
+
+when target.os == .linux {
+    foreign linux {
+        fork :: c proc() -> c_abi.int
+        execv :: c proc(path: cstring, arguments: [^]cstring) -> c_abi.int
+        execve :: c proc(
+            path: cstring,
+            arguments: [^]cstring,
+            environment: [^]cstring,
+        ) -> c_abi.int
+        chdir :: c proc(path: cstring) -> c_abi.int
+        waitpid :: c proc(
+            process: c_abi.int,
+            status: ^c_abi.int,
+            options: c_abi.int,
+        ) -> c_abi.int
+        process_exit as "_exit" :: c proc(status: c_abi.int)
+        errno_pointer as "__errno_location" :: c proc() -> ^c_abi.int
+    }
+}
+
+when target.os == .macos || target.os == .linux {
+    Eintr :: cast[c_abi.int](4)
+
+    // native_run builds both terminated pointer tables before fork. The parent
+    // owns and releases them after waitpid. Allocation-size guards prove every
+    // count and byte multiplication before storage is requested. A child setup
+    // failure deliberately becomes exit 126 or 127 because no Draft cleanup,
+    // allocation, diagnostic, or Context operation is safe after fork.
+    native_run :: proc(
+        path: cstring,
+        arguments: []cstring,
+        environment: []cstring,
+        working_directory: cstring,
+        replace_environment: bool,
+    ) -> Result {
+        if len(arguments) > (~cast[usize](0) / size_of(cstring)) - 2 ||
+            len(environment) > (~cast[usize](0) / size_of(cstring)) - 1 {
+            return Result{error = .unavailable}
+        }
+        argument_count := len(arguments) + 2
+        native_arguments := cast[[^]cstring](memory.allocate(
+            argument_count * size_of(cstring),
+            align_of(cstring),
+        ))
+        defer memory.free_bytes(
+            cast[rawptr](native_arguments),
+            argument_count * size_of(cstring),
+            align_of(cstring),
+        )
+        native_arguments[0] = path
+        for argument, index in arguments {
+            native_arguments[index + 1] = argument
+        }
+        native_arguments[argument_count - 1] = nil
+
+        environment_count := len(environment) + 1
+        native_environment := cast[[^]cstring](memory.allocate(
+            environment_count * size_of(cstring),
+            align_of(cstring),
+        ))
+        defer memory.free_bytes(
+            cast[rawptr](native_environment),
+            environment_count * size_of(cstring),
+            align_of(cstring),
+        )
+        if replace_environment {
+            for row, index in environment {
+                native_environment[index] = row
+            }
+            native_environment[len(environment)] = nil
+        }
+
+        child := fork()
+        if child < 0 {
+            return Result{error = .unavailable}
+        }
+        if child == 0 {
+            if working_directory != nil && chdir(working_directory) != 0 {
+                process_exit(126)
+            }
+            if replace_environment {
+                execve(path, native_arguments, native_environment)
+            } else {
+                execv(path, native_arguments)
+            }
+            process_exit(127)
+        }
+
+        // waitpid may be interrupted without changing child ownership. Every
+        // other failure ends the synchronous operation as unavailable. The
+        // wait status layout is the common POSIX encoding recorded in the
+        // selected Darwin and GNU/Linux target profiles.
+        status: c_abi.int
+        for {
+            waited := waitpid(child, &status, 0)
+            if waited == child {
+                break
+            }
+            if waited < 0 && errno_pointer()^ == Eintr {
+                continue
+            }
+            return Result{error = .unavailable}
+        }
+        terminating_signal := cast[u32](status & 0x7f)
+        if terminating_signal == 0 {
+            return Result{
+                error = .none,
+                exited = true,
+                exit_code = cast[u32]((status >> 8) & 0xff),
+            }
+        }
+        return Result{
+            error = .none,
+            signal = terminating_signal,
+        }
+    }
+}

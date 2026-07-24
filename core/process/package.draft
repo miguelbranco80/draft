@@ -4,8 +4,8 @@
 // and reports exit or signal status. It performs no shell parsing, command
 // lookup, redirection, or background lifetime.
 //
-// Target files own UTF-8/UTF-16 conversion and native process handles. The
-// common package owns validation and deterministic inherited-environment
+// Platform files own native process conversion, creation, and wait handles.
+// The common package owns validation and deterministic inherited-environment
 // merging. Every cstring and slice is borrowed synchronously and remains owned
 // by the caller. Temporary terminated environment copies die after the child
 // has copied them during exec/CreateProcess.

@@ -391,11 +391,13 @@ performs path search, shell parsing, pipe/redirection, detachment, cancellation,
 or background lifetime. All cstrings and slices are borrowed for the complete
 synchronous call.
 
-Darwin and Linux materialize terminated `argv` and optional complete `envp`
-tables before `fork`, optionally call `chdir`, then use `execv` or `execve` and
-a retrying `waitpid`. The child does no Draft work after `fork`; directory
-failure exits 126 and exec failure exits 127. The parent interprets the POSIX
-status as either an eight-bit exit code or terminating signal. Windows converts
+Darwin and Linux share one ordinary Draft procedure which materializes
+terminated `argv` and optional complete `envp` tables before `fork`, optionally
+calls `chdir`, then uses `execv` or `execve` and a retrying `waitpid`. Small
+compile-time branches retain the Darwin/glibc foreign groups and errno access
+symbols. The child does no Draft work after `fork`; directory failure exits 126
+and exec failure exits 127. The parent interprets the POSIX status as either an
+eight-bit exit code or terminating signal. Windows converts
 the application, CRT-quoted command line, optional directory, and sorted
 double-NUL environment block from UTF-8 to owned UTF-16. It calls
 `CreateProcessW`, waits, reads the DWORD exit code, and closes both returned
