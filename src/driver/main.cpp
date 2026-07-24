@@ -76,16 +76,15 @@ using draft::read_judgment_artifacts;
 // CommandManifestContext is the one process-lifetime view of an optional
 // workspace manifest. opened_directory is the user's exact path.
 // package_directory differs only for `run <workspace>`, where an explicit
-// default program is selected. effective_build is the exact-path view used by
-// single-root commands. Aggregate build retains the raw manifest and resolves
-// the same precedence separately for every discovered root.
+// default program is selected. The raw manifest and selected program retain
+// the two policy layers; native commands resolve them once after parsing CLI
+// overrides rather than storing another merged copy here.
 struct CommandManifestContext {
   std::filesystem::path workspace_directory;
   std::filesystem::path opened_directory;
   std::filesystem::path package_directory;
   draft::WorkspaceManifest manifest;
   const draft::ProgramConfiguration *program = nullptr;
-  draft::BuildDefaults effective_build;
 };
 
 // BuildCommandOverrides retains only native-build values explicitly supplied
@@ -153,11 +152,6 @@ prepare_command_manifest(const std::filesystem::path &command_path,
     }
   }
 
-  context.effective_build = context.manifest.build;
-  if (context.program != nullptr) {
-    draft::merge_build_defaults(context.effective_build,
-                                context.program->build);
-  }
   return true;
 }
 
@@ -1674,8 +1668,14 @@ int main(int argc, char **argv) {
   // makes it mechanically difficult for a branch to parse the option and then
   // forget to pass the chosen profile into its operation.
   draft::TargetProfile target = draft::make_aarch64_macos_profile();
-  if (command_context.effective_build.target.has_value() &&
-      !select_command_target(*command_context.effective_build.target, target)) {
+  std::optional<std::string> configured_target =
+      command_context.manifest.build.target;
+  if (command_context.program != nullptr &&
+      command_context.program->build.target.has_value()) {
+    configured_target = command_context.program->build.target;
+  }
+  if (configured_target.has_value() &&
+      !select_command_target(*configured_target, target)) {
     return 2;
   }
   if (argc >= 3 && (std::string_view(argv[1]) == "check" ||
