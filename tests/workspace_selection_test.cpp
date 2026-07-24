@@ -190,6 +190,8 @@ void test_workspace_manifest(TestState &state) {
       "target = aarch64-macos\n"
       "assertions = off\n"
       "provider = common=object:common.o\n"
+      "provider[aarch64-macos] = mac=object:mac.o\n"
+      "provider[x86_64-linux] = linux=archive:linux.a\n"
       "[program editor]\n"
       "root = apps/editor\n"
       "optimization = O2\n"
@@ -222,6 +224,7 @@ void test_workspace_manifest(TestState &state) {
   EXPECT(state, effective.providers.size() == 2);
   EXPECT(state, effective.providers[0] == "common=object:common.o");
   EXPECT(state, effective.providers[1] == "editor=archive:editor.a");
+  EXPECT(state, effective.target_inputs.size() == 2);
 
   // Structural comparison belongs to the parsed value model rather than an
   // embedding. Every source-preserving row participates, while an independent
@@ -244,13 +247,36 @@ void test_workspace_manifest(TestState &state) {
   EXPECT(state,
          policy.optimization == draft::NativeOptimizationLevel::O2);
   EXPECT(state, policy.runtime_assertions);
-  EXPECT(state, policy.foreign_providers.size() == 2);
-  if (policy.foreign_providers.size() == 2) {
+  EXPECT(state, policy.foreign_providers.size() == 3);
+  if (policy.foreign_providers.size() == 3) {
     EXPECT(state,
            policy.foreign_providers[0].path == tree.workspace / "common.o");
     EXPECT(state,
            policy.foreign_providers[1].path == tree.workspace / "editor.a");
+    EXPECT(state,
+           policy.foreign_providers[2].path == tree.workspace / "mac.o");
   }
+
+  draft::BuildDefaults linux_defaults = effective;
+  linux_defaults.target.reset();
+  EXPECT(state,
+         draft::resolve_build_policy(
+             tree.workspace, linux_defaults,
+             draft::make_x86_64_linux_profile(), policy, reason));
+  EXPECT(state, policy.foreign_providers.size() == 3);
+  if (policy.foreign_providers.size() == 3) {
+    EXPECT(state,
+           policy.foreign_providers[2].path == tree.workspace / "linux.a");
+  }
+
+  draft::BuildDefaults invalid_defaults = effective;
+  draft::TargetBuildInputs invalid_inputs;
+  invalid_inputs.target = "unknown-target";
+  invalid_defaults.target_inputs.push_back(invalid_inputs);
+  EXPECT(state,
+         !draft::resolve_build_policy(
+             tree.workspace, invalid_defaults,
+             draft::make_aarch64_macos_profile(), policy, reason));
 }
 
 void test_discovery(TestState &state) {

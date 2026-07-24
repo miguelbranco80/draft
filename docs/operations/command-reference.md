@@ -29,6 +29,8 @@ exclude = build
 [build]
 target = aarch64-macos
 optimization = O0
+provider[aarch64-macos] = window=shared-library:build/libwindow.dylib
+provider[x86_64-linux] = window=shared-library:build/libwindow.so
 
 [program editor]
 root = apps/editor
@@ -43,6 +45,12 @@ Top-level `exclude` rows prune recursive discovery. `[build]` accepts `target`,
 requires `root`, may override those build values, and may add repeated run
 `argument`/`environment` rows plus one `working-directory`. It never lists
 source files, changes import rules, downloads dependencies, or invokes a shell.
+The three native-input keys alone also accept an exact built-in target selector,
+as in `provider[aarch64-macos]`, `provider-summary[x86_64-linux]`, or
+`runtime-asset[x86_64-windows]`. Matching rows append after unconditional rows;
+unknown selectors are errors even when another target is active. Scalars,
+arguments, environment, scripts, and arbitrary expressions cannot be
+conditioned.
 CLI options replace scalar defaults; the first repeated CLI mapping replaces
 the corresponding manifest list. Arguments after `run ... --` replace manifest
 arguments. An aggregate `build` resolves this precedence independently for each

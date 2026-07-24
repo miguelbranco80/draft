@@ -23,6 +23,17 @@
 
 namespace draft {
 
+// TargetBuildInputs is one additive native-input layer selected by an exact
+// built-in target selector. Only provider, provider-summary, and runtime-asset
+// rows may be qualified: this is not a general conditional configuration
+// language. Values retain manifest source order and remain unparsed here.
+struct TargetBuildInputs {
+  std::string target;
+  std::vector<std::string> providers;
+  std::vector<std::string> provider_summaries;
+  std::vector<std::string> runtime_assets;
+};
+
 // BuildDefaults contains only spellings also accepted by the public driver.
 // Empty optionals mean "use the command default". List values are repeated
 // command inputs in manifest order; parsing their provider-specific grammar is
@@ -37,6 +48,7 @@ struct BuildDefaults {
   std::vector<std::string> providers;
   std::vector<std::string> provider_summaries;
   std::vector<std::string> runtime_assets;
+  std::vector<TargetBuildInputs> target_inputs;
 };
 
 // ProgramConfiguration gives one executable root a stable human name plus its

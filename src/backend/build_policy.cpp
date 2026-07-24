@@ -9,6 +9,48 @@
 #include <utility>
 
 namespace draft {
+namespace {
+
+// Appends one already-selected native-input layer. Keeping the three physical
+// parsers in this single operation guarantees that unconditional and
+// target-qualified rows receive identical workspace-relative path treatment.
+[[nodiscard]] bool append_native_inputs(
+    const std::filesystem::path &workspace_directory,
+    const std::vector<std::string> &providers,
+    const std::vector<std::string> &provider_summaries,
+    const std::vector<std::string> &runtime_assets,
+    ResolvedBuildPolicy &resolved, std::string &reason) {
+  for (const std::string &spelling : providers) {
+    ForeignProviderInput input;
+    if (!parse_foreign_provider_input(
+            resolve_manifest_mapping_path(workspace_directory, spelling), input,
+            reason)) {
+      return false;
+    }
+    resolved.foreign_providers.push_back(std::move(input));
+  }
+  for (const std::string &spelling : provider_summaries) {
+    ForeignProviderSummaryInput input;
+    if (!parse_foreign_provider_summary_input(
+            resolve_manifest_mapping_path(workspace_directory, spelling), input,
+            reason)) {
+      return false;
+    }
+    resolved.provider_summaries.push_back(std::move(input));
+  }
+  for (const std::string &spelling : runtime_assets) {
+    RuntimeAssetInput input;
+    if (!parse_runtime_asset_input(
+            resolve_manifest_mapping_path(workspace_directory, spelling), input,
+            reason)) {
+      return false;
+    }
+    resolved.runtime_assets.push_back(std::move(input));
+  }
+  return true;
+}
+
+} // namespace
 
 bool resolve_build_policy(const std::filesystem::path &workspace_directory,
                           const BuildDefaults &defaults,
@@ -64,32 +106,27 @@ bool resolve_build_policy(const std::filesystem::path &workspace_directory,
   // make their path suffix absolute against the process directory. Resolving
   // here preserves the manifest's workspace-relative contract independently of
   // the directory from which draftc or an embedding was launched.
-  for (const std::string &spelling : defaults.providers) {
-    ForeignProviderInput input;
-    if (!parse_foreign_provider_input(
-            resolve_manifest_mapping_path(workspace_directory, spelling), input,
-            reason)) {
-      return false;
-    }
-    resolved.foreign_providers.push_back(std::move(input));
+  if (!append_native_inputs(workspace_directory, defaults.providers,
+                            defaults.provider_summaries,
+                            defaults.runtime_assets, resolved, reason)) {
+    return false;
   }
-  for (const std::string &spelling : defaults.provider_summaries) {
-    ForeignProviderSummaryInput input;
-    if (!parse_foreign_provider_summary_input(
-            resolve_manifest_mapping_path(workspace_directory, spelling), input,
-            reason)) {
+  for (const TargetBuildInputs &inputs : defaults.target_inputs) {
+    TargetProfile qualified_target;
+    if (!select_builtin_target_profile(inputs.target, qualified_target,
+                                       reason) ||
+        !validate_target_profile(qualified_target, reason)) {
+      reason = "invalid target-qualified build input '" + inputs.target +
+          "': " + reason;
       return false;
     }
-    resolved.provider_summaries.push_back(std::move(input));
-  }
-  for (const std::string &spelling : defaults.runtime_assets) {
-    RuntimeAssetInput input;
-    if (!parse_runtime_asset_input(
-            resolve_manifest_mapping_path(workspace_directory, spelling), input,
-            reason)) {
+    if (qualified_target.facts.identity != resolved.target.facts.identity)
+      continue;
+    if (!append_native_inputs(workspace_directory, inputs.providers,
+                              inputs.provider_summaries,
+                              inputs.runtime_assets, resolved, reason)) {
       return false;
     }
-    resolved.runtime_assets.push_back(std::move(input));
   }
 
   result = std::move(resolved);

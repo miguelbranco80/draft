@@ -248,6 +248,8 @@ exclude = build
 [build]
 target = aarch64-macos
 optimization = O0
+provider[aarch64-macos] = window=shared-library:build/libwindow.dylib
+provider[x86_64-linux] = window=shared-library:build/libwindow.so
 
 [program editor]
 root = apps/editor
@@ -269,6 +271,13 @@ builds one exact executable, inherits the terminal, and passes bytes after `--`
 literally; those arguments replace configured `argument` rows. The driver
 invokes no shell. Ordinary `draftc build .` still builds every discovered
 program rather than silently selecting the configured default.
+
+Only native inputs have a target-qualified manifest form:
+`provider[aarch64-macos]`, `provider-summary[x86_64-linux]`, and
+`runtime-asset[x86_64-windows]`. A matching row appends after unconditional
+rows. Every selector must name a built-in target. Do not invent conditioned
+scalars, arguments, environment, scripts, interpolation, or build recipes;
+`draft.workspace` remains closed operator policy rather than a CMake replacement.
 
 ## Native validation
 

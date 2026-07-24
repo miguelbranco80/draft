@@ -29,7 +29,19 @@ namespace {
       left.assertions == right.assertions &&
       left.providers == right.providers &&
       left.provider_summaries == right.provider_summaries &&
-      left.runtime_assets == right.runtime_assets;
+      left.runtime_assets == right.runtime_assets &&
+      left.target_inputs.size() == right.target_inputs.size() &&
+      std::equal(
+          left.target_inputs.begin(), left.target_inputs.end(),
+          right.target_inputs.begin(),
+          [](const TargetBuildInputs &left_inputs,
+             const TargetBuildInputs &right_inputs) {
+            return left_inputs.target == right_inputs.target &&
+                left_inputs.providers == right_inputs.providers &&
+                left_inputs.provider_summaries ==
+                    right_inputs.provider_summaries &&
+                left_inputs.runtime_assets == right_inputs.runtime_assets;
+          });
 }
 
 [[nodiscard]] bool same_program_configuration(
@@ -104,6 +116,68 @@ enum class SectionKind {
   return false;
 }
 
+enum class TargetInputKind {
+  Provider,
+  ProviderSummary,
+  RuntimeAsset,
+};
+
+// Recognizes only the three closed target-qualified native-input keys. The
+// bracket spelling mirrors target-qualified source filenames without turning
+// every manifest scalar into a conditional expression language.
+[[nodiscard]] bool parse_target_input_key(std::string_view key,
+                                          TargetInputKind &kind,
+                                          std::string_view &target) {
+  constexpr std::string_view provider_prefix = "provider[";
+  constexpr std::string_view summary_prefix = "provider-summary[";
+  constexpr std::string_view asset_prefix = "runtime-asset[";
+  std::string_view prefix;
+  if (key.starts_with(provider_prefix)) {
+    kind = TargetInputKind::Provider;
+    prefix = provider_prefix;
+  } else if (key.starts_with(summary_prefix)) {
+    kind = TargetInputKind::ProviderSummary;
+    prefix = summary_prefix;
+  } else if (key.starts_with(asset_prefix)) {
+    kind = TargetInputKind::RuntimeAsset;
+    prefix = asset_prefix;
+  } else {
+    return false;
+  }
+  if (key.size() <= prefix.size() || key.back() != ']')
+    return false;
+  target = key.substr(prefix.size(), key.size() - prefix.size() - 1);
+  return valid_name(target);
+}
+
+// Appends one qualified value to the first source-ordered row for its target.
+// Grouping is a compact parsed representation only; each per-kind vector still
+// preserves the order in which values of that kind appeared in the manifest.
+void append_target_input(BuildDefaults &build, std::string_view target,
+                         TargetInputKind kind, std::string_view value) {
+  auto found = std::find_if(
+      build.target_inputs.begin(), build.target_inputs.end(),
+      [target](const TargetBuildInputs &inputs) {
+        return inputs.target == target;
+      });
+  if (found == build.target_inputs.end()) {
+    build.target_inputs.push_back({});
+    found = build.target_inputs.end() - 1;
+    found->target = std::string(target);
+  }
+  switch (kind) {
+  case TargetInputKind::Provider:
+    found->providers.emplace_back(value);
+    break;
+  case TargetInputKind::ProviderSummary:
+    found->provider_summaries.emplace_back(value);
+    break;
+  case TargetInputKind::RuntimeAsset:
+    found->runtime_assets.emplace_back(value);
+    break;
+  }
+}
+
 [[nodiscard]] bool assign_once(std::optional<std::string> &destination,
                                std::string_view value, std::string_view key,
                                std::string &reason) {
@@ -156,6 +230,12 @@ enum class SectionKind {
   }
   if (key == "runtime-asset") {
     build.runtime_assets.emplace_back(value);
+    return true;
+  }
+  TargetInputKind target_kind = TargetInputKind::Provider;
+  std::string_view target;
+  if (parse_target_input_key(key, target_kind, target)) {
+    append_target_input(build, target, target_kind, value);
     return true;
   }
   reason = "unknown build key '" + std::string(key) + "'";
@@ -249,6 +329,9 @@ void merge_build_defaults(BuildDefaults &destination,
   destination.runtime_assets.insert(destination.runtime_assets.end(),
                                     overrides.runtime_assets.begin(),
                                     overrides.runtime_assets.end());
+  destination.target_inputs.insert(destination.target_inputs.end(),
+                                   overrides.target_inputs.begin(),
+                                   overrides.target_inputs.end());
 }
 
 BuildDefaults effective_build_defaults(const WorkspaceManifest &manifest,
