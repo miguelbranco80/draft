@@ -469,6 +469,34 @@ bool identify_workspace_package(
   return true;
 }
 
+bool resolve_workspace_exclusions(
+    const std::filesystem::path &workspace_directory,
+    std::span<const std::string> relative_paths,
+    std::vector<std::filesystem::path> &directories,
+    DiagnosticSink &diagnostics) {
+  std::vector<std::filesystem::path> resolved;
+  resolved.reserve(relative_paths.size());
+  for (const std::string &relative : relative_paths) {
+    const std::filesystem::path candidate = workspace_directory / relative;
+    std::error_code status_error;
+    const std::filesystem::file_status status =
+        std::filesystem::status(candidate, status_error);
+    if (status_error == std::errc::no_such_file_or_directory ||
+        (!status_error && !std::filesystem::exists(status))) {
+      continue;
+    }
+    if (status_error) {
+      selection_error(diagnostics, "cannot inspect excluded directory '" +
+                                       candidate.string() + "': " +
+                                       status_error.message());
+      return false;
+    }
+    if (std::filesystem::is_directory(status)) resolved.push_back(candidate);
+  }
+  directories = std::move(resolved);
+  return true;
+}
+
 ExecutableRootDiscoveryResult discover_executable_roots(
     SourceManager &sources,
     const std::filesystem::path &search_directory,

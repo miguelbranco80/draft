@@ -295,19 +295,10 @@ bool CompilerSession::refresh_root_options(const WorkspaceManifest &manifest,
   // compiler session proper had begun.
   workspace_options.package_options.work_executor = work_executor_.get();
   std::vector<std::filesystem::path> excluded;
-  for (const std::string &relative : manifest.excludes) {
-    const std::filesystem::path candidate =
-        configuration_.workspace_directory / relative;
-    std::error_code status_error;
-    if (std::filesystem::is_directory(candidate, status_error)) {
-      excluded.push_back(candidate);
-    } else if (status_error) {
-      diagnostics.error(SourceRange::invalid(),
-                        "cannot inspect excluded workspace directory: " +
-                            status_error.message());
-      return false;
-    }
-  }
+  if (!resolve_workspace_exclusions(
+          configuration_.workspace_directory, manifest.excludes, excluded,
+          diagnostics))
+    return false;
 
   // Resolve and select every named program before fallback discovery. Their
   // exact directories are skipped as fallback-target candidates but not as

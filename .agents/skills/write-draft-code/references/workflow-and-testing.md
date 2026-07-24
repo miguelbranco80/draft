@@ -271,6 +271,8 @@ builds one exact executable, inherits the terminal, and passes bytes after `--`
 literally; those arguments replace configured `argument` rows. The driver
 invokes no shell. Ordinary `draftc build .` still builds every discovered
 program rather than silently selecting the configured default.
+An `exclude` may name an absent derived directory such as `build`; a fresh
+checkout does not have to create excluded paths before discovery.
 
 Only native inputs have a target-qualified manifest form:
 `provider[aarch64-macos]`, `provider-summary[x86_64-linux]`, and

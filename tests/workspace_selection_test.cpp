@@ -364,6 +364,27 @@ void test_explicit_selection(TestState &state) {
   EXPECT(state, hidden.identity.root_relative_path == ".hidden");
 }
 
+void test_workspace_exclusions(TestState &state) {
+  TemporaryTree tree;
+  std::error_code directory_error;
+  std::filesystem::create_directories(
+      tree.workspace / "generated", directory_error);
+  EXPECT(state, !directory_error);
+
+  const std::vector<std::string> spellings = {"absent", "generated"};
+  std::vector<std::filesystem::path> resolved = {tree.root / "sentinel"};
+  draft::DiagnosticSink diagnostics;
+  EXPECT(
+      state,
+      draft::resolve_workspace_exclusions(
+          tree.workspace, spellings, resolved, diagnostics));
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, resolved.size() == 1);
+  if (resolved.size() == 1) {
+    EXPECT(state, resolved[0] == tree.workspace / "generated");
+  }
+}
+
 void test_malformed_candidate_fails_discovery(TestState &state) {
   TemporaryTree tree;
   write_file(
@@ -386,6 +407,7 @@ int main() {
   test_workspace_manifest(state);
   test_discovery(state);
   test_explicit_selection(state);
+  test_workspace_exclusions(state);
   test_malformed_candidate_fails_discovery(state);
   return state.failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

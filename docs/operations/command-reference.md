@@ -39,7 +39,8 @@ working-directory = .
 environment = DRAFT_MODE=development
 ```
 
-Top-level `exclude` rows prune recursive discovery. `[build]` accepts `target`,
+Top-level `exclude` rows prune recursive discovery; a named directory that does
+not yet exist is simply absent from the tree. `[build]` accepts `target`,
 `optimization`, `kind`, `output`, `debug-symbols`, `assertions`, and repeated
 `provider`, `provider-summary`, and `runtime-asset` rows. A named program
 requires `root`, may override those build values, and may add repeated run

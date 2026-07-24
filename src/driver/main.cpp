@@ -832,17 +832,12 @@ int build_workspace(const CommandManifestContext &context,
   const std::filesystem::path &search_directory = context.opened_directory;
   const draft::WorkspaceManifest &manifest = context.manifest;
   std::vector<std::filesystem::path> excluded_directories;
-  for (const std::string &relative : manifest.excludes) {
-    const std::filesystem::path candidate = workspace_directory / relative;
-    std::error_code status_error;
-    if (std::filesystem::is_directory(candidate, status_error)) {
-      excluded_directories.push_back(candidate);
-    } else if (status_error) {
-      std::cerr << "error: cannot inspect excluded directory '"
-                << candidate.string() << "': " << status_error.message()
-                << '\n';
-      return 1;
-    }
+  if (!draft::resolve_workspace_exclusions(
+          workspace_directory, manifest.excludes, excluded_directories,
+          discovery_diagnostics)) {
+    std::cerr << draft::render_diagnostics(
+        discovery_sources, discovery_diagnostics);
+    return 1;
   }
 
   draft::ResolvedBuildPolicy base_configuration;

@@ -112,6 +112,21 @@ locate_command_scope(const std::filesystem::path &search_directory,
     WorkspacePackageSelection &selection,
     DiagnosticSink &diagnostics);
 
+// Resolves manifest exclusion spellings to the physical directories which
+// presently exist. A missing exclusion is intentionally ignored: derived
+// directories such as `build` commonly do not exist in a fresh checkout, and
+// pruning policy must not require creating them. Other inspection failures are
+// diagnosed. The parser has already guaranteed that every spelling is a
+// normalized workspace-relative path; discover_executable_roots performs the
+// final canonical containment check before trusting the returned directories.
+// On success directories replaces its previous contents in manifest order. On
+// failure it is unchanged, so callers cannot accidentally use a partial policy.
+[[nodiscard]] bool resolve_workspace_exclusions(
+    const std::filesystem::path &workspace_directory,
+    std::span<const std::string> relative_paths,
+    std::vector<std::filesystem::path> &directories,
+    DiagnosticSink &diagnostics);
+
 // Recursively discovers every selected surface package that contains an
 // ordinary package-level procedure declaration named `main`. Discovery parses
 // candidate packages so malformed package files cannot produce a guessed root
