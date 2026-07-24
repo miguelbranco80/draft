@@ -1,0 +1,70 @@
+// Runnable workload shared by the ThinLTO benchmark and its focused test.
+//
+// The two loops use identical starting values, keys, iteration counts, and
+// arithmetic. Their only intentional difference is whether that arithmetic is
+// authored in lib/kernel or directly in the app loop. Result globals are read
+// by explicit C exports so LLVM must preserve the completed computations; no
+// console or clock call sits inside the measured loops. This package owns only
+// fixed scalar storage.
+
+package app
+
+import lib/kernel
+
+Iteration_Count :: 2000000
+Initial_Value :: 0x243f6a8885a308d3
+
+hidden_result: u64 = Initial_Value
+local_result: u64 = Initial_Value
+
+// run_hidden_kernel exercises the ordinary hidden Draft package boundary which
+// O2 ThinLTO is permitted to import. The global write is observable through
+// read_hidden_result and therefore cannot be deleted as an unused benchmark.
+run_hidden_kernel :: proc() {
+    value := hidden_result
+    for index: usize = 0; index < Iteration_Count; index += 1 {
+        value = kernel.mix(value, cast[u64](index))
+    }
+    hidden_result = value
+}
+
+// run_local_reference spells the same round directly in the app package. It is
+// not intended as a second algorithm: it is the package-local reference which
+// shows whether O2 removed the otherwise observable cross-package call cost.
+run_local_reference :: proc() {
+    value := local_result
+    for index: usize = 0; index < Iteration_Count; index += 1 {
+        mixed := (value ~ cast[u64](index)) * 0x9e3779b185ebca87
+        mixed ~= mixed >> 29
+        value = mixed + 0x165667b19e3779f9
+    }
+    local_result = value
+}
+
+// reset_workloads gives tests and repeated in-process experiments the same
+// deterministic initial state. Benchmark samples normally run in isolated
+// processes, but the operation makes that runner policy unnecessary for
+// correctness.
+reset_workloads :: proc() {
+    hidden_result = Initial_Value
+    local_result = Initial_Value
+}
+
+export read_hidden_result as "draft_thinlto_hidden_result" :: c proc() -> u64 {
+    return hidden_result
+}
+
+export read_local_result as "draft_thinlto_local_result" :: c proc() -> u64 {
+    return local_result
+}
+
+// The ordinary executable is a correctness smoke program. Timing belongs to
+// app_bench.draft so startup, assertions, and harness work cannot contaminate a
+// measured callback.
+main :: proc() {
+    reset_workloads()
+    run_hidden_kernel()
+    run_local_reference()
+    assert(hidden_result == local_result,
+        "cross-package and local kernels must compute the same value")
+}

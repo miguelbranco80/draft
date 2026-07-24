@@ -1,0 +1,19 @@
+// Cross-package scalar kernels for the ThinLTO benchmark.
+//
+// mix is an ordinary public Draft procedure. Its linker definition remains
+// hidden to non-Draft consumers, so O2 may import and inline it into the app
+// package. The app contains an intentionally duplicated local loop as the
+// reference path. Neither procedure owns storage, allocates, or retains an
+// argument.
+
+package kernel
+
+// mix applies one dependency-carrying integer round. A caller cannot simplify
+// a long sequence into independent iterations because each output is the next
+// input; after ThinLTO, however, the small body can live directly in the app's
+// hot loop.
+pub mix :: proc(value: u64, key: u64) -> u64 {
+    mixed := (value ~ key) * 0x9e3779b185ebca87
+    mixed ~= mixed >> 29
+    return mixed + 0x165667b19e3779f9
+}

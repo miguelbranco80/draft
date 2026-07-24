@@ -105,6 +105,7 @@ policy rather than missing backend features.
 | [`nested-procedures`](nested-procedures/) | Static nested procedures, recursion, lexical compile-time bindings, parametric nesting, escaping procedure pointers, context propagation, and collision-free backend names. |
 | [`packages`](packages/) | Folder packages, file-local imports and aliases, `pub` declarations, package constants, qualified names, and compile-time `when`. |
 | [`packages-generic`](packages-generic/) | Cross-package parametric types and procedures, inferred value parameters, layout computation, transitive instantiation, and private consumer types. |
+| [`thinlto-benchmark`](thinlto-benchmark/) | A focused native benchmark contrasting identical dependency-carrying work through an ordinary cross-package Draft procedure and a package-local reference loop; O0 exposes the call boundary while O2 ThinLTO imports it. |
 | [`assembly`](assembly/) | Typed parsed AArch64 assembly with integer, flags, memory, floating conversion, and SIMD register classes; compile-time selection leaves a valid no-assembly program on x86-64. |
 | [`external-assembly`](external-assembly/) | Target-qualified Mach-O/AArch64 ELF/x86-64 ELF/AMD64 COFF `.s` discovery and one C-ABI symbol implemented by separate assembly files. |
 | [`c-interop`](c-interop/) | A small foreign libc import and a Draft procedure exported with a C linker name. |
@@ -132,7 +133,7 @@ policy rather than missing backend features.
 | Explicit UTF-8 validation, scalar traversal, and encoding over byte strings | `core-utf8` |
 | Parsed and external assembly, SIMD, C imports, C exports, and foreign providers | `assembly`, `external-assembly`, `c-interop`, `c-library`, `foreign-provider`, `raylib-asteroids` |
 | `docs`, `judge`, synthesis, deterministic resolution, and provider-free builds | `language-tour`, `judgment-tour`, `agent-judgment-mix`, `agent-acceptance`, `agent-pending` |
-| Denials, assertions, traps, tests, and benchmarks | `denials`, `runtime-traps`, `validation` |
+| Denials, assertions, traps, tests, and benchmarks | `denials`, `runtime-traps`, `validation`, `thinlto-benchmark` |
 
 This map covers positive surface-language capabilities. Parser recovery,
 ill-typed programs, exact diagnostics, denied transitive effects, ABI corner

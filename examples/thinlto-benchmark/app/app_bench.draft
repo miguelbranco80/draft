@@ -1,0 +1,22 @@
+// Native benchmarks for the two cross-package call policies.
+//
+// core/benchmark owns timing and the validation runner owns warmup/sample
+// isolation. Each callback mutates only its dedicated package global and
+// retains no harness pointer. The one-second limit catches accidental runaway
+// work while remaining deliberately noncompetitive across machines; compare
+// the reported medians rather than treating the bound as a performance claim.
+
+package app
+
+import core/benchmark
+import core/time
+
+bench_hidden_draft_boundary :: proc(state: ^benchmark.Benchmark) {
+    benchmark.require_max_time(state, time.second)
+    benchmark.measure(state, run_hidden_kernel)
+}
+
+bench_local_reference :: proc(state: ^benchmark.Benchmark) {
+    benchmark.require_max_time(state, time.second)
+    benchmark.measure(state, run_local_reference)
+}

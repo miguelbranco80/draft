@@ -1,0 +1,16 @@
+// Functional oracle for the benchmark workloads. The test shares the app
+// package so it can reset and inspect private state without adding measurement
+// APIs to the example. Both loops must return the same deterministic result;
+// this catches an optimizer or ABI regression independently of timing noise.
+
+package app
+
+import core/testing
+
+test_kernel_results_match :: proc(test: ^testing.Test) {
+    reset_workloads()
+    run_hidden_kernel()
+    run_local_reference()
+    testing.expect_message(test, hidden_result == local_result,
+        "cross-package and local kernels must remain semantically identical")
+}
