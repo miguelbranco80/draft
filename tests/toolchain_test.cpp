@@ -378,6 +378,24 @@ void test_all_native_artifact_kinds(TestState &state) {
   EXPECT(state, read_file(
       temporary / "assembly" / "package-0-assembly-0.s") ==
       compiled.packages.front()->assembly_sources.front().contents);
+  const std::filesystem::path assembly_marker =
+      temporary / "assembly" / ".draft-assembly-bundle-v1";
+  EXPECT(state, std::filesystem::is_regular_file(assembly_marker));
+
+  // The directory is one replaceable artifact, not an append-only collection.
+  // Simulate an output owned by an earlier plan and prove the next publication
+  // removes that plan's now-obsolete file while retaining no authority over
+  // unmarked directories elsewhere.
+  std::ofstream(temporary / "assembly" / "obsolete.s", std::ios::binary)
+      << "obsolete assembly\n";
+  std::ofstream(assembly_marker, std::ios::binary | std::ios::app)
+      << "obsolete.s\n";
+  EXPECT(state, build(
+      draft::NativeArtifactKind::Assembly,
+      temporary / "assembly").ok);
+  EXPECT(state,
+      !std::filesystem::exists(temporary / "assembly" / "obsolete.s"));
+  EXPECT(state, std::filesystem::is_regular_file(assembly_marker));
 
   const std::string arguments = read_file(log);
   EXPECT(state, arguments.find("\n-Wl,-r\n") != std::string::npos);

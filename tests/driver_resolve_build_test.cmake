@@ -118,7 +118,7 @@ if(failed_build_status EQUAL 0)
   message(FATAL_ERROR "occupied output path unexpectedly produced an artifact")
 endif()
 if(NOT failed_build_stderr MATCHES
-   "cannot create assembly output directory")
+   "assembly output path must be a non-symlink directory")
   message(FATAL_ERROR
     "resolve --build failed for the wrong reason\n"
     "stdout:\n${failed_build_stdout}\nstderr:\n${failed_build_stderr}")

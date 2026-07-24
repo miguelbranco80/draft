@@ -322,7 +322,11 @@ Assembly output is a directory bundle with one compiler-produced source for
 each package LLVM unit, the selected hosted-runtime assembly, and exact copied
 external assembly inputs, avoiding local-label collisions that concatenation
 could create. Compiler-produced assembly currently keeps one complete unit per
-semantic package even at O0.
+semantic package even at O0. A hidden versioned ownership marker enumerates the
+bundle's leaf files. Rebuilding removes exactly that previous set before
+publication, so a smaller new graph cannot retain stale assembly; a nonempty
+unmarked directory or a marked directory containing unrelated entries is
+rejected rather than deleted.
 Generated C headers cover root-package exports and transitively required C
 records, unions, enums, fixed-array fields, and callback types. Layout
 assertions make size, alignment, and field-offset disagreement a C compile error.

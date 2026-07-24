@@ -37,6 +37,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <span>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -489,6 +490,159 @@ void append_target_arguments(
   }
   reason.clear();
   return true;
+}
+
+constexpr std::string_view AssemblyBundleMarker =
+    ".draft-assembly-bundle-v1";
+constexpr std::string_view AssemblyBundleHeader =
+    "draft-assembly-bundle-v1\n";
+
+// Parses the marker from one previous assembly publication. Every row is a
+// single leaf filename: accepting separators would let a modified marker make
+// cleanup escape the artifact directory. The marker is operational ownership
+// metadata, not a cache or semantic input; it exists solely so a later build
+// can remove exactly the files published by the earlier build.
+[[nodiscard]] bool parse_assembly_bundle_marker(
+    std::string_view contents,
+    std::vector<std::string> &filenames,
+    std::string &reason) {
+  filenames.clear();
+  if (!contents.starts_with(AssemblyBundleHeader)) {
+    reason = "assembly output marker has an unknown format";
+    return false;
+  }
+  std::size_t cursor = AssemblyBundleHeader.size();
+  while (cursor < contents.size()) {
+    const std::size_t newline = contents.find('\n', cursor);
+    if (newline == std::string_view::npos || newline == cursor) {
+      reason = "assembly output marker has a malformed filename row";
+      return false;
+    }
+    const std::string filename(contents.substr(cursor, newline - cursor));
+    const std::filesystem::path path(filename);
+    if (path.has_parent_path() || path.filename() != path ||
+        filename == AssemblyBundleMarker) {
+      reason = "assembly output marker contains a non-leaf filename";
+      return false;
+    }
+    filenames.push_back(filename);
+    cursor = newline + 1;
+  }
+  std::sort(filenames.begin(), filenames.end());
+  if (std::adjacent_find(filenames.begin(), filenames.end()) !=
+      filenames.end()) {
+    reason = "assembly output marker contains a duplicate filename";
+    return false;
+  }
+  return true;
+}
+
+// Establishes an empty, compiler-owned assembly directory. A fresh absent or
+// empty directory is accepted. A nonempty directory must contain a valid
+// marker whose rows exactly equal its other regular files; this prevents Draft
+// from deleting arbitrary user contents merely because they share the chosen
+// output path. On success all files from the previous bundle are gone.
+[[nodiscard]] bool prepare_assembly_output_directory(
+    const std::filesystem::path &directory,
+    std::string &reason) {
+  std::error_code error;
+  const std::filesystem::file_status status =
+      std::filesystem::symlink_status(directory, error);
+  const bool missing = error == std::errc::no_such_file_or_directory ||
+      (!error && !std::filesystem::exists(status));
+  if (error && !missing) {
+    reason = "cannot inspect assembly output directory '" +
+        directory.string() + "': " + error.message();
+    return false;
+  }
+  if (missing) {
+    error.clear();
+    std::filesystem::create_directories(directory, error);
+    if (error) {
+      reason = "cannot create assembly output directory: " + error.message();
+      return false;
+    }
+    return true;
+  }
+  if (std::filesystem::is_symlink(status) ||
+      !std::filesystem::is_directory(status)) {
+    reason = "assembly output path must be a non-symlink directory";
+    return false;
+  }
+
+  std::vector<std::string> entries;
+  for (std::filesystem::directory_iterator iterator(directory, error), end;
+       !error && iterator != end; iterator.increment(error)) {
+    const std::filesystem::file_status entry_status =
+        iterator->symlink_status(error);
+    if (error) break;
+    if (std::filesystem::is_symlink(entry_status) ||
+        !std::filesystem::is_regular_file(entry_status)) {
+      reason = "assembly output directory contains a non-regular entry: '" +
+          iterator->path().filename().string() + "'";
+      return false;
+    }
+    entries.push_back(iterator->path().filename().string());
+  }
+  if (error) {
+    reason = "cannot enumerate assembly output directory '" +
+        directory.string() + "': " + error.message();
+    return false;
+  }
+  if (entries.empty()) return true;
+  std::sort(entries.begin(), entries.end());
+
+  const std::filesystem::path marker = directory / AssemblyBundleMarker;
+  std::string marker_bytes;
+  if (!read_file_bytes(marker, marker_bytes, reason)) {
+    reason = "nonempty assembly output directory has no readable Draft "
+        "ownership marker";
+    return false;
+  }
+  std::vector<std::string> owned;
+  if (!parse_assembly_bundle_marker(marker_bytes, owned, reason)) return false;
+  std::vector<std::string> expected = owned;
+  expected.push_back(std::string(AssemblyBundleMarker));
+  std::sort(expected.begin(), expected.end());
+  if (entries != expected) {
+    reason = "assembly output directory contains files not owned by its Draft "
+        "bundle marker";
+    return false;
+  }
+  for (const std::string &filename : owned) {
+    error.clear();
+    if (!std::filesystem::remove(directory / filename, error) || error) {
+      reason = "cannot remove previous assembly output '" + filename +
+          "': " + error.message();
+      return false;
+    }
+  }
+  error.clear();
+  if (!std::filesystem::remove(marker, error) || error) {
+    reason = "cannot remove previous assembly output marker: " +
+        error.message();
+    return false;
+  }
+  return true;
+}
+
+// Removes only filenames belonging to the current attempted publication. It
+// leaves the directory empty and unmarked after a write failure, so retrying
+// does not require the operator to clean a half-published artifact manually.
+void abandon_assembly_output(
+    const std::filesystem::path &directory,
+    std::span<const std::string> filenames) {
+  std::error_code ignored;
+  for (const std::string &filename : filenames) {
+    std::filesystem::remove(directory / filename, ignored);
+    ignored.clear();
+    std::filesystem::remove(directory / (filename + ".tmp"), ignored);
+    ignored.clear();
+  }
+  std::filesystem::remove(directory / AssemblyBundleMarker, ignored);
+  ignored.clear();
+  std::filesystem::remove(
+      directory / (std::string(AssemblyBundleMarker) + ".tmp"), ignored);
 }
 
 [[nodiscard]] std::string phase_failure(
@@ -993,16 +1147,6 @@ NativeBuildResult build_native_artifact(
   const std::filesystem::path output_path(options.output_path);
   const bool assembly_output =
       options.artifact_kind == NativeArtifactKind::Assembly;
-  if (assembly_output) {
-    std::filesystem::create_directories(output_path, directory_error);
-    if (directory_error) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "cannot create assembly output directory: " +
-              directory_error.message());
-      return result;
-    }
-  }
   // Freeze every artifact-layout package unit and assembly input into
   // stable work slots before invoking a tool. This validation boundary ensures
   // later execution can change scheduling without changing task identity,
@@ -1111,6 +1255,31 @@ NativeBuildResult build_native_artifact(
     return result;
   }
 
+  std::vector<std::string> assembly_filenames;
+  if (assembly_output) {
+    assembly_filenames.reserve(object_plan.tasks.size());
+    for (const NativeObjectTask &task : object_plan.tasks) {
+      assembly_filenames.push_back(
+          task.output_stem +
+          (task.kind == NativeObjectTaskKind::PackageAssembly
+               ? task.source_extension
+               : ".s"));
+    }
+    std::sort(assembly_filenames.begin(), assembly_filenames.end());
+    if (std::adjacent_find(assembly_filenames.begin(),
+                           assembly_filenames.end()) !=
+        assembly_filenames.end()) {
+      diagnostics.error(SourceRange::invalid(),
+                        "assembly object plan contains duplicate output names");
+      return result;
+    }
+    std::string preparation_error;
+    if (!prepare_assembly_output_directory(output_path, preparation_error)) {
+      diagnostics.error(SourceRange::invalid(), preparation_error);
+      return result;
+    }
+  }
+
   // Publication is deliberately sequential and uses each package layout's
   // canonical module/assembly order. Worker completion order therefore
   // cannot affect directory contents, archive member order, or final linking.
@@ -1125,6 +1294,8 @@ NativeBuildResult build_native_artifact(
         const std::filesystem::path source =
             build_directory / (task.output_stem + task.source_extension);
         if (!write_atomic(source, product.source_bytes, write_error)) {
+          if (assembly_output)
+            abandon_assembly_output(output_path, assembly_filenames);
           diagnostics.error(SourceRange::invalid(), write_error);
           return result;
         }
@@ -1134,6 +1305,8 @@ NativeBuildResult build_native_artifact(
           : build_directory /
               (task.output_stem + std::string(object_file_extension(target)));
       if (!write_atomic(native_output, product.native_bytes, write_error)) {
+        if (assembly_output)
+          abandon_assembly_output(output_path, assembly_filenames);
         diagnostics.error(SourceRange::invalid(), write_error);
         return result;
       }
@@ -1145,6 +1318,8 @@ NativeBuildResult build_native_artifact(
         (assembly_output ? output_path : build_directory) /
         (task.output_stem + task.source_extension);
     if (!write_atomic(source, product.source_bytes, write_error)) {
+      if (assembly_output)
+        abandon_assembly_output(output_path, assembly_filenames);
       diagnostics.error(SourceRange::invalid(), write_error);
       return result;
     }
@@ -1161,6 +1336,18 @@ NativeBuildResult build_native_artifact(
   object_emission_timing.finish();
 
   if (options.artifact_kind == NativeArtifactKind::Assembly) {
+    std::string marker_bytes(AssemblyBundleHeader);
+    for (const std::string &filename : assembly_filenames) {
+      marker_bytes += filename;
+      marker_bytes += '\n';
+    }
+    std::string marker_error;
+    if (!write_atomic(output_path / AssemblyBundleMarker, marker_bytes,
+                      marker_error)) {
+      abandon_assembly_output(output_path, assembly_filenames);
+      diagnostics.error(SourceRange::invalid(), marker_error);
+      return result;
+    }
     result.ok = true;
     result.output_path = output_path.string();
     result.runtime_assets = runtime_assets;
