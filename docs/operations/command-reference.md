@@ -45,7 +45,11 @@ requires `root`, may override those build values, and may add repeated run
 source files, changes import rules, downloads dependencies, or invokes a shell.
 CLI options replace scalar defaults; the first repeated CLI mapping replaces
 the corresponding manifest list. Arguments after `run ... --` replace manifest
-arguments.
+arguments. An aggregate `build` resolves this precedence independently for each
+discovered root. Named programs may therefore select different targets,
+optimization levels, artifact kinds, provider inputs, runtime assets, and
+explicit output paths in one command. A CLI build option remains one deliberate
+override for every selected root.
 
 All package commands accept
 `--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows` where shown.
@@ -302,10 +306,14 @@ found and `--kind` is object, static-library, dynamic-library, or assembly, the
 supplied directory is built as one exact library package.
 
 Each selected root currently receives an independent compiler graph and native
-pipeline. Shared imported packages may therefore be analyzed or emitted more
-than once during one aggregate command. This is a performance limitation, not a
-semantic obstacle to building all executables. Later command-local deduplication
-may reuse work keyed by source identity, target, and compiler configuration;
+pipeline under its own effective `[build]`, matching `[program]`, and CLI
+configuration. Target is resolved before executable inspection because
+target-qualified source may contain `main`; named programs whose target differs
+from the workspace default are inspected exactly under that target. Shared
+imported packages may therefore be analyzed or emitted more than once during
+one aggregate command. This is a performance limitation, not a semantic
+obstacle to building all executables. Later command-local deduplication may
+reuse work keyed by source identity, target, and compiler configuration;
 persistent object caching remains a separate later feature with an explicit
 invalidation contract.
 
@@ -316,7 +324,11 @@ namespace. For example, roots `cli` and `tools/admin` produce executables at
 only the package's short name, prevents output collisions. `-o` is accepted
 only when exactly one root is selected; an aggregate build with several
 discovered roots must use their
-independent default paths.
+independent default paths. Distinct `[program]` `output` values are valid in an
+aggregate build; duplicate explicit paths are rejected before compilation so a
+later root cannot overwrite an earlier artifact. A workspace-wide `output`
+therefore requires a single selected root unless every program replaces it with
+a distinct path.
 
 ## Build and run one program
 

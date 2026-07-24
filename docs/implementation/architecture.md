@@ -429,8 +429,12 @@ package-local physical path. Automatic executable discovery is a
 workspace-layer operation:
 it deterministically scans ordinary visible directories for surface
 package-level `main` declarations, then sends every selected root through an
-independent ordinary compiler graph. It never changes import resolution or
-merges multiple executables into one semantic graph.
+independent ordinary compiler graph. Workspace build defaults, the matching
+named-program overrides, and explicit CLI overrides are resolved separately for
+each root. Because target-qualified source can declare `main`, named roots with
+a different configured target are inspected exactly under that target before
+the canonical root list is finalized. Discovery never changes import resolution
+or merges multiple executables into one semantic graph.
 
 The first aggregate implementation runs those root graphs sequentially and may
 repeat shared dependency analysis and code generation. A later optimization may

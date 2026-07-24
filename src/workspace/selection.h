@@ -48,6 +48,16 @@ struct ExecutableRootDiscoveryResult {
   std::vector<WorkspacePackageSelection> roots;
 };
 
+// ExecutablePackageInspectionResult is the exact-package counterpart to
+// recursive discovery. contains_main reports only an explicit surface
+// package-level procedure selected for the supplied target. ok is false when
+// package loading or parsing diagnosed malformed input; callers must not treat
+// that failure as an ordinary non-executable package.
+struct ExecutablePackageInspectionResult {
+  bool ok = false;
+  bool contains_main = false;
+};
+
 // One command path has two meanings which must remain distinct. package is the
 // exact root package selected by check/test/run-like commands.
 // workspace_directory owns root-relative imports and `.draft/` state.
@@ -113,5 +123,16 @@ locate_command_scope(const std::filesystem::path &search_directory,
     const WorkspaceLoadOptions &options,
     DiagnosticSink &diagnostics,
     std::span<const std::filesystem::path> excluded_directories = {});
+
+// Inspects one already-selected package under one target file-selection rule.
+// This is used when operator configuration assigns a target to a named program:
+// recursive discovery can use the workspace default for unnamed packages while
+// the configured package is checked exactly once under its own target. The
+// operation does not recurse, follow imports, or type-check the entry signature.
+[[nodiscard]] ExecutablePackageInspectionResult inspect_executable_package(
+    SourceManager &sources,
+    const WorkspacePackageSelection &package,
+    const WorkspaceLoadOptions &options,
+    DiagnosticSink &diagnostics);
 
 } // namespace draft

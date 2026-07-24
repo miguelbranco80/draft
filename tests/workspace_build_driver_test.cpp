@@ -214,11 +214,63 @@ void test_discovery_selection_and_failures(TestState &state) {
   }) == 0);
 }
 
+void test_aggregate_program_configuration(TestState &state) {
+  TemporaryWorkspace workspace;
+
+  // The admin root exists on every target but declares main only for x86-64
+  // Linux. Aggregate discovery must therefore inspect that exact package under
+  // its named program target instead of applying the workspace's macOS default
+  // to every root. Distinct explicit outputs also prove that configuration is
+  // resolved before any artifact is published rather than after a common build
+  // loop has already selected one path and kind.
+  TemporaryWorkspace::write_package(
+      workspace.root / "tools" / "admin", "runner", false, false);
+  {
+    std::ofstream source(
+        workspace.root / "tools" / "admin" /
+            "entry@x86_64-linux.draft",
+        std::ios::binary);
+    source << "package runner\n\nmain :: proc() {}\n";
+    source.close();
+    EXPECT(state, static_cast<bool>(source));
+  }
+  {
+    std::ofstream marker(workspace.root / "draft.workspace",
+                         std::ios::binary | std::ios::trunc);
+    marker <<
+        "draft-workspace-v1\n"
+        "[build]\n"
+        "kind = assembly\n"
+        "[program app]\n"
+        "root = app\n"
+        "output = configured-app-assembly\n"
+        "[program admin]\n"
+        "root = tools/admin\n"
+        "target = x86_64-linux\n"
+        "output = configured-admin-assembly\n";
+    marker.close();
+    EXPECT(state, static_cast<bool>(marker));
+  }
+
+  EXPECT(state, run_driver({
+      DRAFT_DRIVER_PATH,
+      "build",
+      workspace.root.string(),
+  }) == 0);
+  EXPECT(state,
+         std::filesystem::is_directory(
+             workspace.root / "configured-app-assembly"));
+  EXPECT(state,
+         std::filesystem::is_directory(
+             workspace.root / "configured-admin-assembly"));
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_discovery_selection_and_failures(state);
+  test_aggregate_program_configuration(state);
   if (state.failures != 0) {
     std::cerr << state.failures
               << " workspace-build driver expectation(s) failed\n";

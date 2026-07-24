@@ -86,9 +86,9 @@ parse_foreign_provider_summary(std::string_view spelling,
 // CommandManifestContext is the one process-lifetime view of an optional
 // workspace manifest. opened_directory is the user's exact path.
 // package_directory differs only for `run <workspace>`, where an explicit
-// default program is selected. effective_build merges workspace defaults with
-// the matching named program; command-line values are applied later and always
-// win.
+// default program is selected. effective_build is the exact-path view used by
+// single-root commands. Aggregate build retains the raw manifest and resolves
+// the same precedence separately for every discovered root.
 struct CommandManifestContext {
   std::filesystem::path workspace_directory;
   std::filesystem::path opened_directory;
@@ -96,6 +96,43 @@ struct CommandManifestContext {
   draft::WorkspaceManifest manifest;
   const draft::ProgramConfiguration *program = nullptr;
   draft::BuildDefaults effective_build;
+};
+
+// BuildCommandOverrides retains only values explicitly supplied on this build
+// command. Aggregate builds must apply those values after each discovered
+// root's manifest configuration; collapsing them into one pre-discovery value
+// would make it impossible to distinguish a CLI override from a workspace
+// default which another named program is allowed to replace.
+struct BuildCommandOverrides {
+  std::optional<draft::TargetProfile> target;
+  std::optional<std::string> output;
+  std::optional<draft::NativeArtifactKind> artifact_kind;
+  std::optional<draft::NativeOptimizationLevel> optimization;
+  std::optional<bool> emit_debug_symbols;
+  std::optional<draft::RuntimeAssertionMode> runtime_assertions;
+  std::optional<std::vector<draft::ForeignProviderInput>> foreign_providers;
+  std::optional<std::vector<draft::ForeignProviderSummaryInput>>
+      provider_summaries;
+  std::optional<std::vector<draft::RuntimeAssetInput>> runtime_assets;
+};
+
+// EffectiveBuildConfiguration is the complete operational input for one root.
+// It contains no borrowed manifest strings. Every relative manifest path has
+// already been resolved against the workspace, while CLI paths retain their
+// ordinary process-facing interpretation until native publication.
+struct EffectiveBuildConfiguration {
+  draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  std::optional<std::string> output;
+  draft::NativeArtifactKind artifact_kind =
+      draft::NativeArtifactKind::Executable;
+  draft::NativeOptimizationLevel optimization =
+      draft::NativeOptimizationLevel::O0;
+  bool emit_debug_symbols = false;
+  draft::RuntimeAssertionMode runtime_assertions =
+      draft::RuntimeAssertionMode::On;
+  std::vector<draft::ForeignProviderInput> foreign_providers;
+  std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
+  std::vector<draft::RuntimeAssetInput> runtime_assets;
 };
 
 void merge_build_defaults(draft::BuildDefaults &destination,
@@ -469,6 +506,136 @@ parse_native_artifact_kind(std::string_view spelling) {
     return false;
   }
   return true;
+}
+
+// Resolves the three-layer build policy for one exact package root. Workspace
+// defaults are copied first, the matching named program is merged second, and
+// explicit CLI values replace the result last. Keeping this operation pure per
+// root is what lets `draftc build .` honor different targets, providers, and
+// output policies without changing recursive discovery order.
+[[nodiscard]] bool resolve_effective_build_configuration(
+    const CommandManifestContext &context,
+    const draft::ProgramConfiguration *program,
+    const BuildCommandOverrides &overrides,
+    EffectiveBuildConfiguration &result,
+    std::string &reason) {
+  CommandManifestContext selected_context = context;
+  selected_context.program = program;
+  selected_context.effective_build = context.manifest.build;
+  if (program != nullptr) {
+    merge_build_defaults(selected_context.effective_build, program->build);
+  }
+
+  EffectiveBuildConfiguration selected;
+  if (selected_context.effective_build.target.has_value()) {
+    if (!draft::select_builtin_target_profile(
+            *selected_context.effective_build.target, selected.target,
+            reason)) {
+      return false;
+    }
+    if (!draft::validate_target_profile(selected.target, reason)) {
+      reason = "invalid built-in target profile: " + reason;
+      return false;
+    }
+  }
+  if (selected_context.effective_build.output.has_value()) {
+    selected.output = manifest_output_path(
+        selected_context, *selected_context.effective_build.output);
+  }
+  if (selected_context.effective_build.artifact_kind.has_value()) {
+    const std::optional<draft::NativeArtifactKind> parsed =
+        parse_native_artifact_kind(
+            *selected_context.effective_build.artifact_kind);
+    if (!parsed.has_value()) {
+      reason = "invalid manifest artifact kind '" +
+          *selected_context.effective_build.artifact_kind + "'";
+      return false;
+    }
+    selected.artifact_kind = *parsed;
+  }
+  if (selected_context.effective_build.optimization.has_value()) {
+    const std::string_view spelling =
+        *selected_context.effective_build.optimization;
+    if (spelling == "O0") {
+      selected.optimization = draft::NativeOptimizationLevel::O0;
+    } else if (spelling == "O2") {
+      selected.optimization = draft::NativeOptimizationLevel::O2;
+    } else {
+      reason = "invalid manifest optimization '" + std::string(spelling) +
+          "'; expected O0 or O2";
+      return false;
+    }
+  }
+  if (selected_context.effective_build.debug_symbols.has_value()) {
+    selected.emit_debug_symbols =
+        *selected_context.effective_build.debug_symbols;
+  }
+  if (selected_context.effective_build.assertions.has_value()) {
+    selected.runtime_assertions =
+        *selected_context.effective_build.assertions
+        ? draft::RuntimeAssertionMode::On
+        : draft::RuntimeAssertionMode::Off;
+  }
+  if (!load_manifest_native_inputs(
+          selected_context, selected.foreign_providers,
+          selected.provider_summaries, selected.runtime_assets, reason)) {
+    return false;
+  }
+
+  if (overrides.target.has_value()) selected.target = *overrides.target;
+  if (overrides.output.has_value()) selected.output = overrides.output;
+  if (overrides.artifact_kind.has_value()) {
+    selected.artifact_kind = *overrides.artifact_kind;
+  }
+  if (overrides.optimization.has_value()) {
+    selected.optimization = *overrides.optimization;
+  }
+  if (overrides.emit_debug_symbols.has_value()) {
+    selected.emit_debug_symbols = *overrides.emit_debug_symbols;
+  }
+  if (overrides.runtime_assertions.has_value()) {
+    selected.runtime_assertions = *overrides.runtime_assertions;
+  }
+  if (overrides.foreign_providers.has_value()) {
+    selected.foreign_providers = *overrides.foreign_providers;
+  }
+  if (overrides.provider_summaries.has_value()) {
+    selected.provider_summaries = *overrides.provider_summaries;
+  }
+  if (overrides.runtime_assets.has_value()) {
+    selected.runtime_assets = *overrides.runtime_assets;
+  }
+  result = std::move(selected);
+  return true;
+}
+
+[[nodiscard]] bool same_target(const draft::TargetProfile &left,
+                               const draft::TargetProfile &right) {
+  return left.facts.identity == right.facts.identity;
+}
+
+// All paths entering this helper are canonical. A component comparison avoids
+// the textual-prefix bug where `/work/tools-two` appears to be below
+// `/work/tools` while accepting the search directory itself.
+[[nodiscard]] bool path_is_within_or_same(
+    const std::filesystem::path &base,
+    const std::filesystem::path &candidate) {
+  if (base == candidate) return true;
+  const std::filesystem::path relative = candidate.lexically_relative(base);
+  if (relative.empty() || relative.is_absolute()) return false;
+  return std::none_of(
+      relative.begin(), relative.end(),
+      [](const std::filesystem::path &component) { return component == ".."; });
+}
+
+[[nodiscard]] bool path_is_excluded(
+    const std::filesystem::path &candidate,
+    const std::vector<std::filesystem::path> &excluded) {
+  return std::any_of(
+      excluded.begin(), excluded.end(),
+      [&candidate](const std::filesystem::path &root) {
+        return path_is_within_or_same(root, candidate);
+      });
 }
 
 // Foreign summaries are explicit semantic inputs for this invocation. They are
@@ -908,20 +1075,12 @@ int build_selected_package(
 // finds every ordinary package-level `main` below path for every artifact kind,
 // which keeps assembly/object inspection useful for aggregate builds. When no
 // program exists and a non-executable kind was requested, path is treated as
-// one exact library package. Selection is complete before output validation, so
-// `-o` is rejected deterministically for a multi-program build without writing
-// an artifact.
-int build_workspace(
-    const std::string &search_spelling, const draft::TargetProfile &target,
-    const std::optional<std::string> &requested_output,
-    draft::NativeArtifactKind artifact_kind,
-    draft::NativeOptimizationLevel optimization,
-    bool emit_debug_symbols,
-    draft::RuntimeAssertionMode runtime_assertions,
-    const std::vector<draft::ForeignProviderInput> &foreign_providers,
-    const std::vector<draft::ForeignProviderSummaryInput> &provider_summaries,
-    const std::vector<draft::RuntimeAssetInput> &runtime_assets,
-    draft::TimingRecorder *timings) {
+// one exact library package. Selection and every per-root configuration are
+// complete before output validation, so a CLI `-o` or colliding manifest output
+// is rejected for a multi-program build without writing an artifact.
+int build_workspace(const CommandManifestContext &context,
+                    const BuildCommandOverrides &overrides,
+                    draft::TimingRecorder *timings) {
   // Root discovery, every selected compilation, and final native emission are
   // all phases of this one user command. Create its executor before discovery
   // so candidate-package parsing cannot silently start a temporary pool which
@@ -930,23 +1089,10 @@ int build_workspace(
       std::make_shared<draft::WorkExecutor>();
   draft::SourceManager discovery_sources;
   draft::DiagnosticSink discovery_diagnostics;
-  std::filesystem::path workspace_directory;
-  std::filesystem::path search_directory;
-  std::filesystem::path manifest_path;
-  if (!draft::locate_command_scope(search_spelling, workspace_directory,
-                                   search_directory, manifest_path,
-                                   discovery_diagnostics)) {
-    std::cerr << draft::render_diagnostics(discovery_sources,
-                                           discovery_diagnostics);
-    return 1;
-  }
-  draft::WorkspaceManifest manifest;
-  std::string manifest_error;
-  if (!draft::load_workspace_manifest(manifest_path, manifest,
-                                      manifest_error)) {
-    std::cerr << "error: " << manifest_error << '\n';
-    return 1;
-  }
+  const std::filesystem::path &workspace_directory =
+      context.workspace_directory;
+  const std::filesystem::path &search_directory = context.opened_directory;
+  const draft::WorkspaceManifest &manifest = context.manifest;
   std::vector<std::filesystem::path> excluded_directories;
   for (const std::string &relative : manifest.excludes) {
     const std::filesystem::path candidate = workspace_directory / relative;
@@ -961,11 +1107,21 @@ int build_workspace(
     }
   }
 
+  EffectiveBuildConfiguration base_configuration;
+  std::string configuration_error;
+  if (!resolve_effective_build_configuration(
+          context, nullptr, overrides, base_configuration,
+          configuration_error)) {
+    std::cerr << "error: " << configuration_error << '\n';
+    return 2;
+  }
+
   std::vector<draft::WorkspacePackageSelection> roots;
   draft::WorkspaceLoadOptions discovery_options;
   discovery_options.workspace_directory = workspace_directory.string();
   configure_core_distribution(discovery_options);
-  discovery_options.package_options.file_tag = target.facts.file_tag;
+  discovery_options.package_options.file_tag =
+      base_configuration.target.facts.file_tag;
   discovery_options.package_options.work_executor = work_executor.get();
   const draft::ExecutableRootDiscoveryResult discovered =
       draft::discover_executable_roots(discovery_sources, search_directory,
@@ -973,12 +1129,100 @@ int build_workspace(
                                        excluded_directories);
   if (discovered.ok)
     roots = discovered.roots;
-  if (roots.empty() && !discovery_diagnostics.has_errors() &&
-      artifact_kind != draft::NativeArtifactKind::Executable) {
+
+  // A named program may select a target whose file-qualified source differs
+  // from the workspace default. Reinspect only those exact program packages;
+  // unnamed packages retain the common discovery target. Program pointers are
+  // sorted by root so manifest section order cannot change diagnostics or the
+  // eventual canonical build order.
+  std::vector<const draft::ProgramConfiguration *> configured_programs;
+  configured_programs.reserve(manifest.programs.size());
+  for (const draft::ProgramConfiguration &program : manifest.programs) {
+    configured_programs.push_back(&program);
+  }
+  std::sort(
+      configured_programs.begin(), configured_programs.end(),
+      [](const draft::ProgramConfiguration *left,
+         const draft::ProgramConfiguration *right) {
+        return left->root < right->root;
+      });
+  for (const draft::ProgramConfiguration *program : configured_programs) {
+    const std::filesystem::path lexical_program =
+        (workspace_directory / program->root).lexically_normal();
+    if (!path_is_within_or_same(search_directory, lexical_program) ||
+        path_is_excluded(lexical_program, excluded_directories)) {
+      continue;
+    }
+
+    EffectiveBuildConfiguration configured;
+    if (!resolve_effective_build_configuration(
+            context, program, overrides, configured, configuration_error)) {
+      std::cerr << "error: program '" << program->name
+                << "': " << configuration_error << '\n';
+      return 2;
+    }
+    if (same_target(configured.target, base_configuration.target))
+      continue;
+
+    draft::WorkspacePackageSelection selected;
+    if (!draft::select_workspace_package(
+            workspace_directory, program->root, selected,
+            discovery_diagnostics)) {
+      continue;
+    }
+    roots.erase(
+        std::remove_if(
+            roots.begin(), roots.end(),
+            [program](const draft::WorkspacePackageSelection &root) {
+              return root.identity.root_relative_path == program->root;
+            }),
+        roots.end());
+
+    draft::WorkspaceLoadOptions configured_options = discovery_options;
+    configured_options.package_options.file_tag = configured.target.facts.file_tag;
+    const draft::ExecutablePackageInspectionResult inspected =
+        draft::inspect_executable_package(
+            discovery_sources, selected, configured_options,
+            discovery_diagnostics);
+    if (inspected.ok && inspected.contains_main) {
+      roots.push_back(std::move(selected));
+    }
+  }
+
+  std::sort(
+      roots.begin(), roots.end(),
+      [](const draft::WorkspacePackageSelection &left,
+         const draft::WorkspacePackageSelection &right) {
+        return left.identity.root_relative_path <
+            right.identity.root_relative_path;
+      });
+  roots.erase(
+      std::unique(
+          roots.begin(), roots.end(),
+          [](const draft::WorkspacePackageSelection &left,
+             const draft::WorkspacePackageSelection &right) {
+            return left.identity == right.identity;
+          }),
+      roots.end());
+
+  if (roots.empty() && !discovery_diagnostics.has_errors()) {
     draft::WorkspacePackageSelection root;
     if (draft::identify_workspace_package(workspace_directory, search_directory,
                                           root, discovery_diagnostics)) {
-      roots.push_back(std::move(root));
+      const draft::ProgramConfiguration *program =
+          draft::find_program_by_root(
+              manifest, root.identity.root_relative_path);
+      EffectiveBuildConfiguration exact_configuration;
+      if (!resolve_effective_build_configuration(
+              context, program, overrides, exact_configuration,
+              configuration_error)) {
+        std::cerr << "error: " << configuration_error << '\n';
+        return 2;
+      }
+      if (exact_configuration.artifact_kind !=
+          draft::NativeArtifactKind::Executable) {
+        roots.push_back(std::move(root));
+      }
     }
   }
 
@@ -991,27 +1235,80 @@ int build_workspace(
     std::cerr << "error: build path contains no executable packages\n";
     return 1;
   }
-  if (requested_output.has_value() && roots.size() != 1) {
+  if (overrides.output.has_value() && roots.size() != 1) {
     std::cerr << "error: -o requires exactly one selected build root\n";
     return 2;
+  }
+
+  struct ConfiguredRoot {
+    draft::WorkspacePackageSelection selection;
+    EffectiveBuildConfiguration build;
+  };
+  std::vector<ConfiguredRoot> configured_roots;
+  configured_roots.reserve(roots.size());
+  for (const draft::WorkspacePackageSelection &root : roots) {
+    const draft::ProgramConfiguration *program =
+        draft::find_program_by_root(
+            manifest, root.identity.root_relative_path);
+    EffectiveBuildConfiguration build;
+    if (!resolve_effective_build_configuration(
+            context, program, overrides, build, configuration_error)) {
+      std::cerr << "error: root '" << root.identity.root_relative_path
+                << "': " << configuration_error << '\n';
+      return 2;
+    }
+    configured_roots.push_back({root, std::move(build)});
+  }
+
+  // Explicit output paths have no automatic root namespace. Validate all of
+  // them before the first compiler graph starts so one completed artifact can
+  // never be overwritten by a later program in the same aggregate command.
+  for (std::size_t index = 0; index < configured_roots.size(); ++index) {
+    if (!configured_roots[index].build.output.has_value()) continue;
+    std::error_code output_error;
+    const std::filesystem::path output = std::filesystem::absolute(
+        *configured_roots[index].build.output, output_error).lexically_normal();
+    if (output_error) {
+      std::cerr << "error: cannot make native output path absolute: "
+                << output_error.message() << '\n';
+      return 2;
+    }
+    for (std::size_t previous = 0; previous < index; ++previous) {
+      if (!configured_roots[previous].build.output.has_value()) continue;
+      std::error_code previous_error;
+      const std::filesystem::path previous_output =
+          std::filesystem::absolute(
+              *configured_roots[previous].build.output, previous_error)
+              .lexically_normal();
+      if (!previous_error && output == previous_output) {
+        std::cerr << "error: roots '"
+                  << configured_roots[previous]
+                         .selection.identity.root_relative_path
+                  << "' and '"
+                  << configured_roots[index]
+                         .selection.identity.root_relative_path
+                  << "' select the same explicit output path\n";
+        return 2;
+      }
+    }
   }
 
   // All selected roots deliberately own independent SourceManagers and
   // compiler product graphs. Only the sleeping worker set crosses those roots;
   // the executor retains no source, syntax, semantic, or artifact products.
-  for (const draft::WorkspacePackageSelection &root : roots) {
+  for (const ConfiguredRoot &root : configured_roots) {
     const int result = build_selected_package(
         workspace_directory,
-        root,
-        target,
-        requested_output,
-        artifact_kind,
-        optimization,
-        emit_debug_symbols,
-        runtime_assertions,
-        foreign_providers,
-        provider_summaries,
-        runtime_assets,
+        root.selection,
+        root.build.target,
+        root.build.output,
+        root.build.artifact_kind,
+        root.build.optimization,
+        root.build.emit_debug_symbols,
+        root.build.runtime_assertions,
+        root.build.foreign_providers,
+        root.build.provider_summaries,
+        root.build.runtime_assets,
         timings,
         work_executor);
     if (result != 0) return result;
@@ -2212,62 +2509,17 @@ int main(int argc, char **argv) {
                             provider_summaries, runtime_assets, timings);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "build") {
-    std::optional<std::string> output;
+    BuildCommandOverrides overrides;
     bool output_set = false;
-    draft::NativeArtifactKind artifact_kind =
+    draft::NativeArtifactKind parsed_artifact_kind =
         draft::NativeArtifactKind::Executable;
     bool artifact_kind_set = false;
-    draft::NativeOptimizationLevel optimization =
+    draft::NativeOptimizationLevel parsed_optimization =
         draft::NativeOptimizationLevel::O0;
     bool optimization_set = false;
-    bool emit_debug_symbols = false;
     bool debug_symbols_set = false;
-    bool assertions_off = false;
     bool assertions_set = false;
     bool target_set = false;
-    std::vector<draft::ForeignProviderInput> foreign_providers;
-    std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
-    std::vector<draft::RuntimeAssetInput> runtime_assets;
-    bool cli_providers = false;
-    bool cli_provider_summaries = false;
-    bool cli_runtime_assets = false;
-    if (command_context.effective_build.output.has_value()) {
-      output = manifest_output_path(command_context,
-                                    *command_context.effective_build.output);
-    }
-    if (command_context.effective_build.artifact_kind.has_value()) {
-      const std::optional<draft::NativeArtifactKind> parsed =
-          parse_native_artifact_kind(
-              *command_context.effective_build.artifact_kind);
-      if (!parsed.has_value()) {
-        std::cerr << "error: invalid manifest artifact kind '"
-                  << *command_context.effective_build.artifact_kind << "'\n";
-        return 2;
-      }
-      artifact_kind = *parsed;
-    }
-    if (command_context.effective_build.optimization.has_value()) {
-      const std::string spelling =
-          "-" + *command_context.effective_build.optimization;
-      if (!parse_native_optimization_argument(spelling, optimization_set,
-                                              optimization)) {
-        return 2;
-      }
-      optimization_set = false;
-    }
-    if (command_context.effective_build.debug_symbols.has_value()) {
-      emit_debug_symbols = *command_context.effective_build.debug_symbols;
-    }
-    if (command_context.effective_build.assertions.has_value()) {
-      assertions_off = !*command_context.effective_build.assertions;
-    }
-    std::string manifest_input_error;
-    if (!load_manifest_native_inputs(command_context, foreign_providers,
-                                     provider_summaries, runtime_assets,
-                                     manifest_input_error)) {
-      std::cerr << "error: " << manifest_input_error << '\n';
-      return 2;
-    }
     for (int index = 3; index < argc; ++index) {
       const std::string_view argument(argv[index]);
       if (argument == "--target" && !target_set &&
@@ -2275,9 +2527,10 @@ int main(int argc, char **argv) {
         target_set = true;
         if (!select_command_target(argv[++index], target))
           return 2;
+        overrides.target = target;
       } else if (argument == "--assertions=off" && !assertions_set) {
-        assertions_off = true;
         assertions_set = true;
+        overrides.runtime_assertions = draft::RuntimeAssertionMode::Off;
       } else if (argument == "--kind" && !artifact_kind_set &&
                  index + 1 < argc) {
         const std::optional<draft::NativeArtifactKind> parsed =
@@ -2286,36 +2539,34 @@ int main(int argc, char **argv) {
           print_usage();
           return 2;
         }
-        artifact_kind = *parsed;
+        parsed_artifact_kind = *parsed;
         artifact_kind_set = true;
+        overrides.artifact_kind = parsed_artifact_kind;
       } else if (argument.starts_with("-O")) {
         if (!parse_native_optimization_argument(
-                argument, optimization_set, optimization)) {
+                argument, optimization_set, parsed_optimization)) {
           return 2;
         }
+        overrides.optimization = parsed_optimization;
       } else if (argument == "--debug-symbols" && !debug_symbols_set) {
-        emit_debug_symbols = true;
         debug_symbols_set = true;
+        overrides.emit_debug_symbols = true;
       } else if (argument == "-o" && !output_set && index + 1 < argc) {
-        output = argv[++index];
+        overrides.output = std::string(argv[++index]);
         output_set = true;
       } else if (argument == "--provider" && index + 1 < argc) {
-        if (!cli_providers) {
-          foreign_providers.clear();
-          cli_providers = true;
-        }
+        if (!overrides.foreign_providers.has_value())
+          overrides.foreign_providers.emplace();
         draft::ForeignProviderInput provider;
         std::string reason;
         if (!parse_foreign_provider(argv[++index], provider, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
-        foreign_providers.push_back(std::move(provider));
+        overrides.foreign_providers->push_back(std::move(provider));
       } else if (argument == "--provider-summary" && index + 1 < argc) {
-        if (!cli_provider_summaries) {
-          provider_summaries.clear();
-          cli_provider_summaries = true;
-        }
+        if (!overrides.provider_summaries.has_value())
+          overrides.provider_summaries.emplace();
         draft::ForeignProviderSummaryInput summary;
         std::string reason;
         if (!parse_foreign_provider_summary(
@@ -2323,19 +2574,17 @@ int main(int argc, char **argv) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
-        provider_summaries.push_back(std::move(summary));
+        overrides.provider_summaries->push_back(std::move(summary));
       } else if (argument == "--runtime-asset" && index + 1 < argc) {
-        if (!cli_runtime_assets) {
-          runtime_assets.clear();
-          cli_runtime_assets = true;
-        }
+        if (!overrides.runtime_assets.has_value())
+          overrides.runtime_assets.emplace();
         draft::RuntimeAssetInput asset;
         std::string reason;
         if (!parse_runtime_asset(argv[++index], asset, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
-        runtime_assets.push_back(std::move(asset));
+        overrides.runtime_assets->push_back(std::move(asset));
       } else if (is_timing_argument(argument)) {
         continue;
       } else {
@@ -2343,12 +2592,7 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    return build_workspace(command_path, target, output, artifact_kind,
-                           optimization, emit_debug_symbols,
-                           assertions_off ? draft::RuntimeAssertionMode::Off
-                                          : draft::RuntimeAssertionMode::On,
-                           foreign_providers, provider_summaries,
-                           runtime_assets, timings);
+    return build_workspace(command_context, overrides, timings);
   }
   if (argc >= 2 && std::string_view(argv[1]) == "target") {
     bool target_set = false;

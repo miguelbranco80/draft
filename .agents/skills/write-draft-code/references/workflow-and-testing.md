@@ -242,11 +242,15 @@ environment = DRAFT_MODE=development
 
 Workspace build defaults apply first, matching program overrides apply second,
 and explicit CLI options win. Repeated CLI provider/environment inputs replace
-their configured lists. `draftc run apps/editor -- document.txt` builds one
-exact executable, inherits the terminal, and passes bytes after `--` literally;
-those arguments replace configured `argument` rows. The driver invokes no
-shell. Ordinary `draftc build .` still builds every discovered program rather
-than silently selecting the configured default.
+their configured lists. Aggregate `build` performs that merge independently for
+each discovered root; a CLI option deliberately overrides every root, while
+named programs may retain different targets, optimization, providers, artifact
+kinds, runtime assets, and distinct outputs. Target is resolved before
+target-qualified `main` discovery. `draftc run apps/editor -- document.txt`
+builds one exact executable, inherits the terminal, and passes bytes after `--`
+literally; those arguments replace configured `argument` rows. The driver
+invokes no shell. Ordinary `draftc build .` still builds every discovered
+program rather than silently selecting the configured default.
 
 ## Native validation
 

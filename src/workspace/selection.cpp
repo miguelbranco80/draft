@@ -559,4 +559,31 @@ ExecutableRootDiscoveryResult discover_executable_roots(
   return result;
 }
 
+ExecutablePackageInspectionResult inspect_executable_package(
+    SourceManager &sources,
+    const WorkspacePackageSelection &package,
+    const WorkspaceLoadOptions &options,
+    DiagnosticSink &diagnostics) {
+  ExecutablePackageInspectionResult result;
+  const std::size_t initial_errors = diagnostics.error_count();
+  if (options.package_options.file_tag.empty()) {
+    selection_error(diagnostics, "target file tag must not be empty");
+    return result;
+  }
+
+  // load_package owns the same deterministic file selection and parser path as
+  // recursive discovery. Inspecting the exact directory here avoids parsing
+  // unrelated descendants merely because one named program overrides target.
+  const PackageLoadResult loaded = load_package(
+      sources,
+      package.physical_directory.string(),
+      options.package_options,
+      diagnostics);
+  if (!loaded.ok || diagnostics.error_count() != initial_errors)
+    return result;
+  result.contains_main = package_contains_main(sources, loaded.package);
+  result.ok = true;
+  return result;
+}
+
 } // namespace draft
