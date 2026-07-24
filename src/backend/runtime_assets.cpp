@@ -65,6 +65,26 @@ namespace {
 
 } // namespace
 
+bool parse_runtime_asset_input(std::string_view spelling,
+                               RuntimeAssetInput &input,
+                               std::string &reason) {
+  const std::size_t colon = spelling.find(':');
+  if (colon == 0 || colon == std::string_view::npos ||
+      colon + 1 >= spelling.size()) {
+    reason = "runtime asset mapping must be name:path";
+    return false;
+  }
+  input.name = std::string(spelling.substr(0, colon));
+  std::error_code error;
+  input.path = std::filesystem::absolute(
+      std::filesystem::path(spelling.substr(colon + 1)), error).lexically_normal();
+  if (error) {
+    reason = "cannot make runtime asset path absolute: " + error.message();
+    return false;
+  }
+  return true;
+}
+
 bool inspect_runtime_asset_inputs(
     std::span<const RuntimeAssetInput> inputs,
     std::vector<VerifiedRuntimeAssetInput> &verified,

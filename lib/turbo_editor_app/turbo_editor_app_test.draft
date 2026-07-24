@@ -50,7 +50,7 @@ fake_artifact_path :: c proc(
     capacity: usize,
 ) -> usize {
     _ = user
-    path := "/usr/bin/true"
+    path := "/bin/sh"
     when target.os == .windows {
         path = "C:\\Windows\\System32\\where.exe"
     }
@@ -68,6 +68,113 @@ fake_artifact_path :: c proc(
     return len(path)
 }
 
+fake_copy_bytes :: c proc(
+    data: rawptr,
+    length: usize,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    if capacity != 0 && destination != nil {
+        count := length
+        if count >= capacity {
+            count = capacity - 1
+        }
+        bytes := cast[[^]u8](data)
+        for index: usize = 0; index < count; index += 1 {
+            destination[index] = bytes[index]
+        }
+        destination[count] = 0
+    }
+    return length
+}
+
+fake_artifact_kind :: c proc(user: rawptr) -> u8 {
+    _ = user
+    kind: draft_compiler_api.Artifact_Kind = .executable
+    return cast[u8](kind)
+}
+
+fake_run_argument_count :: c proc(user: rawptr) -> usize {
+    _ = user
+    when target.os == .windows {
+        return 0
+    } else {
+        return 4
+    }
+}
+
+fake_run_argument :: c proc(
+    user: rawptr,
+    index: usize,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    text := ""
+    if index == 0 {
+        text = "-c"
+    } else if index == 1 {
+        text = "test \"$DRAFT_IDE_RUN\" = expected && test \"$PWD\" = / && test \"$1\" = \"argument with spaces\""
+    } else if index == 2 {
+        text = "draftide-run-test"
+    } else if index == 3 {
+        text = "argument with spaces"
+    }
+    return fake_copy_bytes(
+        cast[rawptr](raw_data(text)),
+        len(text),
+        destination,
+        capacity,
+    )
+}
+
+fake_run_environment_count :: c proc(user: rawptr) -> usize {
+    _ = user
+    when target.os == .windows {
+        return 0
+    } else {
+        return 1
+    }
+}
+
+fake_run_environment :: c proc(
+    user: rawptr,
+    index: usize,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    if index != 0 {
+        return 0
+    }
+    text := "DRAFT_IDE_RUN=expected"
+    return fake_copy_bytes(
+        cast[rawptr](raw_data(text)),
+        len(text),
+        destination,
+        capacity,
+    )
+}
+
+fake_run_working_directory :: c proc(
+    user: rawptr,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    when target.os == .windows {
+        return 0
+    } else {
+        text := "/"
+        return fake_copy_bytes(
+            cast[rawptr](raw_data(text)),
+            len(text),
+            destination,
+            capacity,
+        )
+    }
+}
+
 // The real compiler-service test proves native Build. This same-package test
 // proves the Draft-owned half of Run: the application consumes an artifact
 // path through the host table and launches it through core/process rather than
@@ -79,6 +186,12 @@ test_draft_owned_run :: proc(test: ^testing.Test) {
     defer destroy_app(&app)
     app.host.build = fake_build
     app.host.copy_artifact_path = fake_artifact_path
+    app.host.artifact_kind = fake_artifact_kind
+    app.host.run_argument_count = fake_run_argument_count
+    app.host.copy_run_argument = fake_run_argument
+    app.host.run_environment_count = fake_run_environment_count
+    app.host.copy_run_environment = fake_run_environment
+    app.host.copy_run_working_directory = fake_run_working_directory
     execute_host_action(&app, true)
     when target.os == .windows {
         testing.expect(

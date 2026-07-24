@@ -14,6 +14,7 @@
 #include "workspace/selection.h"
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -88,10 +89,134 @@ void append_location(std::string &output, const SourceManager &sources,
   return SourceRange::invalid();
 }
 
+// Manifest and effective-configuration comparisons are structural session
+// invalidation tests, never language equality or persistent hashes. Reading the
+// small manifest on each foreground operation keeps saved configuration live;
+// equality prevents an unchanged file from rebuilding root discovery or
+// discarding the last checked graph.
+[[nodiscard]] bool same_build_defaults(const BuildDefaults &left,
+                                       const BuildDefaults &right) {
+  return left.target == right.target &&
+      left.optimization == right.optimization &&
+      left.artifact_kind == right.artifact_kind &&
+      left.output == right.output &&
+      left.debug_symbols == right.debug_symbols &&
+      left.assertions == right.assertions &&
+      left.providers == right.providers &&
+      left.provider_summaries == right.provider_summaries &&
+      left.runtime_assets == right.runtime_assets;
+}
+
+[[nodiscard]] bool same_program_configuration(
+    const ProgramConfiguration &left,
+    const ProgramConfiguration &right) {
+  return left.name == right.name && left.root == right.root &&
+      same_build_defaults(left.build, right.build) &&
+      left.arguments == right.arguments &&
+      left.working_directory == right.working_directory &&
+      left.environment == right.environment;
+}
+
+[[nodiscard]] bool same_workspace_manifest(const WorkspaceManifest &left,
+                                           const WorkspaceManifest &right) {
+  if (left.present != right.present || left.path != right.path ||
+      left.default_program != right.default_program ||
+      left.excludes != right.excludes ||
+      !same_build_defaults(left.build, right.build) ||
+      left.programs.size() != right.programs.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.programs.size(); ++index) {
+    if (!same_program_configuration(left.programs[index],
+                                    right.programs[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool same_foreign_effect(const ForeignAuditEffect &left,
+                                       const ForeignAuditEffect &right) {
+  return left.kind == right.kind &&
+      left.root_identity == right.root_identity &&
+      left.root_relative_path == right.root_relative_path &&
+      left.declaration == right.declaration && left.detail == right.detail &&
+      left.flow_parameter == right.flow_parameter &&
+      left.flow_path == right.flow_path &&
+      left.flow_context == right.flow_context;
+}
+
+[[nodiscard]] bool same_foreign_audit(const ForeignProviderAudit &left,
+                                      const ForeignProviderAudit &right) {
+  if (left.provider != right.provider ||
+      left.symbols.size() != right.symbols.size()) {
+    return false;
+  }
+  for (std::size_t symbol = 0; symbol < left.symbols.size(); ++symbol) {
+    const ForeignAuditSymbol &left_symbol = left.symbols[symbol];
+    const ForeignAuditSymbol &right_symbol = right.symbols[symbol];
+    if (left_symbol.linker_name != right_symbol.linker_name ||
+        left_symbol.effects.size() != right_symbol.effects.size()) {
+      return false;
+    }
+    for (std::size_t effect = 0; effect < left_symbol.effects.size(); ++effect) {
+      if (!same_foreign_effect(left_symbol.effects[effect],
+                               right_symbol.effects[effect])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool same_program_policy(
+    const EffectiveProgramConfiguration &left,
+    const EffectiveProgramConfiguration &right) {
+  if (left.target.facts.identity != right.target.facts.identity ||
+      left.artifact_kind != right.artifact_kind ||
+      left.optimization != right.optimization ||
+      left.runtime_assertions != right.runtime_assertions ||
+      left.emit_debug_symbols != right.emit_debug_symbols ||
+      left.output_path != right.output_path ||
+      left.foreign_providers.size() != right.foreign_providers.size() ||
+      left.foreign_provider_audits.size() !=
+          right.foreign_provider_audits.size() ||
+      left.runtime_assets.size() != right.runtime_assets.size() ||
+      left.arguments != right.arguments ||
+      left.environment != right.environment ||
+      left.working_directory != right.working_directory) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.foreign_providers.size(); ++index) {
+    const ForeignProviderInput &left_input = left.foreign_providers[index];
+    const ForeignProviderInput &right_input = right.foreign_providers[index];
+    if (left_input.provider != right_input.provider ||
+        left_input.kind != right_input.kind ||
+        left_input.path != right_input.path) {
+      return false;
+    }
+  }
+  for (std::size_t index = 0; index < left.foreign_provider_audits.size();
+       ++index) {
+    if (!same_foreign_audit(left.foreign_provider_audits[index],
+                            right.foreign_provider_audits[index])) {
+      return false;
+    }
+  }
+  for (std::size_t index = 0; index < left.runtime_assets.size(); ++index) {
+    if (left.runtime_assets[index].name != right.runtime_assets[index].name ||
+        left.runtime_assets[index].path != right.runtime_assets[index].path) {
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
 CompilerSession::CompilerSession(CompilerConfiguration configuration)
-    : configuration_(std::move(configuration)) {
+    : configuration_(std::move(configuration)),
+      fallback_target_(configuration_.target) {
   source_path_ = configuration_.root_package_directory /
                  configuration_.source_relative_name;
 }
@@ -101,17 +226,144 @@ CompilerSession::~CompilerSession() {
   std::filesystem::remove_all(build_directory_, error);
 }
 
-bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
-  SourceManager discovery_sources;
-  WorkspaceLoadOptions workspace_options = compile_options().workspace;
-  workspace_options.package_options.file_tag =
-      configuration_.target.facts.file_tag;
-  // Root discovery and source inventory are part of this long-lived project
-  // session. Reuse the same workers later used by checks and native builds;
-  // otherwise opening a project would create short-lived pools before the
-  // compiler session proper had begun.
-  workspace_options.package_options.work_executor = work_executor_.get();
-  WorkspaceManifest manifest;
+bool CompilerSession::resolve_program_configuration(
+    const WorkspaceManifest &manifest, std::string_view root,
+    EffectiveProgramConfiguration &result, DiagnosticSink &diagnostics) const {
+  const BuildDefaults build = effective_build_defaults(manifest, root);
+  EffectiveProgramConfiguration resolved;
+  resolved.target = configuration_.target;
+  std::string reason;
+
+  // A user-selected target is an IDE command override. Otherwise the manifest
+  // may specialize each named root, with the create-time host target remaining
+  // the fallback for roots that say nothing.
+  if (!configuration_.target_is_explicit && build.target.has_value()) {
+    if (!select_builtin_target_profile(*build.target, resolved.target,
+                                       reason) ||
+        !validate_target_profile(resolved.target, reason)) {
+      diagnostics.error(SourceRange::invalid(),
+                        "program '" + std::string(root) +
+                            "' has an invalid target: " + reason);
+      return false;
+    }
+  }
+  if (build.artifact_kind.has_value()) {
+    const std::optional<NativeArtifactKind> kind =
+        parse_native_artifact_kind(*build.artifact_kind);
+    if (!kind.has_value()) {
+      diagnostics.error(SourceRange::invalid(),
+                        "program '" + std::string(root) +
+                            "' has invalid artifact kind '" +
+                            *build.artifact_kind + "'");
+      return false;
+    }
+    resolved.artifact_kind = *kind;
+  }
+  if (build.optimization.has_value()) {
+    if (*build.optimization == "O0") {
+      resolved.optimization = NativeOptimizationLevel::O0;
+    } else if (*build.optimization == "O2") {
+      resolved.optimization = NativeOptimizationLevel::O2;
+    } else {
+      diagnostics.error(SourceRange::invalid(),
+                        "program '" + std::string(root) +
+                            "' has invalid optimization '" +
+                            *build.optimization + "'");
+      return false;
+    }
+  }
+  if (build.debug_symbols.has_value())
+    resolved.emit_debug_symbols = *build.debug_symbols;
+  if (build.assertions.has_value()) {
+    resolved.runtime_assertions = *build.assertions ? RuntimeAssertionMode::On
+                                                    : RuntimeAssertionMode::Off;
+  }
+  if (build.output.has_value()) {
+    const std::filesystem::path path(*build.output);
+    resolved.output_path =
+        path.is_absolute() ? path : configuration_.workspace_directory / path;
+  }
+
+  // Native mappings use the same backend-owned public parsers as draftc. The
+  // manifest layer supplies only precedence and workspace-relative path policy;
+  // it does not acquire a second artifact grammar inside the IDE.
+  std::vector<ForeignProviderSummaryInput> summaries;
+  for (const std::string &spelling : build.providers) {
+    ForeignProviderInput input;
+    if (!parse_foreign_provider_input(
+            resolve_manifest_mapping_path(configuration_.workspace_directory,
+                                          spelling),
+            input, reason)) {
+      diagnostics.error(SourceRange::invalid(),
+                        "program '" + std::string(root) + "': " + reason);
+      return false;
+    }
+    resolved.foreign_providers.push_back(std::move(input));
+  }
+  for (const std::string &spelling : build.provider_summaries) {
+    ForeignProviderSummaryInput input;
+    if (!parse_foreign_provider_summary_input(
+            resolve_manifest_mapping_path(configuration_.workspace_directory,
+                                          spelling),
+            input, reason)) {
+      diagnostics.error(SourceRange::invalid(),
+                        "program '" + std::string(root) + "': " + reason);
+      return false;
+    }
+    summaries.push_back(std::move(input));
+  }
+  for (const std::string &spelling : build.runtime_assets) {
+    RuntimeAssetInput input;
+    if (!parse_runtime_asset_input(
+            resolve_manifest_mapping_path(configuration_.workspace_directory,
+                                          spelling),
+            input, reason)) {
+      diagnostics.error(SourceRange::invalid(),
+                        "program '" + std::string(root) + "': " + reason);
+      return false;
+    }
+    resolved.runtime_assets.push_back(std::move(input));
+  }
+  if (!load_foreign_provider_summaries(summaries, resolved.foreign_providers,
+                                       resolved.foreign_provider_audits,
+                                       diagnostics)) {
+    return false;
+  }
+
+  const ProgramConfiguration *program = find_program_by_root(manifest, root);
+  if (program != nullptr) {
+    // Run rows do not affect checking or native publication. Preserve their
+    // source order and make the optional directory process-facing, but defer
+    // existence/changeability to the actual F5 launch so an unused program's
+    // stale run directory cannot prevent the workspace from opening.
+    resolved.arguments = program->arguments;
+    resolved.environment = program->environment;
+    if (program->working_directory.has_value()) {
+      const std::filesystem::path spelling(*program->working_directory);
+      const std::filesystem::path candidate =
+          spelling.is_absolute()
+              ? spelling
+              : configuration_.workspace_directory / spelling;
+      std::error_code error;
+      const std::filesystem::path absolute =
+          std::filesystem::absolute(candidate, error).lexically_normal();
+      if (error) {
+        diagnostics.error(SourceRange::invalid(),
+                          "program '" + std::string(root) +
+                              "' working directory cannot be made absolute: " +
+                              error.message());
+        return false;
+      }
+      resolved.working_directory = absolute;
+    }
+  }
+  result = std::move(resolved);
+  return true;
+}
+
+bool CompilerSession::read_workspace_manifest(
+    WorkspaceManifest &manifest,
+    DiagnosticSink &diagnostics) const {
   std::string manifest_error;
   const std::filesystem::path manifest_path =
       configuration_.workspace_directory / WorkspaceManifestName;
@@ -122,27 +374,42 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
       marker_error == std::errc::no_such_file_or_directory ||
       (!marker_error && !std::filesystem::exists(marker_status));
   if (marker_error && !marker_missing) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "cannot inspect workspace manifest: " + marker_error.message());
+    diagnostics.error(SourceRange::invalid(),
+                      "cannot inspect workspace manifest: " +
+                          marker_error.message());
     return false;
   }
   const bool marker_present = !marker_missing;
-  if (marker_present &&
-      (std::filesystem::is_symlink(marker_status) ||
-       !std::filesystem::is_regular_file(marker_status))) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "workspace manifest must be a regular non-symlink file");
+  if (marker_present && (std::filesystem::is_symlink(marker_status) ||
+                         !std::filesystem::is_regular_file(marker_status))) {
+    diagnostics.error(SourceRange::invalid(),
+                      "workspace manifest must be a regular non-symlink file");
     return false;
   }
-  if (!load_workspace_manifest(
-          marker_present ? manifest_path : std::filesystem::path{},
-          manifest,
-          manifest_error)) {
+  if (!load_workspace_manifest(marker_present ? manifest_path
+                                              : std::filesystem::path{},
+                               manifest, manifest_error)) {
     diagnostics.error(SourceRange::invalid(), std::move(manifest_error));
     return false;
   }
+  return true;
+}
+
+bool CompilerSession::refresh_root_options(const WorkspaceManifest &manifest,
+                                           DiagnosticSink &diagnostics) {
+  SourceManager discovery_sources;
+  WorkspaceLoadOptions workspace_options;
+  workspace_options.workspace_directory =
+      configuration_.workspace_directory.string();
+  workspace_options.core_files = embedded_core_files();
+  workspace_options.core_content_identity = embedded_core_content_identity();
+  workspace_options.package_options.file_tag =
+      configuration_.target.facts.file_tag;
+  // Root discovery and source inventory are part of this long-lived project
+  // session. Reuse the same workers later used by checks and native builds;
+  // otherwise opening a project would create short-lived pools before the
+  // compiler session proper had begun.
+  workspace_options.package_options.work_executor = work_executor_.get();
   std::vector<std::filesystem::path> excluded;
   for (const std::string &relative : manifest.excludes) {
     const std::filesystem::path candidate =
@@ -151,23 +418,91 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
     if (std::filesystem::is_directory(candidate, status_error)) {
       excluded.push_back(candidate);
     } else if (status_error) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "cannot inspect excluded workspace directory: " +
-              status_error.message());
+      diagnostics.error(SourceRange::invalid(),
+                        "cannot inspect excluded workspace directory: " +
+                            status_error.message());
       return false;
     }
   }
+
+  // Resolve and select every named program before fallback discovery. Their
+  // exact directories are skipped as fallback-target candidates but not as
+  // traversal roots, then inspected once below under their effective target.
+  // This prevents an irrelevant malformed target-qualified file from making a
+  // correctly configured program impossible to open.
+  struct ConfiguredProgramSelection {
+    const ProgramConfiguration *program = nullptr;
+    EffectiveProgramConfiguration configuration;
+    WorkspacePackageSelection selection;
+  };
+  std::vector<const ProgramConfiguration *> configured_programs;
+  configured_programs.reserve(manifest.programs.size());
+  for (const ProgramConfiguration &program : manifest.programs)
+    configured_programs.push_back(&program);
+  std::sort(
+      configured_programs.begin(), configured_programs.end(),
+      [](const ProgramConfiguration *left, const ProgramConfiguration *right) {
+        return left->root < right->root;
+      });
+  std::vector<ConfiguredProgramSelection> configured;
+  std::vector<std::filesystem::path> independently_inspected;
+  configured.reserve(configured_programs.size());
+  independently_inspected.reserve(configured_programs.size());
+  for (const ProgramConfiguration *program : configured_programs) {
+    ConfiguredProgramSelection row;
+    row.program = program;
+    if (!resolve_program_configuration(manifest, program->root,
+                                       row.configuration, diagnostics) ||
+        !select_workspace_package(configuration_.workspace_directory,
+                                  program->root, row.selection, diagnostics)) {
+      return false;
+    }
+    independently_inspected.push_back(row.selection.physical_directory);
+    configured.push_back(std::move(row));
+  }
   const ExecutableRootDiscoveryResult discovered = discover_executable_roots(
-      discovery_sources,
-      configuration_.workspace_directory,
-      workspace_options,
-      diagnostics,
-      excluded);
+      discovery_sources, configuration_.workspace_directory, workspace_options,
+      diagnostics, excluded, independently_inspected);
   if (!discovered.ok || diagnostics.has_errors())
     return false;
 
   std::vector<WorkspacePackageSelection> selections = discovered.roots;
+  // Recursive discovery uses one fallback target. Named programs are exact
+  // roots and may select target-qualified source of their own, so reinspect
+  // those packages under the same effective configuration later used by
+  // Check/F5. Manifest section order cannot affect the visible root order.
+  for (ConfiguredProgramSelection &row : configured) {
+    WorkspaceLoadOptions program_options = workspace_options;
+    program_options.package_options.file_tag =
+        row.configuration.target.facts.file_tag;
+    const ExecutablePackageInspectionResult inspected =
+        inspect_executable_package(discovery_sources, row.selection,
+                                   program_options, diagnostics);
+    if (!inspected.ok || diagnostics.has_errors())
+      return false;
+    selections.erase(
+        std::remove_if(selections.begin(), selections.end(),
+                       [&row](const WorkspacePackageSelection &candidate) {
+                         return candidate.identity.root_relative_path ==
+                                row.program->root;
+                       }),
+        selections.end());
+    if (inspected.contains_main)
+      selections.push_back(std::move(row.selection));
+  }
+  std::sort(selections.begin(), selections.end(),
+            [](const WorkspacePackageSelection &left,
+               const WorkspacePackageSelection &right) {
+              return left.identity.root_relative_path <
+                     right.identity.root_relative_path;
+            });
+  selections.erase(std::unique(selections.begin(), selections.end(),
+                               [](const WorkspacePackageSelection &left,
+                                  const WorkspacePackageSelection &right) {
+                                 return left.identity == right.identity;
+                               }),
+                   selections.end());
+
   const bool has_configured_root = !configuration_.root_relative_path.empty();
   const bool contains_current =
       has_configured_root &&
@@ -194,7 +529,14 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
   options.reserve(selections.size());
   std::size_t selected = 0;
   for (const WorkspacePackageSelection &selection : selections) {
+    EffectiveProgramConfiguration program_configuration;
+    if (!resolve_program_configuration(manifest,
+                                       selection.identity.root_relative_path,
+                                       program_configuration, diagnostics)) {
+      return false;
+    }
     PackageLoadOptions package_options = workspace_options.package_options;
+    package_options.file_tag = program_configuration.target.facts.file_tag;
     const PackageLoadResult loaded =
         load_package(discovery_sources, selection.physical_directory.string(),
                      package_options, diagnostics);
@@ -246,6 +588,7 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
         selection.physical_directory,
         std::move(source_name),
         std::move(source_options),
+        std::move(program_configuration),
     });
   }
 
@@ -262,8 +605,12 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
 }
 
 bool CompilerSession::initialize(DiagnosticSink &diagnostics) {
-  if (!refresh_root_options(diagnostics))
+  WorkspaceManifest manifest;
+  if (!read_workspace_manifest(manifest, diagnostics) ||
+      !refresh_root_options(manifest, diagnostics)) {
     return false;
+  }
+  manifest_ = std::move(manifest);
   const RootOption &selected = root_options_[selected_root_];
   configuration_.root_relative_path = selected.root_relative_path;
   configuration_.root_package_directory = selected.physical_directory;
@@ -271,6 +618,46 @@ bool CompilerSession::initialize(DiagnosticSink &diagnostics) {
   source_path_ = selected.physical_directory / selected.source_relative_name;
   select_root_sources(selected);
   return create_build_directory(diagnostics);
+}
+
+bool CompilerSession::refresh_configuration(DiagnosticSink &diagnostics) {
+  WorkspaceManifest manifest;
+  if (!read_workspace_manifest(manifest, diagnostics))
+    return false;
+
+  if (!same_workspace_manifest(manifest_, manifest)) {
+    // A saved manifest is one atomic operator-policy replacement. Rebuild the
+    // root table before publishing any portion of it, preserve the current root
+    // by identity when it still exists, and discard semantic products because
+    // target, assertions, or denial inputs may have changed.
+    if (!refresh_root_options(manifest, diagnostics))
+      return false;
+    manifest_ = std::move(manifest);
+    const RootOption selected = root_options_[selected_root_];
+    configuration_.root_relative_path = selected.root_relative_path;
+    configuration_.root_package_directory = selected.physical_directory;
+    configuration_.source_relative_name = selected.source_relative_name;
+    source_path_ = selected.physical_directory / selected.source_relative_name;
+    reset_checked_program();
+    select_root_sources(selected);
+    return true;
+  }
+
+  // Summary files are external semantic inputs and can change without changing
+  // draft.workspace. Re-resolve the active row on each foreground operation;
+  // structural equality retains the checked graph when those bytes and all
+  // ordinary build/run policy remain unchanged.
+  EffectiveProgramConfiguration resolved;
+  if (!resolve_program_configuration(
+          manifest, root_options_[selected_root_].root_relative_path,
+          resolved, diagnostics)) {
+    return false;
+  }
+  if (!same_program_policy(root_options_[selected_root_].program, resolved)) {
+    root_options_[selected_root_].program = std::move(resolved);
+    reset_checked_program();
+  }
+  return true;
 }
 
 bool CompilerSession::create_build_directory(DiagnosticSink &diagnostics) {
@@ -297,11 +684,6 @@ bool CompilerSession::create_build_directory(DiagnosticSink &diagnostics) {
     error.clear();
     if (std::filesystem::create_directory(candidate, error)) {
       build_directory_ = candidate;
-#if defined(_WIN32)
-      output_path_ = build_directory_ / "program.exe";
-#else
-      output_path_ = build_directory_ / "program";
-#endif
       return true;
     }
     if (error && error != std::errc::file_exists) {
@@ -328,6 +710,41 @@ void CompilerSession::reset_checked_program() {
   diagnostics_text_.clear();
   diagnostic_count_ = 0;
   built_output_path_.clear();
+}
+
+const EffectiveProgramConfiguration &CompilerSession::active_program() const {
+  // Every public operation occurs after initialize has published one selected
+  // root. Keeping the assertion here makes accidental pre-initialization use a
+  // compiler invariant instead of silently choosing unrelated defaults.
+  assert(!root_options_.empty() && selected_root_ < root_options_.size());
+  return root_options_[selected_root_].program;
+}
+
+std::filesystem::path CompilerSession::default_output_path() const {
+  const EffectiveProgramConfiguration &program = active_program();
+  switch (program.artifact_kind) {
+  case NativeArtifactKind::Executable:
+    return build_directory_ / (program.target.facts.object_format == "coff"
+                                   ? "program.exe"
+                                   : "program");
+  case NativeArtifactKind::Object:
+    return build_directory_ / (program.target.facts.object_format == "coff"
+                                   ? "program.obj"
+                                   : "program.o");
+  case NativeArtifactKind::StaticLibrary:
+    return program.target.facts.object_format == "coff"
+               ? build_directory_ / "program.lib"
+               : build_directory_ / "libprogram.a";
+  case NativeArtifactKind::DynamicLibrary:
+    if (program.target.facts.object_format == "coff")
+      return build_directory_ / "program.dll";
+    return build_directory_ / (program.target.facts.object_format == "elf"
+                                   ? "libprogram.so"
+                                   : "libprogram.dylib");
+  case NativeArtifactKind::Assembly:
+    return build_directory_ / "program-assembly";
+  }
+  return build_directory_ / "program";
 }
 
 void CompilerSession::select_root_sources(const RootOption &root) {
@@ -402,16 +819,26 @@ bool CompilerSession::select_root(std::size_t index,
 
 bool CompilerSession::select_target(TargetProfile target,
                                     DiagnosticSink &diagnostics) {
+  WorkspaceManifest manifest;
+  if (!read_workspace_manifest(manifest, diagnostics))
+    return false;
   const CompilerConfiguration previous_configuration = configuration_;
+  const TargetProfile previous_fallback = fallback_target_;
+  const WorkspaceManifest previous_manifest = manifest_;
   const std::vector<RootOption> previous_options = root_options_;
   const std::size_t previous_selected = selected_root_;
   configuration_.target = std::move(target);
-  if (!refresh_root_options(diagnostics)) {
+  configuration_.target_is_explicit = true;
+  fallback_target_ = configuration_.target;
+  if (!refresh_root_options(manifest, diagnostics)) {
     configuration_ = previous_configuration;
+    fallback_target_ = previous_fallback;
+    manifest_ = previous_manifest;
     root_options_ = previous_options;
     selected_root_ = previous_selected;
     return false;
   }
+  manifest_ = std::move(manifest);
   const RootOption selected = root_options_[selected_root_];
   configuration_.root_relative_path = selected.root_relative_path;
   configuration_.root_package_directory = selected.physical_directory;
@@ -423,7 +850,15 @@ bool CompilerSession::select_target(TargetProfile target,
 }
 
 const TargetProfile &CompilerSession::target() const {
-  return configuration_.target;
+  return active_program().target;
+}
+
+bool CompilerSession::target_is_explicit() const {
+  return configuration_.target_is_explicit;
+}
+
+const TargetProfile &CompilerSession::fallback_target() const {
+  return fallback_target_;
 }
 
 std::size_t CompilerSession::source_count() const {
@@ -446,12 +881,16 @@ CompilerSession::source_path(std::size_t index) const {
 
 CompileWorkspaceOptions CompilerSession::compile_options() const {
   CompileWorkspaceOptions options;
-  options.target = configuration_.target;
+  const EffectiveProgramConfiguration &program = active_program();
+  options.target = program.target;
   options.workspace.workspace_directory =
       configuration_.workspace_directory.string();
   options.workspace.core_files = embedded_core_files();
   options.workspace.core_content_identity = embedded_core_content_identity();
-  options.emit_program_entry = true;
+  options.configuration.runtime_assertions = program.runtime_assertions;
+  options.emit_program_entry =
+      program.artifact_kind == NativeArtifactKind::Executable;
+  options.foreign_provider_audits = program.foreign_provider_audits;
   options.work_executor = work_executor_;
   return options;
 }
@@ -563,7 +1002,7 @@ void CompilerSession::rebuild_tooling_index() {
   // which are deterministic compiler products. The view never re-enumerates
   // the filesystem or constructs a second dependency graph.
   packages += "Target: ";
-  packages += configuration_.target.facts.file_tag;
+  packages += active_program().target.facts.file_tag;
   packages += "\nPackages and dependencies\n";
   for (std::size_t package_index = 0;
        package_index < compiled.graph.packages.size(); ++package_index) {
@@ -757,6 +1196,14 @@ CheckResult CompilerSession::check(std::span<const SourceOverlay> overlays,
     return {false, diagnostic_count_};
   }
 
+  DiagnosticSink configuration_diagnostics;
+  if (!refresh_configuration(configuration_diagnostics)) {
+    syntax_spans_.clear();
+    SourceManager sources;
+    publish_diagnostics(sources, configuration_diagnostics);
+    return {false, diagnostic_count_};
+  }
+
   DiagnosticSink conversion_diagnostics;
   const std::optional<std::vector<WorkspaceSourceOverride>> converted =
       source_overrides(overlays, conversion_diagnostics);
@@ -834,10 +1281,15 @@ CheckResult CompilerSession::build_checked() {
   CompileWorkspaceResult compiled = *last_good_;
   DiagnosticSink diagnostics;
   CompileWorkspaceOptions options = compile_options();
+  const EffectiveProgramConfiguration &program = active_program();
   options.lower_mir = true;
   options.emit_native_output = true;
-  options.native_output.output_kind = LlvmNativeOutputKind::Object;
-  options.native_output.optimization = NativeOptimizationLevel::O0;
+  options.native_output.output_kind =
+      program.artifact_kind == NativeArtifactKind::Assembly
+          ? LlvmNativeOutputKind::Assembly
+          : LlvmNativeOutputKind::Object;
+  options.native_output.optimization = program.optimization;
+  options.emit_debug_information = program.emit_debug_symbols;
   if (!continue_compiled_workspace(sources, options, compiled, diagnostics)) {
     publish_diagnostics(sources, diagnostics);
     return {false, diagnostic_count_};
@@ -845,17 +1297,22 @@ CheckResult CompilerSession::build_checked() {
 
   NativeBuildOptions native;
   native.build_directory = build_directory_.string();
-  native.output_path = output_path_.string();
-  native.artifact_kind = NativeArtifactKind::Executable;
-  native.optimization = NativeOptimizationLevel::O0;
+  native.output_path =
+      program.output_path.value_or(default_output_path()).string();
+  native.artifact_kind = program.artifact_kind;
+  native.optimization = program.optimization;
+  native.emit_debug_symbols = program.emit_debug_symbols;
+  native.foreign_providers = program.foreign_providers;
+  native.runtime_assets = program.runtime_assets;
   native.work_executor = options.work_executor;
-  const NativeBuildResult built = build_native_executable(
-      configuration_.target, compiled, native, diagnostics);
+  const NativeBuildResult built =
+      build_native_artifact(program.target, compiled, native, diagnostics);
   if (!built.ok) {
     publish_diagnostics(sources, diagnostics);
     return {false, diagnostic_count_};
   }
   built_output_path_ = built.output_path;
+  built_artifact_kind_ = program.artifact_kind;
   publish_diagnostics(sources, diagnostics);
   return {true, diagnostic_count_};
 }
@@ -889,6 +1346,23 @@ const std::filesystem::path &CompilerSession::source_path() const {
 
 const std::filesystem::path &CompilerSession::built_output_path() const {
   return built_output_path_;
+}
+
+NativeArtifactKind CompilerSession::built_artifact_kind() const {
+  return built_artifact_kind_;
+}
+
+std::span<const std::string> CompilerSession::run_arguments() const {
+  return active_program().arguments;
+}
+
+std::span<const std::string> CompilerSession::run_environment() const {
+  return active_program().environment;
+}
+
+const std::optional<std::filesystem::path> &
+CompilerSession::run_working_directory() const {
+  return active_program().working_directory;
 }
 
 } // namespace draft::ide

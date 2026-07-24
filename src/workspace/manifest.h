@@ -66,6 +66,30 @@ struct WorkspaceManifest {
   std::vector<ProgramConfiguration> programs;
 };
 
+// Applies one more-specific build layer to an already copied less-specific
+// layer. Scalar options replace earlier values; repeated native inputs append
+// in source order so a workspace can supply common inputs and one program can
+// add its own. The operation owns no command defaults and parses no backend
+// spelling, making it the shared policy primitive for the CLI and embeddings.
+void merge_build_defaults(BuildDefaults &destination,
+                          const BuildDefaults &overrides);
+
+// Returns the workspace build layer followed by the exact program-root layer,
+// when one exists. The returned value owns every string and remains valid
+// independently of manifest. Explicit command or UI overrides belong to the
+// caller and are deliberately not represented here.
+[[nodiscard]] BuildDefaults
+effective_build_defaults(const WorkspaceManifest &manifest,
+                         std::string_view root);
+
+// Resolves only the path suffix of a `name:path` or `name=kind:path` manifest
+// mapping against workspace_directory. Absolute suffixes and the logical
+// prefix remain exact. The parser intentionally leaves paths lexical; this is
+// the shared process-facing conversion used by CLI and IDE consumers.
+[[nodiscard]] std::string
+resolve_manifest_mapping_path(const std::filesystem::path &workspace_directory,
+                              std::string_view spelling);
+
 // Reads and parses one already-located marker. An empty path returns a valid
 // absent manifest. Failure reports one stable reason including a one-based line
 // where applicable and leaves result in its zero state.

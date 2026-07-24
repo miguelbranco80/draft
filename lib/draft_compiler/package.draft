@@ -20,7 +20,9 @@ pub Target :: enum u8 {
 // Configuration points at immutable Draft strings for one create call. The
 // native service copies and canonicalizes every path before returning. An
 // empty root requests deterministic executable-root discovery; an empty source
-// prefers package.draft.
+// selects the first target-qualified package file in bytewise filename order.
+// target_is_explicit distinguishes `--target` policy from the host fallback
+// which yields to each manifest program target.
 pub Configuration :: c struct {
     workspace_data: rawptr,
     workspace_length: usize,
@@ -29,6 +31,7 @@ pub Configuration :: c struct {
     source_data: rawptr,
     source_length: usize,
     target: Target,
+    target_is_explicit: u8,
 }
 
 foreign draft_compiler_service {
@@ -120,6 +123,38 @@ foreign draft_compiler_service {
         capacity: usize,
     ) -> usize
 
+    pub artifact_kind as "draft_compiler_session_artifact_kind" :: c proc(
+        session: rawptr,
+    ) -> u8
+
+    pub run_argument_count as "draft_compiler_session_run_argument_count" :: c proc(
+        session: rawptr,
+    ) -> usize
+
+    pub copy_run_argument as "draft_compiler_session_copy_run_argument" :: c proc(
+        session: rawptr,
+        index: usize,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub run_environment_count as "draft_compiler_session_run_environment_count" :: c proc(
+        session: rawptr,
+    ) -> usize
+
+    pub copy_run_environment as "draft_compiler_session_copy_run_environment" :: c proc(
+        session: rawptr,
+        index: usize,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub copy_run_working_directory as "draft_compiler_session_copy_run_working_directory" :: c proc(
+        session: rawptr,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
     pub source_count as "draft_compiler_session_source_count" :: c proc(
         session: rawptr,
     ) -> usize
@@ -174,6 +209,7 @@ foreign draft_compiler_service {
 pub create :: proc(
     workspace, root, source: string,
     target: Target,
+    target_is_explicit: bool,
     error_destination: []u8,
 ) -> rawptr {
     configuration := Configuration{
@@ -184,6 +220,7 @@ pub create :: proc(
         source_data = cast[rawptr](raw_data(source)),
         source_length = len(source),
         target = target,
+        target_is_explicit = 1 if target_is_explicit else 0,
     }
     error_data: [^]u8 = nil
     if len(error_destination) != 0 {
@@ -205,6 +242,7 @@ pub create_from_bytes :: proc(
     workspace: string,
     root, source: []u8,
     target: Target,
+    target_is_explicit: bool,
     error_destination: []u8,
 ) -> rawptr {
     root_data: rawptr = nil
@@ -223,6 +261,7 @@ pub create_from_bytes :: proc(
         source_data = source_data,
         source_length = len(source),
         target = target,
+        target_is_explicit = 1 if target_is_explicit else 0,
     }
     error_data: [^]u8 = nil
     if len(error_destination) != 0 {
@@ -255,6 +294,12 @@ pub host_api :: proc(session: rawptr) -> draft_compiler_api.Host_Api {
         copy_source_name = copy_source_name,
         copy_source_path_at = copy_source_path_at,
         copy_artifact_path = copy_artifact_path,
+        artifact_kind = artifact_kind,
+        run_argument_count = run_argument_count,
+        copy_run_argument = copy_run_argument,
+        run_environment_count = run_environment_count,
+        copy_run_environment = copy_run_environment,
+        copy_run_working_directory = copy_run_working_directory,
         root_count = root_count,
         selected_root = selected_root,
         copy_root_name = copy_root_name,

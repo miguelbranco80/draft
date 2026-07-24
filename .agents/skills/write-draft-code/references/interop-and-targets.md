@@ -472,7 +472,8 @@ providers remain separate and require a final executable/DLL link or
 consumer-side linking. `--kind assembly` publishes package and hosted-runtime
 `.s` files instead. The output directory is one replaceable artifact: a hidden
 Draft marker owns its exact leaf filenames, the next build removes that set,
-and a nonempty unmarked directory is rejected rather than deleted.
+and a nonempty unmarked directory or marked directory with unrelated entries
+is rejected rather than deleted.
 macOS additionally requires the Apple linker/SDK and `libtool`; a
 `--debug-symbols` build also uses matching LLVM `dsymutil` and publishes a
 verified `.dSYM`. Linux uses the matching Clang/LLVM tools, `ld.lld`, `llvm-ar`,

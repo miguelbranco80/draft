@@ -106,6 +106,18 @@ pub Open_Workspace_Proc :: c proc(
     error_capacity: usize,
 ) -> u8
 
+// Artifact_Kind is the native publication shape produced by the most recent
+// successful Build. Only executable is runnable; the other values let the
+// Draft-owned application reject F5 without trying to execute an archive,
+// object, dynamic library, or assembly directory.
+pub Artifact_Kind :: enum u8 {
+    executable,
+    object,
+    static_library,
+    dynamic_library,
+    assembly,
+}
+
 // Host_Api is a borrowed table. A zero value means that no compiler service is
 // attached. destroy is intentionally absent: the Draft root which creates a
 // service session owns its explicit destruction separately from the editor.
@@ -126,6 +138,12 @@ pub Host_Api :: c struct {
     copy_source_name: Copy_Indexed_Text_Proc,
     copy_source_path_at: Copy_Indexed_Text_Proc,
     copy_artifact_path: Copy_Text_Proc,
+    artifact_kind: Value_Proc,
+    run_argument_count: Count_Proc,
+    copy_run_argument: Copy_Indexed_Text_Proc,
+    run_environment_count: Count_Proc,
+    copy_run_environment: Copy_Indexed_Text_Proc,
+    copy_run_working_directory: Copy_Text_Proc,
     root_count: Count_Proc,
     selected_root: Index_Proc,
     copy_root_name: Copy_Indexed_Text_Proc,

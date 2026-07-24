@@ -185,6 +185,53 @@ enum class SectionKind {
 
 } // namespace
 
+void merge_build_defaults(BuildDefaults &destination,
+                          const BuildDefaults &overrides) {
+  if (overrides.target.has_value())
+    destination.target = overrides.target;
+  if (overrides.optimization.has_value())
+    destination.optimization = overrides.optimization;
+  if (overrides.artifact_kind.has_value())
+    destination.artifact_kind = overrides.artifact_kind;
+  if (overrides.output.has_value())
+    destination.output = overrides.output;
+  if (overrides.debug_symbols.has_value())
+    destination.debug_symbols = overrides.debug_symbols;
+  if (overrides.assertions.has_value())
+    destination.assertions = overrides.assertions;
+  destination.providers.insert(destination.providers.end(),
+                               overrides.providers.begin(),
+                               overrides.providers.end());
+  destination.provider_summaries.insert(destination.provider_summaries.end(),
+                                        overrides.provider_summaries.begin(),
+                                        overrides.provider_summaries.end());
+  destination.runtime_assets.insert(destination.runtime_assets.end(),
+                                    overrides.runtime_assets.begin(),
+                                    overrides.runtime_assets.end());
+}
+
+BuildDefaults effective_build_defaults(const WorkspaceManifest &manifest,
+                                       std::string_view root) {
+  BuildDefaults result = manifest.build;
+  const ProgramConfiguration *program = find_program_by_root(manifest, root);
+  if (program != nullptr)
+    merge_build_defaults(result, program->build);
+  return result;
+}
+
+std::string
+resolve_manifest_mapping_path(const std::filesystem::path &workspace_directory,
+                              std::string_view spelling) {
+  const std::size_t colon = spelling.find(':');
+  if (colon == std::string_view::npos || colon + 1 == spelling.size())
+    return std::string(spelling);
+  const std::filesystem::path path(spelling.substr(colon + 1));
+  if (path.is_absolute())
+    return std::string(spelling);
+  return std::string(spelling.substr(0, colon + 1)) +
+         (workspace_directory / path).string();
+}
+
 bool load_workspace_manifest(const std::filesystem::path &path,
                              WorkspaceManifest &result, std::string &reason) {
   result = {};

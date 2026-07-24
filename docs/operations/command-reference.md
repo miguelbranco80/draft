@@ -164,13 +164,25 @@ build/draftide path/to/workspace \
 Turbo Draft uses the same upward workspace discovery and `draft.workspace`
 default program as `draftc`. Without a marker it discovers executable roots in
 the standalone directory. `--source` may select the initial direct package
-file; the target defaults to the native host. IDE-local selections are not
-stored in the workspace manifest.
+file; otherwise the compiler opens the first target-selected source in bytewise
+filename order, and `package.draft` remains only a convention. The target
+defaults to the native host. Unless `--target` or Shift-F12
+supplies an explicit override, selecting a named program applies its effective
+workspace/program target. IDE-local root/window selections are not stored in
+the workspace manifest.
 
 Turbo Draft opens ordinary files; the active buffer and every other dirty
 project buffer form one in-memory compiler transaction, and saving updates the
 same files. File > Open Workspace swaps to another validated directory after
-explicit dirty-buffer handling. F5 checks, builds, and runs the selected root.
+explicit dirty-buffer handling. Build and F5 use the complete effective
+`[build]` plus matching `[program]` configuration: target, optimization,
+artifact kind/output, debug symbols, assertions, providers and summaries, and
+runtime assets. F5 runs an executable with the program's arguments,
+environment overrides, and working directory; a non-executable artifact is
+built but deliberately not launched.
+Saving `draft.workspace` affects the next Check, Build, or F5 without reopening
+the IDE. Provider-summary files are likewise reread at that foreground
+boundary; unchanged structural configuration keeps the retained checked graph.
 F6 opens the root list and package/dependency view; F7-F11 toggle other
 compiler-derived semantic windows. F12 cycles roots, and Shift-F12 targets.
 

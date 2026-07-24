@@ -10,6 +10,7 @@
 // useful file editor buildable without LLVM or the bootstrap compiler service.
 package turbo_editor_app
 
+import core/array
 import core/io
 import core/memory
 import core/os
@@ -688,6 +689,193 @@ refresh_host :: proc(app: ^App) {
     refresh_tooling_text(app)
 }
 
+Run_CString_Array :: struct {
+    data: [^]cstring,
+    length: usize,
+}
+
+// Run_Configuration owns every variable-length service string for one
+// synchronous child launch. Pointer arrays are built only after all owners are
+// appended, so Dynamic relocation can never leave one cstring pointing into a
+// moved ownership record. The bytes themselves live in independent allocations.
+Run_Configuration :: struct {
+    argument_owners: array.Dynamic[memory.Owned_String],
+    arguments: Run_CString_Array,
+    environment_owners: array.Dynamic[memory.Owned_String],
+    environment: Run_CString_Array,
+    working_directory: memory.Owned_String,
+    has_working_directory: bool,
+}
+
+// run_configuration_init establishes empty dynamic owners. The remaining
+// zero-initialized fields already represent valid empty pointer tables.
+run_configuration_init :: proc(configuration: ^Run_Configuration) {
+    array.init(&configuration^.argument_owners)
+    array.init(&configuration^.environment_owners)
+}
+
+// run_configuration_destroy releases all service copies and is valid after a
+// partially failed load. No cstring pointer is observed after its owner dies.
+run_configuration_destroy :: proc(configuration: ^Run_Configuration) {
+    for index: usize = 0; index < configuration^.argument_owners.length; index += 1 {
+        memory.owned_string_destroy(&configuration^.argument_owners.data[index])
+    }
+    for index: usize = 0; index < configuration^.environment_owners.length; index += 1 {
+        memory.owned_string_destroy(&configuration^.environment_owners.data[index])
+    }
+    if configuration^.has_working_directory {
+        memory.owned_string_destroy(&configuration^.working_directory)
+    }
+    if configuration^.environment.data != nil {
+        memory.free_bytes(
+            cast[rawptr](configuration^.environment.data),
+            configuration^.environment.length * size_of(cstring),
+            align_of(cstring),
+        )
+    }
+    array.destroy(&configuration^.environment_owners)
+    if configuration^.arguments.data != nil {
+        memory.free_bytes(
+            cast[rawptr](configuration^.arguments.data),
+            configuration^.arguments.length * size_of(cstring),
+            align_of(cstring),
+        )
+    }
+    array.destroy(&configuration^.argument_owners)
+}
+
+// copy_host_text allocates from the service's reported complete size, then
+// verifies that the second call observed the same value. A changed result would
+// mean the supposedly synchronous selected configuration mutated mid-copy.
+copy_host_text :: proc(
+    user: rawptr,
+    procedure: draft_compiler_api.Copy_Text_Proc,
+    owned: ^memory.Owned_String,
+) -> bool {
+    length := procedure(user, nil, 0)
+    if length == ~cast[usize](0) {
+        return false
+    }
+    storage := cast[[^]u8](memory.allocate(length + 1, 1))
+    copied := procedure(user, storage, length + 1)
+    if copied != length {
+        memory.free_bytes(cast[rawptr](storage), length + 1, 1)
+        return false
+    }
+    memory.owned_string_copy_bytes(owned, storage[:length])
+    memory.free_bytes(cast[rawptr](storage), length + 1, 1)
+    return true
+}
+
+// copy_host_indexed_text is the indexed counterpart to copy_host_text. The
+// selected configuration must remain unchanged between the sizing/copy calls.
+copy_host_indexed_text :: proc(
+    user: rawptr,
+    procedure: draft_compiler_api.Copy_Indexed_Text_Proc,
+    index: usize,
+    owned: ^memory.Owned_String,
+) -> bool {
+    length := procedure(user, index, nil, 0)
+    if length == ~cast[usize](0) {
+        return false
+    }
+    storage := cast[[^]u8](memory.allocate(length + 1, 1))
+    copied := procedure(user, index, storage, length + 1)
+    if copied != length {
+        memory.free_bytes(cast[rawptr](storage), length + 1, 1)
+        return false
+    }
+    memory.owned_string_copy_bytes(owned, storage[:length])
+    memory.free_bytes(cast[rawptr](storage), length + 1, 1)
+    return true
+}
+
+// load_run_rows copies one ordered string list and only then builds the exact
+// cstring table borrowed by core/process. Partial owners remain destroyable by
+// run_configuration_destroy when a service callback changes or fails.
+load_run_rows :: proc(
+    user: rawptr,
+    count_procedure: draft_compiler_api.Count_Proc,
+    copy_procedure: draft_compiler_api.Copy_Indexed_Text_Proc,
+    owners: ^array.Dynamic[memory.Owned_String],
+    pointers: ^Run_CString_Array,
+) -> bool {
+    if count_procedure == nil || copy_procedure == nil {
+        return true
+    }
+    count := count_procedure(user)
+    for index: usize = 0; index < count; index += 1 {
+        owned: memory.Owned_String
+        if !copy_host_indexed_text(user, copy_procedure, index, &owned) {
+            return false
+        }
+        array.append(owners, owned)
+    }
+    pointers^.length = owners^.length
+    if pointers^.length != 0 {
+        if pointers^.length > ~cast[usize](0) / size_of(cstring) {
+            return false
+        }
+        pointers^.data = cast[[^]cstring](memory.allocate(
+            pointers^.length * size_of(cstring),
+            align_of(cstring),
+        ))
+    }
+    for index: usize = 0; index < pointers^.length; index += 1 {
+        pointers^.data[index] = memory.owned_string_cstring(
+            &owners^.data[index],
+        )
+    }
+    return true
+}
+
+// load_run_configuration snapshots the selected root's complete run tail after
+// a successful build. It performs no launch and leaves one destroyable owner
+// even when a callback fails midway.
+load_run_configuration :: proc(
+    app: ^App,
+    configuration: ^Run_Configuration,
+) -> bool {
+    run_configuration_init(configuration)
+    if !load_run_rows(
+        app^.host.user,
+        app^.host.run_argument_count,
+        app^.host.copy_run_argument,
+        &configuration^.argument_owners,
+        &configuration^.arguments,
+    ) || !load_run_rows(
+        app^.host.user,
+        app^.host.run_environment_count,
+        app^.host.copy_run_environment,
+        &configuration^.environment_owners,
+        &configuration^.environment,
+    ) {
+        return false
+    }
+    if app^.host.copy_run_working_directory != nil {
+        length := app^.host.copy_run_working_directory(
+            app^.host.user,
+            nil,
+            0,
+        )
+        if length != 0 {
+            if !copy_host_text(
+                app^.host.user,
+                app^.host.copy_run_working_directory,
+                &configuration^.working_directory,
+            ) {
+                return false
+            }
+            configuration^.has_working_directory = true
+        }
+    }
+    return true
+}
+
+// execute_host_action submits all open source overlays, then optionally runs
+// only a successfully published executable. F5 snapshots run settings after
+// the build so artifact path, arguments, environment, and directory all belong
+// to the same selected root/configuration.
 execute_host_action :: proc(app: ^App, run: bool) {
     procedure := app^.host.build
     if procedure == nil {
@@ -714,26 +902,62 @@ execute_host_action :: proc(app: ^App, run: bool) {
     app^.diagnostic_count = result.diagnostic_count
     if result.success != 0 {
         if run {
-            if app^.host.copy_artifact_path == nil {
+            artifact_kind: draft_compiler_api.Artifact_Kind = .executable
+            if app^.host.artifact_kind != nil {
+                artifact_kind = cast[draft_compiler_api.Artifact_Kind](
+                    app^.host.artifact_kind(app^.host.user),
+                )
+            }
+            if artifact_kind != .executable {
+                app^.status = "Build completed; selected artifact is not executable"
+            } else if app^.host.copy_artifact_path == nil {
                 app^.status = "Compiler did not expose the built artifact path"
             } else {
-                path_storage: [Host_Path_Capacity]u8
-                path_length := app^.host.copy_artifact_path(
+                owned_path: memory.Owned_String
+                path_copied := copy_host_text(
                     app^.host.user,
-                    cast[[^]u8](&path_storage[0]),
-                    len(path_storage),
+                    app^.host.copy_artifact_path,
+                    &owned_path,
                 )
-                if path_length == 0 || path_length >= len(path_storage) {
+                if !path_copied || owned_path.length == 0 {
+                    if path_copied {
+                        memory.owned_string_destroy(&owned_path)
+                    }
                     app^.status = "Built artifact path is unavailable"
                 } else {
-                    owned_path: memory.Owned_String
-                    memory.owned_string_copy_bytes(
-                        &owned_path,
-                        path_storage[:path_length],
+                    run_configuration: Run_Configuration
+                    loaded_run := load_run_configuration(app, &run_configuration)
+                    if !loaded_run {
+                        app^.status = "Could not read the selected run configuration"
+                        run_configuration_destroy(&run_configuration)
+                        memory.owned_string_destroy(&owned_path)
+                        refresh_tooling_text(app)
+                        return
+                    }
+                    working_directory: cstring
+                    if run_configuration.has_working_directory {
+                        working_directory = memory.owned_string_cstring(
+                            &run_configuration.working_directory,
+                        )
+                    }
+                    options := process.Options{
+                        arguments = run_configuration.arguments.data[
+                            :run_configuration.arguments.length
+                        ],
+                        environment = run_configuration.environment.data[
+                            :run_configuration.environment.length
+                        ],
+                        working_directory = working_directory,
+                    }
+                    launched := process.run_with_options(
+                        memory.owned_string_cstring(&owned_path),
+                        options,
                     )
-                    launched := process.run(memory.owned_string_cstring(&owned_path))
+                    run_configuration_destroy(&run_configuration)
                     memory.owned_string_destroy(&owned_path)
-                    if launched.error != .none {
+                    if launched.error == .invalid_options {
+                        app^.status = "Selected run configuration is invalid"
+                    } else if launched.error != .none {
                         app^.status = "Could not launch the built program"
                     } else if !launched.exited {
                         app^.status = "Built program terminated by a signal"

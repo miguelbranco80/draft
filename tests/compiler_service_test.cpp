@@ -71,6 +71,30 @@ void write_file(const std::filesystem::path &path, std::string_view contents) {
 #endif
 }
 
+[[nodiscard]] std::string_view native_target_name() {
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+  return "aarch64-macos";
+#elif defined(__linux__) && defined(__aarch64__)
+  return "aarch64-linux";
+#elif defined(__linux__) && defined(__x86_64__)
+  return "x86_64-linux";
+#elif defined(_WIN32) && defined(_M_X64)
+  return "x86_64-windows";
+#else
+#error "compiler service test requires an implemented native host"
+#endif
+}
+
+[[nodiscard]] std::string_view target_name(std::uint8_t ordinal) {
+  switch (ordinal) {
+  case 0: return "aarch64-macos";
+  case 1: return "aarch64-linux";
+  case 2: return "x86_64-linux";
+  case 3: return "x86_64-windows";
+  }
+  return {};
+}
+
 [[nodiscard]] DraftCompilerServiceConfiguration
 configuration(const std::string &workspace, const std::string &root,
               const std::string &source) {
@@ -82,6 +106,7 @@ configuration(const std::string &workspace, const std::string &root,
       source.data(),
       source.size(),
       native_target_ordinal(),
+      0,
   };
 }
 
@@ -469,6 +494,204 @@ void test_create_discovers_root_when_omitted(TestState &state) {
   draft_compiler_session_destroy(session);
 }
 
+void test_manifest_program_build_and_run_configuration(TestState &state) {
+  draft::test::TemporaryDirectory temporary{
+      "draft-compiler-program-configuration-test"};
+  const std::filesystem::path workspace = temporary.path() / "workspace";
+  const std::filesystem::path app = workspace / "app";
+  const std::filesystem::path working_directory = workspace / "run-here";
+  const std::filesystem::path runtime_asset = workspace / "assets";
+  std::error_code directory_error;
+  std::filesystem::create_directories(working_directory, directory_error);
+  EXPECT(state, !directory_error);
+  directory_error.clear();
+  std::filesystem::create_directories(runtime_asset, directory_error);
+  EXPECT(state, !directory_error);
+  const std::string source = "package app\n"
+                             "main :: proc() -> int {\n"
+                             "    return 0\n"
+                             "}\n";
+  write_file(app / "package.draft", source);
+  write_file(workspace / "draft.workspace",
+             "draft-workspace-v1\n"
+             "default = configured\n"
+             "[program configured]\n"
+             "root = app\n"
+             "target = " +
+                 std::string(native_target_name()) +
+                 "\n"
+                 "optimization = O0\n"
+                 "kind = object\n"
+                 "output = outputs/configured.o\n"
+                 "debug-symbols = off\n"
+                 "assertions = off\n"
+                 "runtime-asset = data:assets\n"
+                 "argument = first argument\n"
+                 "argument = --second\n"
+                 "environment = DRAFT_SERVICE_TEST=expected\n"
+                 "working-directory = run-here\n");
+
+  const std::string workspace_text = workspace.string();
+  const std::string root;
+  const std::string source_name = "package.draft";
+  DraftCompilerServiceConfiguration input =
+      configuration(workspace_text, root, source_name);
+  input.target = static_cast<std::uint8_t>((native_target_ordinal() + 1) % 4);
+  input.target_is_explicit = 0;
+  std::array<std::uint8_t, 512> error{};
+  void *session =
+      draft_compiler_session_create(&input, error.data(), error.size());
+  if (session == nullptr)
+    std::cerr << reinterpret_cast<const char *>(error.data()) << '\n';
+  EXPECT(state, session != nullptr);
+  if (session == nullptr)
+    return;
+
+  // With no explicit IDE override, the selected program target wins over the
+  // deliberately different create-time host fallback.
+  EXPECT(state,
+         draft_compiler_session_target(session) == native_target_ordinal());
+  EXPECT(state, draft_compiler_session_run_argument_count(session) == 2);
+  std::array<std::uint8_t, 128> copied{};
+  EXPECT(state, draft_compiler_session_copy_run_argument(
+                    session, 0, copied.data(), copied.size()) == 14);
+  EXPECT(state, std::string_view(reinterpret_cast<const char *>(
+                    copied.data())) == "first argument");
+  EXPECT(state, draft_compiler_session_run_environment_count(session) == 1);
+  copied.fill(0);
+  EXPECT(state, draft_compiler_session_copy_run_environment(
+                    session, 0, copied.data(), copied.size()) == 27);
+  EXPECT(state, std::string_view(reinterpret_cast<const char *>(
+                    copied.data())) == "DRAFT_SERVICE_TEST=expected");
+  std::array<std::uint8_t, 4096> directory_bytes{};
+  const std::size_t directory_size =
+      draft_compiler_session_copy_run_working_directory(
+          session, directory_bytes.data(), directory_bytes.size());
+  const std::string canonical_working_directory =
+      std::filesystem::canonical(working_directory).string();
+  EXPECT(state, directory_size == canonical_working_directory.size());
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(directory_bytes.data()),
+                    directory_size) == canonical_working_directory);
+
+  const std::filesystem::path source_path =
+      std::filesystem::canonical(app / source_name);
+  const std::string source_path_text = source_path.string();
+  const DraftCompilerServiceOverlay source_overlay =
+      overlay(source_path_text, source);
+  DraftCompilerServiceResult built{};
+  draft_compiler_session_build(session, &source_overlay, 1, 0, &built);
+  if (built.success == 0) {
+    std::array<std::uint8_t, 4096> diagnostics{};
+    draft_compiler_session_copy_diagnostics(session, diagnostics.data(),
+                                            diagnostics.size());
+    std::cerr << reinterpret_cast<const char *>(diagnostics.data());
+  }
+  EXPECT(state, built.success == 1);
+  EXPECT(state, draft_compiler_session_artifact_kind(session) == 1);
+  std::array<std::uint8_t, 4096> artifact{};
+  const std::size_t artifact_size = draft_compiler_session_copy_artifact_path(
+      session, artifact.data(), artifact.size());
+  const std::filesystem::path expected_output =
+      std::filesystem::canonical(workspace / "outputs/configured.o");
+  const std::string artifact_text(
+      reinterpret_cast<const char *>(artifact.data()), artifact_size);
+  if (artifact_text != expected_output.string()) {
+    std::cerr << "configured artifact: " << artifact_text
+              << "\nexpected artifact: " << expected_output.string() << '\n';
+  }
+  EXPECT(state, artifact_text == expected_output.string());
+  EXPECT(state, std::filesystem::is_regular_file(expected_output));
+
+  // A saved manifest is visible to the next foreground build without reopening
+  // the session. This also proves that run rows and configured output are read
+  // from one refreshed selected-root record rather than an initialization copy.
+  write_file(workspace / "draft.workspace",
+             "draft-workspace-v1\n"
+             "default = configured\n"
+             "[program configured]\n"
+             "root = app\n"
+             "target = " +
+                 std::string(native_target_name()) +
+                 "\n"
+                 "optimization = O0\n"
+                 "kind = object\n"
+                 "output = outputs/refreshed.o\n"
+                 "argument = refreshed\n");
+  draft_compiler_session_build(session, &source_overlay, 1, 0, &built);
+  EXPECT(state, built.success == 1);
+  EXPECT(state, draft_compiler_session_run_argument_count(session) == 1);
+  copied.fill(0);
+  EXPECT(state, draft_compiler_session_copy_run_argument(
+                    session, 0, copied.data(), copied.size()) == 9);
+  EXPECT(state, std::string_view(reinterpret_cast<const char *>(copied.data())) ==
+                    "refreshed");
+  artifact.fill(0);
+  const std::size_t refreshed_size =
+      draft_compiler_session_copy_artifact_path(
+          session, artifact.data(), artifact.size());
+  const std::filesystem::path refreshed_output =
+      std::filesystem::canonical(workspace / "outputs/refreshed.o");
+  EXPECT(state,
+         std::string_view(reinterpret_cast<const char *>(artifact.data()),
+                          refreshed_size) == refreshed_output.string());
+  draft_compiler_session_destroy(session);
+
+  // The same manifest target is only a default. An explicit create-time
+  // target, as supplied by --target or Shift-F12, must replace it for discovery
+  // and subsequent checking without rewriting draft.workspace.
+  input.target_is_explicit = 1;
+  session = draft_compiler_session_create(&input, error.data(), error.size());
+  EXPECT(state, session != nullptr);
+  if (session != nullptr) {
+    EXPECT(state, draft_compiler_session_target(session) == input.target);
+  }
+  draft_compiler_session_destroy(session);
+}
+
+void test_named_program_is_discovered_only_under_its_target(TestState &state) {
+  draft::test::TemporaryDirectory temporary{
+      "draft-compiler-service-program-target-test"};
+  const std::filesystem::path workspace = temporary.path() / "workspace";
+  const std::filesystem::path app = workspace / "app";
+  const std::uint8_t configured_target =
+      static_cast<std::uint8_t>((native_target_ordinal() + 1) % 4);
+  write_file(app / ("entry@" + std::string(target_name(configured_target)) +
+                    ".draft"),
+             "package app\n"
+             "main :: proc() -> int {\n"
+             "    return 0\n"
+             "}\n");
+  write_file(app / ("broken@" + std::string(native_target_name()) + ".draft"),
+             "package app\nmain :: proc(\n");
+  write_file(workspace / "draft.workspace",
+             "draft-workspace-v1\n"
+             "default = configured\n"
+             "[program configured]\n"
+             "root = app\n"
+             "target = " +
+                 std::string(target_name(configured_target)) + "\n");
+
+  const std::string workspace_text = workspace.string();
+  const std::string root;
+  const std::string source;
+  DraftCompilerServiceConfiguration input =
+      configuration(workspace_text, root, source);
+  input.target = native_target_ordinal();
+  input.target_is_explicit = 0;
+  std::array<std::uint8_t, 512> error{};
+  void *session =
+      draft_compiler_session_create(&input, error.data(), error.size());
+  if (session == nullptr)
+    std::cerr << reinterpret_cast<const char *>(error.data()) << '\n';
+  EXPECT(state, session != nullptr);
+  if (session != nullptr) {
+    EXPECT(state,
+           draft_compiler_session_target(session) == configured_target);
+  }
+  draft_compiler_session_destroy(session);
+}
+
 } // namespace
 
 int main() {
@@ -476,5 +699,7 @@ int main() {
   test_service_transactions_and_native_build(state);
   test_create_rejects_escaping_paths(state);
   test_create_discovers_root_when_omitted(state);
+  test_manifest_program_build_and_run_configuration(state);
+  test_named_program_is_discovered_only_under_its_target(state);
   return state.failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

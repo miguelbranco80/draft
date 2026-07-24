@@ -72,17 +72,6 @@ using draft::parse_judgment_artifact_path;
 using draft::parse_judgment_validator;
 using draft::read_judgment_artifacts;
 
-[[nodiscard]] bool parse_foreign_provider(std::string_view spelling,
-                                          draft::ForeignProviderInput &provider,
-                                          std::string &reason);
-[[nodiscard]] bool
-parse_foreign_provider_summary(std::string_view spelling,
-                               draft::ForeignProviderSummaryInput &summary,
-                               std::string &reason);
-[[nodiscard]] bool parse_runtime_asset(std::string_view spelling,
-                                       draft::RuntimeAssetInput &asset,
-                                       std::string &reason);
-
 // CommandManifestContext is the one process-lifetime view of an optional
 // workspace manifest. opened_directory is the user's exact path.
 // package_directory differs only for `run <workspace>`, where an explicit
@@ -135,31 +124,6 @@ struct EffectiveBuildConfiguration {
   std::vector<draft::RuntimeAssetInput> runtime_assets;
 };
 
-void merge_build_defaults(draft::BuildDefaults &destination,
-                          const draft::BuildDefaults &overrides) {
-  if (overrides.target.has_value())
-    destination.target = overrides.target;
-  if (overrides.optimization.has_value())
-    destination.optimization = overrides.optimization;
-  if (overrides.artifact_kind.has_value())
-    destination.artifact_kind = overrides.artifact_kind;
-  if (overrides.output.has_value())
-    destination.output = overrides.output;
-  if (overrides.debug_symbols.has_value())
-    destination.debug_symbols = overrides.debug_symbols;
-  if (overrides.assertions.has_value())
-    destination.assertions = overrides.assertions;
-  destination.providers.insert(destination.providers.end(),
-                               overrides.providers.begin(),
-                               overrides.providers.end());
-  destination.provider_summaries.insert(destination.provider_summaries.end(),
-                                        overrides.provider_summaries.begin(),
-                                        overrides.provider_summaries.end());
-  destination.runtime_assets.insert(destination.runtime_assets.end(),
-                                    overrides.runtime_assets.begin(),
-                                    overrides.runtime_assets.end());
-}
-
 [[nodiscard]] bool
 prepare_command_manifest(const std::filesystem::path &command_path,
                          bool select_default_program,
@@ -209,7 +173,8 @@ prepare_command_manifest(const std::filesystem::path &command_path,
 
   context.effective_build = context.manifest.build;
   if (context.program != nullptr) {
-    merge_build_defaults(context.effective_build, context.program->build);
+    draft::merge_build_defaults(context.effective_build,
+                                context.program->build);
   }
   return true;
 }
@@ -236,15 +201,8 @@ manifest_output_path(const CommandManifestContext &context,
 [[nodiscard]] std::string
 manifest_named_path(const CommandManifestContext &context,
                     std::string_view spelling) {
-  const std::size_t colon = spelling.find(':');
-  if (colon == std::string_view::npos || colon + 1 == spelling.size()) {
-    return std::string(spelling);
-  }
-  const std::filesystem::path path(spelling.substr(colon + 1));
-  if (path.is_absolute())
-    return std::string(spelling);
-  return std::string(spelling.substr(0, colon + 1)) +
-         (context.workspace_directory / path).string();
+  return draft::resolve_manifest_mapping_path(context.workspace_directory,
+                                              spelling);
 }
 
 [[nodiscard]] bool load_manifest_native_inputs(
@@ -254,7 +212,7 @@ manifest_named_path(const CommandManifestContext &context,
     std::vector<draft::RuntimeAssetInput> &assets, std::string &reason) {
   for (const std::string &spelling : context.effective_build.providers) {
     draft::ForeignProviderInput input;
-    if (!parse_foreign_provider(manifest_named_path(context, spelling), input,
+    if (!draft::parse_foreign_provider_input(manifest_named_path(context, spelling), input,
                                 reason)) {
       return false;
     }
@@ -263,7 +221,7 @@ manifest_named_path(const CommandManifestContext &context,
   for (const std::string &spelling :
        context.effective_build.provider_summaries) {
     draft::ForeignProviderSummaryInput input;
-    if (!parse_foreign_provider_summary(manifest_named_path(context, spelling),
+    if (!draft::parse_foreign_provider_summary_input(manifest_named_path(context, spelling),
                                         input, reason)) {
       return false;
     }
@@ -271,7 +229,7 @@ manifest_named_path(const CommandManifestContext &context,
   }
   for (const std::string &spelling : context.effective_build.runtime_assets) {
     draft::RuntimeAssetInput input;
-    if (!parse_runtime_asset(manifest_named_path(context, spelling), input,
+    if (!draft::parse_runtime_asset_input(manifest_named_path(context, spelling), input,
                              reason)) {
       return false;
     }
@@ -381,25 +339,6 @@ select_command_package(const std::string &package_spelling,
   return true;
 }
 
-// Converts the closed public artifact vocabulary once for both `build` and
-// `resolve --build`. Keeping the parser shared prevents the continuation path
-// from acquiring subtly different output semantics from an ordinary build.
-[[nodiscard]] std::optional<draft::NativeArtifactKind>
-parse_native_artifact_kind(std::string_view spelling) {
-  if (spelling == "executable") {
-    return draft::NativeArtifactKind::Executable;
-  }
-  if (spelling == "object") return draft::NativeArtifactKind::Object;
-  if (spelling == "static-library") {
-    return draft::NativeArtifactKind::StaticLibrary;
-  }
-  if (spelling == "dynamic-library") {
-    return draft::NativeArtifactKind::DynamicLibrary;
-  }
-  if (spelling == "assembly") return draft::NativeArtifactKind::Assembly;
-  return std::nullopt;
-}
-
 // Parses one argument already known to begin with `-O`. Draft exposes only two
 // levels, so every other spelling receives a specific usage error instead of
 // falling through to the full command synopsis. `seen` enforces one explicit
@@ -427,87 +366,6 @@ parse_native_artifact_kind(std::string_view spelling) {
   return false;
 }
 
-[[nodiscard]] bool parse_foreign_provider(
-    std::string_view spelling,
-    draft::ForeignProviderInput &input,
-    std::string &reason) {
-  const std::size_t equal = spelling.find('=');
-  const std::size_t colon = equal == std::string_view::npos
-      ? std::string_view::npos
-      : spelling.find(':', equal + 1);
-  if (equal == 0 || equal == std::string_view::npos ||
-      colon == equal + 1 || colon == std::string_view::npos ||
-      colon + 1 >= spelling.size()) {
-    reason = "provider mapping must be name=object|archive|shared-library:path";
-    return false;
-  }
-  input.provider = std::string(spelling.substr(0, equal));
-  const std::string_view kind = spelling.substr(equal + 1, colon - equal - 1);
-  if (kind == "object") {
-    input.kind = draft::ForeignArtifactKind::Object;
-  } else if (kind == "archive") {
-    input.kind = draft::ForeignArtifactKind::Archive;
-  } else if (kind == "shared-library") {
-    input.kind = draft::ForeignArtifactKind::SharedLibrary;
-  } else {
-    reason = "provider artifact kind must be object, archive, or shared-library";
-    return false;
-  }
-  std::error_code error;
-  input.path = std::filesystem::absolute(
-      std::filesystem::path(spelling.substr(colon + 1)), error).lexically_normal();
-  if (error) {
-    reason = "cannot make provider artifact path absolute: " + error.message();
-    return false;
-  }
-  return true;
-}
-
-[[nodiscard]] bool parse_foreign_provider_summary(
-    std::string_view spelling,
-    draft::ForeignProviderSummaryInput &input,
-    std::string &reason) {
-  const std::size_t colon = spelling.find(':');
-  if (colon == 0 || colon == std::string_view::npos ||
-      colon + 1 >= spelling.size()) {
-    reason = "provider summary mapping must be name:path";
-    return false;
-  }
-  input.provider = std::string(spelling.substr(0, colon));
-  std::error_code error;
-  input.path = std::filesystem::absolute(
-      std::filesystem::path(spelling.substr(colon + 1)), error).lexically_normal();
-  if (error) {
-    reason = "cannot make provider summary path absolute: " + error.message();
-    return false;
-  }
-  return true;
-}
-
-// Runtime assets use a logical name independent of their relocatable physical
-// root. The backend performs shape, duplicate, and content checks; the driver
-// owns only CLI spelling and conversion to an absolute path.
-[[nodiscard]] bool parse_runtime_asset(
-    std::string_view spelling,
-    draft::RuntimeAssetInput &input,
-    std::string &reason) {
-  const std::size_t colon = spelling.find(':');
-  if (colon == 0 || colon == std::string_view::npos ||
-      colon + 1 >= spelling.size()) {
-    reason = "runtime asset mapping must be name:path";
-    return false;
-  }
-  input.name = std::string(spelling.substr(0, colon));
-  std::error_code error;
-  input.path = std::filesystem::absolute(
-      std::filesystem::path(spelling.substr(colon + 1)), error).lexically_normal();
-  if (error) {
-    reason = "cannot make runtime asset path absolute: " + error.message();
-    return false;
-  }
-  return true;
-}
-
 // Resolves the three-layer build policy for one exact package root. Workspace
 // defaults are copied first, the matching named program is merged second, and
 // explicit CLI values replace the result last. Keeping this operation pure per
@@ -523,7 +381,8 @@ parse_native_artifact_kind(std::string_view spelling) {
   selected_context.program = program;
   selected_context.effective_build = context.manifest.build;
   if (program != nullptr) {
-    merge_build_defaults(selected_context.effective_build, program->build);
+    draft::merge_build_defaults(selected_context.effective_build,
+                                program->build);
   }
 
   EffectiveBuildConfiguration selected;
@@ -544,7 +403,7 @@ parse_native_artifact_kind(std::string_view spelling) {
   }
   if (selected_context.effective_build.artifact_kind.has_value()) {
     const std::optional<draft::NativeArtifactKind> parsed =
-        parse_native_artifact_kind(
+        draft::parse_native_artifact_kind(
             *selected_context.effective_build.artifact_kind);
     if (!parsed.has_value()) {
       reason = "invalid manifest artifact kind '" +
@@ -1995,7 +1854,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--provider" && index + 1 < argc) {
         draft::ForeignProviderInput provider;
         std::string reason;
-        if (!parse_foreign_provider(argv[++index], provider, reason)) {
+        if (!draft::parse_foreign_provider_input(argv[++index], provider, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
@@ -2003,7 +1862,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--provider-summary" && index + 1 < argc) {
         draft::ForeignProviderSummaryInput summary;
         std::string reason;
-        if (!parse_foreign_provider_summary(
+        if (!draft::parse_foreign_provider_summary_input(
                 argv[++index], summary, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
@@ -2069,7 +1928,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--kind" && !artifact_kind_set &&
                  index + 1 < argc) {
         const std::optional<draft::NativeArtifactKind> parsed =
-            parse_native_artifact_kind(argv[++index]);
+            draft::parse_native_artifact_kind(argv[++index]);
         if (!parsed.has_value()) {
           print_usage();
           return 2;
@@ -2090,7 +1949,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--provider" && index + 1 < argc) {
         draft::ForeignProviderInput provider;
         std::string reason;
-        if (!parse_foreign_provider(argv[++index], provider, reason)) {
+        if (!draft::parse_foreign_provider_input(argv[++index], provider, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
@@ -2098,7 +1957,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--provider-summary" && index + 1 < argc) {
         draft::ForeignProviderSummaryInput summary;
         std::string reason;
-        if (!parse_foreign_provider_summary(
+        if (!draft::parse_foreign_provider_summary_input(
                 argv[++index], summary, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
@@ -2107,7 +1966,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--runtime-asset" && index + 1 < argc) {
         draft::RuntimeAssetInput asset;
         std::string reason;
-        if (!parse_runtime_asset(argv[++index], asset, reason)) {
+        if (!draft::parse_runtime_asset_input(argv[++index], asset, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
@@ -2206,7 +2065,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--provider" && index + 1 < argc) {
         draft::ForeignProviderInput provider;
         std::string reason;
-        if (!parse_foreign_provider(argv[++index], provider, reason)) {
+        if (!draft::parse_foreign_provider_input(argv[++index], provider, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
@@ -2214,7 +2073,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--provider-summary" && index + 1 < argc) {
         draft::ForeignProviderSummaryInput summary;
         std::string reason;
-        if (!parse_foreign_provider_summary(
+        if (!draft::parse_foreign_provider_summary_input(
                 argv[++index], summary, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
@@ -2377,7 +2236,7 @@ int main(int argc, char **argv) {
         }
         draft::ForeignProviderInput provider;
         std::string reason;
-        if (!parse_foreign_provider(argv[++index], provider, reason)) {
+        if (!draft::parse_foreign_provider_input(argv[++index], provider, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
@@ -2389,7 +2248,7 @@ int main(int argc, char **argv) {
         }
         draft::ForeignProviderSummaryInput summary;
         std::string reason;
-        if (!parse_foreign_provider_summary(argv[++index], summary, reason)) {
+        if (!draft::parse_foreign_provider_summary_input(argv[++index], summary, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
@@ -2401,7 +2260,7 @@ int main(int argc, char **argv) {
         }
         draft::RuntimeAssetInput asset;
         std::string reason;
-        if (!parse_runtime_asset(argv[++index], asset, reason)) {
+        if (!draft::parse_runtime_asset_input(argv[++index], asset, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
@@ -2460,7 +2319,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--provider" && index + 1 < argc) {
         draft::ForeignProviderInput provider;
         std::string reason;
-        if (!parse_foreign_provider(argv[++index], provider, reason)) {
+        if (!draft::parse_foreign_provider_input(argv[++index], provider, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
@@ -2468,7 +2327,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--provider-summary" && index + 1 < argc) {
         draft::ForeignProviderSummaryInput summary;
         std::string reason;
-        if (!parse_foreign_provider_summary(
+        if (!draft::parse_foreign_provider_summary_input(
                 argv[++index], summary, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
@@ -2477,7 +2336,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--runtime-asset" && index + 1 < argc) {
         draft::RuntimeAssetInput asset;
         std::string reason;
-        if (!parse_runtime_asset(argv[++index], asset, reason)) {
+        if (!draft::parse_runtime_asset_input(argv[++index], asset, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
@@ -2534,7 +2393,7 @@ int main(int argc, char **argv) {
       } else if (argument == "--kind" && !artifact_kind_set &&
                  index + 1 < argc) {
         const std::optional<draft::NativeArtifactKind> parsed =
-            parse_native_artifact_kind(argv[++index]);
+            draft::parse_native_artifact_kind(argv[++index]);
         if (!parsed.has_value()) {
           print_usage();
           return 2;
@@ -2559,7 +2418,7 @@ int main(int argc, char **argv) {
           overrides.foreign_providers.emplace();
         draft::ForeignProviderInput provider;
         std::string reason;
-        if (!parse_foreign_provider(argv[++index], provider, reason)) {
+        if (!draft::parse_foreign_provider_input(argv[++index], provider, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
@@ -2569,7 +2428,7 @@ int main(int argc, char **argv) {
           overrides.provider_summaries.emplace();
         draft::ForeignProviderSummaryInput summary;
         std::string reason;
-        if (!parse_foreign_provider_summary(
+        if (!draft::parse_foreign_provider_summary_input(
                 argv[++index], summary, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
@@ -2580,7 +2439,7 @@ int main(int argc, char **argv) {
           overrides.runtime_assets.emplace();
         draft::RuntimeAssetInput asset;
         std::string reason;
-        if (!parse_runtime_asset(argv[++index], asset, reason)) {
+        if (!draft::parse_runtime_asset_input(argv[++index], asset, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }

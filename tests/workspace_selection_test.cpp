@@ -188,9 +188,12 @@ void test_workspace_manifest(TestState &state) {
       "[build]\n"
       "target = aarch64-macos\n"
       "assertions = off\n"
+      "provider = common=object:common.o\n"
       "[program editor]\n"
       "root = apps/editor\n"
       "optimization = O2\n"
+      "assertions = on\n"
+      "provider = editor=archive:editor.a\n"
       "argument = README.md\n"
       "environment = DRAFT_MODE=editor\n");
 
@@ -210,6 +213,14 @@ void test_workspace_manifest(TestState &state) {
   EXPECT(state, manifest.programs[0].build.optimization == "O2");
   EXPECT(state, manifest.programs[0].arguments.size() == 1);
   EXPECT(state, manifest.programs[0].environment.size() == 1);
+  const draft::BuildDefaults effective =
+      draft::effective_build_defaults(manifest, "apps/editor");
+  EXPECT(state, effective.target == "aarch64-macos");
+  EXPECT(state, effective.optimization == "O2");
+  EXPECT(state, effective.assertions == true);
+  EXPECT(state, effective.providers.size() == 2);
+  EXPECT(state, effective.providers[0] == "common=object:common.o");
+  EXPECT(state, effective.providers[1] == "editor=archive:editor.a");
 }
 
 void test_discovery(TestState &state) {

@@ -272,6 +272,27 @@ constexpr std::size_t maximum_summary_bytes = 16U * 1024U * 1024U;
 
 } // namespace
 
+bool parse_foreign_provider_summary_input(
+    std::string_view spelling,
+    ForeignProviderSummaryInput &input,
+    std::string &reason) {
+  const std::size_t colon = spelling.find(':');
+  if (colon == 0 || colon == std::string_view::npos ||
+      colon + 1 >= spelling.size()) {
+    reason = "provider summary mapping must be name:path";
+    return false;
+  }
+  input.provider = std::string(spelling.substr(0, colon));
+  std::error_code error;
+  input.path = std::filesystem::absolute(
+      std::filesystem::path(spelling.substr(colon + 1)), error).lexically_normal();
+  if (error) {
+    reason = "cannot make provider summary path absolute: " + error.message();
+    return false;
+  }
+  return true;
+}
+
 bool load_foreign_provider_summaries(
     std::span<const ForeignProviderSummaryInput> inputs,
     std::span<const ForeignProviderInput> artifacts,

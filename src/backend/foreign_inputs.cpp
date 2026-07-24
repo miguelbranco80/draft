@@ -59,6 +59,41 @@ namespace {
 
 } // namespace
 
+bool parse_foreign_provider_input(std::string_view spelling,
+                                  ForeignProviderInput &input,
+                                  std::string &reason) {
+  const std::size_t equal = spelling.find('=');
+  const std::size_t colon = equal == std::string_view::npos
+      ? std::string_view::npos
+      : spelling.find(':', equal + 1);
+  if (equal == 0 || equal == std::string_view::npos ||
+      colon == equal + 1 || colon == std::string_view::npos ||
+      colon + 1 >= spelling.size()) {
+    reason = "provider mapping must be name=object|archive|shared-library:path";
+    return false;
+  }
+  input.provider = std::string(spelling.substr(0, equal));
+  const std::string_view kind = spelling.substr(equal + 1, colon - equal - 1);
+  if (kind == "object") {
+    input.kind = ForeignArtifactKind::Object;
+  } else if (kind == "archive") {
+    input.kind = ForeignArtifactKind::Archive;
+  } else if (kind == "shared-library") {
+    input.kind = ForeignArtifactKind::SharedLibrary;
+  } else {
+    reason = "provider artifact kind must be object, archive, or shared-library";
+    return false;
+  }
+  std::error_code error;
+  input.path = std::filesystem::absolute(
+      std::filesystem::path(spelling.substr(colon + 1)), error).lexically_normal();
+  if (error) {
+    reason = "cannot make provider artifact path absolute: " + error.message();
+    return false;
+  }
+  return true;
+}
+
 std::string_view foreign_artifact_kind_name(ForeignArtifactKind kind) {
   switch (kind) {
   case ForeignArtifactKind::Object: return "object";

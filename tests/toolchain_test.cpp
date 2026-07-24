@@ -794,6 +794,11 @@ void test_package_assembly_reaches_link(TestState &state) {
 
 int main() {
   TestState state;
+  EXPECT(state, draft::parse_native_artifact_kind("executable") ==
+                    draft::NativeArtifactKind::Executable);
+  EXPECT(state, draft::parse_native_artifact_kind("assembly") ==
+                    draft::NativeArtifactKind::Assembly);
+  EXPECT(state, !draft::parse_native_artifact_kind("bundle").has_value());
   test_package_assembly_reaches_link(state);
   test_explicit_foreign_provider_mapping(state);
   test_all_native_artifact_kinds(state);

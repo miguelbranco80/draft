@@ -53,12 +53,15 @@ default = editor
 root = apps/editor
 ```
 
-The IDE currently consumes the workspace boundary, exclusions, and default
-program. `--source` may select one direct file inside the active package; no
-root selector is required because the opened path or named default supplies the
-initial package. Other build/run defaults are already compiler-owned manifest
-data and can be exposed progressively by the Draft UI without inventing an
-IDE-only file format.
+The IDE consumes the workspace boundary, exclusions, default program, and the
+complete effective build/run layer for every root. `--source` may select one
+direct file inside the active package. Without it, the compiler opens the first
+target-selected source in bytewise filename order; `package.draft` has no
+privileged IDE meaning. No root selector is required because the opened path or
+named default supplies the initial package. A named program's
+target participates in target-qualified root inspection. An explicit
+`--target` or Shift-F12 selection replaces manifest targets without changing
+the file.
 
 These selections already contain the information needed for Build and Run. The
 workspace is the filesystem and import-identity boundary. The active root is
@@ -100,10 +103,12 @@ means selecting a compiler-known row in Files rather than introducing a second
 filesystem browser.
 
 The manifest is operator configuration, not a language or dependency manifest.
-Later versions may add named build/run configurations, foreign provider
-artifacts, arguments, environment, or working directories when the IDE can
-actually consume them. They must not list source files, redefine package
-discovery, or become a dependency manager.
+The compiler service resolves workspace defaults followed by the matching
+program overrides into one immutable root record. It parses provider artifacts,
+provider summaries, and runtime assets at that native boundary; Draft receives
+only the resulting artifact kind/path and copied run arguments, environment,
+and working directory. The manifest does not list source files, redefine
+package discovery, or become a dependency manager.
 
 ## Synchronous checking transaction
 
@@ -194,10 +199,17 @@ source-jump navigation.
 
 Build first checks the exact active-plus-dirty project buffer set. Only a
 successful check continues that retained graph through MIR, per-package LLVM
-modules, object emission, and native executable linking. The service returns
-the resulting path to Draft. Run then suspends mouse reporting, the alternate
-screen, and raw input in restoration order; Draft launches and waits through
-`core/process`; and the
+modules, object/assembly emission, and publication of the configured artifact.
+Optimization, assertion mode, artifact kind/output, debug information,
+providers/summaries, and runtime assets come from the selected root's effective
+manifest configuration. Check and Build reread the small saved manifest, and
+also reread provider-summary inputs, before using the retained graph. A changed
+target, assertion, or summary invalidates that graph; unchanged structural
+configuration retains it. The service returns the resulting kind and path to
+Draft. Run rejects non-executable kinds, then suspends mouse reporting, the
+alternate screen, and raw input in restoration order. Draft copies the selected
+program's arbitrary-length argument/environment rows and working directory,
+launches and waits through `core/process.run_with_options`; and the
 application resumes the terminal and invalidates the differential renderer.
 Consequently an invalid edit can never cause Run to execute the older retained
 program.
@@ -210,15 +222,13 @@ a long synchronous build or check.
 ## Deliberate first-version limits
 
 Checking is synchronous and conservatively treats every edited file as an
-interface change. `core/process` currently runs
-one exact executable path with inherited environment/current directory and no
-arguments, pipes, shell, or background lifetime. Native IDE builds use `-O0`:
-the current package-wide `-O2` pipeline makes routine IDE rebuilds take several
-minutes, while the event/repaint fixes keep the interactive path responsive.
-The compiler optimization selected for the open project remains independent.
+interface change. `core/process` has exact arguments, environment overrides,
+and working-directory selection but no pipes, redirection, shell, or background
+lifetime. IDE build speed now follows the manifest optimization choice; a
+program configured as O2 deliberately pays the ordinary O2/ThinLTO cost.
 
 Identifier completion, background checking, broad Codex worktree editing,
-declaration/reference source-jump navigation, richer build/run configurations,
+declaration/reference source-jump navigation, named configuration variants,
 and body-only invalidation remain later measurements or features. Open
 Workspace currently uses a typed path rather than a directory browser.
 Ordinary Codex can continue editing the normal files, and Draft `...` retains
@@ -232,8 +242,10 @@ paths, multi-file source transactions, source enumeration, production syntax
 spans, structured package rows, semantic views, invalid-overlay diagnostics,
 retained last-good state, topology changes, automatic root discovery,
 transactional workspace replacement,
-root/target switching, traversal rejection, and native Build.
-Draft package tests cover the application-side Host table, overlay assembly,
+root/target switching, traversal rejection, effective program configuration,
+live manifest/summary refresh, target-specialized named-root discovery,
+run-setting copying, configured output kinds, and native Build. Draft package
+tests cover the application-side Host table, overlay assembly, configured
 Draft-owned Run, and the buffer/root invariant. `draft_draftide_smoke` launches
 the real Draft-built executable, reads the repository workspace marker,
 builds its selected program through the real shared compiler service, retrieves

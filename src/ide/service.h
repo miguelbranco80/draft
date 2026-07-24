@@ -34,6 +34,9 @@ typedef struct DraftCompilerServiceConfiguration {
   const void *source_data;
   size_t source_length;
   uint8_t target;
+  // Zero makes target the host fallback behind manifest program targets. One
+  // makes it an explicit embedding override for every selected root.
+  uint8_t target_is_explicit;
 } DraftCompilerServiceConfiguration;
 
 // Result is always written by check/build when the pointer is non-null. Counts
@@ -83,8 +86,9 @@ typedef struct DraftCompilerServicePackageRow {
 // create validates and canonicalizes the borrowed configuration ranges, owns a
 // new compiler session on success, and returns NULL on failure. root may be
 // empty to select the first deterministically discovered executable root;
-// source may be empty to prefer package.draft. A nonempty error destination is
-// always NUL-terminated and may contain a truncated message.
+// source may be empty to select that package's first target-qualified file in
+// bytewise filename order. A nonempty error destination is always
+// NUL-terminated and may contain a truncated message.
 DRAFT_COMPILER_SERVICE_API void *draft_compiler_session_create(
     const DraftCompilerServiceConfiguration *configuration,
     uint8_t *error_destination, size_t error_capacity);
@@ -172,6 +176,31 @@ DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_source_path_at(
 
 DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_artifact_path(
     void *session, uint8_t *destination, size_t capacity);
+
+// The artifact kind and run settings belong to the same effective selected
+// program configuration used by build. Kind uses executable=0, object=1,
+// static-library=2, dynamic-library=3, assembly=4. Arguments exclude argv[0];
+// environment rows are NAME=value overrides. Text follows the complete-size
+// copy contract, and an absent working directory returns zero.
+DRAFT_COMPILER_SERVICE_API uint8_t
+draft_compiler_session_artifact_kind(void *session);
+
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_run_argument_count(void *session);
+
+DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_run_argument(
+    void *session, size_t index, uint8_t *destination, size_t capacity);
+
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_run_environment_count(void *session);
+
+DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_run_environment(
+    void *session, size_t index, uint8_t *destination, size_t capacity);
+
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_copy_run_working_directory(void *session,
+                                                  uint8_t *destination,
+                                                  size_t capacity);
 
 // Root rows are deterministic workspace-relative package names for the current
 // target. Selection is synchronous, returns one on success, and invalidates the

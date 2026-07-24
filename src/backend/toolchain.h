@@ -49,6 +49,11 @@ enum class NativeArtifactKind {
 
 [[nodiscard]] std::string_view native_artifact_kind_name(NativeArtifactKind kind);
 
+// Converts the closed public manifest/CLI spelling without selecting a target
+// or touching the filesystem. All command front ends use this exact table.
+[[nodiscard]] std::optional<NativeArtifactKind>
+parse_native_artifact_kind(std::string_view spelling);
+
 // Native instrumentation is deliberately typed and narrow. The backend never
 // accepts caller-supplied Clang flags: each profile is a compiler-owned bundle
 // of passes, code-generation options, link inputs, and deployment behavior.

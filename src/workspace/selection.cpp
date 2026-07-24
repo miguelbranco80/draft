@@ -294,6 +294,7 @@ inspect_workspace_marker(const std::filesystem::path &directory, bool &present,
     const std::filesystem::path &search_root,
     const PackageLoadOptions &package_options,
     const std::vector<std::filesystem::path> &excluded,
+    const std::vector<std::filesystem::path> &independently_inspected,
     std::vector<std::filesystem::path> &candidates,
     DiagnosticSink &diagnostics) {
   if (is_expanded_source_projection(directory, diagnostics)) return true;
@@ -338,10 +339,16 @@ inspect_workspace_marker(const std::filesystem::path &directory, bool &present,
     if (is_excluded_root(*canonical, excluded)) continue;
     children.push_back(*canonical);
   }
-  if (contains_draft) candidates.push_back(directory);
+  // A named program with its own target is inspected by its caller under that
+  // target. Skip only this exact package candidate while still traversing its
+  // children: an unnamed executable below a named root remains discoverable.
+  if (contains_draft && !is_excluded_root(directory, independently_inspected)) {
+    candidates.push_back(directory);
+  }
   for (const std::filesystem::path &child : children) {
     if (!collect_candidate_directories(
-            child, search_root, package_options, excluded, candidates, diagnostics)) {
+            child, search_root, package_options, excluded,
+            independently_inspected, candidates, diagnostics)) {
       return false;
     }
   }
@@ -467,7 +474,8 @@ ExecutableRootDiscoveryResult discover_executable_roots(
     const std::filesystem::path &search_directory,
     const WorkspaceLoadOptions &options,
     DiagnosticSink &diagnostics,
-    std::span<const std::filesystem::path> excluded_directories) {
+    std::span<const std::filesystem::path> excluded_directories,
+    std::span<const std::filesystem::path> independently_inspected_packages) {
   ExecutableRootDiscoveryResult result;
   const std::size_t initial_errors = diagnostics.error_count();
   const std::optional<std::filesystem::path> workspace = canonical_directory(
@@ -524,11 +532,38 @@ ExecutableRootDiscoveryResult discover_executable_roots(
   std::sort(excluded.begin(), excluded.end());
   excluded.erase(std::unique(excluded.begin(), excluded.end()), excluded.end());
 
+  // Independently inspected packages obey the same canonical containment
+  // rules as exclusions, but do not prune recursion. They are an exact
+  // candidate filter used when operator configuration selects another target.
+  std::vector<std::filesystem::path> independently_inspected;
+  independently_inspected.reserve(independently_inspected_packages.size());
+  for (const std::filesystem::path &directory :
+       independently_inspected_packages) {
+    const std::optional<std::filesystem::path> package =
+        canonical_directory(directory, "independently inspected", diagnostics);
+    if (!package.has_value()) return result;
+    std::filesystem::path relative;
+    if (!path_is_within(*workspace, *package, relative)) {
+      selection_error(
+          diagnostics,
+          "independently inspected package is outside the selected workspace: '" +
+              package->string() + "'");
+      return result;
+    }
+    independently_inspected.push_back(*package);
+  }
+  std::sort(independently_inspected.begin(), independently_inspected.end());
+  independently_inspected.erase(
+      std::unique(independently_inspected.begin(),
+                  independently_inspected.end()),
+      independently_inspected.end());
+
   std::vector<std::filesystem::path> candidates;
   if (!collect_candidate_directories(
           *search, *search,
           options.package_options,
           excluded,
+          independently_inspected,
           candidates,
           diagnostics)) {
     return result;

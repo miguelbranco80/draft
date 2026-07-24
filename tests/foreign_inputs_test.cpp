@@ -34,6 +34,24 @@ void test_paths_and_summaries_are_not_content_pins(TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
       "draft-foreign-input-test"};
   const std::filesystem::path &temporary = temporary_directory.path();
+  std::string parse_reason;
+  draft::ForeignProviderInput parsed_provider;
+  EXPECT(state,
+      draft::parse_foreign_provider_input(
+          "custom_math=object:provider.o", parsed_provider, parse_reason));
+  EXPECT(state, parsed_provider.provider == "custom_math");
+  EXPECT(state, parsed_provider.kind == draft::ForeignArtifactKind::Object);
+  EXPECT(state, parsed_provider.path.is_absolute());
+  EXPECT(state, !draft::parse_foreign_provider_input(
+      "custom_math:provider.o", parsed_provider, parse_reason));
+  draft::ForeignProviderSummaryInput parsed_summary;
+  EXPECT(state,
+      draft::parse_foreign_provider_summary_input(
+          "custom_math:provider.summary", parsed_summary, parse_reason));
+  EXPECT(state, parsed_summary.provider == "custom_math");
+  EXPECT(state, parsed_summary.path.is_absolute());
+  EXPECT(state, !draft::parse_foreign_provider_summary_input(
+      "provider.summary", parsed_summary, parse_reason));
   std::error_code error;
   std::filesystem::create_directories(temporary / "first", error);
   EXPECT(state, !error);

@@ -99,8 +99,24 @@ workspace boundary. It may name programs, a default program, discovery
 exclusions, and compiler/run defaults; it never enumerates source files,
 downloads dependencies, or changes language semantics. Turbo Draft uses the
 same upward boundary discovery and may use the named default; `--source`
-optionally chooses the initial direct-child file. F5 always
-checks/builds/runs the root associated with the active editor buffer.
+optionally chooses the initial direct-child file. Without it, the compiler uses
+the first target-selected source in bytewise filename order; `package.draft`
+remains only a convention. F5 always
+checks/builds/runs the root associated with the active editor buffer and honors
+its effective target, optimization, artifact/output, debug/assertion,
+provider/asset, argument, environment, and working-directory settings. An
+explicit IDE target replaces manifest targets, and non-executable artifacts are
+built without being launched.
+Saving `draft.workspace` or a provider-summary file affects the next Check,
+Build, or F5 without reopening the IDE. Any parsed manifest change
+conservatively invalidates the retained checked graph; provider-summary files
+are reread even when the manifest is unchanged, and a changed effective summary
+policy also invalidates that graph.
+
+F5 launches executables directly without a shell. Arguments remain literal and
+ordered. Environment rows are `NAME=value` overrides on the inherited
+environment with the last occurrence winning. Relative working directories are
+workspace-relative; an absent one inherits DraftIDE's working directory.
 Files is populated from the compiler's target-selected reachable workspace
 graph, while Buffers lists open documents. Check and F5 submit the active buffer
 plus every other dirty buffer belonging to that graph as one transactional
@@ -241,9 +257,11 @@ environment = DRAFT_MODE=development
 ```
 
 Workspace build defaults apply first, matching program overrides apply second,
-and explicit CLI options win. Repeated CLI provider/environment inputs replace
-their configured lists. Aggregate `build` performs that merge independently for
-each discovered root; a CLI option deliberately overrides every root, while
+and explicit CLI options win. Program `provider`, `provider-summary`, and
+`runtime-asset` rows append to workspace rows in source order. Repeated CLI
+provider/environment inputs replace their configured lists. Aggregate `build`
+performs that merge independently for each discovered root; a CLI option
+deliberately overrides every root, while
 named programs may retain different targets, optimization, providers, artifact
 kinds, runtime assets, and distinct outputs. Target is resolved before
 target-qualified `main` discovery. `draftc run apps/editor -- document.txt`

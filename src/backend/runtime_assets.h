@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace draft {
@@ -34,6 +35,12 @@ struct VerifiedRuntimeAssetInput {
   std::string name;
   std::filesystem::path path;
 };
+
+// Parses one public `name:path` mapping and makes the path absolute without
+// checking asset shape. Validation remains a native-build operation.
+[[nodiscard]] bool parse_runtime_asset_input(std::string_view spelling,
+                                             RuntimeAssetInput &input,
+                                             std::string &reason);
 
 // Validates and canonicalizes runtime-asset roots supplied to this invocation.
 // Assets are deployment inputs, not Draft source identity: the compiler does

@@ -14,11 +14,13 @@
 
 #pragma once
 
+#include "backend/foreign_summaries.h"
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "target/profile.h"
+#include "workspace/manifest.h"
 
 #include <array>
 #include <cstddef>
@@ -114,8 +116,35 @@ struct CompilerConfiguration {
   std::filesystem::path workspace_directory;
   std::filesystem::path root_package_directory;
   std::string root_relative_path;
-  std::string source_relative_name = "package.draft";
+  // Empty selects the first target-qualified package file in deterministic
+  // filename order; a nonempty name is an explicit UI/CLI preference.
+  std::string source_relative_name;
   TargetProfile target;
+  // The create-time target is the host fallback unless the user supplied
+  // --target. An explicit target replaces manifest target settings for every
+  // selected root; a fallback yields to each root's effective build layer.
+  bool target_is_explicit = false;
+};
+
+// EffectiveProgramConfiguration is the fully parsed operator policy for one
+// root. It is rebuilt from draft.workspace whenever roots are rediscovered and
+// then remains immutable while that selection is active. Physical input paths
+// are absolute process-facing facts; arguments and environment rows preserve
+// manifest source order. No value enters semantic identity except target and
+// runtime_assertions through CompileWorkspaceOptions.
+struct EffectiveProgramConfiguration {
+  TargetProfile target;
+  NativeArtifactKind artifact_kind = NativeArtifactKind::Executable;
+  NativeOptimizationLevel optimization = NativeOptimizationLevel::O0;
+  RuntimeAssertionMode runtime_assertions = RuntimeAssertionMode::On;
+  bool emit_debug_symbols = false;
+  std::optional<std::filesystem::path> output_path;
+  std::vector<ForeignProviderInput> foreign_providers;
+  std::vector<ForeignProviderAudit> foreign_provider_audits;
+  std::vector<RuntimeAssetInput> runtime_assets;
+  std::vector<std::string> arguments;
+  std::vector<std::string> environment;
+  std::optional<std::filesystem::path> working_directory;
 };
 
 // SourceOption is one editable, target-selected workspace Draft file reachable
@@ -140,6 +169,7 @@ struct RootOption {
   std::filesystem::path physical_directory;
   std::string source_relative_name;
   std::vector<SourceOption> sources;
+  EffectiveProgramConfiguration program;
 };
 
 class CompilerSession {
@@ -179,6 +209,8 @@ public:
   [[nodiscard]] bool select_target(TargetProfile target,
                                    DiagnosticSink &diagnostics);
   [[nodiscard]] const TargetProfile &target() const;
+  [[nodiscard]] bool target_is_explicit() const;
+  [[nodiscard]] const TargetProfile &fallback_target() const;
 
   // Source rows are refreshed from the successful checked graph and contain
   // only ordinary workspace-owned Draft files. Before the first successful
@@ -198,6 +230,11 @@ public:
   [[nodiscard]] const std::filesystem::path &workspace_directory() const;
   [[nodiscard]] const std::filesystem::path &source_path() const;
   [[nodiscard]] const std::filesystem::path &built_output_path() const;
+  [[nodiscard]] NativeArtifactKind built_artifact_kind() const;
+  [[nodiscard]] std::span<const std::string> run_arguments() const;
+  [[nodiscard]] std::span<const std::string> run_environment() const;
+  [[nodiscard]] const std::optional<std::filesystem::path> &
+  run_working_directory() const;
 
 private:
   [[nodiscard]] CompileWorkspaceOptions compile_options() const;
@@ -216,14 +253,29 @@ private:
               CompileWorkspaceResult &candidate, DiagnosticSink &diagnostics);
   [[nodiscard]] CheckResult build_checked();
   [[nodiscard]] bool create_build_directory(DiagnosticSink &diagnostics);
-  [[nodiscard]] bool refresh_root_options(DiagnosticSink &diagnostics);
+  // Reads and resolves operator policy at foreground-operation boundaries.
+  // Root refresh publishes a complete replacement only after discovery and all
+  // configurations succeed. Resolution shares draftc's backend input parsers,
+  // so the IDE never gains a parallel provider, asset, or artifact-kind grammar.
+  [[nodiscard]] bool read_workspace_manifest(WorkspaceManifest &manifest,
+                                             DiagnosticSink &diagnostics) const;
+  [[nodiscard]] bool refresh_root_options(const WorkspaceManifest &manifest,
+                                          DiagnosticSink &diagnostics);
+  [[nodiscard]] bool refresh_configuration(DiagnosticSink &diagnostics);
+  [[nodiscard]] bool resolve_program_configuration(
+      const WorkspaceManifest &manifest, std::string_view root,
+      EffectiveProgramConfiguration &result, DiagnosticSink &diagnostics) const;
+  [[nodiscard]] const EffectiveProgramConfiguration &active_program() const;
+  [[nodiscard]] std::filesystem::path default_output_path() const;
   void reset_checked_program();
 
   CompilerConfiguration configuration_;
+  TargetProfile fallback_target_;
   std::filesystem::path source_path_;
   std::filesystem::path build_directory_;
-  std::filesystem::path output_path_;
   std::filesystem::path built_output_path_;
+  NativeArtifactKind built_artifact_kind_ = NativeArtifactKind::Executable;
+  WorkspaceManifest manifest_;
   std::vector<RootOption> root_options_;
   std::vector<SourceOption> source_options_;
   std::size_t selected_root_ = 0;

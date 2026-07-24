@@ -1060,6 +1060,16 @@ std::string_view native_artifact_kind_name(NativeArtifactKind kind) {
   return "unknown";
 }
 
+std::optional<NativeArtifactKind>
+parse_native_artifact_kind(std::string_view spelling) {
+  if (spelling == "executable") return NativeArtifactKind::Executable;
+  if (spelling == "object") return NativeArtifactKind::Object;
+  if (spelling == "static-library") return NativeArtifactKind::StaticLibrary;
+  if (spelling == "dynamic-library") return NativeArtifactKind::DynamicLibrary;
+  if (spelling == "assembly") return NativeArtifactKind::Assembly;
+  return std::nullopt;
+}
+
 NativeBuildResult build_native_artifact(
     const TargetProfile &target,
     const CompileWorkspaceResult &compiled,

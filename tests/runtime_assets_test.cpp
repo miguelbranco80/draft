@@ -46,6 +46,14 @@ void write_file(const std::filesystem::path &path, std::string_view bytes) {
 
 void test_file_and_directory_paths(TestState &state) {
   TemporaryAssets temporary;
+  draft::RuntimeAssetInput parsed;
+  std::string parse_reason;
+  EXPECT(state, draft::parse_runtime_asset_input(
+      "dictionary:first.data", parsed, parse_reason));
+  EXPECT(state, parsed.name == "dictionary");
+  EXPECT(state, parsed.path.is_absolute());
+  EXPECT(state, !draft::parse_runtime_asset_input(
+      "first.data", parsed, parse_reason));
   const std::filesystem::path first_file = temporary.root / "first.data";
   const std::filesystem::path second_file = temporary.root / "relocated.data";
   const std::filesystem::path first_directory = temporary.root / "first-tree";

@@ -81,8 +81,12 @@ main :: proc() -> int {
     }
 
     workspace := arguments[1]
-    source := "package.draft"
+    // Empty asks the compiler to select the first target-qualified source in
+    // deterministic package order. `package.draft` is conventional, not a
+    // privileged language filename; --source is the explicit override.
+    source := ""
     selected_target := host_target()
+    target_is_explicit := false
     index: usize = 2
     for index < len(arguments) {
         argument := arguments[index]
@@ -96,6 +100,7 @@ main :: proc() -> int {
                 return 1
             }
             selected_target = target_value
+            target_is_explicit = true
             index += 2
         } else if text_equal(argument, "--smoke") {
             // turbo_editor_app observes the same process argument after the
@@ -113,6 +118,7 @@ main :: proc() -> int {
         "",
         source,
         selected_target,
+        target_is_explicit,
         error_storage[:],
     )
     if session == nil {

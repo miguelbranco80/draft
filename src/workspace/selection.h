@@ -117,12 +117,16 @@ locate_command_scope(const std::filesystem::path &search_directory,
 // candidate packages so malformed package files cannot produce a guessed root
 // set. It does not type-check, follow imports, or require a valid entry
 // signature; those errors belong to normal compilation of the selected root.
+// excluded_directories prune complete subtrees. independently_inspected_packages
+// skip only those exact candidate packages while retaining descendant traversal,
+// allowing an embedding to inspect a named root under a different target once.
 [[nodiscard]] ExecutableRootDiscoveryResult discover_executable_roots(
     SourceManager &sources,
     const std::filesystem::path &search_directory,
     const WorkspaceLoadOptions &options,
     DiagnosticSink &diagnostics,
-    std::span<const std::filesystem::path> excluded_directories = {});
+    std::span<const std::filesystem::path> excluded_directories = {},
+    std::span<const std::filesystem::path> independently_inspected_packages = {});
 
 // Inspects one already-selected package under one target file-selection rule.
 // This is used when operator configuration assigns a target to a named program:

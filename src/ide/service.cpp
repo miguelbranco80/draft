@@ -141,12 +141,9 @@ create_session(const DraftCompilerServiceConfiguration &input,
   }
   const std::string workspace_text(
       borrowed_text(input.workspace_data, input.workspace_length));
-  std::string root_text(
-      borrowed_text(input.root_data, input.root_length));
+  std::string root_text(borrowed_text(input.root_data, input.root_length));
   std::string source_text(
       borrowed_text(input.source_data, input.source_length));
-  if (source_text.empty())
-    source_text = "package.draft";
   if (workspace_text.empty() ||
       workspace_text.find('\0') != std::string::npos ||
       root_text.find('\0') != std::string::npos ||
@@ -172,12 +169,8 @@ create_session(const DraftCompilerServiceConfiguration &input,
   std::filesystem::path workspace;
   std::filesystem::path opened_directory;
   std::filesystem::path manifest_path;
-  if (!draft::locate_command_scope(
-          workspace_text,
-          workspace,
-          opened_directory,
-          manifest_path,
-          location_diagnostics)) {
+  if (!draft::locate_command_scope(workspace_text, workspace, opened_directory,
+                                   manifest_path, location_diagnostics)) {
     error_message = "workspace directory is unavailable";
     if (!location_diagnostics.diagnostics().empty()) {
       error_message += ": ";
@@ -187,8 +180,7 @@ create_session(const DraftCompilerServiceConfiguration &input,
   }
 
   draft::WorkspaceManifest manifest;
-  if (!draft::load_workspace_manifest(
-          manifest_path, manifest, error_message)) {
+  if (!draft::load_workspace_manifest(manifest_path, manifest, error_message)) {
     return nullptr;
   }
   if (root_text.empty()) {
@@ -199,7 +191,8 @@ create_session(const DraftCompilerServiceConfiguration &input,
     } else if (manifest.default_program.has_value()) {
       const draft::ProgramConfiguration *program =
           draft::find_program_by_name(manifest, *manifest.default_program);
-      if (program != nullptr) root_text = program->root;
+      if (program != nullptr)
+        root_text = program->root;
     }
   }
   const std::filesystem::path root_spelling(root_text);
@@ -213,6 +206,7 @@ create_session(const DraftCompilerServiceConfiguration &input,
   configuration.workspace_directory = workspace;
   configuration.source_relative_name = source_spelling.generic_string();
   configuration.target = *target;
+  configuration.target_is_explicit = input.target_is_explicit != 0;
   if (!root_text.empty()) {
     const std::filesystem::path root = std::filesystem::weakly_canonical(
         workspace / root_spelling, path_error);
@@ -222,14 +216,16 @@ create_session(const DraftCompilerServiceConfiguration &input,
       error_message = "root package is unavailable or escapes the workspace";
       return nullptr;
     }
-    const std::filesystem::path source =
-        std::filesystem::weakly_canonical(root / source_spelling, path_error);
-    const bool source_is_file =
-        !path_error && std::filesystem::is_regular_file(source, path_error);
-    if (path_error || !source_is_file || !is_within(root, source)) {
-      error_message =
-          "active source is unavailable or escapes the root package";
-      return nullptr;
+    if (!source_text.empty()) {
+      const std::filesystem::path source =
+          std::filesystem::weakly_canonical(root / source_spelling, path_error);
+      const bool source_is_file =
+          !path_error && std::filesystem::is_regular_file(source, path_error);
+      if (path_error || !source_is_file || !is_within(root, source)) {
+        error_message =
+            "active source is unavailable or escapes the root package";
+        return nullptr;
+      }
     }
 
     const std::filesystem::path relative_root =
@@ -349,11 +345,20 @@ std::uint8_t draft_compiler_session_open_workspace(
     return 0;
   }
   const std::string root;
-  const std::string source = "package.draft";
-  const std::uint8_t target = target_ordinal(service->compiler->target());
+  const std::string source;
+  const std::uint8_t target =
+      target_ordinal(service->compiler->target_is_explicit()
+                         ? service->compiler->target()
+                         : service->compiler->fallback_target());
   const DraftCompilerServiceConfiguration configuration{
-      workspace.data(), workspace.size(), root.data(), root.size(),
-      source.data(),    source.size(),    target,
+      workspace.data(),
+      workspace.size(),
+      root.data(),
+      root.size(),
+      source.data(),
+      source.size(),
+      target,
+      static_cast<std::uint8_t>(service->compiler->target_is_explicit()),
   };
   std::string error_message;
   std::unique_ptr<draft::ide::CompilerSession> replacement =
@@ -529,6 +534,63 @@ std::size_t draft_compiler_session_copy_artifact_path(void *opaque_session,
     return 0;
   const std::string output_path = session->built_output_path().string();
   return copy_text(output_path, destination, capacity);
+}
+
+std::uint8_t draft_compiler_session_artifact_kind(void *opaque_session) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr)
+    return std::numeric_limits<std::uint8_t>::max();
+  switch (session->built_artifact_kind()) {
+  case draft::NativeArtifactKind::Executable:
+    return 0;
+  case draft::NativeArtifactKind::Object:
+    return 1;
+  case draft::NativeArtifactKind::StaticLibrary:
+    return 2;
+  case draft::NativeArtifactKind::DynamicLibrary:
+    return 3;
+  case draft::NativeArtifactKind::Assembly:
+    return 4;
+  }
+  return std::numeric_limits<std::uint8_t>::max();
+}
+
+std::size_t draft_compiler_session_run_argument_count(void *opaque_session) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  return session == nullptr ? 0 : session->run_arguments().size();
+}
+
+std::size_t draft_compiler_session_copy_run_argument(void *opaque_session,
+                                                     std::size_t index,
+                                                     std::uint8_t *destination,
+                                                     std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr || index >= session->run_arguments().size())
+    return 0;
+  return copy_text(session->run_arguments()[index], destination, capacity);
+}
+
+std::size_t draft_compiler_session_run_environment_count(void *opaque_session) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  return session == nullptr ? 0 : session->run_environment().size();
+}
+
+std::size_t draft_compiler_session_copy_run_environment(
+    void *opaque_session, std::size_t index, std::uint8_t *destination,
+    std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr || index >= session->run_environment().size())
+    return 0;
+  return copy_text(session->run_environment()[index], destination, capacity);
+}
+
+std::size_t draft_compiler_session_copy_run_working_directory(
+    void *opaque_session, std::uint8_t *destination, std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr || !session->run_working_directory().has_value())
+    return 0;
+  return copy_text(session->run_working_directory()->string(), destination,
+                   capacity);
 }
 
 std::size_t draft_compiler_session_root_count(void *opaque_session) {
