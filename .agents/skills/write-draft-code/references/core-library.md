@@ -447,6 +447,9 @@ optional working directory. Nil or an empty working-directory cstring inherits
 the parent's directory. Both inherit standard handles and wait for
 completion. Every cstring and slice remains caller-owned for the synchronous
 call. Windows currently requires ASCII environment names; values remain UTF-8.
+A replacement launch returns `.unavailable` if the inherited Windows
+environment contains a non-ASCII name; with no overrides, CreateProcessW
+inherits that native environment directly.
 A nonzero child exit still has
 `error == .none`; inspect `exited`, `exit_code`, and `signal`. The path must be
 an exact zero-terminated executable path: there is no PATH lookup, command

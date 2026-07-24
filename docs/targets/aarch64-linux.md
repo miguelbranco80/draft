@@ -81,10 +81,11 @@ ends the record. The core watcher installs only over `SIG_DFL` with an empty
 mask and zero flags, then restores the saved record exactly.
 
 `core/process` uses glibc `fork`/`chdir`/`execv`/`execve`/`waitpid`. Argument
-and environment pointer tables are complete before `fork`; the child performs
-only async-signal-safe native calls. It retries wait for `EINTR = 4`, interprets
-the Linux/POSIX low-seven-bit signal and high-eight-bit exit fields, and
-terminates directory/exec failure through `_exit(126)`/`_exit(127)`.
+and any required replacement-environment pointer tables are complete before
+`fork`; the child performs only async-signal-safe native calls. It retries wait
+for `EINTR = 4`, interprets the Linux/POSIX low-seven-bit signal and
+high-eight-bit exit fields, and terminates directory/exec failure through
+`_exit(126)`/`_exit(127)`.
 
 The initial cross-target qualification used LLVM/LLD 22.1.8 and an Ubuntu
 24.04 arm64 sysroot containing glibc 2.39, Linux 6.8 UAPI headers, and the GCC

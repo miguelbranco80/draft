@@ -96,9 +96,12 @@ operation.
 24-byte/eight-aligned `PROCESS_INFORMATION` records. It converts the exact
 UTF-8 application, CRT-quoted argument vector, optional working directory, and
 case-insensitively sorted complete environment to owned UTF-16, then starts the
-child through `CreateProcessW`. It waits indefinitely, reads the DWORD exit
-code, and closes both process and thread handles. The logical `libc` and
-`windows` provider names match the target's closed UCRT/Kernel32 summaries.
+child through `CreateProcessW`. Environment names in a replacement block are
+currently restricted to ASCII; a non-ASCII inherited name reports the host
+operation unavailable instead of publishing a wrongly ordered block. It waits
+indefinitely, reads the DWORD exit code, and closes both process and thread
+handles. The logical `libc` and `windows` provider names match the target's
+closed UCRT/Kernel32 summaries.
 
 ## Native artifacts and assembly
 

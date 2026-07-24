@@ -58,6 +58,9 @@ test_native_process_launch :: proc(test: ^testing.Test) {
         testing.expect(test, inherited.exited)
         non_ascii_environment: memory.Owned_String
         memory.owned_string_copy(&non_ascii_environment, "Ü=value")
+        testing.expect(test, !environment_name_is_ascii(
+            memory.owned_string_cstring(&non_ascii_environment),
+        ))
         invalid_row := [1]cstring{
             memory.owned_string_cstring(&non_ascii_environment),
         }
@@ -70,6 +73,37 @@ test_native_process_launch :: proc(test: ^testing.Test) {
             ).error == .invalid_options,
         )
         memory.owned_string_destroy(&non_ascii_environment)
+        hidden_environment: memory.Owned_String
+        memory.owned_string_copy(&hidden_environment, "=C:=C:\\")
+        testing.expect(test, environment_name_is_ascii(
+            memory.owned_string_cstring(&hidden_environment),
+        ))
+        memory.owned_string_destroy(&hidden_environment)
+        short_name: memory.Owned_String
+        long_name: memory.Owned_String
+        memory.owned_string_copy(&short_name, "A=last")
+        memory.owned_string_copy(&long_name, "A1=first-if-value-were-sorted")
+        testing.expect(test, environment_row_less(
+            memory.owned_string_cstring(&short_name),
+            memory.owned_string_cstring(&long_name),
+        ))
+        testing.expect(test, !environment_row_less(
+            memory.owned_string_cstring(&long_name),
+            memory.owned_string_cstring(&short_name),
+        ))
+        memory.owned_string_destroy(&long_name)
+        memory.owned_string_destroy(&short_name)
+        utf8_value: memory.Owned_String
+        memory.owned_string_copy(&utf8_value, "DRAFT_UTF8=Grüße")
+        utf8_rows := [1]cstring{
+            memory.owned_string_cstring(&utf8_value),
+        }
+        wide_environment := utf16_environment(utf8_rows[:])
+        testing.expect(test, wide_environment != nil)
+        if wide_environment != nil {
+            native_free(cast[rawptr](wide_environment))
+        }
+        memory.owned_string_destroy(&utf8_value)
         missing := run_path(
             "C:\\Windows\\System32\\draft-missing-program.exe",
         )

@@ -68,11 +68,11 @@ eight-aligned `sigaction` record: one handler pointer, 32-bit signal mask, and
 and zero flags, and restores the complete prior record.
 
 `core/process` uses Darwin's LP64 `fork`/`chdir`/`execv`/`execve`/`waitpid`
-boundary. Argument and environment pointer tables are complete before `fork`;
-the child performs only async-signal-safe native calls. It retries wait only
-for Darwin `EINTR = 4`, interprets the standard low-seven-bit signal and
-high-eight-bit exit fields, and terminates directory/exec failure through
-`_exit(126)`/`_exit(127)`.
+boundary. The argument and any required replacement-environment pointer tables
+are complete before `fork`; the child performs only async-signal-safe native
+calls. It retries wait only for Darwin `EINTR = 4`, interprets the standard
+low-seven-bit signal and high-eight-bit exit fields, and terminates
+directory/exec failure through `_exit(126)`/`_exit(127)`.
 
 ## C enum ABI
 

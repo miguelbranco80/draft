@@ -691,9 +691,10 @@ refresh_host :: proc(app: ^App) {
 
 // Run_Configuration owns every variable-length service string for one
 // synchronous child launch. The cstring arrays are ordinary Dynamic values,
-// built only after all owners are appended, so owner-record relocation can
-// never invalidate a pointer. The string bytes themselves live in independent
-// allocations and therefore remain stable until destruction.
+// each built only after its corresponding owner list is complete; the complete
+// configuration is not exposed unless every field loads successfully. Each
+// string's bytes live in an independent allocation and therefore remain stable
+// even if growing an owner array relocates its records.
 Run_Configuration :: struct {
     argument_owners: array.Dynamic[memory.Owned_String],
     arguments: array.Dynamic[cstring],

@@ -235,3 +235,28 @@ for `draft-x86_64-linux-gnu-v2`, and
 `22186fba98f4f600a0f6856512e7a07f176528ae6a460a5865b9195522025828`
 for `draft-x86_64-windows-msvc-v2`. The native `core/process` integration test
 and all ten example/integration tests passed on the AArch64 macOS host.
+
+## Process storage cleanup revalidation
+
+On 2026-07-24, the common process implementation replaced its remaining manual
+C-string pointer table with `core/array.Dynamic[cstring]`, and the POSIX path
+stopped allocating an `envp` table for the ordinary inherited-environment
+`execv` branch. Windows replacement-environment preparation now also rejects a
+non-ASCII inherited name as unavailable instead of applying an inexact ASCII
+sort, and the sorter now compares names rather than complete `NAME=value` rows.
+All four saved expansions remained unchanged. The resulting embedded core
+identity is
+`draft-core:57a5212c6aaa96cb1c669756d7b233ae49e770a4bc42778fd45c46fbb5b4e9e0`.
+Provider-free `resolve --revalidate` reused and rechecked all four expansions
+with zero synthesis calls for each target. The committed resolved-program
+digests are
+`4b858ec6777e7a05ffd6e048bd3c05c6adbc7aae078c441cdc1bda9bfa51d501`
+for `draft-aarch64-macos-v6`,
+`be7b3f765782a3802494e27fbd13375c8c48a68f319cbc92a4ae5233241927ef`
+for `draft-aarch64-linux-gnu-v2`,
+`9540144a7b561dfaa1073a72ae3e4316b79f802da06000e08c0b5e01bba8be59`
+for `draft-x86_64-linux-gnu-v2`, and
+`72a7dbc9103f16774734a8dadbd2d254e6992ac71bf8e7c7f799fba7b03c60ca`
+for `draft-x86_64-windows-msvc-v2`. The complete 95-test normal suite passed;
+the embedded-core, native-process, compiler-service, and Turbo IDE library
+tests also passed in the address/undefined-behavior sanitizer build.

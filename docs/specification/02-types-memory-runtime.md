@@ -1107,11 +1107,13 @@ strings, `NAME=value` environment overrides, and an optional exact working
 directory. Arguments exclude `argv[0]`, which is always the executable path.
 Environment overrides replace inherited names with last duplicate winning.
 Windows currently accepts ASCII names only and compares them
-case-insensitively; values remain arbitrary valid UTF-8. An empty override list
-inherits the parent environment, while nil or an empty working-directory
-cstring inherits the current directory. Both operations inherit standard
-handles, wait synchronously, and distinguish invalid options or host
-process-operation failure from a normal exit or signal termination. A POSIX
+case-insensitively; values remain arbitrary valid UTF-8. When overrides require
+a complete replacement environment, a non-ASCII inherited Windows name makes
+the host operation `.unavailable` rather than misordering that native block. An
+empty override list inherits the parent environment, while nil or an empty
+working-directory cstring inherits the current directory. Both operations
+inherit standard handles, wait synchronously, and distinguish invalid options
+or host process-operation failure from a normal exit or signal termination. A POSIX
 child whose exact `execv`/`execve` fails reports exit 127; failure to enter its
 working directory reports exit 126; Windows creation failure reports
 `.unavailable`. Neither operation performs path search or shell interpretation.

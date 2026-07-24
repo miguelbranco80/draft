@@ -49,7 +49,11 @@ Treat these live values as non-copyable by convention:
 
 Pass a pointer to one stable owner. If an intentional transfer is necessary,
 copy the value to the destination and immediately replace the source with its
-zero value before either path can fail or clean up.
+zero value before either path can fail or clean up. A local may instead end its
+lifetime immediately after the structural copy—for example, an `append` as its
+final use—when it has no deferred cleanup and no later branch can observe or
+destroy it. In both forms, the destination becomes the one owner; do not read,
+destroy, or otherwise use the transferred source.
 
 ## Storage and initialization
 
@@ -240,9 +244,11 @@ keys and values. None of these operations call element destructors.
 
 Consequently, putting an owning handle in either generic container requires
 application-defined lifecycle logic. Clean up live elements before `clear` or
-`destroy`, avoid shallow-copy transfers during append/set/rebuild, and decide
-what replacement and removal mean. Prefer stable IDs or non-owning records
-when that policy would otherwise be subtle.
+`destroy`; make an intentional append/set transfer the source's final use or
+zero that source immediately; and decide what replacement and removal mean.
+Container rebuilds must leave exactly one live owner for each allocation.
+Prefer stable IDs or non-owning records when that policy would otherwise be
+subtle.
 
 `map.Map[string,V]` stores shallow string views. The key bytes must outlive map
 membership. Copy keys into stable owned storage if input buffers are transient.

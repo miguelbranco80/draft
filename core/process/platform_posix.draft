@@ -59,11 +59,12 @@ when target.os == .linux {
 when target.os == .macos || target.os == .linux {
     Eintr :: cast[c_abi.int](4)
 
-    // native_run builds both terminated pointer tables before fork. The parent
-    // owns and releases them after waitpid. Allocation-size guards prove every
-    // count and byte multiplication before storage is requested. A child setup
-    // failure deliberately becomes exit 126 or 127 because no Draft cleanup,
-    // allocation, diagnostic, or Context operation is safe after fork.
+    // native_run builds terminated argv and, only for execve, envp before fork.
+    // The parent owns and releases them after waitpid. Allocation-size guards
+    // prove every count and byte multiplication before storage is requested. A
+    // child setup failure deliberately becomes exit 126 or 127 because no
+    // Draft cleanup, allocation, diagnostic, or Context operation is safe
+    // after fork.
     native_run :: proc(
         path: cstring,
         arguments: []cstring,
@@ -72,7 +73,9 @@ when target.os == .macos || target.os == .linux {
         replace_environment: bool,
     ) -> Result {
         if len(arguments) > (~cast[usize](0) / size_of(cstring)) - 2 ||
-            len(environment) > (~cast[usize](0) / size_of(cstring)) - 1 {
+            (replace_environment &&
+                len(environment) >
+                    (~cast[usize](0) / size_of(cstring)) - 1) {
             return Result{error = .unavailable}
         }
         argument_count := len(arguments) + 2
@@ -91,22 +94,28 @@ when target.os == .macos || target.os == .linux {
         }
         native_arguments[argument_count - 1] = nil
 
-        environment_count := len(environment) + 1
-        native_environment := cast[[^]cstring](memory.allocate(
-            environment_count * size_of(cstring),
-            align_of(cstring),
-        ))
-        defer memory.free_bytes(
-            cast[rawptr](native_environment),
-            environment_count * size_of(cstring),
-            align_of(cstring),
-        )
+        // execv inherits the parent environment directly. Construct envp only
+        // for execve; the nil/zero owner below makes the common deferred
+        // cleanup valid on both branches without an otherwise unused
+        // allocation for the ordinary inherited-environment launch.
+        native_environment: [^]cstring
+        environment_count: usize
         if replace_environment {
+            environment_count = len(environment) + 1
+            native_environment = cast[[^]cstring](memory.allocate(
+                environment_count * size_of(cstring),
+                align_of(cstring),
+            ))
             for row, index in environment {
                 native_environment[index] = row
             }
             native_environment[len(environment)] = nil
         }
+        defer memory.free_bytes(
+            cast[rawptr](native_environment),
+            environment_count * size_of(cstring),
+            align_of(cstring),
+        )
 
         child := fork()
         if child < 0 {

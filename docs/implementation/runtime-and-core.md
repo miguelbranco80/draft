@@ -403,8 +403,11 @@ double-NUL environment block from UTF-8 to owned UTF-16. It calls
 `CreateProcessW`, waits, reads the DWORD exit code, and closes both returned
 handles. Windows environment names are currently restricted to ASCII so the
 common byte sorter exactly implements its case-insensitive order; values remain
-UTF-8. This is the foreground IDE Build/Run boundary; redirected and
-asynchronous execution remain intentionally absent.
+UTF-8. A replacement launch reports `.unavailable` if an inherited name is
+non-ASCII; an empty override list asks CreateProcessW to inherit the native
+block directly and needs no such restriction. This is the foreground IDE
+Build/Run boundary; redirected and asynchronous execution remain intentionally
+absent.
 
 ## Hosted process views and core threads
 

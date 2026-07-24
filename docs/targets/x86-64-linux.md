@@ -88,10 +88,11 @@ Target-selected core files fix the following x86-64 glibc 2.39 facts:
 - Linux anonymous private mapping uses `MAP_PRIVATE | MAP_ANONYMOUS = 0x22`.
 
 `core/process` uses glibc `fork`/`chdir`/`execv`/`execve`/`waitpid`. Argument
-and environment pointer tables are complete before `fork`; the child performs
-only async-signal-safe native calls. It retries wait for `EINTR = 4`, interprets
-the Linux/POSIX low-seven-bit signal and high-eight-bit exit fields, and
-terminates directory/exec failure through `_exit(126)`/`_exit(127)`.
+and any required replacement-environment pointer tables are complete before
+`fork`; the child performs only async-signal-safe native calls. It retries wait
+for `EINTR = 4`, interprets the Linux/POSIX low-seven-bit signal and
+high-eight-bit exit fields, and terminates directory/exec failure through
+`_exit(126)`/`_exit(127)`.
 
 The common runtime, allocator, files, threads, terminal, TUI, and validation
 policy is otherwise the same target-independent Draft source used on AArch64.

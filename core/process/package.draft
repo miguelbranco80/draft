@@ -31,13 +31,16 @@ pub Options :: struct {
     working_directory: cstring,
 }
 
-// CString_Array is an internal exact-size pointer table. It exists separately
-// from array.Dynamic because cstring carries a zero-termination contract that
-// must remain visible through generic inference; only the pointed-to strings
-// own bytes.
-CString_Array :: struct {
-    data: [^]cstring,
-    length: usize,
+// Environment_Preparation_Result keeps caller-controlled option errors
+// separate from a host environment which the current target implementation
+// cannot reproduce. In particular, Windows promises ASCII environment names;
+// a non-ASCII inherited name can only be discovered while constructing the
+// complete replacement environment and is therefore unavailable, not an
+// invalid user override.
+Environment_Preparation_Result :: enum u8 {
+    success,
+    invalid_options,
+    unavailable,
 }
 
 // Result distinguishes failure to create/wait from an ordinary nonzero exit.
@@ -90,6 +93,37 @@ environment_name_length :: proc(text: cstring) -> (usize, bool) {
     return (length, length != 0 && bytes[length] == cast[u8]('='))
 }
 
+// environment_sort_name_length returns the name prefix used for deterministic
+// Windows block ordering. Ordinary rows stop at their first '='. Windows also
+// carries hidden drive-directory rows such as `=C:=C:\\...`; their leading '='
+// is part of the name and the second '=' begins the value. Native rows are
+// assumed well formed because os.environment owns their platform conversion.
+environment_sort_name_length :: proc(text: cstring) -> usize {
+    bytes := cast[[^]u8](text)
+    index: usize = 0
+    if bytes[0] == cast[u8]('=') {
+        index = 1
+    }
+    for bytes[index] != 0 && bytes[index] != cast[u8]('=') {
+        index += 1
+    }
+    return index
+}
+
+// environment_name_is_ascii accepts every byte spelling used by a native
+// inherited row, including Windows' hidden drive-directory entries. It checks
+// only the complete name prefix; values remain arbitrary UTF-8.
+environment_name_is_ascii :: proc(text: cstring) -> bool {
+    bytes := cast[[^]u8](text)
+    length := environment_sort_name_length(text)
+    for index: usize = 0; index < length; index += 1 {
+        if bytes[index] >= 0x80 {
+            return false
+        }
+    }
+    return true
+}
+
 // environment_name_equal compares only the NAME portions used for override
 // replacement. POSIX names are byte-sensitive; Windows folds ASCII because
 // that is the operating-system environment-name contract.
@@ -119,14 +153,20 @@ environment_name_equal :: proc(left: cstring, right: cstring) -> bool {
     return true
 }
 
-// environment_row_less supplies the case-insensitive byte order required for
-// the Windows environment block. It is instantiated only by the Windows
-// compile-time branch in prepare_environment.
+// environment_row_less supplies the case-insensitive name order required for
+// the Windows environment block. Values never participate: comparing complete
+// rows would incorrectly put `A1=x` before `A=x` because '1' precedes '='.
+// The operation is instantiated only by prepare_environment's Windows branch.
 environment_row_less :: proc(left, right: cstring) -> bool {
     left_bytes := cast[[^]u8](left)
     right_bytes := cast[[^]u8](right)
-    index: usize
-    for left_bytes[index] != 0 && right_bytes[index] != 0 {
+    left_length := environment_sort_name_length(left)
+    right_length := environment_sort_name_length(right)
+    common_length := left_length
+    if right_length < common_length {
+        common_length = right_length
+    }
+    for index: usize = 0; index < common_length; index += 1 {
         left_byte := left_bytes[index]
         right_byte := right_bytes[index]
         if left_byte >= cast[u8]('a') && left_byte <= cast[u8]('z') {
@@ -138,9 +178,8 @@ environment_row_less :: proc(left, right: cstring) -> bool {
         if left_byte != right_byte {
             return left_byte < right_byte
         }
-        index += 1
     }
-    return left_bytes[index] == 0 && right_bytes[index] != 0
+    return left_length < right_length
 }
 
 // append_owned_environment adds one independent terminated copy. The owner
@@ -161,19 +200,20 @@ append_owned_environment :: proc(
 prepare_environment :: proc(
     overrides: []cstring,
     owners: ^array.Dynamic[memory.Owned_String],
-    pointers: ^CString_Array,
-) -> bool {
+    pointers: ^array.Dynamic[cstring],
+) -> Environment_Preparation_Result {
     array.init(owners)
+    array.init(pointers)
     if len(overrides) == 0 {
-        return true
+        return .success
     }
     for override in overrides {
         if override == nil {
-            return false
+            return .invalid_options
         }
         (_, valid) := environment_name_length(override)
         if !valid {
-            return false
+            return .invalid_options
         }
     }
 
@@ -181,6 +221,17 @@ prepare_environment :: proc(
         inherited_owner: memory.Owned_String
         memory.owned_string_copy(&inherited_owner, inherited)
         inherited_pointer := memory.owned_string_cstring(&inherited_owner)
+        when target.os == .windows {
+            // The Windows environment block must be sorted under the same
+            // case-insensitive name relation used for override replacement.
+            // Fail honestly when the current ASCII-only implementation cannot
+            // reproduce one inherited name; classifying host state as an
+            // invalid user option would make the Result contract misleading.
+            if !environment_name_is_ascii(inherited_pointer) {
+                memory.owned_string_destroy(&inherited_owner)
+                return .unavailable
+            }
+        }
         replaced := false
         for override in overrides {
             if environment_name_equal(inherited_pointer, override) {
@@ -211,19 +262,14 @@ prepare_environment :: proc(
             cast[[^]u8](overrides[index])[:length],
         )
     }
-    pointers^.length = owners^.length
-    if pointers^.length != 0 {
-        if pointers^.length > ~cast[usize](0) / size_of(cstring) {
-            return false
-        }
-        pointers^.data = cast[[^]cstring](memory.allocate(
-            pointers^.length * size_of(cstring),
-            align_of(cstring),
-        ))
+    if owners^.length > ~cast[usize](0) / size_of(cstring) {
+        return .unavailable
     }
-    for index: usize = 0; index < pointers^.length; index += 1 {
-        pointers^.data[index] = memory.owned_string_cstring(
-            &owners^.data[index],
+    array.reserve(pointers, owners^.length)
+    for index: usize = 0; index < owners^.length; index += 1 {
+        array.append(
+            pointers,
+            memory.owned_string_cstring(&owners^.data[index]),
         )
     }
     when target.os == .windows {
@@ -241,28 +287,20 @@ prepare_environment :: proc(
             pointers^.data[cursor] = row
         }
     }
-    return true
+    return .success
 }
 
-// destroy_environment releases every row and the parallel pointer table. It is
-// valid after partial preparation, which keeps validation failures on the same
-// cleanup path as a completed launch.
+// destroy_environment releases every row and the non-owning parallel pointer
+// table. It is valid after partial preparation, which keeps validation failures
+// on the same cleanup path as a completed launch.
 destroy_environment :: proc(
     owners: ^array.Dynamic[memory.Owned_String],
-    pointers: ^CString_Array,
+    pointers: ^array.Dynamic[cstring],
 ) {
+    array.destroy(pointers)
     for index: usize = 0; index < owners^.length; index += 1 {
         memory.owned_string_destroy(&owners^.data[index])
     }
-    if pointers^.data != nil {
-        memory.free_bytes(
-            cast[rawptr](pointers^.data),
-            pointers^.length * size_of(cstring),
-            align_of(cstring),
-        )
-    }
-    pointers^.data = nil
-    pointers^.length = 0
     array.destroy(owners)
 }
 
@@ -280,14 +318,18 @@ pub run_with_options :: proc(path: cstring, options: Options) -> Result {
         }
     }
     environment_owners: array.Dynamic[memory.Owned_String]
-    environment_pointers: CString_Array
-    if !prepare_environment(
+    environment_pointers: array.Dynamic[cstring]
+    environment_result := prepare_environment(
         options.environment,
         &environment_owners,
         &environment_pointers,
-    ) {
+    )
+    if environment_result != .success {
         destroy_environment(&environment_owners, &environment_pointers)
-        return Result{error = .invalid_options}
+        if environment_result == .invalid_options {
+            return Result{error = .invalid_options}
+        }
+        return Result{error = .unavailable}
     }
     defer destroy_environment(&environment_owners, &environment_pointers)
     working_directory := options.working_directory
@@ -301,7 +343,7 @@ pub run_with_options :: proc(path: cstring, options: Options) -> Result {
     return native_run(
         path,
         options.arguments,
-        environment_pointers.data[:environment_pointers.length],
+        array.view(&environment_pointers),
         working_directory,
         len(options.environment) != 0,
     )
