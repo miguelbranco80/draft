@@ -15,7 +15,7 @@ namespace {
 // changes, its identity changes and this profile stays unavailable until that
 // new target has independently qualified the host pass and runtime behavior.
 constexpr std::string_view kAddressSanitizerTargetIdentity =
-    "draft-aarch64-macos-v5";
+    "draft-aarch64-macos-v6";
 
 } // namespace
 

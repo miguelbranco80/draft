@@ -9,7 +9,7 @@
 // sections 5-7 and 12, plus the x86-64 Windows target profile.
 package time
 
-foreign windows_kernel {
+foreign windows {
     query_performance_counter as "QueryPerformanceCounter" :: c proc(
         value: ^i64,
     ) -> i32

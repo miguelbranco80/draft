@@ -1,11 +1,12 @@
 // Native process integration tests for core/process.
 //
-// These tests execute exact platform paths and validate creation, waiting,
-// exit-status, and missing-program behavior. Temporary zero-terminated paths
-// are owned by one local memory.Owned_String for the complete synchronous call;
-// neither process.run nor the test retains a borrowed pointer or native handle.
-// The file depends only on core/memory and core/testing. It exercises the
-// explicit ownership and C-string rules of specification sections 5-7.
+// These tests execute exact platform paths and validate creation, arguments,
+// environment replacement, working-directory selection, waiting, exit status,
+// and missing-program behavior. Temporary zero-terminated values are owned by
+// local memory.Owned_String records for the complete synchronous call; neither
+// process operation retains a borrowed pointer or native handle. The file
+// depends only on core/memory and core/testing and exercises the explicit
+// ownership and C-string rules of specification sections 5-7.
 package process
 
 import core/memory
@@ -23,6 +24,22 @@ run_path :: proc(path: string) -> Result {
     return run(memory.owned_string_cstring(&owned))
 }
 
+// run_path_with_empty_working_directory proves that the documented empty
+// cstring spelling is the same inherited-directory request as nil. The owner
+// stays live through the synchronous native launch.
+run_path_with_empty_working_directory :: proc(path: string) -> Result {
+    executable: memory.Owned_String
+    directory: memory.Owned_String
+    memory.owned_string_copy(&executable, path)
+    memory.owned_string_copy(&directory, "")
+    defer memory.owned_string_destroy(&directory)
+    defer memory.owned_string_destroy(&executable)
+    options := Options{
+        working_directory = memory.owned_string_cstring(&directory),
+    }
+    return run_with_options(memory.owned_string_cstring(&executable), options)
+}
+
 // This native integration test launches an operating-system executable rather
 // than mocking the ABI. POSIX true proves a zero exit; Windows where.exe with no
 // arguments may return nonzero, but creation, waiting, exit-code retrieval, and
@@ -34,6 +51,25 @@ test_native_process_launch :: proc(test: ^testing.Test) {
         testing.expect(test, result.error == .none)
         testing.expect(test, result.exited)
         testing.expect(test, result.exit_code != 0)
+        inherited := run_path_with_empty_working_directory(
+            "C:\\Windows\\System32\\where.exe",
+        )
+        testing.expect(test, inherited.error == .none)
+        testing.expect(test, inherited.exited)
+        non_ascii_environment: memory.Owned_String
+        memory.owned_string_copy(&non_ascii_environment, "Ü=value")
+        invalid_row := [1]cstring{
+            memory.owned_string_cstring(&non_ascii_environment),
+        }
+        non_ascii_options := Options{environment = invalid_row[:]}
+        testing.expect(
+            test,
+            run_with_options(
+                memory.owned_string_cstring(&non_ascii_environment),
+                non_ascii_options,
+            ).error == .invalid_options,
+        )
+        memory.owned_string_destroy(&non_ascii_environment)
         missing := run_path(
             "C:\\Windows\\System32\\draft-missing-program.exe",
         )
@@ -43,6 +79,10 @@ test_native_process_launch :: proc(test: ^testing.Test) {
         testing.expect(test, result.error == .none)
         testing.expect(test, result.exited)
         testing.expect(test, result.exit_code == 0)
+        inherited := run_path_with_empty_working_directory("/usr/bin/true")
+        testing.expect(test, inherited.error == .none)
+        testing.expect(test, inherited.exited)
+        testing.expect(test, inherited.exit_code == 0)
         failed := run_path("/usr/bin/false")
         testing.expect(test, failed.error == .none)
         testing.expect(test, failed.exited)
@@ -52,4 +92,70 @@ test_native_process_launch :: proc(test: ^testing.Test) {
         testing.expect(test, missing.exited)
         testing.expect(test, missing.exit_code == 127)
     }
+
+    executable_text := "/bin/sh"
+    first_argument_text := "-c"
+    script_text := "test \"$DRAFT_PROCESS_CHILD\" = expected && test \"$PWD\" = / && test \"$1\" = \"argument with spaces\""
+    zero_argument_text := "draft-process-test"
+    spaced_argument_text := "argument with spaces"
+    working_directory := "/"
+    when target.os == .windows {
+        executable_text = "C:\\Windows\\System32\\cmd.exe"
+        first_argument_text = "/D"
+        script_text = "/C"
+        zero_argument_text = "if \"%DRAFT_PROCESS_CHILD%\"==\"expected\" (if exist Windows\\System32\\where.exe (exit 0)) else exit 1"
+        spaced_argument_text = ""
+        working_directory = "C:\\"
+    }
+    executable: memory.Owned_String
+    first_argument: memory.Owned_String
+    script: memory.Owned_String
+    zero_argument: memory.Owned_String
+    spaced_argument: memory.Owned_String
+    environment: memory.Owned_String
+    directory: memory.Owned_String
+    memory.owned_string_copy(&executable, executable_text)
+    memory.owned_string_copy(&first_argument, first_argument_text)
+    memory.owned_string_copy(&script, script_text)
+    memory.owned_string_copy(&zero_argument, zero_argument_text)
+    memory.owned_string_copy(&spaced_argument, spaced_argument_text)
+    memory.owned_string_copy(&environment, "DRAFT_PROCESS_CHILD=expected")
+    memory.owned_string_copy(&directory, working_directory)
+    invalid_environment := [1]cstring{nil}
+    invalid_options := Options{environment = invalid_environment[:]}
+    testing.expect(
+        test,
+        run_with_options(
+            memory.owned_string_cstring(&executable),
+            invalid_options,
+        ).error == .invalid_options,
+    )
+    arguments := [4]cstring{
+        memory.owned_string_cstring(&first_argument),
+        memory.owned_string_cstring(&script),
+        memory.owned_string_cstring(&zero_argument),
+        memory.owned_string_cstring(&spaced_argument),
+    }
+    environment_rows := [1]cstring{
+        memory.owned_string_cstring(&environment),
+    }
+    options := Options{
+        arguments = arguments[:],
+        environment = environment_rows[:],
+        working_directory = memory.owned_string_cstring(&directory),
+    }
+    configured := run_with_options(
+        memory.owned_string_cstring(&executable),
+        options,
+    )
+    memory.owned_string_destroy(&directory)
+    memory.owned_string_destroy(&environment)
+    memory.owned_string_destroy(&spaced_argument)
+    memory.owned_string_destroy(&zero_argument)
+    memory.owned_string_destroy(&script)
+    memory.owned_string_destroy(&first_argument)
+    memory.owned_string_destroy(&executable)
+    testing.expect(test, configured.error == .none)
+    testing.expect(test, configured.exited)
+    testing.expect(test, configured.exit_code == 0)
 }

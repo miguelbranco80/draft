@@ -14,7 +14,7 @@ coherent target path. Cross-platform validation execution and provider-backed
 Codex commands remain bootstrap-host limitations rather than target semantics.
 
 The command selector is `x86_64-windows`, the profile identity is
-`draft-x86_64-windows-msvc-v1`, and the target-qualified source tag is
+`draft-x86_64-windows-msvc-v2`, and the target-qualified source tag is
 `x86_64-windows`. It targets `x86_64-pc-windows-msvc`, little-endian COFF,
 64-bit pointers, 4 KiB pages, position-independent small-model code, and
 general-dynamic TLS. Its hosted boundary is Windows 10 with the Universal CRT
@@ -93,11 +93,12 @@ scheme over `malloc` so every supported alignment has one matching release
 operation.
 
 `core/process` uses the LLP64 104-byte/eight-aligned `STARTUPINFOW` and
-24-byte/eight-aligned `PROCESS_INFORMATION` records, converts an exact UTF-8
-application path with `MultiByteToWideChar`, starts it through `CreateProcessW`,
-waits indefinitely, reads the DWORD exit code, and closes both process and
-thread handles. It does not construct a command-line string for the first
-zero-extra-argument operation.
+24-byte/eight-aligned `PROCESS_INFORMATION` records. It converts the exact
+UTF-8 application, CRT-quoted argument vector, optional working directory, and
+case-insensitively sorted complete environment to owned UTF-16, then starts the
+child through `CreateProcessW`. It waits indefinitely, reads the DWORD exit
+code, and closes both process and thread handles. The logical `libc` and
+`windows` provider names match the target's closed UCRT/Kernel32 summaries.
 
 ## Native artifacts and assembly
 

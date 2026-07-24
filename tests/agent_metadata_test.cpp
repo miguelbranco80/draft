@@ -358,7 +358,7 @@ void test_agent_records(TestState &state) {
     EXPECT(state, saw_package_version);
     EXPECT(state, saw_lexical_constant);
     EXPECT(state,
-        synthesis_obligation.target.identity == "draft-aarch64-macos-v5");
+        synthesis_obligation.target.identity == "draft-aarch64-macos-v6");
     EXPECT(state, synthesis_obligation.target.arch == "aarch64");
     EXPECT(state, synthesis_obligation.target.pointer_bits == 64);
     EXPECT(state,

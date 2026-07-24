@@ -4,7 +4,7 @@ This document records the versioned machine and ABI facts of the first Draft tar
 
 ## Initial AArch64 macOS profile
 
-Status: bootstrap target contract; versioned as `draft-aarch64-macos-v5`.
+Status: bootstrap target contract; versioned as `draft-aarch64-macos-v6`.
 
 The first profile targets `arm64-apple-macosx14.0.0`, uses the generic AArch64
 CPU with baseline NEON, 64-bit little-endian pointers, 16 KiB pages, Mach-O,
@@ -67,10 +67,12 @@ eight-aligned `sigaction` record: one handler pointer, 32-bit signal mask, and
 32-bit flags. The core watcher installs only over `SIG_DFL`, uses an empty mask
 and zero flags, and restores the complete prior record.
 
-`core/process` uses Darwin's LP64 `fork`/`execv`/`waitpid` boundary. It retries
-wait only for Darwin `EINTR = 4`, interprets the standard low-seven-bit signal
-and high-eight-bit exit fields, and terminates a failed child exec through
-`_exit(127)`.
+`core/process` uses Darwin's LP64 `fork`/`chdir`/`execv`/`execve`/`waitpid`
+boundary. Argument and environment pointer tables are complete before `fork`;
+the child performs only async-signal-safe native calls. It retries wait only
+for Darwin `EINTR = 4`, interprets the standard low-seven-bit signal and
+high-eight-bit exit fields, and terminates directory/exec failure through
+`_exit(126)`/`_exit(127)`.
 
 ## C enum ABI
 

@@ -79,7 +79,7 @@ struct TemporaryFixture {
         "test \"$(cat \"$work/requested-artifact-00000000.bin\")\" = object-bytes || exit 28\n"
         "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-judgment-request-v4*SITE*judgment-site*TARGET_IDENTITY*draft-aarch64-macos-v5*BRANCH_KIND*if-condition-entered-false*BRANCH_SUBJECT*validated*LOOP_RANGES*LOOP_RANGE_KIND*captured-iteration-length*LOOP_RANGE_BINDING*index*LOOP_RANGE_UPPER*values*JUDGMENT_CLAIM*preserve-the-abi*ATTACHMENT_PATH*EVIDENCE.md*RESOLVED_PROGRAM_SHA256*COMPILER_IDENTITY*draft-bootstrap-cpp-v119*POLICY_IDENTITY*draft-judgment-policy-v1*VALIDATOR_IDENTITY*validator-0*REQUESTED_ARTIFACTS*ARTIFACT_KIND*object*ARTIFACT_FILE*requested-artifact-00000000.bin*ARTIFACT_SHA256*) ;;\n"
+        "  *REQUEST_FORMAT*draft-judgment-request-v4*SITE*judgment-site*TARGET_IDENTITY*draft-aarch64-macos-v6*BRANCH_KIND*if-condition-entered-false*BRANCH_SUBJECT*validated*LOOP_RANGES*LOOP_RANGE_KIND*captured-iteration-length*LOOP_RANGE_BINDING*index*LOOP_RANGE_UPPER*values*JUDGMENT_CLAIM*preserve-the-abi*ATTACHMENT_PATH*EVIDENCE.md*RESOLVED_PROGRAM_SHA256*COMPILER_IDENTITY*draft-bootstrap-cpp-v119*POLICY_IDENTITY*draft-judgment-policy-v1*VALIDATOR_IDENTITY*validator-0*REQUESTED_ARTIFACTS*ARTIFACT_KIND*object*ARTIFACT_FILE*requested-artifact-00000000.bin*ARTIFACT_SHA256*) ;;\n"
         "  *) exit 29 ;;\n"
         "esac\n"
         "case \"$model\" in\n"
@@ -109,7 +109,7 @@ draft::JudgmentRequest make_request() {
   request.obligation.input_digest = draft::sha256("typed judgment input");
   request.obligation.expected_type_digest = draft::sha256("unit");
   request.obligation.expected_type_text = "unit";
-  request.obligation.target.identity = "draft-aarch64-macos-v5";
+  request.obligation.target.identity = "draft-aarch64-macos-v6";
   request.obligation.target.arch = "aarch64";
   request.obligation.target.os = "macos";
   request.obligation.target.abi = "darwin_arm64";

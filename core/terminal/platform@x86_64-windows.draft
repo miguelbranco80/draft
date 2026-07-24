@@ -74,13 +74,13 @@ Wait_Object_0 :: cast[c_abi.unsigned_long](0)
 Wait_Timeout :: cast[c_abi.unsigned_long](258)
 Invalid_Os_Handle :: ~cast[uintptr](0)
 
-foreign windows_ucrt {
+foreign libc {
     descriptor_os_handle as "_get_osfhandle" :: c proc(
         descriptor: c_abi.int,
     ) -> c_abi.intptr_t
 }
 
-foreign windows_kernel {
+foreign windows {
     get_console_mode as "GetConsoleMode" :: c proc(
         handle: rawptr,
         mode: ^c_abi.unsigned_long,

@@ -106,7 +106,7 @@ void test_canonical_task_order(TestState &state) {
           draft::NativePackageUnitInputKind::EmittedNativeBytes);
   EXPECT(state,
       plan.tasks[1].display_name ==
-          "draft-aarch64-macos-v5 hosted runtime");
+          "draft-aarch64-macos-v6 hosted runtime");
   EXPECT(state, plan.tasks[1].output_stem == "hosted-runtime");
   EXPECT(state, plan.tasks[1].source_extension.empty());
   EXPECT(state, !plan.tasks[1].input_bytes.empty());

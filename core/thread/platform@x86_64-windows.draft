@@ -36,7 +36,7 @@ Wait_Object_0 :: cast[c_abi.unsigned_long](0)
 Infinite :: cast[c_abi.unsigned_long](0xffffffff)
 Maximum_Finite_Milliseconds :: cast[u64](0xfffffffe)
 
-foreign windows_kernel {
+foreign windows {
     create_thread as "CreateThread" :: c proc(
         security_attributes: rawptr,
         stack_size: usize,

@@ -12,10 +12,10 @@ operations. It combines features that are most useful when exercised together:
 - native debug information for a program containing generated source.
 
 The committed `.draft` files are content-addressed acceptance inputs, not build
-caches. They contain four checked generated-source objects and separate v6
-resolution manifests for AArch64 macOS, AArch64 GNU/Linux, and x86-64
-GNU/Linux. Each selected program has four sites, and the checked expansions are
-shared across the three targets. The
+caches. They contain four checked generated-source objects and separate v7
+resolution manifests for AArch64 macOS, AArch64 GNU/Linux, x86-64 GNU/Linux,
+and x86-64 Windows. Each selected program has four sites, and the checked
+expansions are shared across the four targets. The
 input digests remain target-specific where the typed obligation contains target
 facts. Validation and judgment evidence is stored independently in the
 workspace-level `.draft/evidence` store and is not selected by either manifest.
@@ -197,3 +197,20 @@ for x86-64 GNU/Linux, and
 for x86-64 Windows. No generated source object changed. The normal CTest
 matrix passed all 93 tests, including provider-free frontend, expansion,
 validation, native run, and relocated-compiler core checks.
+
+## Configured-process target-profile revalidation
+
+On 2026-07-24, the closed system-provider summaries gained the exact
+`core/process` argument/environment/working-directory symbols and advanced all
+four target identities. Provider-free `resolve --revalidate` reused and
+rechecked all four saved expansions with zero synthesis calls on each target;
+no generated source object changed. The resulting committed resolved-program
+digests are
+`1d11757dd656114d98cd7500d31dd9d80c178fbab47d263665eb833184a86abb`
+for `draft-aarch64-macos-v6`,
+`c86d794b7228fef6493a483f856ed08ecff9abf1e67d273f5414c1a8ed7dd0e9`
+for `draft-aarch64-linux-gnu-v2`,
+`def8903f032fd34d8833a3636cc44589b2761e815e6cdbdbc812b5471cd6f260`
+for `draft-x86_64-linux-gnu-v2`, and
+`ae06c1223d19fc49601f98bf94bcccb625f9dced7088bbd5af83f17f5b226745`
+for `draft-x86_64-windows-msvc-v2`.

@@ -1,18 +1,43 @@
 // core/process is the small hosted child-process boundary shared by Draft
-// development tools. The first surface launches one executable with no extra
-// arguments, inherits the parent environment and working directory, waits for
-// completion, and reports exit or signal status explicitly. It performs no
-// shell parsing, command lookup, redirection, or background lifetime.
+// development tools. It launches one exact executable with explicit argument,
+// environment-override, and working-directory policy, waits for completion,
+// and reports exit or signal status. It performs no shell parsing, command
+// lookup, redirection, or background lifetime.
 //
 // Target files own UTF-8/UTF-16 conversion and native process handles. The
-// common package owns the stable Draft result contract. The input cstring is
-// borrowed synchronously and retained only by the child process image after a
-// successful exec/CreateProcess transition.
+// common package owns validation and deterministic inherited-environment
+// merging. Every cstring and slice is borrowed synchronously and remains owned
+// by the caller. Temporary terminated environment copies die after the child
+// has copied them during exec/CreateProcess.
 package process
+
+import core/array
+import core/memory
+import core/os
 
 pub Error :: enum u8 {
     none,
     unavailable,
+    invalid_options,
+}
+
+// Options contains the exact process-facing tail. arguments excludes argv[0];
+// run installs path there. environment contains NAME=value overrides rather
+// than a complete environment. An empty working_directory inherits the parent
+// directory. CString storage must remain live for the synchronous call.
+pub Options :: struct {
+    arguments: []cstring,
+    environment: []cstring,
+    working_directory: cstring,
+}
+
+// CString_Array is an internal exact-size pointer table. It exists separately
+// from array.Dynamic because cstring carries a zero-termination contract that
+// must remain visible through generic inference; only the pointed-to strings
+// own bytes.
+CString_Array :: struct {
+    data: [^]cstring,
+    length: usize,
 }
 
 // Result distinguishes failure to create/wait from an ordinary nonzero exit.
@@ -25,9 +50,259 @@ pub Result :: struct {
     signal: u32,
 }
 
+// run is the zero-configuration convenience operation. It preserves the
+// original core/process surface while giving all launches one implementation
+// and one result contract.
 pub run :: proc(path: cstring) -> Result {
+    options: Options
+    return run_with_options(path, options)
+}
+
+// cstring_length scans one required terminated process string. All callers
+// validate nil before reaching this helper; the returned count excludes NUL.
+cstring_length :: proc(text: cstring) -> usize {
+    bytes := cast[[^]u8](text)
+    length: usize
+    for bytes[length] != 0 {
+        length += 1
+    }
+    return length
+}
+
+// environment_name_length finds the NAME prefix and reports whether the row is
+// a valid nonempty NAME=value spelling. Values may be empty and may contain
+// additional '=' bytes.
+environment_name_length :: proc(text: cstring) -> (usize, bool) {
+    bytes := cast[[^]u8](text)
+    length: usize
+    for bytes[length] != 0 && bytes[length] != cast[u8]('=') {
+        when target.os == .windows {
+            // The bootstrap sorter implements the exact ASCII-insensitive
+            // ordering used below. Reject non-ASCII names instead of emitting
+            // a Unicode environment block in an order CreateProcess does not
+            // define as canonical. Values after '=' remain arbitrary UTF-8.
+            if bytes[length] >= 0x80 {
+                return (0, false)
+            }
+        }
+        length += 1
+    }
+    return (length, length != 0 && bytes[length] == cast[u8]('='))
+}
+
+// environment_name_equal compares only the NAME portions used for override
+// replacement. POSIX names are byte-sensitive; Windows folds ASCII because
+// that is the operating-system environment-name contract.
+environment_name_equal :: proc(left: cstring, right: cstring) -> bool {
+    (left_length, left_valid) := environment_name_length(left)
+    (right_length, right_valid) := environment_name_length(right)
+    if !left_valid || !right_valid || left_length != right_length {
+        return false
+    }
+    left_bytes := cast[[^]u8](left)
+    right_bytes := cast[[^]u8](right)
+    for index: usize = 0; index < left_length; index += 1 {
+        left_byte := left_bytes[index]
+        right_byte := right_bytes[index]
+        when target.os == .windows {
+            if left_byte >= cast[u8]('a') && left_byte <= cast[u8]('z') {
+                left_byte -= cast[u8]('a') - cast[u8]('A')
+            }
+            if right_byte >= cast[u8]('a') && right_byte <= cast[u8]('z') {
+                right_byte -= cast[u8]('a') - cast[u8]('A')
+            }
+        }
+        if left_byte != right_byte {
+            return false
+        }
+    }
+    return true
+}
+
+// environment_row_less supplies the case-insensitive byte order required for
+// the Windows environment block. It is instantiated only by the Windows
+// compile-time branch in prepare_environment.
+environment_row_less :: proc(left, right: cstring) -> bool {
+    left_bytes := cast[[^]u8](left)
+    right_bytes := cast[[^]u8](right)
+    index: usize
+    for left_bytes[index] != 0 && right_bytes[index] != 0 {
+        left_byte := left_bytes[index]
+        right_byte := right_bytes[index]
+        if left_byte >= cast[u8]('a') && left_byte <= cast[u8]('z') {
+            left_byte -= cast[u8]('a') - cast[u8]('A')
+        }
+        if right_byte >= cast[u8]('a') && right_byte <= cast[u8]('z') {
+            right_byte -= cast[u8]('a') - cast[u8]('A')
+        }
+        if left_byte != right_byte {
+            return left_byte < right_byte
+        }
+        index += 1
+    }
+    return left_bytes[index] == 0 && right_bytes[index] != 0
+}
+
+// append_owned_environment adds one independent terminated copy. The owner
+// array may move, but each Owned_String's byte allocation remains stable.
+append_owned_environment :: proc(
+    owners: ^array.Dynamic[memory.Owned_String],
+    bytes: []u8,
+) {
+    owned: memory.Owned_String
+    memory.owned_string_copy_bytes(&owned, bytes)
+    array.append(owners, owned)
+}
+
+// prepare_environment constructs a complete environment only when overrides
+// exist. Parent rows keep operating-system order; overridden names are removed,
+// then each last override is appended in manifest order. Duplicate overrides
+// therefore have one deterministic last-wins meaning on every target.
+prepare_environment :: proc(
+    overrides: []cstring,
+    owners: ^array.Dynamic[memory.Owned_String],
+    pointers: ^CString_Array,
+) -> bool {
+    array.init(owners)
+    if len(overrides) == 0 {
+        return true
+    }
+    for override in overrides {
+        if override == nil {
+            return false
+        }
+        (_, valid) := environment_name_length(override)
+        if !valid {
+            return false
+        }
+    }
+
+    for inherited in os.environment() {
+        inherited_owner: memory.Owned_String
+        memory.owned_string_copy(&inherited_owner, inherited)
+        inherited_pointer := memory.owned_string_cstring(&inherited_owner)
+        replaced := false
+        for override in overrides {
+            if environment_name_equal(inherited_pointer, override) {
+                replaced = true
+                break
+            }
+        }
+        if replaced {
+            memory.owned_string_destroy(&inherited_owner)
+        } else {
+            array.append(owners, inherited_owner)
+        }
+    }
+    for index: usize = 0; index < len(overrides); index += 1 {
+        superseded := false
+        for later := index + 1; later < len(overrides); later += 1 {
+            if environment_name_equal(overrides[index], overrides[later]) {
+                superseded = true
+                break
+            }
+        }
+        if superseded {
+            continue
+        }
+        length := cstring_length(overrides[index])
+        append_owned_environment(
+            owners,
+            cast[[^]u8](overrides[index])[:length],
+        )
+    }
+    pointers^.length = owners^.length
+    if pointers^.length != 0 {
+        if pointers^.length > ~cast[usize](0) / size_of(cstring) {
+            return false
+        }
+        pointers^.data = cast[[^]cstring](memory.allocate(
+            pointers^.length * size_of(cstring),
+            align_of(cstring),
+        ))
+    }
+    for index: usize = 0; index < pointers^.length; index += 1 {
+        pointers^.data[index] = memory.owned_string_cstring(
+            &owners^.data[index],
+        )
+    }
+    when target.os == .windows {
+        // CreateProcess requires a case-insensitively sorted Unicode
+        // environment block. Pointer sorting changes no owner addresses and
+        // leaves the POSIX inherited-order contract untouched.
+        for index: usize = 1; index < pointers^.length; index += 1 {
+            row := pointers^.data[index]
+            cursor := index
+            for cursor != 0 &&
+                environment_row_less(row, pointers^.data[cursor - 1]) {
+                pointers^.data[cursor] = pointers^.data[cursor - 1]
+                cursor -= 1
+            }
+            pointers^.data[cursor] = row
+        }
+    }
+    return true
+}
+
+// destroy_environment releases every row and the parallel pointer table. It is
+// valid after partial preparation, which keeps validation failures on the same
+// cleanup path as a completed launch.
+destroy_environment :: proc(
+    owners: ^array.Dynamic[memory.Owned_String],
+    pointers: ^CString_Array,
+) {
+    for index: usize = 0; index < owners^.length; index += 1 {
+        memory.owned_string_destroy(&owners^.data[index])
+    }
+    if pointers^.data != nil {
+        memory.free_bytes(
+            cast[rawptr](pointers^.data),
+            pointers^.length * size_of(cstring),
+            align_of(cstring),
+        )
+    }
+    pointers^.data = nil
+    pointers^.length = 0
+    array.destroy(owners)
+}
+
+// run_with_options validates borrowed process strings, constructs a complete
+// environment only when overrides exist, and synchronously delegates target
+// creation/waiting. Invalid option syntax is distinct from an unavailable
+// native launch; child exit failure remains an ordinary Result status.
+pub run_with_options :: proc(path: cstring, options: Options) -> Result {
     if path == nil {
         return Result{error = .unavailable}
     }
-    return native_run(path)
+    for argument in options.arguments {
+        if argument == nil {
+            return Result{error = .invalid_options}
+        }
+    }
+    environment_owners: array.Dynamic[memory.Owned_String]
+    environment_pointers: CString_Array
+    if !prepare_environment(
+        options.environment,
+        &environment_owners,
+        &environment_pointers,
+    ) {
+        destroy_environment(&environment_owners, &environment_pointers)
+        return Result{error = .invalid_options}
+    }
+    defer destroy_environment(&environment_owners, &environment_pointers)
+    working_directory := options.working_directory
+    if working_directory != nil && cast[[^]u8](working_directory)[0] == 0 {
+        // Both nil and an explicitly terminated empty string mean inheritance.
+        // Normalize here so every target wrapper receives one native contract:
+        // POSIX must not call chdir("") and Windows must pass null to
+        // CreateProcessW rather than an empty current-directory string.
+        working_directory = nil
+    }
+    return native_run(
+        path,
+        options.arguments,
+        environment_pointers.data[:environment_pointers.length],
+        working_directory,
+        len(options.environment) != 0,
+    )
 }

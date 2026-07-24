@@ -37,7 +37,7 @@ assertion checks that the generated `i64` expression produced `42`.
 The successful resolve creates:
 
 ```text
-/tmp/draft-agent-pending/.draft/resolutions/draft-aarch64-macos-v5/packages/app/resolution.json
+/tmp/draft-agent-pending/.draft/resolutions/draft-aarch64-macos-v6/packages/app/resolution.json
 /tmp/draft-agent-pending/.draft/generated/<content-digest>.draft
 ```
 

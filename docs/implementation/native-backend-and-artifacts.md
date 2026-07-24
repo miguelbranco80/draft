@@ -422,9 +422,9 @@ Status: complete harness required on AArch64 macOS, AArch64 Linux, and x86-64
 Linux; native artifact/application smoke required on x86-64 Windows.
 
 The native integration executables select the target matching the host pair:
-Apple Silicon exercises `draft-aarch64-macos-v5`, AArch64 Linux exercises
-`draft-aarch64-linux-gnu-v1`, and x86-64 Linux exercises
-`draft-x86_64-linux-gnu-v1`. Every host compiles complete example packages,
+Apple Silicon exercises `draft-aarch64-macos-v6`, AArch64 Linux exercises
+`draft-aarch64-linux-gnu-v2`, and x86-64 Linux exercises
+`draft-x86_64-linux-gnu-v2`. Every host compiles complete example packages,
 builds and runs executables, provokes the selected trap path, repeats every
 artifact build to compare its complete output tree, and compile a C client
 against the generated header and shared library. Mach-O cases additionally

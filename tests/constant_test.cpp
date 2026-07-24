@@ -32,7 +32,7 @@ struct TestState {
 
 [[nodiscard]] draft::TargetFacts test_target() {
   draft::TargetFacts target;
-  target.identity = "draft-aarch64-macos-v5";
+  target.identity = "draft-aarch64-macos-v6";
   target.arch = "aarch64";
   target.os = "macos";
   target.abi = "darwin_arm64";

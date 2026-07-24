@@ -21,7 +21,7 @@ Page_Read_Write :: cast[u32](0x04)
 Page_Execute_Read :: cast[u32](0x20)
 Page_Execute_Read_Write :: cast[u32](0x40)
 
-foreign windows_kernel {
+foreign windows {
     virtual_alloc as "VirtualAlloc" :: c proc(
         address: rawptr,
         size: usize,

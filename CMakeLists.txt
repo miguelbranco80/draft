@@ -1086,7 +1086,7 @@ if(BUILD_TESTING)
   set_tests_properties(
     draft_aarch64_linux_target_driver
     PROPERTIES PASS_REGULAR_EXPRESSION
-      "identity draft-aarch64-linux-gnu-v1.*triple aarch64-unknown-linux-gnu"
+      "identity draft-aarch64-linux-gnu-v2.*triple aarch64-unknown-linux-gnu"
   )
   add_test(
     NAME draft_aarch64_linux_check_driver
@@ -1105,7 +1105,7 @@ if(BUILD_TESTING)
   set_tests_properties(
     draft_x86_64_linux_target_driver
     PROPERTIES PASS_REGULAR_EXPRESSION
-      "identity draft-x86_64-linux-gnu-v1.*triple x86_64-unknown-linux-gnu"
+      "identity draft-x86_64-linux-gnu-v2.*triple x86_64-unknown-linux-gnu"
   )
   add_test(
     NAME draft_x86_64_linux_check_driver
@@ -1124,7 +1124,7 @@ if(BUILD_TESTING)
   set_tests_properties(
     draft_x86_64_windows_target_driver
     PROPERTIES PASS_REGULAR_EXPRESSION
-      "identity draft-x86_64-windows-msvc-v1.*triple x86_64-pc-windows-msvc"
+      "identity draft-x86_64-windows-msvc-v2.*triple x86_64-pc-windows-msvc"
   )
   add_test(
     NAME draft_x86_64_windows_c_abi_check_driver
@@ -1332,6 +1332,24 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
       draft_core_terminal_tests
+      PROPERTIES LABELS "integration"
+    )
+
+    # core/process owns the exact argv/environment/directory conversion on each
+    # hosted target. Its native test launches fixed system executables from an
+    # isolated copied workspace so no validation state reaches the checkout.
+    add_test(
+      NAME draft_core_process_tests
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core-process-test"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_core_process_test.cmake"
+    )
+    set_tests_properties(
+      draft_core_process_tests
       PROPERTIES LABELS "integration"
     )
 

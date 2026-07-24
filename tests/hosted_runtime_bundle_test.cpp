@@ -75,10 +75,10 @@ void expect_runtime_symbols(
 
 void test_complete_canonical_bundle(TestState &state) {
   constexpr std::array<std::string_view, 4> expected_identities{
-      "draft-aarch64-macos-v5",
-      "draft-aarch64-linux-gnu-v1",
-      "draft-x86_64-linux-gnu-v1",
-      "draft-x86_64-windows-msvc-v1",
+      "draft-aarch64-macos-v6",
+      "draft-aarch64-linux-gnu-v2",
+      "draft-x86_64-linux-gnu-v2",
+      "draft-x86_64-windows-msvc-v2",
   };
   const std::span<const draft::EmbeddedHostedRuntimeObject> runtimes =
       draft::embedded_hosted_runtime_objects();

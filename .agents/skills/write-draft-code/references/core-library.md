@@ -432,19 +432,28 @@ errno, or asynchronous I/O. The separate minimal child-process boundary is in
 Blocking execution of one exact executable path:
 
 ```draft
-process.Error // .none, .unavailable
+process.Error // .none, .unavailable, .invalid_options
 process.Result{error, exited, exit_code, signal}
 process.run(path: cstring) -> process.Result
+process.Options{arguments: []cstring, environment: []cstring,
+                working_directory: cstring}
+process.run_with_options(path: cstring, options: process.Options)
+    -> process.Result
 ```
 
-`run` supplies no extra arguments, inherits the current directory, environment,
-and standard handles, and waits for completion. A nonzero child exit still has
+`run` supplies no extra arguments. `run_with_options` accepts an argument tail,
+last-wins `NAME=value` overrides over the inherited environment, and an
+optional working directory. Nil or an empty working-directory cstring inherits
+the parent's directory. Both inherit standard handles and wait for
+completion. Every cstring and slice remains caller-owned for the synchronous
+call. Windows currently requires ASCII environment names; values remain UTF-8.
+A nonzero child exit still has
 `error == .none`; inspect `exited`, `exit_code`, and `signal`. The path must be
 an exact zero-terminated executable path: there is no PATH lookup, command
-string, shell, quoting, pipes, redirection, detached/background lifetime,
+string, shell, pipes, redirection, detached/background lifetime,
 cancellation, or asynchronous API. A POSIX `execv` failure appears as exit 127;
-a Windows creation failure returns `.unavailable`. Keep the input cstring alive
-through the synchronous call.
+a POSIX working-directory failure appears as exit 126; a Windows creation
+failure returns `.unavailable`.
 
 ## `core/random`
 
@@ -842,7 +851,7 @@ may need:
 
 - path manipulation, directories, metadata, random-access files, or rename;
 - general signal-safe terminal recovery beyond the scoped resize handler;
-- sockets, argument-bearing/redirected/background processes, general signals,
+- sockets, redirected/background processes, general signals,
   dynamic libraries, or event loops;
 - Unicode normalization, general property queries, case mapping, shaping, bidi,
   locale tailoring, or line breaking;

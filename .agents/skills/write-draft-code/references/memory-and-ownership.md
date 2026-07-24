@@ -253,6 +253,12 @@ membership. Copy keys into stable owned storage if input buffers are transient.
 `close(^File)` clears only the passed copy after successful close. Pick one
 owner; pass `File` by value only to operations that borrow the descriptor.
 
+`process.run_with_options` synchronously borrows the executable cstring, every
+argument/environment cstring, both slice tables, and the optional working
+directory. Keep every backing owner alive and unmoved until it returns. The
+package copies only the complete environment it must merge; it retains no
+caller pointer after the child has been created and waited for.
+
 `terminal.Session` borrows its input `os.File` and owns the exact native mode
 that must be restored. Keep the Session at one stable address, restore before
 closing the descriptor, and do not copy an active or suspended value. Suspend

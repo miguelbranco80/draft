@@ -99,9 +99,14 @@ namespace {
 linux_system_foreign_summaries() {
   return {
       {"libc", "labs", {}},
+      {"linux", "__errno_location", {}},
       {"linux", "_exit", {}},
+      {"linux", "chdir", {}},
       {"linux", "clock_gettime", {}},
       {"linux", "close", {}},
+      {"linux", "execv", {}},
+      {"linux", "execve", {}},
+      {"linux", "fork", {}},
       {"linux", "getpid", {}},
       {"linux", "mmap", {}},
       {"linux", "mprotect", {}},
@@ -123,6 +128,7 @@ linux_system_foreign_summaries() {
       {"linux", "read", {}},
       {"linux", "sched_yield", {}},
       {"linux", "unlink", {}},
+      {"linux", "waitpid", {}},
       {"linux", "write", {}},
   };
 }
@@ -152,6 +158,7 @@ windows_system_foreign_summaries() {
       {"libc", "wcslen", {}},
       {"windows", "AcquireSRWLockExclusive", {}},
       {"windows", "CloseHandle", {}},
+      {"windows", "CreateProcessW", {}},
       {"windows", "CreateThread", {2}},
       {"windows", "FlsAlloc", {0}},
       {"windows", "FlsFree", {}},
@@ -160,6 +167,7 @@ windows_system_foreign_summaries() {
       {"windows", "GetConsoleMode", {}},
       {"windows", "GetConsoleScreenBufferInfo", {}},
       {"windows", "GetCurrentThreadId", {}},
+      {"windows", "GetExitCodeProcess", {}},
       {"windows", "InitializeConditionVariable", {}},
       {"windows", "InitializeSRWLock", {}},
       {"windows", "MultiByteToWideChar", {}},
@@ -184,7 +192,7 @@ windows_system_foreign_summaries() {
 
 TargetProfile make_aarch64_macos_profile() {
   TargetProfile profile;
-  profile.facts.identity = "draft-aarch64-macos-v5";
+  profile.facts.identity = "draft-aarch64-macos-v6";
   profile.facts.arch = "aarch64";
   profile.facts.os = "macos";
   profile.facts.abi = "darwin_arm64";
@@ -226,9 +234,14 @@ TargetProfile make_aarch64_macos_profile() {
   // another System API requires deciding whether it calls or stores any Draft
   // procedure pointer and then changing the target profile identity.
   profile.system_foreign_summaries = {
+      {"darwin", "__error", {}},
       {"darwin", "_exit", {}},
+      {"darwin", "chdir", {}},
       {"darwin", "clock_gettime_nsec_np", {}},
       {"darwin", "close", {}},
+      {"darwin", "execv", {}},
+      {"darwin", "execve", {}},
+      {"darwin", "fork", {}},
       {"darwin", "getpid", {}},
       {"darwin", "mmap", {}},
       {"darwin", "mprotect", {}},
@@ -250,6 +263,7 @@ TargetProfile make_aarch64_macos_profile() {
       {"darwin", "read", {}},
       {"darwin", "sched_yield", {}},
       {"darwin", "unlink", {}},
+      {"darwin", "waitpid", {}},
       {"darwin", "write", {}},
       {"libc", "labs", {}},
   };
@@ -259,7 +273,7 @@ TargetProfile make_aarch64_macos_profile() {
 
 TargetProfile make_aarch64_linux_profile() {
   TargetProfile profile;
-  profile.facts.identity = "draft-aarch64-linux-gnu-v1";
+  profile.facts.identity = "draft-aarch64-linux-gnu-v2";
   profile.facts.arch = "aarch64";
   profile.facts.os = "linux";
   profile.facts.abi = "aapcs64_gnu";
@@ -303,7 +317,7 @@ TargetProfile make_aarch64_linux_profile() {
 
 TargetProfile make_x86_64_linux_profile() {
   TargetProfile profile;
-  profile.facts.identity = "draft-x86_64-linux-gnu-v1";
+  profile.facts.identity = "draft-x86_64-linux-gnu-v2";
   profile.facts.arch = "x86_64";
   profile.facts.os = "linux";
   profile.facts.abi = "sysv_amd64";
@@ -344,7 +358,7 @@ TargetProfile make_x86_64_linux_profile() {
 
 TargetProfile make_x86_64_windows_profile() {
   TargetProfile profile;
-  profile.facts.identity = "draft-x86_64-windows-msvc-v1";
+  profile.facts.identity = "draft-x86_64-windows-msvc-v2";
   profile.facts.arch = "x86_64";
   profile.facts.os = "windows";
   profile.facts.abi = "win64";

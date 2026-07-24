@@ -30,7 +30,7 @@ void test_initial_profile(TestState &state) {
   std::string reason;
   EXPECT(state, draft::validate_target_profile(profile, reason));
   EXPECT(state, reason.empty());
-  EXPECT(state, profile.facts.identity == "draft-aarch64-macos-v5");
+  EXPECT(state, profile.facts.identity == "draft-aarch64-macos-v6");
   EXPECT(state, profile.facts.pointer_bits == 64);
   EXPECT(state, profile.facts.page_size == 16384);
   EXPECT(state, profile.facts.simd_shapes.size() == 19);
@@ -45,11 +45,11 @@ void test_initial_profile(TestState &state) {
   EXPECT(state, profile.parsed_assembly_instructions.size() == 82);
   EXPECT(state, profile.system_link_library == "System");
   EXPECT(state, profile.system_link_providers.size() == 2);
-  EXPECT(state, profile.system_foreign_summaries.size() == 26);
-  EXPECT(state, profile.system_foreign_summaries[13].linker_name ==
+  EXPECT(state, profile.system_foreign_summaries.size() == 32);
+  EXPECT(state, profile.system_foreign_summaries[18].linker_name ==
       "pthread_create");
   EXPECT(state,
-      profile.system_foreign_summaries[13].callback_parameters ==
+      profile.system_foreign_summaries[18].callback_parameters ==
           std::vector<std::uint32_t>{2});
   EXPECT(state, profile.assembly_files.size() == 3);
   EXPECT(state, draft::relocation_model_name(profile.relocation_model) == "pic");
@@ -62,7 +62,7 @@ void test_linux_profile(TestState &state) {
   std::string reason;
   EXPECT(state, draft::validate_target_profile(profile, reason));
   EXPECT(state, reason.empty());
-  EXPECT(state, profile.facts.identity == "draft-aarch64-linux-gnu-v1");
+  EXPECT(state, profile.facts.identity == "draft-aarch64-linux-gnu-v2");
   EXPECT(state, profile.facts.os == "linux");
   EXPECT(state, profile.facts.abi == "aapcs64_gnu");
   EXPECT(state, profile.facts.object_format == "elf");
@@ -76,11 +76,11 @@ void test_linux_profile(TestState &state) {
   EXPECT(state, profile.system_link_library == "c");
   EXPECT(state, profile.system_link_providers ==
       std::vector<std::string>({"libc", "linux"}));
-  EXPECT(state, profile.system_foreign_summaries.size() == 26);
-  EXPECT(state, profile.system_foreign_summaries[14].linker_name ==
+  EXPECT(state, profile.system_foreign_summaries.size() == 32);
+  EXPECT(state, profile.system_foreign_summaries[19].linker_name ==
       "pthread_create");
   EXPECT(state,
-      profile.system_foreign_summaries[14].callback_parameters ==
+      profile.system_foreign_summaries[19].callback_parameters ==
           std::vector<std::uint32_t>{2});
 
   draft::TargetProfile selected;
@@ -94,7 +94,7 @@ void test_x86_64_linux_profile(TestState &state) {
   std::string reason;
   EXPECT(state, draft::validate_target_profile(profile, reason));
   EXPECT(state, reason.empty());
-  EXPECT(state, profile.facts.identity == "draft-x86_64-linux-gnu-v1");
+  EXPECT(state, profile.facts.identity == "draft-x86_64-linux-gnu-v2");
   EXPECT(state, profile.facts.arch == "x86_64");
   EXPECT(state, profile.facts.os == "linux");
   EXPECT(state, profile.facts.abi == "sysv_amd64");
@@ -110,11 +110,11 @@ void test_x86_64_linux_profile(TestState &state) {
   EXPECT(state, profile.parsed_assembly_instructions.empty());
   EXPECT(state, profile.system_link_providers ==
       std::vector<std::string>({"libc", "linux"}));
-  EXPECT(state, profile.system_foreign_summaries.size() == 26);
-  EXPECT(state, profile.system_foreign_summaries[14].linker_name ==
+  EXPECT(state, profile.system_foreign_summaries.size() == 32);
+  EXPECT(state, profile.system_foreign_summaries[19].linker_name ==
       "pthread_create");
   EXPECT(state,
-      profile.system_foreign_summaries[14].callback_parameters ==
+      profile.system_foreign_summaries[19].callback_parameters ==
           std::vector<std::uint32_t>{2});
 
   draft::TargetProfile selected;
@@ -131,7 +131,7 @@ void test_x86_64_windows_profile(TestState &state) {
   std::string reason;
   EXPECT(state, draft::validate_target_profile(profile, reason));
   EXPECT(state, reason.empty());
-  EXPECT(state, profile.facts.identity == "draft-x86_64-windows-msvc-v1");
+  EXPECT(state, profile.facts.identity == "draft-x86_64-windows-msvc-v2");
   EXPECT(state, profile.facts.arch == "x86_64");
   EXPECT(state, profile.facts.os == "windows");
   EXPECT(state, profile.facts.abi == "win64");
@@ -146,16 +146,16 @@ void test_x86_64_windows_profile(TestState &state) {
   EXPECT(state, profile.system_link_providers ==
       std::vector<std::string>({"libc", "windows"}));
   EXPECT(state, profile.system_link_library == "kernel32");
-  EXPECT(state, profile.system_foreign_summaries.size() == 43);
-  EXPECT(state, profile.system_foreign_summaries[18].linker_name ==
+  EXPECT(state, profile.system_foreign_summaries.size() == 45);
+  EXPECT(state, profile.system_foreign_summaries[19].linker_name ==
       "CreateThread");
   EXPECT(state,
-      profile.system_foreign_summaries[18].callback_parameters ==
+      profile.system_foreign_summaries[19].callback_parameters ==
           std::vector<std::uint32_t>{2});
-  EXPECT(state, profile.system_foreign_summaries[19].linker_name ==
+  EXPECT(state, profile.system_foreign_summaries[20].linker_name ==
       "FlsAlloc");
   EXPECT(state,
-      profile.system_foreign_summaries[19].callback_parameters ==
+      profile.system_foreign_summaries[20].callback_parameters ==
           std::vector<std::uint32_t>{0});
 
   draft::TargetProfile selected;

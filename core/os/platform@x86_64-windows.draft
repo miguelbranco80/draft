@@ -36,7 +36,7 @@ Cp_Utf8 :: cast[c_abi.unsigned_int](65001)
 Mb_Err_Invalid_Chars :: cast[c_abi.unsigned_long](0x00000008)
 Maximum_Ucrt_Count :: cast[usize](0xffffffff)
 
-foreign windows_ucrt {
+foreign libc {
     ucrt_wopen as "_wopen" :: c proc(
         path: [^]u16,
         flags: c_abi.int,
@@ -60,7 +60,7 @@ foreign windows_ucrt {
     ucrt_free as "free" :: c proc(storage: rawptr)
 }
 
-foreign windows_kernel {
+foreign windows {
     multi_byte_to_wide_char as "MultiByteToWideChar" :: c proc(
         code_page: c_abi.unsigned_int,
         flags: c_abi.unsigned_long,

@@ -447,7 +447,7 @@ barrier :: proc() {
       draft::render_diagnostics(source.sources, diagnostics);
   EXPECT(state,
          rendered.find("parsed assembly is not supported by target "
-                       "'draft-x86_64-linux-gnu-v1'") != std::string::npos);
+                       "'draft-x86_64-linux-gnu-v2'") != std::string::npos);
   EXPECT(state, rendered.find("asm aarch64") != std::string::npos);
 }
 

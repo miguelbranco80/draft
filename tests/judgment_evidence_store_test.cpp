@@ -34,7 +34,7 @@ struct TestState {
 [[nodiscard]] draft::JudgmentEvidence evidence_attempt(bool passed) {
   draft::JudgmentEvidence evidence;
   evidence.resolved_program = draft::sha256("judged program");
-  evidence.target_identity = "draft-aarch64-macos-v5";
+  evidence.target_identity = "draft-aarch64-macos-v6";
   evidence.compiler_identity = "compiler-v1";
   evidence.policy_identity = "single-validator-all-pass-v1";
   evidence.claim.site_identity = "site-" + draft::sha256("store site").hex();

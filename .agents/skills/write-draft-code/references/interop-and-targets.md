@@ -29,10 +29,10 @@ The compiler currently selects four hosted native target profiles:
 
 | CLI target | Profile identity | ABI and object format | Page size | File tag |
 | --- | --- | --- | --- | --- |
-| `aarch64-macos` | `draft-aarch64-macos-v5` | Darwin arm64, Mach-O | 16 KiB | `aarch64-macos` |
-| `aarch64-linux` | `draft-aarch64-linux-gnu-v1` | GNU AAPCS64, ELF/glibc 2.39 | 4 KiB | `aarch64-linux` |
-| `x86_64-linux` | `draft-x86_64-linux-gnu-v1` | SysV AMD64, ELF/glibc 2.39 | 4 KiB | `x86_64-linux` |
-| `x86_64-windows` | `draft-x86_64-windows-msvc-v1` | Microsoft x64, COFF/UCRT | 4 KiB | `x86_64-windows` |
+| `aarch64-macos` | `draft-aarch64-macos-v6` | Darwin arm64, Mach-O | 16 KiB | `aarch64-macos` |
+| `aarch64-linux` | `draft-aarch64-linux-gnu-v2` | GNU AAPCS64, ELF/glibc 2.39 | 4 KiB | `aarch64-linux` |
+| `x86_64-linux` | `draft-x86_64-linux-gnu-v2` | SysV AMD64, ELF/glibc 2.39 | 4 KiB | `x86_64-linux` |
+| `x86_64-windows` | `draft-x86_64-windows-msvc-v2` | Microsoft x64, COFF/UCRT | 4 KiB | `x86_64-windows` |
 
 All are 64-bit little-endian native profiles, but they are not one generic
 platform. C aggregate rules, narrow scalar extension, enum ABI, thread and

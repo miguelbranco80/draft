@@ -1,8 +1,8 @@
-// Windows process creation converts the borrowed UTF-8 path to UTF-16, passes
-// it as an explicit application name, waits for the process handle, reads its
-// DWORD exit code, and closes both returned handles exactly once. No command
-// line is needed for the first no-argument surface, which also avoids a second
-// quoting language in core/process.
+// Windows process creation converts the exact UTF-8 application, command line,
+// working directory, and optional complete environment to UTF-16. Arguments
+// use the documented Microsoft C-runtime quoting rule before CreateProcessW;
+// no shell or command lookup participates. Both returned handles and every
+// conversion allocation have one visible owner and are released exactly once.
 package process
 
 import core/c_abi
@@ -11,6 +11,7 @@ Cp_Utf8 :: cast[c_abi.unsigned_int](65001)
 Mb_Err_Invalid_Chars :: cast[c_abi.unsigned_long](0x00000008)
 Wait_Object_0 :: cast[c_abi.unsigned_long](0)
 Infinite :: cast[c_abi.unsigned_long](0xffffffff)
+Create_Unicode_Environment :: cast[c_abi.unsigned_long](0x00000400)
 
 Startup_Info :: c struct {
     byte_size: c_abi.unsigned_long,
@@ -40,12 +41,12 @@ Process_Information :: c struct {
     thread_id: c_abi.unsigned_long,
 }
 
-foreign windows_ucrt {
+foreign libc {
     native_malloc as "malloc" :: c proc(size: usize) -> rawptr
     native_free as "free" :: c proc(storage: rawptr)
 }
 
-foreign windows_kernel {
+foreign windows {
     multi_byte_to_wide_char as "MultiByteToWideChar" :: c proc(
         code_page: c_abi.unsigned_int,
         flags: c_abi.unsigned_long,
@@ -77,7 +78,10 @@ foreign windows_kernel {
     close_handle as "CloseHandle" :: c proc(handle: rawptr) -> i32
 }
 
-utf16_path :: proc(path: cstring) -> [^]u16 {
+// utf16_text converts one required terminated UTF-8 string to an independently
+// allocated terminated UTF-16 string. Invalid UTF-8 and allocation/size
+// failures return nil; native_run owns every successful result.
+utf16_text :: proc(path: cstring) -> [^]u16 {
     required := multi_byte_to_wide_char(
         Cp_Utf8,
         Mb_Err_Invalid_Chars,
@@ -112,30 +116,224 @@ utf16_path :: proc(path: cstring) -> [^]u16 {
     return storage
 }
 
-native_run :: proc(path: cstring) -> Result {
+Command_Line :: struct {
+    data: [^]u8,
+    length: usize,
+    capacity: usize,
+}
+
+// append_byte writes into the exactly precomputed command-line allocation.
+// Exhaustion is an internal size-proof failure, not user-controlled recovery.
+append_byte :: proc(bytes: ^Command_Line, value: u8) {
+    assert(bytes^.length < bytes^.capacity, "command-line capacity exhausted")
+    bytes^.data[bytes^.length] = value
+    bytes^.length += 1
+}
+
+// append_quoted_argument emits one argv element under CommandLineToArgvW/CRT
+// rules. Backslashes are copied ordinarily except immediately before a quote
+// or the closing delimiter, where doubling preserves the exact original byte
+// sequence after the child runtime parses the mutable command line.
+append_quoted_argument :: proc(bytes: ^Command_Line, text: cstring) {
+    append_byte(bytes, cast[u8]('"'))
+    source := cast[[^]u8](text)
+    index: usize
+    backslashes: usize
+    for source[index] != 0 {
+        if source[index] == cast[u8]('\\') {
+            backslashes += 1
+            index += 1
+            continue
+        }
+        if source[index] == cast[u8]('"') {
+            for count: usize = 0; count < backslashes * 2 + 1; count += 1 {
+                append_byte(bytes, cast[u8]('\\'))
+            }
+            append_byte(bytes, cast[u8]('"'))
+            backslashes = 0
+            index += 1
+            continue
+        }
+        for count: usize = 0; count < backslashes; count += 1 {
+            append_byte(bytes, cast[u8]('\\'))
+        }
+        backslashes = 0
+        append_byte(bytes, source[index])
+        index += 1
+    }
+    for count: usize = 0; count < backslashes * 2; count += 1 {
+        append_byte(bytes, cast[u8]('\\'))
+    }
+    append_byte(bytes, cast[u8]('"'))
+}
+
+// build_command_line precomputes a conservative upper bound and emits argv[0]
+// followed by every exact argument. The allocation remains mutable because
+// CreateProcessW may modify its command-line buffer during process creation.
+build_command_line :: proc(
+    path: cstring,
+    arguments: []cstring,
+    bytes: ^Command_Line,
+) -> bool {
+    source_bytes := cstring_length(path)
+    for argument in arguments {
+        length := cstring_length(argument)
+        if source_bytes > ~cast[usize](0) - length {
+            return false
+        }
+        source_bytes += length
+    }
+    if len(arguments) > (~cast[usize](0) - 3) / 3 {
+        return false
+    }
+    framing_bytes := len(arguments) * 3 + 3
+    if source_bytes > (~cast[usize](0) - framing_bytes) / 2 {
+        return false
+    }
+    bytes^.capacity = source_bytes * 2 + framing_bytes
+    bytes^.data = cast[[^]u8](native_malloc(bytes^.capacity))
+    if bytes^.data == nil {
+        return false
+    }
+    append_quoted_argument(bytes, path)
+    for argument in arguments {
+        append_byte(bytes, cast[u8](' '))
+        append_quoted_argument(bytes, argument)
+    }
+    append_byte(bytes, 0)
+    return true
+}
+
+// utf16_environment converts the already merged and sorted NAME=value rows to
+// the double-NUL-terminated block required with CREATE_UNICODE_ENVIRONMENT.
+// The returned allocation is nil only on conversion, allocation, or overflow
+// failure and is always released by native_run.
+utf16_environment :: proc(environment: []cstring) -> [^]u16 {
+    required_total: usize = 1
+    for row in environment {
+        required := multi_byte_to_wide_char(
+            Cp_Utf8,
+            Mb_Err_Invalid_Chars,
+            row,
+            -1,
+            nil,
+            0,
+        )
+        if required <= 0 ||
+            required_total > ~cast[usize](0) - cast[usize](required) {
+            return nil
+        }
+        required_total += cast[usize](required)
+    }
+    if required_total > ~cast[usize](0) / size_of(u16) {
+        return nil
+    }
+    storage := cast[[^]u16](native_malloc(required_total * size_of(u16)))
+    if storage == nil {
+        return nil
+    }
+    offset: usize
+    for row in environment {
+        required := multi_byte_to_wide_char(
+            Cp_Utf8,
+            Mb_Err_Invalid_Chars,
+            row,
+            -1,
+            nil,
+            0,
+        )
+        converted := multi_byte_to_wide_char(
+            Cp_Utf8,
+            Mb_Err_Invalid_Chars,
+            row,
+            -1,
+            cast[[^]u16](&storage[offset]),
+            required,
+        )
+        if converted != required {
+            native_free(cast[rawptr](storage))
+            return nil
+        }
+        offset += cast[usize](required)
+    }
+    storage[offset] = 0
+    return storage
+}
+
+// native_run owns all temporary UTF-16/native allocations and both returned
+// process handles. It waits synchronously, converts a completed DWORD status to
+// Result, and reports any conversion/create/wait/handle failure as unavailable.
+native_run :: proc(
+    path: cstring,
+    arguments: []cstring,
+    environment: []cstring,
+    working_directory: cstring,
+    replace_environment: bool,
+) -> Result {
     static_assert(size_of(Startup_Info) == 104)
     static_assert(align_of(Startup_Info) == 8)
     static_assert(size_of(Process_Information) == 24)
     static_assert(align_of(Process_Information) == 8)
-    wide_path := utf16_path(path)
+    wide_path := utf16_text(path)
     if wide_path == nil {
         return Result{error = .unavailable}
+    }
+    command_line: Command_Line
+    if !build_command_line(path, arguments, &command_line) {
+        native_free(cast[rawptr](wide_path))
+        return Result{error = .unavailable}
+    }
+    defer native_free(cast[rawptr](command_line.data))
+    wide_command := utf16_text(cast[cstring](command_line.data))
+    if wide_command == nil {
+        native_free(cast[rawptr](wide_path))
+        return Result{error = .unavailable}
+    }
+    wide_directory: [^]u16
+    if working_directory != nil {
+        wide_directory = utf16_text(working_directory)
+        if wide_directory == nil {
+            native_free(cast[rawptr](wide_command))
+            native_free(cast[rawptr](wide_path))
+            return Result{error = .unavailable}
+        }
+    }
+    wide_environment: [^]u16
+    creation_flags: c_abi.unsigned_long
+    if replace_environment {
+        wide_environment = utf16_environment(environment)
+        if wide_environment == nil {
+            if wide_directory != nil {
+                native_free(cast[rawptr](wide_directory))
+            }
+            native_free(cast[rawptr](wide_command))
+            native_free(cast[rawptr](wide_path))
+            return Result{error = .unavailable}
+        }
+        creation_flags = Create_Unicode_Environment
     }
     startup: Startup_Info
     startup.byte_size = cast[c_abi.unsigned_long](size_of(Startup_Info))
     information: Process_Information
     created := create_process(
         wide_path,
-        nil,
+        wide_command,
         nil,
         nil,
         0,
-        0,
-        nil,
-        nil,
+        creation_flags,
+        cast[rawptr](wide_environment),
+        wide_directory,
         &startup,
         &information,
     )
+    if wide_environment != nil {
+        native_free(cast[rawptr](wide_environment))
+    }
+    if wide_directory != nil {
+        native_free(cast[rawptr](wide_directory))
+    }
+    native_free(cast[rawptr](wide_command))
     native_free(cast[rawptr](wide_path))
     if created == 0 {
         return Result{error = .unavailable}

@@ -12,7 +12,7 @@ C-client, determinism, and sanitizer gate; dated pass counts belong in release
 evidence only after that workflow completes.
 
 The command selector is `x86_64-linux`, the profile identity is
-`draft-x86_64-linux-gnu-v1`, and the target-qualified source tag is
+`draft-x86_64-linux-gnu-v2`, and the target-qualified source tag is
 `x86_64-linux`. It targets `x86_64-unknown-linux-gnu`, little-endian ELF,
 64-bit pointers, 4 KiB pages, position-independent small-model code, and
 general-dynamic TLS. Its hosted contract is Linux 6.8 with glibc 2.39,
@@ -87,9 +87,11 @@ Target-selected core files fix the following x86-64 glibc 2.39 facts:
 - `timespec` is two signed 64-bit words; and
 - Linux anonymous private mapping uses `MAP_PRIVATE | MAP_ANONYMOUS = 0x22`.
 
-`core/process` uses glibc `fork`/`execv`/`waitpid`, retries wait for
-`EINTR = 4`, interprets the Linux/POSIX low-seven-bit signal and high-eight-bit
-exit fields, and terminates a failed child exec through `_exit(127)`.
+`core/process` uses glibc `fork`/`chdir`/`execv`/`execve`/`waitpid`. Argument
+and environment pointer tables are complete before `fork`; the child performs
+only async-signal-safe native calls. It retries wait for `EINTR = 4`, interprets
+the Linux/POSIX low-seven-bit signal and high-eight-bit exit fields, and
+terminates directory/exec failure through `_exit(126)`/`_exit(127)`.
 
 The common runtime, allocator, files, threads, terminal, TUI, and validation
 policy is otherwise the same target-independent Draft source used on AArch64.

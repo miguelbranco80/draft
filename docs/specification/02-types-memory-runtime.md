@@ -1101,15 +1101,21 @@ not secrets, keys, nonces, or tokens.
 such as `time.nanosecond: Duration`; the distinct-operator rules make
 `200 * time.nanosecond` a `Duration`.
 
-`core/process.run` is the initial hosted child-process operation. It borrows one
-exact zero-terminated executable path, supplies no additional arguments,
-inherits the parent environment, current directory, and standard handles, waits
-synchronously, and distinguishes host process-operation failure from a normal
-exit or signal termination. A POSIX child whose exact `execv` fails reports
-exit 127; Windows creation failure reports `.unavailable`. It performs no path
-search or shell interpretation. More
-argument, I/O, and lifetime policy can grow in the package without becoming a
-language or compiler feature.
+`core/process.run` is the minimal hosted child-process operation.
+`run_with_options` additionally accepts borrowed zero-terminated argument
+strings, `NAME=value` environment overrides, and an optional exact working
+directory. Arguments exclude `argv[0]`, which is always the executable path.
+Environment overrides replace inherited names with last duplicate winning.
+Windows currently accepts ASCII names only and compares them
+case-insensitively; values remain arbitrary valid UTF-8. An empty override list
+inherits the parent environment, while nil or an empty working-directory
+cstring inherits the current directory. Both operations inherit standard
+handles, wait synchronously, and distinguish invalid options or host
+process-operation failure from a normal exit or signal termination. A POSIX
+child whose exact `execv`/`execve` fails reports exit 127; failure to enter its
+working directory reports exit 126; Windows creation failure reports
+`.unavailable`. Neither operation performs path search or shell interpretation.
+Pipes, redirection, cancellation, and background lifetime remain absent.
 
 ### Growable arrays and maps
 

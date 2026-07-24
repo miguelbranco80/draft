@@ -112,7 +112,7 @@ arbitrary Clang flags. Draft 1 names `address`, `lifetime`,
 requests are errors. Standalone validation uses the target-availability gate;
 resolution does not accept instrumentation options or run validation.
 
-`draft-aarch64-macos-v5` supports exactly `address`. The native adapter adds
+`draft-aarch64-macos-v6` supports exactly `address`. The native adapter adds
 the standard `sanitize_address` and retained-frame-pointer attributes to every
 definition in its private LLVM snapshot, runs LLVM 22's in-process `asan` pass,
 and lets the matching LLVM Clang driver link the sanitizer runtime from the same

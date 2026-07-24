@@ -30,7 +30,7 @@ struct TestState {
   draft::JudgmentEvidence evidence;
   evidence.attempt = 2;
   evidence.resolved_program = draft::sha256("complete resolved program");
-  evidence.target_identity = "draft-aarch64-macos-v5";
+  evidence.target_identity = "draft-aarch64-macos-v6";
   evidence.compiler_identity = "draft-bootstrap-cpp-v100";
   evidence.policy_identity = "draft-judgment-policy-v1:all-pass";
   evidence.claim.site_identity = "site-" + draft::sha256("judgment site").hex();

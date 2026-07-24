@@ -10,7 +10,7 @@ or userspace ABI is interchangeable.
 Status: implemented and required in native AArch64 Linux CI; Draft-level Linux
 sanitizer profiles remain future work.
 
-The profile identity is `draft-aarch64-linux-gnu-v1`. It targets
+The profile identity is `draft-aarch64-linux-gnu-v2`. It targets
 `aarch64-unknown-linux-gnu`, the GNU AAPCS64 ABI, little-endian ELF, the generic
 Armv8-A CPU with baseline NEON, 64-bit pointers, 4 KiB pages,
 position-independent small-model code, and general-dynamic TLS. Its initial
@@ -80,9 +80,11 @@ eight-aligned public `sigaction` record. Its `sigset_t` is sixteen
 ends the record. The core watcher installs only over `SIG_DFL` with an empty
 mask and zero flags, then restores the saved record exactly.
 
-`core/process` uses glibc `fork`/`execv`/`waitpid`, retries wait for
-`EINTR = 4`, interprets the Linux/POSIX low-seven-bit signal and high-eight-bit
-exit fields, and terminates a failed child exec through `_exit(127)`.
+`core/process` uses glibc `fork`/`chdir`/`execv`/`execve`/`waitpid`. Argument
+and environment pointer tables are complete before `fork`; the child performs
+only async-signal-safe native calls. It retries wait for `EINTR = 4`, interprets
+the Linux/POSIX low-seven-bit signal and high-eight-bit exit fields, and
+terminates directory/exec failure through `_exit(126)`/`_exit(127)`.
 
 The initial cross-target qualification used LLVM/LLD 22.1.8 and an Ubuntu
 24.04 arm64 sysroot containing glibc 2.39, Linux 6.8 UAPI headers, and the GCC

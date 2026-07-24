@@ -380,25 +380,29 @@ are versioned core/target facts, not values inferred from host headers.
 Status: ordinary target-selected Draft implementation on every current hosted
 target; no shell, runtime helper, or compiler intrinsic.
 
-`core/process.run` launches one exact zero-terminated executable path, supplies
-no additional arguments, inherits the current directory, environment, and
-standard handles, waits synchronously, and returns an explicit launch/wait
-`Result` separating parent-side failure from exit/signal completion. A nonzero
-child exit is a successful process operation and remains
-distinguishable from failure to create the parent-side process or wait. The
-operation performs no path search, shell parsing, quoting, pipe/redirection,
-detachment, cancellation, or background lifetime.
+`core/process.run` launches one exact zero-terminated executable path with no
+extra arguments. `run_with_options` adds an exact argument tail, last-wins
+`NAME=value` overrides over the inherited environment, and an optional working
+directory; nil or an empty working-directory cstring means inheritance. Both
+inherit standard handles, wait synchronously, and return an explicit `Result`
+separating invalid options or parent-side failure from exit/signal completion.
+A nonzero child exit is therefore a successful process operation. No operation
+performs path search, shell parsing, pipe/redirection, detachment, cancellation,
+or background lifetime. All cstrings and slices are borrowed for the complete
+synchronous call.
 
-Darwin and Linux use `fork`, an exact two-entry `execv` argument vector, and a
-retrying `waitpid`. The child does no Draft work after `fork`; failed `execv`
-ends through `_exit(127)`. The parent interprets the POSIX status as either an
-eight-bit exit code or terminating signal; consequently an `execv` failure is
-reported as exit 127 rather than `.unavailable`. Windows converts the borrowed
-UTF-8 path to owned UTF-16, passes it as `CreateProcessW`'s explicit application
-name, waits for completion, reads the DWORD exit code, and closes both returned
-handles. The first surface exists for IDE Build/Run; a future argument-bearing
-or redirected operation should extend this package without adding a shell
-language to it.
+Darwin and Linux materialize terminated `argv` and optional complete `envp`
+tables before `fork`, optionally call `chdir`, then use `execv` or `execve` and
+a retrying `waitpid`. The child does no Draft work after `fork`; directory
+failure exits 126 and exec failure exits 127. The parent interprets the POSIX
+status as either an eight-bit exit code or terminating signal. Windows converts
+the application, CRT-quoted command line, optional directory, and sorted
+double-NUL environment block from UTF-8 to owned UTF-16. It calls
+`CreateProcessW`, waits, reads the DWORD exit code, and closes both returned
+handles. Windows environment names are currently restricted to ASCII so the
+common byte sorter exactly implements its case-insensitive order; values remain
+UTF-8. This is the foreground IDE Build/Run boundary; redirected and
+asynchronous execution remain intentionally absent.
 
 ## Hosted process views and core threads
 
