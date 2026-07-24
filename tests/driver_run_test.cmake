@@ -17,17 +17,34 @@ endif()
 file(REMOVE_RECURSE "${TEST_ROOT}")
 file(MAKE_DIRECTORY "${TEST_ROOT}/workspace/app")
 file(MAKE_DIRECTORY "${TEST_ROOT}/workspace/run-directory")
+file(MAKE_DIRECTORY "${TEST_ROOT}/workspace/assets")
+file(WRITE "${TEST_ROOT}/workspace/assets/selected.txt" "selected\n")
 
-file(WRITE "${TEST_ROOT}/workspace/draft.workspace" [=[
-draft-workspace-v1
-default = contract
+if(TARGET_SELECTOR STREQUAL "x86_64-windows")
+  set(inactive_target "aarch64-macos")
+else()
+  set(inactive_target "x86_64-windows")
+endif()
+string(CONCAT workspace_manifest
+  "draft-workspace-v1\n"
+  "default = contract\n"
+  "\n"
+  "[build]\n"
+  "target = ${inactive_target}\n"
+  "runtime-asset[${inactive_target}] = absent:assets/absent.txt\n"
+  "runtime-asset[${TARGET_SELECTOR}] = selected:assets/selected.txt\n"
+  "\n"
+  "[program contract]\n"
+  "root = app\n"
+  "argument = configured\n"
+  "working-directory = run-directory\n"
+  "environment = DRAFT_RUN_CONTRACT=yes\n"
+)
+file(WRITE "${TEST_ROOT}/workspace/draft.workspace" "${workspace_manifest}")
 
-[program contract]
-root = app
-argument = configured
-working-directory = run-directory
-environment = DRAFT_RUN_CONTRACT=yes
-]=])
+# The checked-in target differs from the actual host. Each launch's explicit
+# --target must replace that scalar before selecting qualified native inputs;
+# otherwise the absent inactive asset makes native emission fail.
 
 file(WRITE "${TEST_ROOT}/workspace/app/package.draft" [=[
 // Native run-contract fixture. It observes only the portable process views;

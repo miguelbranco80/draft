@@ -88,11 +88,11 @@ struct CommandManifestContext {
   draft::BuildDefaults effective_build;
 };
 
-// BuildCommandOverrides retains only values explicitly supplied on this build
-// command. Aggregate builds must apply those values after each discovered
-// root's manifest configuration; collapsing them into one pre-discovery value
-// would make it impossible to distinguish a CLI override from a workspace
-// default which another named program is allowed to replace.
+// BuildCommandOverrides retains only native-build values explicitly supplied
+// on one build or run command. Aggregate builds must apply those values after
+// each discovered root's manifest configuration. Collapsing them into one
+// pre-discovery value would make it impossible to distinguish a CLI override
+// from a workspace default which another named program is allowed to replace.
 struct BuildCommandOverrides {
   std::optional<draft::TargetProfile> target;
   std::optional<std::filesystem::path> output_path;
@@ -312,14 +312,22 @@ select_command_package(const std::string &package_spelling,
     draft::merge_build_defaults(defaults, program->build);
   }
 
+  // Target selection must precede native-input selection. A CLI target is the
+  // final scalar value, so suppress the manifest spelling and make the parsed
+  // profile the resolver default; changing only ResolvedBuildPolicy::target
+  // afterward would retain inputs selected for the manifest/default target.
+  draft::TargetProfile default_target = draft::make_aarch64_macos_profile();
+  if (overrides.target.has_value()) {
+    defaults.target.reset();
+    default_target = *overrides.target;
+  }
+
   draft::ResolvedBuildPolicy selected;
   if (!draft::resolve_build_policy(context.workspace_directory, defaults,
-                                   draft::make_aarch64_macos_profile(),
-                                   selected, reason)) {
+                                   default_target, selected, reason)) {
     return false;
   }
 
-  if (overrides.target.has_value()) selected.target = *overrides.target;
   if (overrides.output_path.has_value())
     selected.output_path = overrides.output_path;
   if (overrides.artifact_kind.has_value()) {
@@ -2002,46 +2010,19 @@ int main(int argc, char **argv) {
         timings);
   }
   if (argc >= 3 && std::string_view(argv[1]) == "run") {
-    std::optional<std::string> output;
+    BuildCommandOverrides overrides;
     bool output_set = false;
-    draft::NativeOptimizationLevel optimization =
+    draft::NativeOptimizationLevel parsed_optimization =
         draft::NativeOptimizationLevel::O0;
     bool optimization_set = false;
-    bool emit_debug_symbols = false;
     bool debug_symbols_set = false;
-    bool assertions_off = false;
     bool assertions_set = false;
     bool target_set = false;
-    std::vector<draft::ForeignProviderInput> foreign_providers;
-    std::vector<draft::ForeignProviderSummaryInput> provider_summaries;
-    std::vector<draft::RuntimeAssetInput> runtime_assets;
     std::vector<std::string> program_arguments;
     std::optional<std::filesystem::path> working_directory;
     std::vector<std::string> environment;
-    bool cli_providers = false;
-    bool cli_provider_summaries = false;
-    bool cli_runtime_assets = false;
     bool cli_environment = false;
     bool cli_working_directory = false;
-
-    draft::ResolvedBuildPolicy manifest_build;
-    std::string manifest_build_error;
-    if (!draft::resolve_build_policy(
-            command_context.workspace_directory,
-            command_context.effective_build,
-            draft::make_aarch64_macos_profile(), manifest_build,
-            manifest_build_error)) {
-      std::cerr << "error: " << manifest_build_error << '\n';
-      return 2;
-    }
-    if (manifest_build.output_path.has_value())
-      output = manifest_build.output_path->string();
-    optimization = manifest_build.optimization;
-    emit_debug_symbols = manifest_build.emit_debug_symbols;
-    assertions_off = !manifest_build.runtime_assertions;
-    foreign_providers = std::move(manifest_build.foreign_providers);
-    provider_summaries = std::move(manifest_build.provider_summaries);
-    runtime_assets = std::move(manifest_build.runtime_assets);
     if (command_context.program != nullptr) {
       program_arguments = command_context.program->arguments;
       environment = command_context.program->environment;
@@ -2068,19 +2049,21 @@ int main(int argc, char **argv) {
         target_set = true;
         if (!select_command_target(argv[++index], target))
           return 2;
+        overrides.target = target;
       } else if (argument == "--assertions=off" && !assertions_set) {
-        assertions_off = true;
         assertions_set = true;
+        overrides.runtime_assertions = false;
       } else if (argument.starts_with("-O")) {
-        if (!parse_native_optimization_argument(argument, optimization_set,
-                                                optimization)) {
+        if (!parse_native_optimization_argument(
+                argument, optimization_set, parsed_optimization)) {
           return 2;
         }
+        overrides.optimization = parsed_optimization;
       } else if (argument == "--debug-symbols" && !debug_symbols_set) {
-        emit_debug_symbols = true;
         debug_symbols_set = true;
+        overrides.emit_debug_symbols = true;
       } else if (argument == "-o" && !output_set && index + 1 < argc) {
-        output = argv[++index];
+        overrides.output_path = std::filesystem::path(argv[++index]);
         output_set = true;
       } else if (argument == "--cwd" && !cli_working_directory &&
                  index + 1 < argc) {
@@ -2099,41 +2082,35 @@ int main(int argc, char **argv) {
         }
         environment.emplace_back(argv[++index]);
       } else if (argument == "--provider" && index + 1 < argc) {
-        if (!cli_providers) {
-          foreign_providers.clear();
-          cli_providers = true;
-        }
+        if (!overrides.foreign_providers.has_value())
+          overrides.foreign_providers.emplace();
         draft::ForeignProviderInput provider;
         std::string reason;
         if (!draft::parse_foreign_provider_input(argv[++index], provider, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
-        foreign_providers.push_back(std::move(provider));
+        overrides.foreign_providers->push_back(std::move(provider));
       } else if (argument == "--provider-summary" && index + 1 < argc) {
-        if (!cli_provider_summaries) {
-          provider_summaries.clear();
-          cli_provider_summaries = true;
-        }
+        if (!overrides.provider_summaries.has_value())
+          overrides.provider_summaries.emplace();
         draft::ForeignProviderSummaryInput summary;
         std::string reason;
         if (!draft::parse_foreign_provider_summary_input(argv[++index], summary, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
-        provider_summaries.push_back(std::move(summary));
+        overrides.provider_summaries->push_back(std::move(summary));
       } else if (argument == "--runtime-asset" && index + 1 < argc) {
-        if (!cli_runtime_assets) {
-          runtime_assets.clear();
-          cli_runtime_assets = true;
-        }
+        if (!overrides.runtime_assets.has_value())
+          overrides.runtime_assets.emplace();
         draft::RuntimeAssetInput asset;
         std::string reason;
         if (!draft::parse_runtime_asset_input(argv[++index], asset, reason)) {
           std::cerr << "error: " << reason << '\n';
           return 2;
         }
-        runtime_assets.push_back(std::move(asset));
+        overrides.runtime_assets->push_back(std::move(asset));
       } else if (is_timing_argument(argument)) {
         continue;
       } else {
@@ -2151,11 +2128,25 @@ int main(int argc, char **argv) {
       }
       working_directory = canonical;
     }
+
+    draft::ResolvedBuildPolicy build;
+    std::string build_error;
+    if (!resolve_effective_build_configuration(
+            command_context, command_context.program, overrides, build,
+            build_error)) {
+      std::cerr << "error: " << build_error << '\n';
+      return 2;
+    }
     return run_package(
-        command_path, target, output, optimization, emit_debug_symbols,
-        assertions_off ? draft::RuntimeAssertionMode::Off
-                       : draft::RuntimeAssertionMode::On,
-        foreign_providers, provider_summaries, runtime_assets,
+        command_path, build.target,
+        build.output_path.has_value()
+            ? std::optional<std::string>(build.output_path->string())
+            : std::nullopt,
+        build.optimization, build.emit_debug_symbols,
+        build.runtime_assertions ? draft::RuntimeAssertionMode::On
+                                 : draft::RuntimeAssertionMode::Off,
+        build.foreign_providers, build.provider_summaries,
+        build.runtime_assets,
         program_arguments, working_directory, environment, timings);
   }
   if (argc >= 3 && (std::string_view(argv[1]) == "test" ||
