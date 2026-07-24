@@ -52,7 +52,7 @@ optimized Draft application, and expose that directory to the loader:
 
 ```sh
 RAYLIB=$(realpath build/raylib-desktop/raylib/libraylib.dylib)
-build/draftc build examples/raylib-asteroids --root app \
+build/draftc build examples/raylib-asteroids/app \
   --target aarch64-macos -O2 \
   --provider "raylib=shared-library:$RAYLIB" \
   -o build/draft-asteroids
@@ -64,7 +64,7 @@ On x86-64 Linux, use the corresponding target and loader variable (use
 
 ```sh
 RAYLIB=$(realpath build/raylib-desktop/raylib/libraylib.so)
-build/draftc build examples/raylib-asteroids --root app \
+build/draftc build examples/raylib-asteroids/app \
   --target x86_64-linux -O2 \
   --provider "raylib=shared-library:$RAYLIB" \
   -o build/draft-asteroids
@@ -88,7 +88,7 @@ cmake -S vendor/raylib -B build/raylib-desktop -A x64 `
   -DSUPPORT_BUSY_WAIT_LOOP=OFF
 cmake --build build/raylib-desktop --config Release --parallel 4
 $raylib = (Resolve-Path build/raylib-desktop/raylib/Release/raylib.lib).Path
-build/Release/draftc.exe build examples/raylib-asteroids --root app `
+build/Release/draftc.exe build examples/raylib-asteroids/app `
   --target x86_64-windows -O2 `
   --provider "raylib=archive:$raylib" `
   -o build/draft-asteroids.exe
@@ -104,7 +104,7 @@ when selecting the `.lib` and `.dll`.
 The game rules need no provider:
 
 ```sh
-build/draftc test examples/raylib-asteroids --root game
+build/draftc test examples/raylib-asteroids/game
 ```
 
 The repository integration test additionally builds raylib's software

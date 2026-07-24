@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,6 +34,15 @@ class WorkExecutor;
 enum class PackageFileKind {
   DraftSource,
   AssemblySource,
+};
+
+// EmbeddedPackageFile is one immutable distribution-owned source row. The path
+// is normalized relative to the embedded root (for example
+// `console/package.draft`); contents borrows process-lifetime generated storage.
+// Rows are sorted by relative_path and may include target-qualified source.
+struct EmbeddedPackageFile {
+  std::string_view relative_path;
+  std::string_view contents;
 };
 
 // PackageSourceOverride supplies one complete in-memory source file under the
@@ -76,6 +86,12 @@ struct PackageLoadOptions {
   // number of complete-file tasks. This value never changes source selection,
   // FileId assignment, syntax, or diagnostic order.
   std::size_t file_worker_count = 0;
+  // Nonempty selects an immutable in-memory root instead of filesystem
+  // enumeration. embedded_package_path is `.` for the root or a normalized
+  // slash-separated package path. Source overrides still replace selected
+  // Draft rows by direct filename, exactly as for physical packages.
+  std::span<const EmbeddedPackageFile> embedded_files;
+  std::string embedded_package_path;
 };
 
 // LoadedPackageFile owns no source bytes; FileId points into the caller-owned
@@ -93,6 +109,9 @@ struct LoadedPackageFile {
 // to SourceManager cannot invalidate it. files are in canonical filename order.
 struct LoadedPackage {
   std::string physical_directory;
+  // Embedded packages have no physical attachment root. physical_directory is
+  // then a diagnostic-only logical path such as `core/console`.
+  bool embedded = false;
   std::string short_name;
   std::vector<LoadedPackageFile> files;
 };

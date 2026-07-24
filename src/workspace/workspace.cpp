@@ -327,7 +327,25 @@ private:
       });
     }
 
-    if (!options_.core_directory.empty()) {
+    if (!options_.core_files.empty() && !options_.core_directory.empty()) {
+      diagnostics_.error(
+          SourceRange::invalid(),
+          "core distribution cannot be both embedded and physical");
+    } else if (!options_.core_files.empty()) {
+      if (options_.core_content_identity.empty() ||
+          options_.core_content_identity == "workspace") {
+        diagnostics_.error(
+            SourceRange::invalid(),
+            "core distribution requires a pinned content identity");
+      } else {
+        graph_.roots.push_back({
+            PackageRootKind::Core,
+            options_.core_content_identity,
+            "core",
+            {},
+        });
+      }
+    } else if (!options_.core_directory.empty()) {
       if (options_.core_content_identity.empty() ||
           options_.core_content_identity == "workspace") {
         diagnostics_.error(
@@ -482,21 +500,27 @@ private:
       return PackageId{};
     }
 
-    const std::filesystem::path candidate = relative_path == "."
-        ? std::filesystem::path(root.physical_directory)
-        : std::filesystem::path(root.physical_directory) / relative_path;
-    const std::optional<std::string> canonical = canonical_existing_directory(
-        candidate.string(), import_range, "package");
-    if (!canonical.has_value()) {
-      return PackageId{};
-    }
-    const std::optional<std::string> checked_relative = contained_relative_path(
-        root.physical_directory, *canonical, import_range, "package path");
-    if (!checked_relative.has_value()) {
-      return PackageId{};
+    std::string load_directory;
+    std::string checked_relative = relative_path;
+    if (root.kind == PackageRootKind::Core && root.physical_directory.empty()) {
+      load_directory = relative_path == "."
+          ? "core"
+          : "core/" + relative_path;
+    } else {
+      const std::filesystem::path candidate = relative_path == "."
+          ? std::filesystem::path(root.physical_directory)
+          : std::filesystem::path(root.physical_directory) / relative_path;
+      const std::optional<std::string> canonical = canonical_existing_directory(
+          candidate.string(), import_range, "package");
+      if (!canonical.has_value()) return PackageId{};
+      const std::optional<std::string> contained = contained_relative_path(
+          root.physical_directory, *canonical, import_range, "package path");
+      if (!contained.has_value()) return PackageId{};
+      checked_relative = *contained;
+      load_directory = *canonical;
     }
 
-    const PackageIdentity checked_identity{root.identity, *checked_relative};
+    const PackageIdentity checked_identity{root.identity, checked_relative};
     if (!(checked_identity == identity)) {
       // Canonical symlinks may normalize a spelling to a different in-root
       // directory. Identity follows the canonical target so aliases cannot load
@@ -515,6 +539,10 @@ private:
 
     PackageLoadOptions package_options = options_.package_options;
     package_options.source_overrides.clear();
+    if (root.kind == PackageRootKind::Core && root.physical_directory.empty()) {
+      package_options.embedded_files = options_.core_files;
+      package_options.embedded_package_path = checked_relative;
+    }
     for (const WorkspaceSourceOverride &source_override :
          options_.source_overrides) {
       if (source_override.identity == checked_identity) {
@@ -526,7 +554,7 @@ private:
         "package source loading: ",
         checked_identity);
     PackageLoadResult loaded = draft::load_package(
-        sources_, *canonical, package_options, diagnostics_);
+        sources_, load_directory, package_options, diagnostics_);
     package_timing.finish();
     if (!loaded.ok) {
       return PackageId{};

@@ -9,7 +9,7 @@ boundary.
 Build and run the correctness smoke program:
 
 ```sh
-build/draftc build examples/thinlto-benchmark --root app -O2 \
+build/draftc build examples/thinlto-benchmark/app -O2 \
   -o /tmp/draft-thinlto-benchmark
 /tmp/draft-thinlto-benchmark
 ```
@@ -17,7 +17,7 @@ build/draftc build examples/thinlto-benchmark --root app -O2 \
 Run the isolated benchmark samples:
 
 ```sh
-build/draftc bench examples/thinlto-benchmark --root app -O2
+build/draftc bench examples/thinlto-benchmark/app -O2
 ```
 
 `bench_hidden_draft_boundary` is the ThinLTO-importable path;

@@ -82,8 +82,8 @@ foreach(line IN LISTS matrix_lines)
   foreach(target IN ITEMS
       aarch64-macos aarch64-linux x86_64-linux x86_64-windows)
     execute_process(
-      COMMAND "${DRAFTC}" check "${SOURCE_ROOT}/${workspace}"
-        --root "${root}" --target "${target}"
+      COMMAND "${DRAFTC}" check "${SOURCE_ROOT}/${workspace}/${root}"
+        --target "${target}"
       RESULT_VARIABLE result
       OUTPUT_VARIABLE standard_output
       ERROR_VARIABLE standard_error

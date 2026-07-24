@@ -28,14 +28,14 @@ endif()
 string(REGEX MATCHALL "\\[--timings\\|--timings=all\\]"
   timing_usage_options "${usage_stderr}")
 list(LENGTH timing_usage_options timing_usage_count)
-if(NOT timing_usage_count EQUAL 9 OR
+if(NOT timing_usage_count EQUAL 10 OR
    usage_stderr MATCHES "package commands accept --timings")
   message(FATAL_ERROR
-    "timing options are not shown directly on all nine package commands\n${usage_stderr}")
+    "timing options are not shown directly on all ten package commands\n${usage_stderr}")
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" check "${source_workspace}" --root "${source_root}"
+  COMMAND "${DRAFTC}" check "${source_workspace}/${source_root}"
     --timings
   RESULT_VARIABLE summary_result
   OUTPUT_VARIABLE summary_stdout
@@ -60,7 +60,7 @@ if(summary_stderr MATCHES "worker time \\(" OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" check "${source_workspace}" --root "${source_root}"
+  COMMAND "${DRAFTC}" check "${source_workspace}/${source_root}"
     --timings=all
   RESULT_VARIABLE all_result
   OUTPUT_VARIABLE all_stdout
@@ -71,7 +71,7 @@ if(NOT all_result EQUAL 0)
 endif()
 if(NOT all_stderr MATCHES "source file I/O: package.draft" OR
    NOT all_stderr MATCHES "lex and parse: package.draft" OR
-   NOT all_stderr MATCHES "import graph resolution: workspace:hello" OR
+   NOT all_stderr MATCHES "import graph resolution: workspace:examples/hello" OR
    NOT all_stderr MATCHES "package name set worker time" OR
    NOT all_stderr MATCHES "type identity worker time" OR
    NOT all_stderr MATCHES "semantic ready-wave selection:" OR
@@ -85,7 +85,7 @@ if(NOT all_stderr MATCHES "source file I/O: package.draft" OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" check "${source_workspace}" --root "${source_root}"
+  COMMAND "${DRAFTC}" check "${source_workspace}/${source_root}"
     --timings --timings=all
   RESULT_VARIABLE duplicate_result
   OUTPUT_VARIABLE duplicate_stdout

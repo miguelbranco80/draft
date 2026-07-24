@@ -25,7 +25,7 @@ Copy it to a disposable workspace, then resolve and build the copy:
 rm -rf /tmp/draft-agent-judgment-mix
 cp -R examples/agent-judgment-mix /tmp/draft-agent-judgment-mix
 
-build/draftc resolve /tmp/draft-agent-judgment-mix --root app \
+build/draftc resolve /tmp/draft-agent-judgment-mix/app \
   --build -o /tmp/draft-agent-judgment-mix-program \
   --timings
 /tmp/draft-agent-judgment-mix-program
@@ -36,10 +36,10 @@ Resolution writes the accepted fragments and manifest below
 projection and rebuild it without Codex:
 
 ```sh
-build/draftc expand /tmp/draft-agent-judgment-mix --root app \
+build/draftc expand /tmp/draft-agent-judgment-mix/app \
   --out /tmp/draft-agent-judgment-mix-expanded
-build/draftc check /tmp/draft-agent-judgment-mix --root app
-build/draftc build /tmp/draft-agent-judgment-mix --root app \
+build/draftc check /tmp/draft-agent-judgment-mix/app
+build/draftc build /tmp/draft-agent-judgment-mix/app \
   -o /tmp/draft-agent-judgment-mix-rebuild
 ```
 
@@ -47,8 +47,8 @@ Listing the five surface judgments is also provider-free. Running them is a
 separate explicit Codex-backed action:
 
 ```sh
-build/draftc judge /tmp/draft-agent-judgment-mix --root app --list
-build/draftc judge /tmp/draft-agent-judgment-mix --root app
+build/draftc judge /tmp/draft-agent-judgment-mix/app --list
+build/draftc judge /tmp/draft-agent-judgment-mix/app
 ```
 
 A real project commits the manifest and every referenced generated object after

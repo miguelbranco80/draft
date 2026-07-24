@@ -43,9 +43,12 @@ foreach(line IN LISTS matrix_lines)
   file(COPY "${SOURCE_ROOT}/${workspace}" DESTINATION "${row_directory}")
   get_filename_component(workspace_name "${workspace}" NAME)
   set(copied_workspace "${row_directory}/${workspace_name}")
+  if(NOT EXISTS "${copied_workspace}/draft.workspace")
+    file(WRITE "${copied_workspace}/draft.workspace" "draft-workspace-v1\n")
+  endif()
 
   execute_process(
-    COMMAND "${DRAFTC}" test "${copied_workspace}" --root "${root}"
+    COMMAND "${DRAFTC}" test "${copied_workspace}/${root}"
       --target "${TARGET_SELECTOR}"
     RESULT_VARIABLE test_status
     OUTPUT_VARIABLE test_stdout
@@ -60,7 +63,7 @@ foreach(line IN LISTS matrix_lines)
 
   if(validation STREQUAL "test-bench")
     execute_process(
-      COMMAND "${DRAFTC}" bench "${copied_workspace}" --root "${root}"
+      COMMAND "${DRAFTC}" bench "${copied_workspace}/${root}"
         --target "${TARGET_SELECTOR}" --verify
       RESULT_VARIABLE bench_status
       OUTPUT_VARIABLE bench_stdout

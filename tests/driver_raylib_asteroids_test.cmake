@@ -122,7 +122,7 @@ if(WIN32)
 endif()
 execute_process(
   COMMAND "${DRAFTC}" build
-    "${workspace}" --root app
+    "${workspace}/app"
     --target "${TARGET_SELECTOR}" -O2
     --provider "raylib=${provider_kind}:${provider}"
     -o "${program}"

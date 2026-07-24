@@ -957,10 +957,13 @@ are no hidden package destructors.
 
 ### Program entry
 
-`draft build path/to/workspace --root path/to/package` treats the selected
-package as one executable root. Omitting `--root` discovers every surface
-package-level `main` below the workspace and builds each selected package as an
-independent program target; `--root .` names the workspace-directory package.
+`draft build path/to/package` builds that package when it contains `main`.
+Supplying a broader directory recursively discovers every surface
+package-level `main` below that directory and builds each selected package as
+an independent program target. In particular, `draft build .` builds every
+program in the current workspace; a narrower path restricts discovery to that
+subtree. Nested workspace markers are independent boundaries and are not
+entered by aggregate discovery.
 A hosted executable root must contain exactly one package-level, non-parametric
 ordinary procedure named `main`. The declaration must appear explicitly in
 surface source, although its body may contain synthesis sites. `main` uses the

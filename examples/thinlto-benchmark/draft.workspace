@@ -1,0 +1,5 @@
+draft-workspace-v1
+
+[program thinlto-benchmark]
+root = app
+optimization = O2

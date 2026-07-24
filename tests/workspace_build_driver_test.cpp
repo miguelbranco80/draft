@@ -1,11 +1,11 @@
-// Public workspace-build discovery, selection, and output-layout tests.
+// Public package-path build discovery, selection, and output-layout tests.
 //
 // This process-level fixture owns one disposable workspace with two executable
 // packages and one library. It invokes the real driver with assembly output so
 // every selected root crosses argument parsing, discovery, semantic compilation,
 // LLVM lowering, and artifact publication without requiring a host linker. The
 // test then introduces a broken executable to prove aggregate failure and
-// explicit-root isolation. All filesystem state is removed with the fixture.
+// exact-subtree isolation. All filesystem state is removed with the fixture.
 
 #include "target/profile.h"
 
@@ -57,6 +57,12 @@ struct TemporaryWorkspace {
     if (error) std::exit(EXIT_FAILURE);
     std::filesystem::create_directories(root / "lib", error);
     if (error) std::exit(EXIT_FAILURE);
+
+    std::ofstream marker(root / "draft.workspace", std::ios::binary);
+    marker << "draft-workspace-v1\n";
+    marker.close();
+    if (!marker) std::exit(EXIT_FAILURE);
+
     // Both executable packages intentionally have the same short package name.
     // Their mirrored root paths, rather than a globally unique basename,
     // prevent default artifact collisions.
@@ -158,9 +164,7 @@ void test_discovery_selection_and_failures(TestState &state) {
   EXPECT(state, run_driver({
       DRAFT_DRIVER_PATH,
       "build",
-      workspace.root.string(),
-      "--root",
-      "tools/admin",
+      (workspace.root / "tools" / "admin").string(),
       "--kind",
       "assembly",
       "-o",
@@ -168,19 +172,23 @@ void test_discovery_selection_and_failures(TestState &state) {
   }) == 0);
   EXPECT(state, std::filesystem::is_directory(explicit_output));
 
-  // Duplicate selectors are a command mistake rather than two builds of the
-  // same output namespace.
+  // A package at the workspace boundary has the fixed `workspace` namespace,
+  // which cannot collide with any child package path. Recursive discovery
+  // includes it exactly once alongside the already existing programs.
+  TemporaryWorkspace::write_package(
+      workspace.root, "root_runner", true, false);
   EXPECT(state, run_driver({
       DRAFT_DRIVER_PATH,
       "build",
       workspace.root.string(),
-      "--root",
-      "app",
-      "--root",
-      "app",
       "--kind",
       "assembly",
-  }) == 1);
+  }) == 0);
+  EXPECT(state,
+      std::filesystem::is_directory(
+          workspace.root / ".draft" / "build" /
+          draft::make_aarch64_macos_profile().facts.file_tag /
+          "workspace" / "root_runner-assembly"));
 
   std::error_code error;
   std::filesystem::create_directories(workspace.root / "optional-tool", error);
@@ -200,32 +208,10 @@ void test_discovery_selection_and_failures(TestState &state) {
   EXPECT(state, run_driver({
       DRAFT_DRIVER_PATH,
       "build",
-      workspace.root.string(),
-      "--root",
-      "app",
+      (workspace.root / "app").string(),
       "--kind",
       "assembly",
   }) == 0);
-
-  // Root `.` has a fixed `workspace` namespace which cannot collide with a
-  // child package path. It is selected explicitly because bare build now means
-  // executable discovery, not an implicit root package.
-  TemporaryWorkspace::write_package(
-      workspace.root, "root_runner", true, false);
-  EXPECT(state, run_driver({
-      DRAFT_DRIVER_PATH,
-      "build",
-      workspace.root.string(),
-      "--root",
-      ".",
-      "--kind",
-      "assembly",
-  }) == 0);
-  EXPECT(state,
-      std::filesystem::is_directory(
-          workspace.root / ".draft" / "build" /
-          draft::make_aarch64_macos_profile().facts.file_tag /
-          "workspace" / "root_runner-assembly"));
 }
 
 } // namespace

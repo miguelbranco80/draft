@@ -23,7 +23,7 @@ From the repository root, copy the unresolved workspace and resolve that copy:
 rm -rf /tmp/draft-agent-pending
 cp -R examples/agent-pending /tmp/draft-agent-pending
 
-build/draftc resolve /tmp/draft-agent-pending --root app \
+build/draftc resolve /tmp/draft-agent-pending/app \
   --build -o /tmp/draft-agent-pending-program \
   --timings
 
@@ -46,15 +46,15 @@ complete provider-free source view with:
 
 ```sh
 rm -rf /tmp/draft-agent-pending-expanded
-build/draftc expand /tmp/draft-agent-pending --root app \
+build/draftc expand /tmp/draft-agent-pending/app \
   --out /tmp/draft-agent-pending-expanded
 ```
 
 After resolution, these commands do not contact Codex:
 
 ```sh
-build/draftc check /tmp/draft-agent-pending --root app
-build/draftc build /tmp/draft-agent-pending --root app \
+build/draftc check /tmp/draft-agent-pending/app
+build/draftc build /tmp/draft-agent-pending/app \
   -o /tmp/draft-agent-pending-rebuild
 /tmp/draft-agent-pending-rebuild
 ```
@@ -63,7 +63,7 @@ Judgment is deliberately separate from synthesis and building. To evaluate the
 surface claim after the program is resolved, run:
 
 ```sh
-build/draftc judge /tmp/draft-agent-pending --root app
+build/draftc judge /tmp/draft-agent-pending/app
 ```
 
 A real project should commit the root/target manifest under `.draft/resolutions`

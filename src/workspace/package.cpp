@@ -31,6 +31,7 @@ namespace {
 struct SelectedFile {
   std::string name;
   PackageFileKind kind = PackageFileKind::DraftSource;
+  const EmbeddedPackageFile *embedded = nullptr;
 };
 
 // PackageFileTask owns every mutable object touched while one complete file is
@@ -43,6 +44,7 @@ struct PackageFileTask {
   SelectedFile selected;
   std::filesystem::path physical;
   const PackageSourceOverride *source_override = nullptr;
+  const EmbeddedPackageFile *embedded = nullptr;
   SourceManager sources;
   DiagnosticSink diagnostics;
   std::optional<SyntaxTree> syntax;
@@ -98,6 +100,10 @@ using PackageFileClock = std::chrono::steady_clock;
         task.physical.string() + " [resolved]",
         task.source_override->contents,
         task.source_override->expansion_maps);
+  } else if (task.embedded != nullptr) {
+    load.ok = true;
+    load.file = task.sources.add_source(
+        task.physical.string(), std::string(task.embedded->contents));
   } else {
     load = task.sources.load_file(task.physical.string());
   }
@@ -290,6 +296,7 @@ PackageLoadResult load_package(
     DiagnosticSink &diagnostics) {
   PackageLoadResult result;
   result.package.physical_directory = directory;
+  result.package.embedded = !options.embedded_files.empty();
   const std::size_t initial_error_count = diagnostics.error_count();
 
   if (options.file_tag.empty()) {
@@ -297,46 +304,70 @@ PackageLoadResult load_package(
     return result;
   }
 
-  std::error_code error;
   const std::filesystem::path directory_path(directory);
   TimingScope discovery_timing = options.timings != nullptr
       ? options.timings->scope(
             "package file discovery", TimingVisibility::Detail)
       : TimingScope{};
-  std::filesystem::directory_iterator iterator(directory_path, error);
-  if (error) {
-    diagnostics.error(
-        SourceRange::invalid(),
-        "cannot enumerate package directory '" + directory + "': " + error.message());
-    return result;
-  }
-
   std::vector<SelectedFile> selected;
-  const std::filesystem::directory_iterator end;
-  for (; iterator != end; iterator.increment(error)) {
+  if (!options.embedded_files.empty()) {
+    if (options.embedded_package_path.empty()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "embedded package path must not be empty");
+      return result;
+    }
+    for (const EmbeddedPackageFile &file : options.embedded_files) {
+      const std::size_t slash = file.relative_path.rfind('/');
+      const std::string_view parent = slash == std::string_view::npos
+          ? std::string_view(".")
+          : file.relative_path.substr(0, slash);
+      if (parent != options.embedded_package_path) continue;
+      const std::string_view filename = slash == std::string_view::npos
+          ? file.relative_path
+          : file.relative_path.substr(slash + 1);
+      const std::optional<PackageFileKind> kind =
+          selected_package_file_kind(filename, options);
+      if (kind.has_value()) {
+        selected.push_back({std::string(filename), *kind, &file});
+      }
+    }
+  } else {
+    std::error_code error;
+    std::filesystem::directory_iterator iterator(directory_path, error);
     if (error) {
       diagnostics.error(
           SourceRange::invalid(),
           "cannot enumerate package directory '" + directory + "': " + error.message());
       return result;
     }
-
-    std::error_code type_error;
-    if (!iterator->is_regular_file(type_error)) {
-      if (type_error) {
+    const std::filesystem::directory_iterator end;
+    for (; iterator != end; iterator.increment(error)) {
+      if (error) {
         diagnostics.error(
             SourceRange::invalid(),
-            "cannot inspect package entry '" + iterator->path().string() + "': " +
-                type_error.message());
+            "cannot enumerate package directory '" + directory + "': " +
+                error.message());
         return result;
       }
-      continue;
-    }
 
-    const std::string name = iterator->path().filename().string();
-    const std::optional<PackageFileKind> kind =
-        selected_package_file_kind(name, options);
-    if (kind.has_value()) selected.push_back({name, *kind});
+      std::error_code type_error;
+      if (!iterator->is_regular_file(type_error)) {
+        if (type_error) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "cannot inspect package entry '" + iterator->path().string() + "': " +
+                  type_error.message());
+          return result;
+        }
+        continue;
+      }
+
+      const std::string name = iterator->path().filename().string();
+      const std::optional<PackageFileKind> kind =
+          selected_package_file_kind(name, options);
+      if (kind.has_value()) selected.push_back({name, *kind, nullptr});
+    }
   }
 
   // Bytewise filename order is the canonical source processing order. std::less
@@ -358,6 +389,7 @@ PackageLoadResult load_package(
     PackageFileTask task;
     task.selected = selected_file;
     task.physical = physical;
+    task.embedded = selected_file.embedded;
     const PackageSourceOverride *source_override = find_override(
         options, selected_file.name, task.diagnostics);
     if (source_override != nullptr &&
@@ -444,6 +476,8 @@ PackageLoadResult load_package(
       options.timings->record_completed_event(
           std::string(task.source_override != nullptr
                           ? "resolved source install: "
+                          : task.embedded != nullptr
+                          ? "embedded source load: "
                           : "source file I/O: ") + task.selected.name,
           task.source_nanoseconds,
           TimingVisibility::Detail);

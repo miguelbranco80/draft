@@ -13,8 +13,8 @@ the objective runtime results, so checking, building, and running it never
 contacts Codex:
 
 ```sh
-build/draftc check examples/judgment-tour --root app
-build/draftc build examples/judgment-tour --root app \
+build/draftc check examples/judgment-tour/app
+build/draftc build examples/judgment-tour/app \
   -o /tmp/draft-judgment-tour
 /tmp/draft-judgment-tour
 ```
@@ -25,13 +25,13 @@ Listing sites is provider-free and prints each stable judgment identity, its
 package, its enclosing declaration or type, source file, and occurrence:
 
 ```sh
-build/draftc judge examples/judgment-tour --root app --list
+build/draftc judge examples/judgment-tour/app --list
 ```
 
 Run all selected judgments with the configured Codex CLI:
 
 ```sh
-build/draftc judge examples/judgment-tour --root app
+build/draftc judge examples/judgment-tour/app
 ```
 
 Pass either a package-and-declaration selector such as `app:counter_add`, or one

@@ -5,7 +5,7 @@ target; native execution is qualified on matching hosts.
 
 Turbo Draft is a Draft program, not a C++ editor wrapped around Draft widgets.
 `tools/draftide` contains the hosted Draft `main`; `lib/turbo_editor_app` owns
-buffers, terminal resources, immediate-mode UI state, project interaction,
+buffers, terminal resources, immediate-mode UI state, workspace interaction,
 Build/Run policy, and the event loop. The same application package runs without
 a compiler in `examples/turbo-editor`, which keeps the editor and Turbo UI
 independently reusable.
@@ -32,32 +32,33 @@ type crosses the boundary.
 This seam can therefore be replaced by the self-hosted compiler without
 rewriting the Draft application.
 
-## Files and project selection
+## Files and workspace selection
 
-The project model is “open a workspace directory.” The compiler service
-discovers executable roots using the same workspace selection operation as
-`draftc`; with one root it selects it directly, and with several it selects the
-first deterministic row and opens Project so the user can choose. The target
-defaults to the native host and remains an explicit command-line/session
-choice. An explicitly opened library root remains selectable even without
-`main`. Root and target changes discard the previous checked graph and select
-an ordinary target-applicable source file for the new root.
+The IDE opens an ordinary directory. The compiler service uses the same upward
+`draft.workspace` search as `draftc`, so that directory may be a workspace or a
+package inside one. The nearest marker establishes the import and `.draft/`
+state boundary. With no marker, the opened directory is a standalone
+workspace. The service discovers executable roots below that boundary; with
+one it selects it directly, and with several it selects the first deterministic
+row and opens the program/package view so the user can choose. An explicitly
+opened library package remains selectable for checking even without `main`.
 
-The first manifest is intentionally closed and small:
+When a marker names a default program, the IDE initially selects its `root`:
 
 ```text
-draft-project-v1
-root = examples/turbo-editor
-source = package.draft
+draft-workspace-v1
+default = editor
+
+[program editor]
+root = apps/editor
 ```
 
-The complete `draft.project` file is optional. When present, its `root` is
-required and workspace-relative; `source` is optional, defaults to
-`package.draft`, and names one direct file inside the root. `--root` and
-`--source` are explicit overrides. Turbo Draft reads only
-`<workspace>/draft.project`: it does not search parents, enumerate source files
-from the manifest, or change package/import discovery. With neither manifest
-nor `--root`, executable-root discovery provides the in-memory choice.
+The IDE currently consumes the workspace boundary, exclusions, and default
+program. `--source` may select one direct file inside the active package; no
+root selector is required because the opened path or named default supplies the
+initial package. Other build/run defaults are already compiler-owned manifest
+data and can be exposed progressively by the Draft UI without inventing an
+IDE-only file format.
 
 These selections already contain the information needed for Build and Run. The
 workspace is the filesystem and import-identity boundary. The active root is
@@ -68,7 +69,7 @@ executable. A library root remains useful for focused editing and checking, but
 cannot produce an executable until it supplies a valid `main`.
 
 No directory name other than `core` has package-resolution meaning. For a
-workspace `/project`, `import lib/text` reads `/project/lib/text`; `lib` is only
+workspace `/work`, `import lib/text` reads `/work/lib/text`; `lib` is only
 an ordinary first path component. `import core/console` instead selects the
 compiler distribution's pinned core root, regardless of the shell's current
 directory. Consequently the workspace argument, not the directory from which
@@ -225,8 +226,8 @@ its existing compiler-synthesis meaning.
 
 ## Verification boundary
 
-`draft_project` package tests cover the optional versioned manifest grammar and
-path constraints. `draft_compiler_service_tests` cover C ABI creation, canonical
+`draft_workspace_selection_tests` cover marker discovery, manifest grammar,
+and path constraints. `draft_compiler_service_tests` cover C ABI creation, canonical
 paths, multi-file source transactions, source enumeration, production syntax
 spans, structured package rows, semantic views, invalid-overlay diagnostics,
 retained last-good state, topology changes, automatic root discovery,
@@ -234,7 +235,7 @@ transactional workspace replacement,
 root/target switching, traversal rejection, and native Build.
 Draft package tests cover the application-side Host table, overlay assembly,
 Draft-owned Run, and the buffer/root invariant. `draft_draftide_smoke` launches
-the real Draft-built executable without `--root`, reads the repository manifest,
+the real Draft-built executable, reads the repository workspace marker,
 builds its selected program through the real shared compiler service, retrieves
 syntax/semantic products, and paints a frame without entering an interactive
 terminal. `draft_draftide_auto_root_smoke` repeats that boundary in the

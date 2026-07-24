@@ -16,12 +16,13 @@ endif()
 
 file(REMOVE_RECURSE "${TEST_ROOT}")
 file(MAKE_DIRECTORY "${TEST_ROOT}/workspace/tui")
+file(WRITE "${TEST_ROOT}/workspace/draft.workspace" "draft-workspace-v1\n")
 file(COPY "${SOURCE_ROOT}/core/tui/"
   DESTINATION "${TEST_ROOT}/workspace/tui"
   FILES_MATCHING PATTERN "*.draft")
 
 execute_process(
-  COMMAND "${DRAFTC}" test "${TEST_ROOT}/workspace" --root tui
+  COMMAND "${DRAFTC}" test "${TEST_ROOT}/workspace/tui"
     --target "${TARGET_SELECTOR}"
   RESULT_VARIABLE status
   OUTPUT_VARIABLE standard_output

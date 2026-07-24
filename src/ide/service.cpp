@@ -1,6 +1,6 @@
 // Stable C facade for embedding the bootstrap compiler in Draft tools.
 //
-// The Draft executable owns project selection, source buffers, UI state, and
+// The Draft executable owns workspace selection, source buffers, UI state, and
 // the lifetime of the opaque handle returned here. This module validates and
 // copies create-time paths, owns exactly one CompilerSession behind that
 // handle, and borrows all source/destination byte pointers only for a
@@ -16,6 +16,8 @@
 #include "ide/compiler_session.h"
 
 #include "target/profile.h"
+#include "workspace/manifest.h"
+#include "workspace/selection.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -139,7 +141,7 @@ create_session(const DraftCompilerServiceConfiguration &input,
   }
   const std::string workspace_text(
       borrowed_text(input.workspace_data, input.workspace_length));
-  const std::string root_text(
+  std::string root_text(
       borrowed_text(input.root_data, input.root_length));
   std::string source_text(
       borrowed_text(input.source_data, input.source_length));
@@ -152,11 +154,8 @@ create_session(const DraftCompilerServiceConfiguration &input,
     error_message = "workspace and source must be valid paths";
     return nullptr;
   }
-  const std::filesystem::path root_spelling(root_text);
   const std::filesystem::path source_spelling(source_text);
-  if (root_spelling.is_absolute() || source_spelling.is_absolute() ||
-      has_parent_component(root_spelling) ||
-      has_parent_component(source_spelling) ||
+  if (source_spelling.is_absolute() || has_parent_component(source_spelling) ||
       source_spelling.has_parent_path()) {
     error_message = "root and source must be workspace-relative package paths";
     return nullptr;
@@ -169,15 +168,47 @@ create_session(const DraftCompilerServiceConfiguration &input,
     return nullptr;
   }
 
-  std::error_code path_error;
-  const std::filesystem::path workspace =
-      std::filesystem::canonical(workspace_text, path_error);
-  const bool workspace_is_directory =
-      !path_error && std::filesystem::is_directory(workspace, path_error);
-  if (path_error || !workspace_is_directory) {
+  draft::DiagnosticSink location_diagnostics;
+  std::filesystem::path workspace;
+  std::filesystem::path opened_directory;
+  std::filesystem::path manifest_path;
+  if (!draft::locate_command_scope(
+          workspace_text,
+          workspace,
+          opened_directory,
+          manifest_path,
+          location_diagnostics)) {
     error_message = "workspace directory is unavailable";
+    if (!location_diagnostics.diagnostics().empty()) {
+      error_message += ": ";
+      error_message += location_diagnostics.diagnostics().front().message;
+    }
     return nullptr;
   }
+
+  draft::WorkspaceManifest manifest;
+  if (!draft::load_workspace_manifest(
+          manifest_path, manifest, error_message)) {
+    return nullptr;
+  }
+  if (root_text.empty()) {
+    if (opened_directory != workspace) {
+      const std::filesystem::path relative =
+          opened_directory.lexically_relative(workspace);
+      root_text = relative.empty() ? "." : relative.generic_string();
+    } else if (manifest.default_program.has_value()) {
+      const draft::ProgramConfiguration *program =
+          draft::find_program_by_name(manifest, *manifest.default_program);
+      if (program != nullptr) root_text = program->root;
+    }
+  }
+  const std::filesystem::path root_spelling(root_text);
+  if (root_spelling.is_absolute() || has_parent_component(root_spelling)) {
+    error_message = "root must be a workspace-relative package path";
+    return nullptr;
+  }
+
+  std::error_code path_error;
   draft::ide::CompilerConfiguration configuration;
   configuration.workspace_directory = workspace;
   configuration.source_relative_name = source_spelling.generic_string();

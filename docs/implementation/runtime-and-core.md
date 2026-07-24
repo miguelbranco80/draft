@@ -5,13 +5,35 @@ allocator/core facilities, process and thread support, and compiler-backed
 atomic surface. Portable language behavior remains in the specification;
 exact machine and OS facts live in the selected target profile.
 
+## Compiler-distributed source and runtime
+
+Every compiler client links an immutable byte table containing the exact
+target-qualified source below `core/`. Workspace loading selects and parses
+those bytes directly from memory. It does not search the checkout, the current
+directory, an environment variable, or a path beside `draftc`. The generator
+sorts relative filenames and computes one build-time content identity from the
+framed names and bytes; that identity is the semantic root identity for every
+`core/...` package.
+
+The hosted runtime remains a separate compiler-distributed input because it is
+already target machine code rather than Draft source. CMake compiles one object
+for each supported target and embeds those exact object and assembly bytes in
+the compiler. A native build therefore needs neither the repository's `core/`
+tree nor an installed runtime sidecar.
+
+The repository's Draft coding skill is a third, independent distribution
+asset. `draftc` embeds a read-only copy for the Codex synthesis adapter used by
+`...`; an external coding agent installs the repository/marketplace skill in
+its own agent environment. Ordinary checking, building, and running use
+neither the external skill nor Codex.
+
 ## Initial hosted runtime context layout
 
 Status: bootstrap runtime ABI; synchronized with `core/runtime` by tests.
 
-Core content identity `draft-core-bootstrap-v4` names the current target-
-qualified Darwin/Linux/Windows OS, memory, thread, time, package-assembly,
-formatting, terminal, and console distribution. It includes the typed
+The generated core content identity names the exact target-qualified
+Darwin/Linux/Windows OS, memory, thread, time, package-assembly, formatting,
+terminal, and console source bundle. It includes the typed
 immutable-string write path:
 core code may pass existing string storage to a synchronous nonmutating native
 write without manufacturing a mutable byte slice or copying through a bounded
@@ -31,8 +53,8 @@ services references the hidden link-unit symbols; only unit zero of the root
 package adds the small hosted `main`/`wmain` wrapper when building an
 executable. This gives all ordinary calls one coherent Context and prevents
 per-package runtime state from emerging as a bootstrap artifact. Changing this
-layout or helper contract requires a new runtime ABI and core distribution
-identity.
+layout or helper contract changes the generated core identity and requires a
+corresponding runtime ABI review.
 
 `context` is a predeclared, addressable value in every ordinary Draft procedure.
 When `core/runtime` is imported, its type is exactly the public

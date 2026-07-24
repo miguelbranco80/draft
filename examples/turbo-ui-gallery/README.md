@@ -11,7 +11,7 @@ differential cell rendering.
 Build and run on a native AArch64 macOS host from the repository root:
 
 ```sh
-build/draftc build . --root examples/turbo-ui-gallery -o /tmp/turbo-ui-gallery
+build/draftc build examples/turbo-ui-gallery -o /tmp/turbo-ui-gallery
 /tmp/turbo-ui-gallery
 ```
 

@@ -2,10 +2,10 @@
 //
 // Directory traversal and package parsing are intentionally separate stages.
 // Traversal first collects canonical package candidates in bytewise path order;
-// parsing then applies ordinary package-file rules and inspects only declaration
-// syntax which contributes to the package scope. This keeps local procedure
-// declarations from becoming executable roots and makes a malformed candidate
-// fail discovery before any native output is attempted.
+// parsing then applies ordinary package-file rules and inspects only
+// declaration syntax which contributes to the package scope. This keeps local
+// procedure declarations from becoming executable roots and makes a malformed
+// candidate fail discovery before any native output is attempted.
 
 #include "workspace/selection.h"
 
@@ -28,6 +28,37 @@ void selection_error(DiagnosticSink &diagnostics, std::string message) {
 [[nodiscard]] bool is_hidden_leaf(const std::filesystem::path &path) {
   const std::string leaf = path.filename().string();
   return !leaf.empty() && leaf.front() == '.';
+}
+
+// A workspace marker is a boundary, not merely configuration. Rejecting a
+// symlinked marker prevents a repository layout from changing according to an
+// external file while the containing directory still appears canonical.
+[[nodiscard]] bool
+inspect_workspace_marker(const std::filesystem::path &directory, bool &present,
+                         DiagnosticSink &diagnostics) {
+  const std::filesystem::path marker = directory / WorkspaceManifestName;
+  std::error_code error;
+  const std::filesystem::file_status status =
+      std::filesystem::symlink_status(marker, error);
+  if (error == std::errc::no_such_file_or_directory ||
+      (!error && !std::filesystem::exists(status))) {
+    present = false;
+    return true;
+  }
+  if (error) {
+    selection_error(diagnostics, "cannot inspect workspace marker '" +
+                                     marker.string() + "': " + error.message());
+    return false;
+  }
+  if (std::filesystem::is_symlink(status) ||
+      !std::filesystem::is_regular_file(status)) {
+    selection_error(diagnostics,
+                    "workspace marker must be a regular non-symlink file: '" +
+                        marker.string() + "'");
+    return false;
+  }
+  present = true;
+  return true;
 }
 
 // Expanded-source projections are explicit inspection artifacts with one
@@ -118,7 +149,8 @@ void selection_error(DiagnosticSink &diagnostics, std::string message) {
         : slash;
     const std::string_view component = spelling.substr(begin, end - begin);
     if (component.empty() || component == "." || component == "..") {
-      reason = "root package selector must not contain '.', '..', or empty components";
+      reason = "root package selector must not contain '.', '..', or empty "
+               "components";
       return false;
     }
     begin = end + 1;
@@ -259,12 +291,21 @@ void selection_error(DiagnosticSink &diagnostics, std::string message) {
 // host enumeration order and cannot satisfy Draft's determinism contract.
 [[nodiscard]] bool collect_candidate_directories(
     const std::filesystem::path &directory,
+    const std::filesystem::path &search_root,
     const PackageLoadOptions &package_options,
     const std::vector<std::filesystem::path> &excluded,
     std::vector<std::filesystem::path> &candidates,
     DiagnosticSink &diagnostics) {
   if (is_expanded_source_projection(directory, diagnostics)) return true;
   if (diagnostics.has_errors()) return false;
+  if (directory != search_root) {
+    bool nested_workspace = false;
+    if (!inspect_workspace_marker(directory, nested_workspace, diagnostics)) {
+      return false;
+    }
+    if (nested_workspace)
+      return true;
+  }
   std::vector<std::filesystem::path> entries;
   if (!sorted_directory_entries(directory, entries, diagnostics)) return false;
 
@@ -300,7 +341,7 @@ void selection_error(DiagnosticSink &diagnostics, std::string message) {
   if (contains_draft) candidates.push_back(directory);
   for (const std::filesystem::path &child : children) {
     if (!collect_candidate_directories(
-            child, package_options, excluded, candidates, diagnostics)) {
+            child, search_root, package_options, excluded, candidates, diagnostics)) {
       return false;
     }
   }
@@ -308,6 +349,53 @@ void selection_error(DiagnosticSink &diagnostics, std::string message) {
 }
 
 } // namespace
+
+bool locate_command_scope(const std::filesystem::path &search_directory,
+                          std::filesystem::path &workspace_directory,
+                          std::filesystem::path &canonical_search_directory,
+                          std::filesystem::path &manifest_path,
+                          DiagnosticSink &diagnostics) {
+  const std::optional<std::filesystem::path> canonical_search =
+      canonical_directory(search_directory, "command", diagnostics);
+  if (!canonical_search.has_value())
+    return false;
+  canonical_search_directory = *canonical_search;
+
+  std::filesystem::path current = *canonical_search;
+  for (;;) {
+    bool marker_present = false;
+    if (!inspect_workspace_marker(current, marker_present, diagnostics)) {
+      return false;
+    }
+    if (marker_present) {
+      workspace_directory = current;
+      manifest_path = current / WorkspaceManifestName;
+      return true;
+    }
+    const std::filesystem::path parent = current.parent_path();
+    if (parent.empty() || parent == current)
+      break;
+    current = parent;
+  }
+
+  workspace_directory = *canonical_search;
+  manifest_path.clear();
+  return true;
+}
+
+bool locate_command_package(const std::filesystem::path &package_directory,
+                            CommandPackageSelection &selection,
+                            DiagnosticSink &diagnostics) {
+  std::filesystem::path canonical_package;
+  if (!locate_command_scope(package_directory, selection.workspace_directory,
+                            canonical_package, selection.manifest_path,
+                            diagnostics)) {
+    return false;
+  }
+  return identify_workspace_package(selection.workspace_directory,
+                                    canonical_package, selection.package,
+                                    diagnostics);
+}
 
 bool select_workspace_package(
     const std::filesystem::path &workspace_directory,
@@ -376,19 +464,51 @@ bool identify_workspace_package(
 
 ExecutableRootDiscoveryResult discover_executable_roots(
     SourceManager &sources,
+    const std::filesystem::path &search_directory,
     const WorkspaceLoadOptions &options,
-    DiagnosticSink &diagnostics) {
+    DiagnosticSink &diagnostics,
+    std::span<const std::filesystem::path> excluded_directories) {
   ExecutableRootDiscoveryResult result;
   const std::size_t initial_errors = diagnostics.error_count();
   const std::optional<std::filesystem::path> workspace = canonical_directory(
       options.workspace_directory, "workspace", diagnostics);
   if (!workspace.has_value()) return result;
+  const std::optional<std::filesystem::path> search =
+      canonical_directory(search_directory, "build search", diagnostics);
+  if (!search.has_value())
+    return result;
+  std::filesystem::path search_relative;
+  if (!path_is_within(*workspace, *search, search_relative)) {
+    selection_error(
+        diagnostics,
+        "build search directory is outside the selected workspace: '" +
+            search->string() + "'");
+    return result;
+  }
   if (options.package_options.file_tag.empty()) {
     selection_error(diagnostics, "target file tag must not be empty");
     return result;
   }
 
   std::vector<std::filesystem::path> excluded;
+  excluded.reserve(excluded_directories.size() + options.dependencies.size() +
+                   1);
+  for (const std::filesystem::path &directory : excluded_directories) {
+    const std::optional<std::filesystem::path> root =
+        canonical_directory(directory, "excluded", diagnostics);
+    if (!root.has_value())
+      return result;
+    std::filesystem::path relative;
+    if (!path_is_within(*workspace, *root, relative)) {
+      selection_error(
+          diagnostics,
+          "excluded directory is outside the selected workspace: '" +
+              root->string() + "'");
+      return result;
+    }
+    if (*root != *workspace)
+      excluded.push_back(*root);
+  }
   if (!options.core_directory.empty()) {
     const std::optional<std::filesystem::path> core = canonical_directory(
         options.core_directory, "core", diagnostics);
@@ -406,7 +526,7 @@ ExecutableRootDiscoveryResult discover_executable_roots(
 
   std::vector<std::filesystem::path> candidates;
   if (!collect_candidate_directories(
-          *workspace,
+          *search, *search,
           options.package_options,
           excluded,
           candidates,

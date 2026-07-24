@@ -12,7 +12,7 @@ opens an explicit Overwrite/Discard/Cancel choice.
 Build and run from the repository root on AArch64 macOS:
 
 ```sh
-build/draftc build . --root examples/turbo-editor -O2 -o /tmp/turbo-editor
+build/draftc build examples/turbo-editor -O2 -o /tmp/turbo-editor
 /tmp/turbo-editor path/to/file.draft another-file.txt
 ```
 

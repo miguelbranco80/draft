@@ -1,4 +1,0 @@
-# Default Turbo Draft session for this multi-program compiler workspace.
-draft-project-v1
-root = examples/turbo-editor
-source = package.draft

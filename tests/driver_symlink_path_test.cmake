@@ -1,8 +1,8 @@
-# Public CLI regression for an explicit workspace reached through a symlink.
+# Public CLI regression for a package reached through a symlinked workspace.
 #
 # The resolution store deliberately refuses symlink components after it accepts
-# a workspace root. The driver must therefore canonicalize the explicitly
-# supplied workspace before resolving `--root hello`. An ordinary build-tree
+# a workspace root. The driver must therefore canonicalize the supplied package
+# before identifying it below the nearest marker. An ordinary build-tree
 # symlink reproduces the same boundary as macOS `/tmp` without relying on
 # host-specific global paths.
 
@@ -12,6 +12,7 @@ endif()
 
 file(REMOVE_RECURSE "${TEST_ROOT}")
 file(MAKE_DIRECTORY "${TEST_ROOT}/real/workspace/hello")
+file(WRITE "${TEST_ROOT}/real/workspace/draft.workspace" "draft-workspace-v1\n")
 file(COPY "${SOURCE_PACKAGE}/" DESTINATION "${TEST_ROOT}/real/workspace/hello")
 file(CREATE_LINK
   "${TEST_ROOT}/real/workspace"
@@ -24,7 +25,7 @@ if(NOT link_result STREQUAL "0")
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" check "${TEST_ROOT}/workspace-link" --root hello
+  COMMAND "${DRAFTC}" check "${TEST_ROOT}/workspace-link/hello"
   RESULT_VARIABLE result
   OUTPUT_VARIABLE output
   ERROR_VARIABLE error

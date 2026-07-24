@@ -25,5 +25,5 @@ The standalone [`turbo-editor`](../../examples/turbo-editor/) application is
 the complete interactive example. Run focused native tests with:
 
 ```sh
-build/draftc test . --root lib/turbo_editor --target aarch64-macos
+build/draftc test lib/turbo_editor --target aarch64-macos
 ```

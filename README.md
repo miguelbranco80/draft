@@ -118,7 +118,7 @@ content-addressed boundaries. Detailed capability and evidence claims belong to
 the linked qualification report rather than this overview.
 
 The same CMake build produces `build/draftide`, a Turbo-style terminal IDE whose
-application, editor, project interaction, syntax-colored UI, and Build/Run
+application, editor, workspace interaction, syntax-colored UI, and Build/Run
 policy are written in Draft. During bootstrap it calls the C++ compiler library
 through a narrow opaque C ABI:
 
@@ -126,11 +126,29 @@ through a narrow opaque C ABI:
 build/draftide .
 ```
 
-The repository's optional `draft.project` selects `examples/turbo-editor`
-initially; without one, executable roots are discovered and selected in the
-Project window. `--root` remains an explicit override. F5 checks, builds, and
-runs the selected root, while F6 opens its root selector and expandable
-package/dependency tree.
+The repository's `draft.workspace` establishes the import/state boundary and
+selects `examples/turbo-editor` as the initial program. Without a marker, the
+opened directory is a standalone workspace and executable roots are discovered
+there. F5 checks, builds, and runs the selected program, while F6 opens its
+program selector and expandable package/dependency tree.
+
+The ordinary compiler commands take package paths directly. A marker found by
+searching upward supplies workspace-relative imports and optional build/run
+defaults; without one the selected package stands alone. `build` recursively
+builds every program below its path, and `run` passes literal process arguments
+after `--`:
+
+```sh
+build/draftc check apps/editor
+build/draftc build .
+build/draftc run apps/editor -- document.txt
+```
+
+`draftc` contains the exact matching `core` source, target runtime objects, and
+the synthesis adapter's Draft coding guidance. Moving the compiler therefore
+does not require an adjacent checkout or `core` path configuration. The
+repository skill remains separately installable for external coding agents;
+ordinary compiler use does not require Codex.
 
 See [Turbo Draft](tools/draftide/README.md) for controls and
 [the implementation boundary](docs/implementation/turbo-draft.md) for the

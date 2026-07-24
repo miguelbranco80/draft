@@ -24,7 +24,7 @@ multi-package workspace, select a child explicitly or let `build` discover all
 packages with a surface package-level `main`:
 
 ```sh
-build/draftc check examples/packages --root app
+build/draftc check examples/packages/app
 build/draftc build examples/packages
 ```
 

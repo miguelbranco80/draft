@@ -8,6 +8,8 @@
 
 #include "syntax/lexer.h"
 #include "syntax/token.h"
+#include "workspace/embedded_core.h"
+#include "workspace/manifest.h"
 #include "workspace/package.h"
 #include "workspace/selection.h"
 
@@ -109,8 +111,59 @@ bool CompilerSession::refresh_root_options(DiagnosticSink &diagnostics) {
   // otherwise opening a project would create short-lived pools before the
   // compiler session proper had begun.
   workspace_options.package_options.work_executor = work_executor_.get();
+  WorkspaceManifest manifest;
+  std::string manifest_error;
+  const std::filesystem::path manifest_path =
+      configuration_.workspace_directory / WorkspaceManifestName;
+  std::error_code marker_error;
+  const std::filesystem::file_status marker_status =
+      std::filesystem::symlink_status(manifest_path, marker_error);
+  const bool marker_missing =
+      marker_error == std::errc::no_such_file_or_directory ||
+      (!marker_error && !std::filesystem::exists(marker_status));
+  if (marker_error && !marker_missing) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "cannot inspect workspace manifest: " + marker_error.message());
+    return false;
+  }
+  const bool marker_present = !marker_missing;
+  if (marker_present &&
+      (std::filesystem::is_symlink(marker_status) ||
+       !std::filesystem::is_regular_file(marker_status))) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "workspace manifest must be a regular non-symlink file");
+    return false;
+  }
+  if (!load_workspace_manifest(
+          marker_present ? manifest_path : std::filesystem::path{},
+          manifest,
+          manifest_error)) {
+    diagnostics.error(SourceRange::invalid(), std::move(manifest_error));
+    return false;
+  }
+  std::vector<std::filesystem::path> excluded;
+  for (const std::string &relative : manifest.excludes) {
+    const std::filesystem::path candidate =
+        configuration_.workspace_directory / relative;
+    std::error_code status_error;
+    if (std::filesystem::is_directory(candidate, status_error)) {
+      excluded.push_back(candidate);
+    } else if (status_error) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "cannot inspect excluded workspace directory: " +
+              status_error.message());
+      return false;
+    }
+  }
   const ExecutableRootDiscoveryResult discovered = discover_executable_roots(
-      discovery_sources, workspace_options, diagnostics);
+      discovery_sources,
+      configuration_.workspace_directory,
+      workspace_options,
+      diagnostics,
+      excluded);
   if (!discovered.ok || diagnostics.has_errors())
     return false;
 
@@ -396,8 +449,8 @@ CompileWorkspaceOptions CompilerSession::compile_options() const {
   options.target = configuration_.target;
   options.workspace.workspace_directory =
       configuration_.workspace_directory.string();
-  options.workspace.core_directory = DRAFT_CORE_DIRECTORY;
-  options.workspace.core_content_identity = DRAFT_CORE_CONTENT_IDENTITY;
+  options.workspace.core_files = embedded_core_files();
+  options.workspace.core_content_identity = embedded_core_content_identity();
   options.emit_program_entry = true;
   options.work_executor = work_executor_;
   return options;

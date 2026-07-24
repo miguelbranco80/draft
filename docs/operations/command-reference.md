@@ -3,18 +3,54 @@
 Status: current bootstrap CLI. The executable is named `draftc`; examples below
 use the default `build/draftc` CMake output.
 
-All package commands take an explicit workspace directory as their first
-positional path. The workspace is canonicalized before package selection and
-the resolution-store boundary are established. A single-root command accepts
-`--root <package>` as a normalized path relative to that workspace and defaults
-to `--root .`; no directory name such as `app` has special meaning. Thus
-`draftc check project` compiles the package in `project/`, while
-`draftc check project --root tools/admin` compiles the package in
-`project/tools/admin/` and permits imports such as `lib` from `project/lib/`.
+Package commands take the package directory itself as their first positional
+path. `draftc` canonicalizes that directory and searches upward for the nearest
+`draft.workspace`; its containing directory owns workspace-relative imports and
+`.draft/` state. If no marker exists, the supplied package is a standalone
+workspace. Thus `draftc check project/tools/admin` checks that exact package;
+with `project/draft.workspace` present, `import lib/text` resolves from
+`project/lib/text` from the package's single path coordinate.
+
+`build` treats its path as a recursive discovery scope and builds every package
+with a surface `main` below it. Therefore `draftc build .` is the ordinary
+"build every program in this workspace" command; there is no separate
+`programs` or required `--all` command. Nested `draft.workspace` directories
+are independent workspaces and are not traversed. If discovery finds no program
+and a non-executable `--kind` was requested, the path names one exact library
+package.
+
+The optional marker is also a small durable operator configuration:
+
+```text
+draft-workspace-v1
+default = editor
+exclude = build
+
+[build]
+target = aarch64-macos
+optimization = O0
+
+[program editor]
+root = apps/editor
+argument = document.txt
+working-directory = .
+environment = DRAFT_MODE=development
+```
+
+Top-level `exclude` rows prune recursive discovery. `[build]` accepts `target`,
+`optimization`, `kind`, `output`, `debug-symbols`, `assertions`, and repeated
+`provider`, `provider-summary`, and `runtime-asset` rows. A named program
+requires `root`, may override those build values, and may add repeated run
+`argument`/`environment` rows plus one `working-directory`. It never lists
+source files, changes import rules, downloads dependencies, or invokes a shell.
+CLI options replace scalar defaults; the first repeated CLI mapping replaces
+the corresponding manifest list. Arguments after `run ... --` replace manifest
+arguments.
 
 All package commands accept
 `--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows` where shown.
-macOS remains the compatibility default. The workspace, selected root, and
+macOS remains the compatibility default. A manifest target supplies the default
+when present, and an explicit CLI target wins. The workspace, selected root, and
 target determine persistent namespaces. Generated source objects are shared by
 content identity, while manifests and derived build artifacts are isolated as:
 
@@ -117,16 +153,15 @@ IDE linked to the sibling bootstrap compiler service.
 ```sh
 cmake --build build --target draftide --parallel
 build/draftide path/to/workspace \
-  [--root package/path] [--source package.draft] \
+  [--source package.draft] \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows]
 ```
 
-Turbo Draft discovers executable roots without a manifest. Optional
-`<workspace>/draft.project` requires `root = package/path` and may specify
-`source = package.draft` to select the initial row; `--root` and `--source` are
-explicit overrides. The target defaults to the native host. The manifest is
-initial IDE operator configuration, not a source/package list or dependency
-manifest.
+Turbo Draft uses the same upward workspace discovery and `draft.workspace`
+default program as `draftc`. Without a marker it discovers executable roots in
+the standalone directory. `--source` may select the initial direct package
+file; the target defaults to the native host. IDE-local selections are not
+stored in the workspace manifest.
 
 Turbo Draft opens ordinary files; the active buffer and every other dirty
 project buffer form one in-memory compiler transaction, and saving updates the
@@ -145,11 +180,11 @@ noninteractive compiler/UI composition check for CI.
 ```sh
 build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
-build/draftc check path/to/workspace [--root package/path] \
+build/draftc check path/to/package \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows] [--timings|--timings=all]
-build/draftc emit-llvm path/to/workspace [--root package/path] \
+build/draftc emit-llvm path/to/package \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows] [--timings|--timings=all]
-build/draftc emit-c-header path/to/workspace [--root package/path] [-o output.h] \
+build/draftc emit-c-header path/to/package [-o output.h] \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows] [--timings|--timings=all]
 build/draftc target [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows]
 ```
@@ -164,10 +199,16 @@ definitions. A root module also contains its small entry/validation wrapper,
 but not the invariant hosted runtime implementation, which is embedded in the
 compiler as a separate exact-target object.
 
+`import core/...` reads immutable source rows embedded in the same compiler
+binary. The bundle has a build-time content identity and is parsed directly
+from memory; no command searches the checkout, executable directory, current
+directory, or an environment variable for core source. The separately embedded
+hosted-runtime object remains a backend input rather than Draft source.
+
 ## Expand checked source
 
 ```sh
-build/draftc expand path/to/workspace [--root package/path] --out new-directory \
+build/draftc expand path/to/package --out new-directory \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows] [--assertions=off] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
   [--provider-summary name:/absolute/path]... \
@@ -192,7 +233,7 @@ a separate reason to version that derived view.
 ## Build native artifacts
 
 ```sh
-build/draftc build path/to/workspace [--root package/path]... [-o output] \
+build/draftc build path/to/package-or-directory [-o output] \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows] \
   [--kind executable|object|static-library|dynamic-library|assembly] \
   [-O0|-O2] \
@@ -247,17 +288,18 @@ ELF keeps requested DWARF in the primary artifact and therefore still returns
 no companion path. The flag changes derived debug products only; assertions,
 optimization, source semantics, and resolution identity remain independent.
 
-Without `--root`, `build` recursively discovers every ordinary surface package
-under the workspace that contains a package-level procedure named `main` and
-builds all of them in canonical root-path order. Discovery does not follow
+`build` recursively discovers every ordinary surface package under the supplied
+directory that contains a package-level procedure named `main` and builds all
+of them in canonical root-path order. Discovery does not follow
 symlinks, enter a directory whose leaf begins with `.`, descend into configured
-core or dependency roots, enter a `draft-expanded-source.map` projection, or
+dependency roots or nested workspaces, enter a
+`draft-expanded-source.map` projection, visit a manifest `exclude`, or
 select target-inapplicable, test, or benchmark files. Compiler-generated build
 and resolution state is already below hidden `.draft`. A malformed discovered package or any selected executable
-that fails normal compilation makes the aggregate command fail. Repeated
-`--root` options replace discovery with exactly that subset; this is also how a
-library package without `main` is selected for object, archive, dynamic-library,
-or assembly output.
+that fails normal compilation makes the aggregate command fail. Supplying a
+narrower package directory narrows discovery to that subtree. If no `main` is
+found and `--kind` is object, static-library, dynamic-library, or assembly, the
+supplied directory is built as one exact library package.
 
 Each selected root currently receives an independent compiler graph and native
 pipeline. Shared imported packages may therefore be analyzed or emitted more
@@ -271,10 +313,26 @@ Default output paths mirror the selected package folder below the target build
 namespace. For example, roots `cli` and `tools/admin` produce executables at
 `.draft/build/aarch64-macos/packages/cli/cli` and
 `.draft/build/aarch64-macos/packages/tools/admin/admin`. The folder path, not
-only the package's short name, prevents output collisions. Duplicate explicit
-roots are rejected. `-o` is accepted only when exactly one root is selected;
-an aggregate build with several discovered or explicit roots must use their
+only the package's short name, prevents output collisions. `-o` is accepted
+only when exactly one root is selected; an aggregate build with several
+discovered roots must use their
 independent default paths.
+
+## Build and run one program
+
+```sh
+build/draftc run path/to/package [build options] [-- argument...]
+```
+
+`run` selects one exact package, builds an executable through the same native
+pipeline as `build`, attaches the child directly to the current standard input,
+output, and error streams, waits, and returns its exit status. It never invokes
+a shell. `--cwd <directory>` selects a working directory and repeated
+`--env NAME=value` rows override the inherited environment. If the path is the
+workspace directory and `draft.workspace` declares `default`, that named
+program is selected. Arguments after `--` are literal program arguments and
+replace configured `argument` rows; compiler flags are not recognized after
+the separator.
 
 For non-assembly native builds, the native adapter emits one internal linker-
 input object per semantic package through the LLVM 22 library linked into
@@ -327,7 +385,7 @@ SONAME, and executables add hosted entry glue.
 ## Resolve synthesis sites
 
 ```sh
-build/draftc resolve path/to/workspace [--root package/path] [--revalidate] [--build] \
+build/draftc resolve path/to/package [--revalidate] [--build] \
   [--regenerate [site-id]] \
   [-o output] \
   [--kind executable|object|static-library|dynamic-library|assembly] \
@@ -394,7 +452,7 @@ cache; `.draft/generated` is source, not cached compiler state.
 ## Test and benchmark
 
 ```sh
-build/draftc test path/to/workspace [--root package/path] \
+build/draftc test path/to/package \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows] [-O0|-O2] \
   [--instrument address|...] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
@@ -402,7 +460,7 @@ build/draftc test path/to/workspace [--root package/path] \
   [--runtime-asset name:/absolute/file-or-directory]... \
   [--timings|--timings=all]
 
-build/draftc bench path/to/workspace [--root package/path] [--verify] \
+build/draftc bench path/to/package [--verify] \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows] [-O0|-O2] \
   [--instrument address|...] \
   [--provider name=object|archive|shared-library:/absolute/path]... \
@@ -437,7 +495,7 @@ Linux Draft sanitizer profile fail closed with an explicit diagnostic.
 ## Judge
 
 ```sh
-build/draftc judge path/to/workspace [--root package/path] [selector...] [--list] \
+build/draftc judge path/to/package [selector...] [--list] \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows] [--assertions=off] \
   [--judge-validator identity:model]... \
   [--judge-artifact kind:/absolute/path]... \

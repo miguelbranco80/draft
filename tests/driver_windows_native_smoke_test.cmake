@@ -75,6 +75,10 @@ file(REMOVE_RECURSE "${TEST_ROOT}")
 file(MAKE_DIRECTORY "${TEST_ROOT}")
 file(COPY "${SOURCE_ROOT}/examples" DESTINATION "${TEST_ROOT}")
 file(COPY "${SOURCE_ROOT}/lib" DESTINATION "${TEST_ROOT}")
+# Mirror the source repository's one top-level workspace boundary. This keeps
+# every copied package and top-level library in one import namespace without
+# inheriting a marker from the CMake build directory above TEST_ROOT.
+file(WRITE "${TEST_ROOT}/draft.workspace" "draft-workspace-v1\n")
 
 run_checked(
   "Windows target report"
@@ -116,7 +120,7 @@ foreach(row IN LISTS qualification_rows)
 
   run_checked(
     "${workspace_relative}:${root_package} build"
-    "${DRAFTC}" build "${workspace}" --root "${root_package}"
+    "${DRAFTC}" build "${workspace}/${root_package}"
       --target "${target_selector}" -o "${program}"
   )
 
@@ -152,14 +156,14 @@ set(artifact_root "${TEST_ROOT}/artifacts")
 file(MAKE_DIRECTORY "${artifact_root}")
 run_checked(
   "COFF object publication"
-  "${DRAFTC}" build "${TEST_ROOT}/examples" --root hello
+  "${DRAFTC}" build "${TEST_ROOT}/examples/hello"
     --target "${target_selector}" --kind object
     -o "${artifact_root}/hello.obj"
 )
 set(assembly_bundle "${artifact_root}/hello-assembly")
 run_checked(
   "Windows assembly-bundle publication"
-  "${DRAFTC}" build "${TEST_ROOT}/examples" --root hello
+  "${DRAFTC}" build "${TEST_ROOT}/examples/hello"
     --target "${target_selector}" --kind assembly
     -o "${assembly_bundle}"
 )
@@ -169,7 +173,7 @@ if(NOT EXISTS "${assembly_bundle}/package-0-unit-0.s")
 endif()
 run_checked(
   "COFF static-library publication"
-  "${DRAFTC}" build "${TEST_ROOT}/examples" --root c-library
+  "${DRAFTC}" build "${TEST_ROOT}/examples/c-library"
     --target "${target_selector}" --kind static-library
     -o "${artifact_root}/draft-c-library-static.lib"
 )
@@ -184,12 +188,12 @@ set(import_library "${artifact_root}/draft-c-library.lib")
 set(client "${artifact_root}/draft-c-library-client.exe")
 run_checked(
   "Windows C header emission"
-  "${DRAFTC}" emit-c-header "${TEST_ROOT}/examples" --root c-library
+  "${DRAFTC}" emit-c-header "${TEST_ROOT}/examples/c-library"
     --target "${target_selector}" -o "${header}"
 )
 run_checked(
   "Windows Draft DLL build"
-  "${DRAFTC}" build "${TEST_ROOT}/examples" --root c-library
+  "${DRAFTC}" build "${TEST_ROOT}/examples/c-library"
     --target "${target_selector}" --kind dynamic-library -o "${dll}"
 )
 foreach(companion IN ITEMS "${dll}" "${import_library}" "${artifact_root}/draft-c-library.pdb")
@@ -226,7 +230,7 @@ run_checked(
 )
 run_checked(
   "Windows foreign provider build"
-  "${DRAFTC}" build "${TEST_ROOT}/examples/foreign-provider" --root .
+  "${DRAFTC}" build "${TEST_ROOT}/examples/foreign-provider"
     --target "${target_selector}"
     --provider "custom_math=object:${provider_object}"
     -o "${provider_program}"

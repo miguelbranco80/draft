@@ -12,6 +12,7 @@
 #include "judgment/selection.h"
 #include "source/diagnostic.h"
 #include "target/profile.h"
+#include "workspace/embedded_core.h"
 
 #include "test_directory.h"
 
@@ -69,6 +70,11 @@ struct TemporaryWorkspace {
     if (error) std::exit(EXIT_FAILURE);
     std::filesystem::create_directories(codex_directory, error);
     if (error) std::exit(EXIT_FAILURE);
+
+    std::ofstream marker(root / "draft.workspace", std::ios::binary);
+    marker << "draft-workspace-v1\n";
+    marker.close();
+    if (!marker) std::exit(EXIT_FAILURE);
 
     std::ofstream source(package / "package.draft", std::ios::binary);
     source << "package app\n\n"
@@ -174,9 +180,7 @@ void append_codex_arguments(std::vector<std::string> &arguments) {
   std::vector<std::string> arguments{
       DRAFT_DRIVER_PATH,
       "judge",
-      workspace.root.string(),
-      "--root",
-      "app",
+      workspace.package.string(),
   };
   for (const std::string &selector : selectors) {
     arguments.push_back(selector);
@@ -194,9 +198,7 @@ void append_codex_arguments(std::vector<std::string> &arguments) {
   return run_driver({
       DRAFT_DRIVER_PATH,
       "judge",
-      workspace.root.string(),
-      "--root",
-      "app",
+      workspace.package.string(),
       "--judge-validator",
       "review-primary:fixture-primary",
       "--judge-validator",
@@ -220,8 +222,9 @@ void append_codex_arguments(std::vector<std::string> &arguments) {
   draft::CompileWorkspaceOptions options;
   options.target = draft::make_aarch64_macos_profile();
   options.workspace.workspace_directory = workspace.root.string();
-  options.workspace.core_directory = DRAFT_CORE_DIRECTORY;
-  options.workspace.core_content_identity = DRAFT_CORE_CONTENT_IDENTITY;
+  options.workspace.core_files = draft::embedded_core_files();
+  options.workspace.core_content_identity =
+      draft::embedded_core_content_identity();
   return draft::compile_workspace_with_resolution(
       sources, workspace.package.string(), std::move(options), diagnostics);
 }

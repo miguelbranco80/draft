@@ -12,15 +12,20 @@ A directory is one package: a namespace, visibility boundary, compilation unit,
 and synthesis-context boundary. Every Draft source file in the directory declares
 the same short package name. Every program target selects one package inside one
 canonical workspace root; an aggregate command may build several such targets
-independently. An import path resolves relative to that workspace root or through one explicit
+independently. A `draft.workspace` marker establishes that root for packages
+below it. When no marked ancestor exists, a directly selected package is a
+standalone workspace. The marker may record operator build/run defaults, but it
+does not enumerate source files or change language semantics.
+
+An import path resolves relative to that workspace root or through one explicit
 import-prefix mapping to a dependency root; `core/...` resolves in the selected
 compiler distribution. Ambiguous mappings, paths escaping a mapped root, and
-ambient searches through parent directories, environment paths, or the process
-working directory are errors. A package's semantic identity is its normalized
-root-relative import path paired with its root identity. The workspace root has
-the fixed identity `workspace`; a dependency root uses its pinned content
-identity; and the `core/...` root uses the selected compiler distribution's
-content identity. Physical filesystem paths are not semantic.
+ambient searches through unrelated directories, environment paths, or the
+process working directory are errors. A package's semantic identity is its
+normalized root-relative import path paired with its root identity. The
+workspace root has the fixed identity `workspace`; a dependency root uses its
+pinned content identity; and the `core/...` root uses the selected compiler
+distribution's content identity. Physical filesystem paths are not semantic.
 
 ```draft
 package jpeg

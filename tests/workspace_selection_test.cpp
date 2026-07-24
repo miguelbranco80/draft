@@ -1,13 +1,14 @@
 // Workspace command-root selection and executable discovery tests.
 //
 // These fixtures exercise the filesystem policy before compiler graph loading:
-// explicit selectors are canonical workspace identities, discovery walks
-// ordinary directories in stable order, hidden, symlinked, dependency, and
-// expanded-projection trees are absent, and only target-selected surface
-// procedure declarations named `main` create executable roots.
+// the nearest marker establishes canonical workspace identity, discovery walks
+// ordinary directories in stable order, hidden, symlinked, dependency,
+// expanded-projection, and nested-workspace trees are absent, and only
+// target-selected surface procedure declarations named `main` create roots.
 
 #include "source/diagnostic.h"
 #include "source/source.h"
+#include "workspace/manifest.h"
 #include "workspace/selection.h"
 
 #include "test_directory.h"
@@ -119,6 +120,12 @@ void populate_discovery_tree(TemporaryTree &tree) {
   write_file(
       tree.workspace / "expanded-view" / "copied-app" / "package.draft",
       "package copied_app\nmain :: proc() {}\n");
+  write_file(
+      tree.workspace / "nested" / "draft.workspace",
+      "draft-workspace-v1\n");
+  write_file(
+      tree.workspace / "nested" / "app" / "package.draft",
+      "package nested_app\nmain :: proc() {}\n");
 
   std::error_code error;
   std::filesystem::create_directory_symlink(
@@ -127,6 +134,82 @@ void populate_discovery_tree(TemporaryTree &tree) {
     std::cerr << "cannot create test symlink: " << error.message() << '\n';
     std::exit(EXIT_FAILURE);
   }
+}
+
+void test_command_path_discovery(TestState &state) {
+  TemporaryTree tree;
+  write_file(
+      tree.workspace / "draft.workspace",
+      "draft-workspace-v1\n");
+  write_file(
+      tree.workspace / "apps" / "editor" / "package.draft",
+      "package editor\nmain :: proc() {}\n");
+
+  draft::DiagnosticSink diagnostics;
+  draft::CommandPackageSelection selected;
+  EXPECT(
+      state,
+      draft::locate_command_package(
+          tree.workspace / "apps" / "editor", selected, diagnostics));
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(
+      state,
+      selected.workspace_directory == std::filesystem::canonical(tree.workspace));
+  EXPECT(state, selected.package.identity.root_identity == "workspace");
+  EXPECT(state, selected.package.identity.root_relative_path == "apps/editor");
+  EXPECT(
+      state,
+      selected.manifest_path ==
+          std::filesystem::canonical(tree.workspace / "draft.workspace"));
+
+  const std::filesystem::path standalone = tree.root / "standalone";
+  write_file(
+      standalone / "package.draft",
+      "package standalone\nmain :: proc() {}\n");
+  diagnostics = {};
+  selected = {};
+  EXPECT(
+      state,
+      draft::locate_command_package(standalone, selected, diagnostics));
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, selected.workspace_directory == std::filesystem::canonical(standalone));
+  EXPECT(state, selected.package.identity.root_relative_path == ".");
+  EXPECT(state, selected.manifest_path.empty());
+}
+
+void test_workspace_manifest(TestState &state) {
+  TemporaryTree tree;
+  const std::filesystem::path marker = tree.workspace / "draft.workspace";
+  write_file(
+      marker,
+      "draft-workspace-v1\n"
+      "default = editor\n"
+      "exclude = build\n"
+      "[build]\n"
+      "target = aarch64-macos\n"
+      "assertions = off\n"
+      "[program editor]\n"
+      "root = apps/editor\n"
+      "optimization = O2\n"
+      "argument = README.md\n"
+      "environment = DRAFT_MODE=editor\n");
+
+  draft::WorkspaceManifest manifest;
+  std::string reason;
+  EXPECT(state, draft::load_workspace_manifest(marker, manifest, reason));
+  EXPECT(state, reason.empty());
+  EXPECT(state, manifest.present);
+  EXPECT(state, manifest.default_program == "editor");
+  EXPECT(state, manifest.excludes.size() == 1);
+  EXPECT(state, manifest.build.target == "aarch64-macos");
+  EXPECT(state, manifest.build.assertions == false);
+  EXPECT(state, manifest.programs.size() == 1);
+  if (manifest.programs.size() != 1) return;
+  EXPECT(state, manifest.programs[0].name == "editor");
+  EXPECT(state, manifest.programs[0].root == "apps/editor");
+  EXPECT(state, manifest.programs[0].build.optimization == "O2");
+  EXPECT(state, manifest.programs[0].arguments.size() == 1);
+  EXPECT(state, manifest.programs[0].environment.size() == 1);
 }
 
 void test_discovery(TestState &state) {
@@ -142,7 +225,8 @@ void test_discovery(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
   const draft::ExecutableRootDiscoveryResult discovered =
-      draft::discover_executable_roots(sources, options, diagnostics);
+      draft::discover_executable_roots(
+          sources, tree.workspace, options, diagnostics);
   if (diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(sources, diagnostics);
   }
@@ -222,7 +306,7 @@ void test_malformed_candidate_fails_discovery(TestState &state) {
   draft::DiagnosticSink diagnostics;
   const draft::ExecutableRootDiscoveryResult discovered =
       draft::discover_executable_roots(
-          sources, discovery_options(tree), diagnostics);
+          sources, tree.workspace, discovery_options(tree), diagnostics);
   EXPECT(state, !discovered.ok);
   EXPECT(state, diagnostics.has_errors());
 }
@@ -231,6 +315,8 @@ void test_malformed_candidate_fails_discovery(TestState &state) {
 
 int main() {
   TestState state;
+  test_command_path_discovery(state);
+  test_workspace_manifest(state);
   test_discovery(state);
   test_explicit_selection(state);
   test_malformed_candidate_fails_discovery(state);

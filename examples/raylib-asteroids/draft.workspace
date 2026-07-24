@@ -1,0 +1,5 @@
+draft-workspace-v1
+
+[program asteroids]
+root = app
+optimization = O2

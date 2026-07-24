@@ -68,10 +68,10 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
   selection, buffers, terminal/UI state, Build/Run policy, and the service
   handle lifetime. The service owns compiler products and never calls Draft.
 - [x] Open an ordinary workspace directory. Discover executable roots without
-  requiring a project file; use an optional versioned `draft.project` or
-  `--root` only to select the initial root/source. Keep open buffers in Draft
-  and the last successful `SourceManager`/`CompileWorkspaceResult` pair in the
-  compiler service.
+  requiring an IDE project file; an optional versioned `draft.workspace`
+  establishes the boundary and names the default program. Keep open buffers in
+  Draft and the last successful `SourceManager`/`CompileWorkspaceResult` pair
+  in the compiler service.
 - [x] Check synchronously at first. Submit the active buffer plus every other
   dirty project buffer as one complete-file override transaction, and replace
   the stored graph only after success. A failed attempt publishes diagnostics
@@ -99,8 +99,9 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
   target select the checked graph, resolution/build namespace and run setup.
 - [x] Put a root selector above the F6 package/dependency view and preserve each
   buffer's owning root so F5 always checks/builds the right graph.
-- [x] Keep “open directory” as the project model. The manifest remembers only
-  initial operator selection; it does not enumerate packages or dependencies.
+- [x] Keep “open directory” as the workspace model. `draft.workspace` records
+  named Build/Run configurations but does not enumerate source files or become
+  a dependency manager.
 - [x] Make Files the compiler-discovered source browser and Buffers the open
   document list. Add Open File through Files and transactional Open Workspace
   with Save all / Discard / Cancel dirty-buffer policy.
@@ -119,9 +120,7 @@ These are future additions, not incomplete first-version work:
 - Broad Codex editing through an ordinary Git worktree and explicit conflict
   handling. Ordinary Codex remains outside the keystroke loop, while Draft
   `...` retains its existing precise compiler-synthesis meaning.
-- Extend `draft.project` only when named Build/Run configurations, foreign
-  providers, arguments, environment, or working directories are implemented.
-  It must not list source files, redefine package discovery, or become a
-  dependency manager.
+- Surface every relevant `draft.workspace` Build/Run field in the IDE. Reuse
+  the compiler driver's manifest contract rather than adding an IDE schema.
 - Replace the remaining declaration/reference/effect/denial text projections
   with selectable compiler-backed navigation when source-jump queries exist.

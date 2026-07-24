@@ -9,6 +9,7 @@
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "target/profile.h"
+#include "workspace/embedded_core.h"
 
 #include "test_directory.h"
 
@@ -64,8 +65,9 @@ void test_materializes_complete_graph_with_maps(TestState &state) {
   draft::CompileWorkspaceOptions options;
   options.target = draft::make_aarch64_macos_profile();
   options.workspace.workspace_directory = workspace.string();
-  options.workspace.core_directory = (source_root / "core").string();
-  options.workspace.core_content_identity = "draft-core-bootstrap-v4";
+  options.workspace.core_files = draft::embedded_core_files();
+  options.workspace.core_content_identity =
+      draft::embedded_core_content_identity();
   const draft::CompileWorkspaceResult compiled =
       draft::compile_workspace_with_resolution(
           sources,
@@ -104,7 +106,9 @@ void test_materializes_complete_graph_with_maps(TestState &state) {
       read_file(output / "draft-expanded-source.map");
   EXPECT(state, roots.starts_with("draft-expanded-source-v1\n"));
   EXPECT(state, roots.find("workspace") != std::string::npos);
-  EXPECT(state, roots.find("draft-core-bootstrap-v4") != std::string::npos);
+  EXPECT(
+      state,
+      roots.find(draft::embedded_core_content_identity()) != std::string::npos);
 
   // Refusing an existing destination prevents stale files or maps from a
   // previous graph being mixed with a new projection.

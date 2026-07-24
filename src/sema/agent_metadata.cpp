@@ -171,13 +171,17 @@ public:
   [[nodiscard]] AgentMetadataResult run() {
     AgentMetadataResult result;
     const std::size_t initial_errors = diagnostics_.error_count();
-    std::error_code error;
-    package_root_ = std::filesystem::canonical(loaded_.physical_directory, error);
-    if (error) {
-      diagnostics_.error(
-          SourceRange::invalid(),
-          "cannot canonicalize package directory for attachments: " + error.message());
-      return result;
+    if (!loaded_.embedded) {
+      std::error_code error;
+      package_root_ =
+          std::filesystem::canonical(loaded_.physical_directory, error);
+      if (error) {
+        diagnostics_.error(
+            SourceRange::invalid(),
+            "cannot canonicalize package directory for attachments: " +
+                error.message());
+        return result;
+      }
     }
 
     for (const SemanticSite &site : selected_sites_) {
@@ -402,6 +406,12 @@ private:
       const SyntaxNode &attachment = tree.node(child_id);
       if (attachment.kind != NodeKind::Attachment ||
           attachment.token_begin + 1 >= attachment.token_end) {
+        continue;
+      }
+      if (loaded_.embedded) {
+        diagnostics_.error(
+            attachment.range,
+            "compiler-distributed source cannot attach physical files");
         continue;
       }
       const Token &kind_token = tree.token(attachment.token_begin);

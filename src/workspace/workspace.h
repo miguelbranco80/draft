@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -49,11 +50,12 @@ enum class PackageRootKind {
   Core,
 };
 
-// PackageRoot is one explicitly selected namespace-to-directory mapping.
+// PackageRoot is one explicitly selected namespace-to-source-root mapping.
 // identity participates in semantic package identity and content hashes;
-// physical_directory is only the canonical I/O location. import_prefix is
-// empty for the workspace root, configured for dependencies, and exactly
-// "core" for the selected compiler distribution.
+// physical_directory is only the canonical I/O location and is empty for the
+// immutable embedded core. import_prefix is empty for the workspace root,
+// configured for dependencies, and exactly "core" for the selected compiler
+// distribution.
 struct PackageRoot {
   PackageRootKind kind = PackageRootKind::Workspace;
   std::string identity;
@@ -90,12 +92,17 @@ struct WorkspaceSourceOverride {
   PackageSourceOverride source;
 };
 
-// WorkspaceLoadOptions contains every permitted source root. core_directory
-// may be empty only when the reachable graph imports no core package. Likewise,
-// no dependency directory or environment search path is inferred.
+// WorkspaceLoadOptions contains every permitted source root. core_files and
+// core_content_identity describe the exact compiler-distributed immutable
+// bundle; an empty span is valid only when the reachable graph imports no core
+// package. No dependency directory or environment search path is inferred.
 struct WorkspaceLoadOptions {
   std::string workspace_directory;
+  // Internal tests may supply a synthetic physical core instead of the
+  // distribution bundle. Production compiler clients always leave this empty;
+  // specifying both forms is a configuration error.
   std::string core_directory;
+  std::span<const EmbeddedPackageFile> core_files;
   std::string core_content_identity;
   std::vector<DependencyMapping> dependencies;
   std::vector<WorkspaceSourceOverride> source_overrides;

@@ -1,0 +1,20 @@
+# Draft compiler source workspace. Source files and package imports remain
+# ordinary filesystem content; this file establishes the durable boundary and
+# names convenient program configurations.
+draft-workspace-v1
+default = turbo-editor
+exclude = build
+exclude = build-asan
+exclude = build-llvm22
+exclude = build-llvm22-sanitize
+exclude = build-release
+exclude = build-sanitize
+exclude = build-sanitized
+
+[program draftide]
+root = tools/draftide
+optimization = O0
+
+[program turbo-editor]
+root = examples/turbo-editor
+optimization = O2

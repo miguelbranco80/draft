@@ -15,24 +15,11 @@ file(MAKE_DIRECTORY "${TEST_ROOT}/workspace")
 file(COPY "${SOURCE_ROOT}/lib"
   DESTINATION "${TEST_ROOT}/workspace"
   FILES_MATCHING PATTERN "*.draft")
+file(WRITE "${TEST_ROOT}/workspace/draft.workspace" "draft-workspace-v1\n")
 
 execute_process(
-  COMMAND "${DRAFTC}" test "${TEST_ROOT}/workspace"
-    --root lib/draft_project --target "${TARGET_SELECTOR}"
-  RESULT_VARIABLE project_status
-  OUTPUT_VARIABLE project_output
-  ERROR_VARIABLE project_error
-)
-if(NOT project_status EQUAL 0 OR
-   NOT project_output MATCHES "test passed: 3 selected procedures")
-  message(FATAL_ERROR
-    "draft_project tests failed (${project_status})\n"
-    "stdout:\n${project_output}\nstderr:\n${project_error}")
-endif()
-
-execute_process(
-  COMMAND "${DRAFTC}" test "${TEST_ROOT}/workspace"
-    --root lib/turbo_ui --target "${TARGET_SELECTOR}"
+  COMMAND "${DRAFTC}" test "${TEST_ROOT}/workspace/lib/turbo_ui"
+    --target "${TARGET_SELECTOR}"
   RESULT_VARIABLE ui_status
   OUTPUT_VARIABLE ui_output
   ERROR_VARIABLE ui_error
@@ -45,8 +32,8 @@ if(NOT ui_status EQUAL 0 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" test "${TEST_ROOT}/workspace"
-    --root lib/turbo_editor_app --target "${TARGET_SELECTOR}"
+  COMMAND "${DRAFTC}" test "${TEST_ROOT}/workspace/lib/turbo_editor_app"
+    --target "${TARGET_SELECTOR}"
   RESULT_VARIABLE editor_status
   OUTPUT_VARIABLE editor_output
   ERROR_VARIABLE editor_error

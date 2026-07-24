@@ -501,6 +501,11 @@ void sort_semantic_sites_in_source_order(
       context_options.source_overrides.push_back(source_override.source);
     }
   }
+  if (workspace_package.loaded.embedded) {
+    context_options.embedded_files = workspace_options.core_files;
+    context_options.embedded_package_path =
+        workspace_package.identity.root_relative_path;
+  }
   PackageLoadResult context_package = load_package(
       sources,
       workspace_package.loaded.physical_directory,

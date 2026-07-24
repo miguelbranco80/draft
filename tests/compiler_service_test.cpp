@@ -387,7 +387,7 @@ void test_service_transactions_and_native_build(TestState &state) {
 
   // Workspace replacement is transactional behind the stable opaque handle.
   // A failed replacement leaves the complete old session selectable; a valid
-  // workspace discovers its runnable root without a manifest or --root value.
+  // workspace discovers its runnable root without a manifest selection.
   std::array<std::uint8_t, 256> workspace_error{};
   const std::string missing_workspace =
       (temporary.path() / "missing-workspace").string();

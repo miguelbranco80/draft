@@ -20,10 +20,11 @@ file(MAKE_DIRECTORY "${TEST_ROOT}")
 file(COPY "${SOURCE_PACKAGE}" DESTINATION "${TEST_ROOT}")
 get_filename_component(workspace_name "${SOURCE_PACKAGE}" NAME)
 set(workspace "${TEST_ROOT}/${workspace_name}")
+file(WRITE "${workspace}/draft.workspace" "draft-workspace-v1\n")
 set(program "${TEST_ROOT}/foreign-provider-program")
 
 execute_process(
-  COMMAND "${DRAFTC}" build "${workspace}" --root .
+  COMMAND "${DRAFTC}" build "${workspace}"
     --target "${TARGET_SELECTOR}"
     --provider "custom_math=object:${PROVIDER_OBJECT}"
     -o "${program}"

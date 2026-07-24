@@ -14,6 +14,8 @@ file(REMOVE_RECURSE "${TEST_ROOT}")
 file(MAKE_DIRECTORY "${TEST_ROOT}")
 file(COPY "${SOURCE_PACKAGE}" DESTINATION "${TEST_ROOT}")
 get_filename_component(package_name "${SOURCE_PACKAGE}" NAME)
+file(WRITE "${TEST_ROOT}/${package_name}/draft.workspace"
+  "draft-workspace-v1\n")
 
 execute_process(
   COMMAND "${DRAFTC}" test "${TEST_ROOT}/${package_name}"

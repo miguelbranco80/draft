@@ -196,5 +196,5 @@ complete interactive reference. Tests use in-memory surfaces and synthetic
 events without opening a terminal:
 
 ```sh
-build/draftc test . --root lib/turbo_ui --target aarch64-macos
+build/draftc test lib/turbo_ui --target aarch64-macos
 ```

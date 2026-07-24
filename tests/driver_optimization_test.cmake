@@ -21,6 +21,10 @@ file(COPY "${SOURCE_WORKSPACE}/" DESTINATION "${TEST_ROOT}/workspace")
 file(COPY "${SOURCE_VALIDATION}/" DESTINATION "${TEST_ROOT}/validation")
 set(workspace "${TEST_ROOT}/workspace")
 set(validation "${TEST_ROOT}/validation")
+# The repository marker is an ancestor of TEST_ROOT. Give the copied
+# validation package its own boundary so evidence remains inside the fixture;
+# the copied multi-package workspace already carries its checked-in marker.
+file(WRITE "${validation}/draft.workspace" "draft-workspace-v1\n")
 
 execute_process(
   COMMAND "${DRAFTC}"
@@ -31,20 +35,20 @@ execute_process(
 string(REGEX MATCHALL "\\[-O0\\|-O2\\]"
   optimization_usage_options "${usage_stderr}")
 list(LENGTH optimization_usage_options optimization_usage_count)
-if(NOT usage_result EQUAL 2 OR NOT optimization_usage_count EQUAL 4)
+if(NOT usage_result EQUAL 2 OR NOT optimization_usage_count EQUAL 5)
   message(FATAL_ERROR
     "usage does not expose O0/O2 on all native-producing commands\n${usage_stderr}")
 endif()
 string(REGEX MATCHALL "\\[--debug-symbols\\]"
   debug_usage_options "${usage_stderr}")
 list(LENGTH debug_usage_options debug_usage_count)
-if(NOT debug_usage_count EQUAL 2)
+if(NOT debug_usage_count EQUAL 3)
   message(FATAL_ERROR
     "usage does not expose opt-in debug symbols on build commands\n${usage_stderr}")
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" build "${workspace}" --root app -O1
+  COMMAND "${DRAFTC}" build "${workspace}/app" -O1
   RESULT_VARIABLE unsupported_result
   OUTPUT_VARIABLE unsupported_stdout
   ERROR_VARIABLE unsupported_stderr
@@ -57,7 +61,7 @@ if(NOT unsupported_result EQUAL 2 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" build "${workspace}" --root app -O0 -O2
+  COMMAND "${DRAFTC}" build "${workspace}/app" -O0 -O2
   RESULT_VARIABLE duplicate_result
   OUTPUT_VARIABLE duplicate_stdout
   ERROR_VARIABLE duplicate_stderr
@@ -70,7 +74,7 @@ if(NOT duplicate_result EQUAL 2 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" resolve "${workspace}" --root app -O2
+  COMMAND "${DRAFTC}" resolve "${workspace}/app" -O2
   RESULT_VARIABLE resolve_without_build_result
   OUTPUT_VARIABLE resolve_without_build_stdout
   ERROR_VARIABLE resolve_without_build_stderr
@@ -83,7 +87,7 @@ if(NOT resolve_without_build_result EQUAL 2 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" resolve "${workspace}" --root app --debug-symbols
+  COMMAND "${DRAFTC}" resolve "${workspace}/app" --debug-symbols
   RESULT_VARIABLE debug_without_build_result
   OUTPUT_VARIABLE debug_without_build_stdout
   ERROR_VARIABLE debug_without_build_stderr
@@ -96,7 +100,7 @@ if(NOT debug_without_build_result EQUAL 2 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" emit-llvm "${workspace}" --root app
+  COMMAND "${DRAFTC}" emit-llvm "${workspace}/app"
   RESULT_VARIABLE fast_llvm_result
   OUTPUT_VARIABLE fast_llvm_stdout
   ERROR_VARIABLE fast_llvm_stderr
@@ -108,7 +112,7 @@ if(NOT fast_llvm_result EQUAL 0 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" emit-llvm "${workspace}" --root app -O2
+  COMMAND "${DRAFTC}" emit-llvm "${workspace}/app" -O2
   RESULT_VARIABLE emit_llvm_result
   OUTPUT_VARIABLE emit_llvm_stdout
   ERROR_VARIABLE emit_llvm_stderr
@@ -135,7 +139,7 @@ foreach(level IN ITEMS default o0 o2)
     set(level_output "${o2_output}")
   endif()
   execute_process(
-    COMMAND "${DRAFTC}" build "${workspace}" --root app
+    COMMAND "${DRAFTC}" build "${workspace}/app"
       --kind assembly ${level_argument} -o "${level_output}"
     RESULT_VARIABLE build_result
     OUTPUT_VARIABLE build_stdout
@@ -148,7 +152,7 @@ foreach(level IN ITEMS default o0 o2)
 endforeach()
 
 execute_process(
-  COMMAND "${DRAFTC}" resolve "${workspace}" --root app --build
+  COMMAND "${DRAFTC}" resolve "${workspace}/app" --build
     --kind assembly -O2 -o "${resolve_o2_output}"
   RESULT_VARIABLE resolve_o2_result
   OUTPUT_VARIABLE resolve_o2_stdout

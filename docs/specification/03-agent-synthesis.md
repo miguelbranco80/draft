@@ -343,15 +343,15 @@ movement requires the programmer to select the intended manifest identity in
 tooling.
 
 ```text
-draft resolve . --root cmd/viewer
-draft resolve . --root cmd/viewer --regenerate
-draft resolve . --root cmd/viewer --regenerate site-0123456789abcdef
-draft resolve . --root cmd/viewer --revalidate
-draft resolve . --root cmd/viewer --build
-draft expand . --root cmd/viewer --out /tmp/viewer-expanded
-draft judge . --root cmd/viewer
-draft judge . --root cmd/viewer codec/jpeg:decode
-draft build . --root cmd/viewer
+draft resolve cmd/viewer
+draft resolve cmd/viewer --regenerate
+draft resolve cmd/viewer --regenerate site-0123456789abcdef
+draft resolve cmd/viewer --revalidate
+draft resolve cmd/viewer --build
+draft expand cmd/viewer --out /tmp/viewer-expanded
+draft judge cmd/viewer
+draft judge cmd/viewer codec/jpeg:decode
+draft build cmd/viewer
 ```
 
 `draft resolve` loads valid pins and synthesizes missing or stale sites in
@@ -374,7 +374,7 @@ A complete handwritten program with no synthesis sites needs no resolution
 manifest. This provider boundary is unconditional rather than an optional build
 mode: only `draft resolve` may request generated source.
 
-`draft expand <workspace> --root <package> --out <directory>` performs the same provider-free
+`draft expand <package> --out <directory>` performs the same provider-free
 checks, then writes a complete source projection in which every selected `...`
 site has been replaced by its checked generated Draft bytes. The requested
 directory must not already exist. The projection includes deterministic root

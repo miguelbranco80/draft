@@ -27,12 +27,12 @@ The fixture already contains fresh checked expansions, so ordinary consumer
 commands are deliberately provider-free:
 
 ```sh
-build/draftc check examples/agent-acceptance --root app
-build/draftc build examples/agent-acceptance --root app \
+build/draftc check examples/agent-acceptance/app
+build/draftc build examples/agent-acceptance/app \
   -o /tmp/draft-agent-acceptance
 /tmp/draft-agent-acceptance
-build/draftc test examples/agent-acceptance --root app
-build/draftc bench examples/agent-acceptance --root app --verify
+build/draftc test examples/agent-acceptance/app
+build/draftc bench examples/agent-acceptance/app --verify
 ```
 
 These commands use the macOS compatibility default. Pass
@@ -45,7 +45,7 @@ benchmark, or judgment evidence. To recheck every saved expansion without
 provider access, run:
 
 ```sh
-build/draftc resolve examples/agent-acceptance --root app --revalidate
+build/draftc resolve examples/agent-acceptance/app --revalidate
 ```
 
 ## Exercise live synthesis
@@ -63,7 +63,7 @@ cp examples/agent-acceptance/app/*.draft \
 cp examples/agent-acceptance/lib/*.draft \
   /tmp/draft-agent-acceptance-live/lib/
 
-build/draftc resolve /tmp/draft-agent-acceptance-live --root app \
+build/draftc resolve /tmp/draft-agent-acceptance-live/app \
   --build -o /tmp/draft-agent-acceptance-live/program \
   --model model-name
 /tmp/draft-agent-acceptance-live/program
@@ -80,7 +80,7 @@ return value from its interface alone. Supply the exact library source as the
 claim artifact:
 
 ```sh
-build/draftc judge examples/agent-acceptance --root app \
+build/draftc judge examples/agent-acceptance/app \
   --judge-artifact library-source:examples/agent-acceptance/lib/package.draft \
   --model model-name
 ```
@@ -179,3 +179,21 @@ and judged successfully. That smaller run also verified that its resolution
 store lands in the `app` root/target namespace under
 `agent-pending/.draft/resolutions/`, rather than the shared parent of the
 examples collection or a sibling executable's manifest.
+
+## Embedded-core and workspace-command requalification
+
+On 2026-07-24, provider-free `resolve --revalidate` reused and rechecked all
+four saved expansions with zero synthesis calls after core source became an
+immutable compiler-distributed bundle. The bundle identity was
+`draft-core:a65d9a05146ae42d44dc7cd1e4396fd20eef7e7b1d83e5dc5c7ac05fa399c0bb`.
+The resulting committed resolved-program digests are
+`f22d3b1e6b11845739b7be0d36a0225026f2660c71c59e1a1a26a133055f27ef`
+for AArch64 macOS,
+`4b5d723c652b6e864573ec60afb86e5e026d0aec6c88e68ded8d494a72d9dc79`
+for AArch64 GNU/Linux,
+`9941c17fa05a07e8f232f45939f064ad937afc8afc16c3dc8d49ecba72b85ef0`
+for x86-64 GNU/Linux, and
+`81e2e7de0dc2ab14a27918eceb40a526fb046d1797382fbcd21041938ef03b1c`
+for x86-64 Windows. No generated source object changed. The normal CTest
+matrix passed all 93 tests, including provider-free frontend, expansion,
+validation, native run, and relocated-compiler core checks.

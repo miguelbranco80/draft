@@ -1,7 +1,7 @@
 # Turbo Draft
 
 Turbo Draft is a full-screen terminal IDE written in Draft. The only C++ part
-is the bootstrap compiler service behind an opaque C ABI; project selection,
+is the bootstrap compiler service behind an opaque C ABI; workspace selection,
 files, editor state, syntax-colored UI, Build/Run policy, and `main` live here
 or in reusable Draft libraries.
 
@@ -12,20 +12,22 @@ cmake --build build --target draftide --parallel
 build/draftide .
 ```
 
-The first path is the workspace, not the current package. Turbo Draft discovers
-packages containing `main`; if there are several, Project opens so you can
-choose the active Build/Run root. A workspace may optionally provide
-`<workspace>/draft.project` to choose the initial row:
+The first path may be a workspace or a package inside one. Turbo Draft searches
+upward for the nearest `draft.workspace`; without one, the opened directory is
+a standalone workspace. It discovers packages containing `main`; if there are
+several, the program/package window opens so you can choose the active
+Build/Run root. A workspace may choose the initial program with:
 
 ```text
-draft-project-v1
+draft-workspace-v1
+default = turbo-editor
+
+[program turbo-editor]
 root = examples/turbo-editor
-source = package.draft
 ```
 
-When the file exists, `root` selects one package relative to the workspace;
-`source` is optional and defaults to `package.draft`. Without it, no project
-file is required. `--root` and `--source` are explicit command-line overrides.
+Without the marker, no manifest is required. `--source` optionally selects one
+direct file in the initial package.
 Imports such as
 `lib/turbo_editor_app` are resolved below the workspace, while `core/terminal`
 comes from the compiler's pinned core distribution. Thus, when launching from
@@ -35,11 +37,11 @@ this repository's `examples/` directory, keep the repository as the workspace:
 ../build/draftide ..
 ```
 
-Opening `.` with root `turbo-editor` would make `examples/` the workspace and
-would therefore exclude the top-level `lib/`. Turbo Draft needs no package list:
-it discovers packages containing `main` and F12 switches among those executable
-roots. The explicitly selected root may also be a library for focused editing,
-although it is not runnable.
+Opening the `turbo-editor` package directly still finds the repository marker
+above it and therefore keeps top-level `lib/` imports available. Turbo Draft
+needs no package list: it discovers packages containing `main` and F12 switches
+among those executable roots. The explicitly selected root may also be a
+library for focused editing, although it is not runnable.
 
 The top row contains real File, Edit, Project, and Window drop-down menus. Their
 access letters are underlined: use Alt-F/Alt-E/Alt-P/Alt-W to open a menu, then

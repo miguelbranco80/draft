@@ -24,7 +24,7 @@ set(resolve_output "${TEST_ROOT}/resolve-assembly")
 set(build_output "${TEST_ROOT}/later-assembly")
 
 execute_process(
-  COMMAND "${DRAFTC}" resolve "${workspace}" --root app --revalidate --build
+  COMMAND "${DRAFTC}" resolve "${workspace}/app" --revalidate --build
     --target "${TARGET_SELECTOR}" --kind assembly -o "${resolve_output}"
   RESULT_VARIABLE resolve_status
   OUTPUT_VARIABLE resolve_stdout
@@ -40,7 +40,7 @@ if(NOT resolve_stdout MATCHES "resolved 4 synthesis sites" OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" build "${workspace}" --root app
+  COMMAND "${DRAFTC}" build "${workspace}/app"
     --target "${TARGET_SELECTOR}" --kind assembly -o "${build_output}"
   RESULT_VARIABLE build_status
   OUTPUT_VARIABLE build_stdout
@@ -107,7 +107,7 @@ set(blocked_output "${TEST_ROOT}/occupied-assembly-output")
 file(WRITE "${blocked_output}" "not a directory\n")
 
 execute_process(
-  COMMAND "${DRAFTC}" resolve "${workspace}" --root app --revalidate --build
+  COMMAND "${DRAFTC}" resolve "${workspace}/app" --revalidate --build
     --target "${TARGET_SELECTOR}" --kind assembly
     -o "${blocked_output}"
   RESULT_VARIABLE failed_build_status
@@ -130,7 +130,7 @@ if(manifest_before_backend_failure STREQUAL manifest_after_backend_failure)
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" check "${workspace}" --root app
+  COMMAND "${DRAFTC}" check "${workspace}/app"
     --target "${TARGET_SELECTOR}"
   RESULT_VARIABLE committed_check_status
   OUTPUT_VARIABLE committed_check_stdout

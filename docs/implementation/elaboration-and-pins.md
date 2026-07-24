@@ -251,7 +251,7 @@ the retained surface graph.
 
 The compiler treats the saved fragment as source inserted at its exact `...`
 site while retaining the original surface buffer and a composed source map.
-`draftc expand <workspace> --root <package> --out <directory>` exposes that final checked view as
+`draftc expand <package> --out <directory>` exposes that final checked view as
 ordinary files plus deterministic `.draft-map` sidecars. Indexed output-root
 directories avoid treating semantic root identities as trusted host paths; a
 top-level map retains each root's actual kind, import prefix, and identity.

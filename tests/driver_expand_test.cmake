@@ -12,7 +12,7 @@ endif()
 
 file(REMOVE_RECURSE "${TEST_ROOT}" "${TEST_ROOT}.tmp")
 execute_process(
-  COMMAND "${DRAFTC}" expand "${SOURCE_WORKSPACE}" --root app
+  COMMAND "${DRAFTC}" expand "${SOURCE_WORKSPACE}/app"
     --out "${TEST_ROOT}"
   RESULT_VARIABLE first_status
   OUTPUT_VARIABLE first_stdout
@@ -30,7 +30,7 @@ if(NOT EXISTS "${TEST_ROOT}/draft-expanded-source.map")
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" expand "${SOURCE_WORKSPACE}" --root app
+  COMMAND "${DRAFTC}" expand "${SOURCE_WORKSPACE}/app"
     --out "${TEST_ROOT}"
   RESULT_VARIABLE second_status
   OUTPUT_VARIABLE second_stdout

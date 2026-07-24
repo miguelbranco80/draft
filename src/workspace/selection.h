@@ -1,15 +1,15 @@
-// Explicit workspace-package selection and executable-root discovery.
+// Package-path workspace discovery and executable-root discovery.
 //
-// The command layer supplies one canonical workspace directory. This module
-// converts an explicit root-relative selector into the PackageIdentity used by
-// the compiler, or walks the ordinary workspace tree to find surface packages
-// that declare a package-level `main`. It owns no compiler graph and performs
-// no semantic analysis: selected roots are subsequently compiled through the
-// normal closed import-graph pipeline.
+// The command layer supplies an ordinary package or search directory. This
+// module canonicalizes it, searches its ancestors for the nearest
+// `draft.workspace` marker, and derives both the workspace boundary and the
+// stable PackageIdentity used by the compiler. A directory with no marker
+// above it is a standalone workspace. This makes the common command
+// `draftc check path/to/package` exact with one unambiguous path coordinate.
 //
-// Discovery never follows symlinks, skips every directory whose leaf name
-// begins with '.', excludes marked expanded-source projections, and excludes
-// explicitly mapped dependency/core roots. It
+// Recursive executable discovery never follows symlinks, skips every directory
+// whose leaf name begins with '.', excludes marked expanded-source projections,
+// mapped dependency/core roots, and nested workspaces. It
 // processes directory entries and returned roots in bytewise root-relative
 // path order. Package parsing uses the same target-qualified file-selection
 // rules as ordinary compilation. These invariants prevent host enumeration,
@@ -24,11 +24,14 @@
 #include "workspace/workspace.h"
 
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace draft {
+
+inline constexpr std::string_view WorkspaceManifestName = "draft.workspace";
 
 // One executable-root selection pairs the persistent package identity with its
 // canonical physical directory. identity is always in the `workspace` root;
@@ -44,6 +47,39 @@ struct ExecutableRootDiscoveryResult {
   bool ok = false;
   std::vector<WorkspacePackageSelection> roots;
 };
+
+// One command path has two meanings which must remain distinct. package is the
+// exact root package selected by check/test/run-like commands.
+// workspace_directory owns root-relative imports and `.draft/` state.
+// manifest_path is empty for a standalone package and otherwise names the
+// marker which established that boundary. All paths are canonical and therefore
+// safe to retain for command lifetime I/O; none enters semantic identity except
+// through package.identity.
+struct CommandPackageSelection {
+  std::filesystem::path workspace_directory;
+  WorkspacePackageSelection package;
+  std::filesystem::path manifest_path;
+};
+
+// Locates the exact package supplied to a command. The nearest ancestor marker
+// wins. A present marker must be a regular non-symlink file; malformed manifest
+// contents are parsed by the configuration layer after this physical boundary
+// has been established.
+[[nodiscard]] bool
+locate_command_package(const std::filesystem::path &package_directory,
+                       CommandPackageSelection &selection,
+                       DiagnosticSink &diagnostics);
+
+// Locates a recursive build scope. search_directory is canonicalized exactly
+// like a package path, but it need not itself contain Draft source. The
+// returned workspace is the nearest marked ancestor, or the search directory
+// when no marker exists.
+[[nodiscard]] bool
+locate_command_scope(const std::filesystem::path &search_directory,
+                     std::filesystem::path &workspace_directory,
+                     std::filesystem::path &canonical_search_directory,
+                     std::filesystem::path &manifest_path,
+                     DiagnosticSink &diagnostics);
 
 // Converts one existing physical package directory to its canonical workspace
 // identity. The package must be contained by workspace_directory. This is the
@@ -73,7 +109,9 @@ struct ExecutableRootDiscoveryResult {
 // signature; those errors belong to normal compilation of the selected root.
 [[nodiscard]] ExecutableRootDiscoveryResult discover_executable_roots(
     SourceManager &sources,
+    const std::filesystem::path &search_directory,
     const WorkspaceLoadOptions &options,
-    DiagnosticSink &diagnostics);
+    DiagnosticSink &diagnostics,
+    std::span<const std::filesystem::path> excluded_directories = {});
 
 } // namespace draft

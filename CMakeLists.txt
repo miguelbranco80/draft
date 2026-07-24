@@ -50,6 +50,31 @@ add_custom_command(
   VERBATIM
 )
 
+# Core source is part of the compiler distribution rather than an ambient
+# checkout path. The generated table is consumed in memory by workspace loading
+# and carries a build-time content identity.
+set(DRAFT_CORE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/core")
+file(GLOB_RECURSE DRAFT_CORE_INPUTS CONFIGURE_DEPENDS
+  "${DRAFT_CORE_ROOT}/*.draft"
+  "${DRAFT_CORE_ROOT}/*.s"
+  "${DRAFT_CORE_ROOT}/*.S"
+  "${DRAFT_CORE_ROOT}/*.asm"
+)
+list(SORT DRAFT_CORE_INPUTS)
+set(DRAFT_CORE_BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/generated/draft_core_bundle.cpp")
+add_custom_command(
+  OUTPUT "${DRAFT_CORE_BUNDLE}"
+  COMMAND
+    "${CMAKE_COMMAND}"
+    "-DDRAFT_CORE_ROOT=${DRAFT_CORE_ROOT}"
+    "-DDRAFT_CORE_OUTPUT=${DRAFT_CORE_BUNDLE}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_draft_core.cmake"
+  DEPENDS
+    ${DRAFT_CORE_INPUTS}
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_draft_core.cmake"
+  VERBATIM
+)
+
 # Draft embeds one pinned LLVM major through its C API. The explicit common
 # installation hints keep a normal Apple Silicon Homebrew or Ubuntu LLVM 22
 # installation zero-configuration while LLVM_DIR remains the authoritative
@@ -245,6 +270,7 @@ add_library(
   src/backend/runtime_assets.cpp
   src/backend/toolchain.cpp
   src/base/content_tree.cpp
+  src/base/child_process.cpp
   src/base/sha256.cpp
   src/base/timing.cpp
   src/base/work_graph.cpp
@@ -317,6 +343,8 @@ add_library(
   src/validation/instrumentation.cpp
   src/validation/runner.cpp
   src/workspace/package.cpp
+  "${DRAFT_CORE_BUNDLE}"
+  src/workspace/manifest.cpp
   src/workspace/selection.cpp
   src/workspace/workspace.cpp
   $<TARGET_OBJECTS:draft_llvm_backend>
@@ -370,15 +398,9 @@ endif()
 
 add_executable(draftc src/driver/main.cpp)
 target_link_libraries(draftc PRIVATE draft_compiler)
-target_compile_definitions(
-  draftc
-  PRIVATE
-    DRAFT_CORE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/core"
-    DRAFT_CORE_CONTENT_IDENTITY="draft-core-bootstrap-v4"
-)
 
 # The compiler service is an opaque C ABI over the C++ bootstrap. Draft owns the
-# real draftide executable, main procedure, project selection, editor, and UI;
+# real draftide executable, main procedure, workspace selection, editor, and UI;
 # this library owns only compiler-session products and native build operations.
 add_library(
   draft_compiler_service SHARED
@@ -391,8 +413,6 @@ target_compile_definitions(
   draft_compiler_service
   PRIVATE
     DRAFT_COMPILER_SERVICE_BUILD
-    DRAFT_CORE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/core"
-    DRAFT_CORE_CONTENT_IDENTITY="draft-core-bootstrap-v4"
 )
 target_link_libraries(draft_compiler_service PRIVATE draft_compiler)
 set_target_properties(
@@ -462,7 +482,6 @@ file(GLOB_RECURSE DRAFTIDE_DRAFT_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/core/*.draft"
   "${CMAKE_CURRENT_SOURCE_DIR}/lib/draft_compiler/*.draft"
   "${CMAKE_CURRENT_SOURCE_DIR}/lib/draft_compiler_api/*.draft"
-  "${CMAKE_CURRENT_SOURCE_DIR}/lib/draft_project/*.draft"
   "${CMAKE_CURRENT_SOURCE_DIR}/lib/turbo_ui/*.draft"
   "${CMAKE_CURRENT_SOURCE_DIR}/lib/turbo_ui_terminal/*.draft"
   "${CMAKE_CURRENT_SOURCE_DIR}/lib/turbo_editor/*.draft"
@@ -499,8 +518,9 @@ if(DRAFTIDE_HOST_TARGET)
   add_custom_command(
     OUTPUT "${DRAFTIDE_BUILD_STAMP}"
     BYPRODUCTS "${DRAFTIDE_EXECUTABLE}"
-    COMMAND $<TARGET_FILE:draftc> build "${CMAKE_CURRENT_SOURCE_DIR}"
-      --root tools/draftide --target "${DRAFTIDE_HOST_TARGET}" -O0
+    COMMAND $<TARGET_FILE:draftc> build
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/draftide"
+      --target "${DRAFTIDE_HOST_TARGET}" -O0
       --provider
         "draft_compiler_service=${DRAFTIDE_PROVIDER_KIND}:${DRAFTIDE_PROVIDER_PATH}"
       -o "${DRAFTIDE_EXECUTABLE}"
@@ -509,7 +529,7 @@ if(DRAFTIDE_HOST_TARGET)
       draftc
       draft_compiler_service
       ${DRAFTIDE_DRAFT_SOURCES}
-      "${CMAKE_CURRENT_SOURCE_DIR}/draft.project"
+      "${CMAKE_CURRENT_SOURCE_DIR}/draft.workspace"
     COMMENT "Building the Draft-owned Turbo Draft executable"
     VERBATIM
   )
@@ -532,8 +552,8 @@ if(BUILD_TESTING)
       draft_draftide_smoke PROPERTIES LABELS "ide;integration"
     )
     # examples/hello is itself a one-root workspace and intentionally contains
-    # no draft.project. This companion smoke proves the project file is an
-    # optional initial preference rather than a prerequisite for opening Draft.
+    # no draft.workspace. This companion smoke proves a standalone package is
+    # itself a valid workspace rather than requiring a manifest.
     add_test(
       NAME draft_draftide_auto_root_smoke
       COMMAND
@@ -629,6 +649,10 @@ if(BUILD_TESTING)
   add_executable(draft_workspace_tests tests/workspace_test.cpp)
   target_link_libraries(draft_workspace_tests PRIVATE draft_compiler)
   add_test(NAME draft_workspace_tests COMMAND draft_workspace_tests)
+
+  add_executable(draft_embedded_core_tests tests/embedded_core_test.cpp)
+  target_link_libraries(draft_embedded_core_tests PRIVATE draft_compiler)
+  add_test(NAME draft_embedded_core_tests COMMAND draft_embedded_core_tests)
 
   add_executable(
     draft_workspace_selection_tests
@@ -976,8 +1000,6 @@ if(BUILD_TESTING)
     draft_judgment_driver_tests
     PRIVATE
       DRAFT_DRIVER_PATH="$<TARGET_FILE:draftc>"
-      DRAFT_CORE_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/core"
-      DRAFT_CORE_CONTENT_IDENTITY="draft-core-bootstrap-v4"
   )
   add_dependencies(draft_judgment_driver_tests draftc)
   add_test(NAME draft_judgment_driver_tests COMMAND draft_judgment_driver_tests)
@@ -1027,12 +1049,12 @@ if(BUILD_TESTING)
   add_test(
     NAME draft_judgment_tour_check
     COMMAND draftc check
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/judgment-tour" --root app
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/judgment-tour/app"
   )
   add_test(
     NAME draft_judgment_tour_list
     COMMAND draftc judge
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/judgment-tour" --root app --list
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/judgment-tour/app" --list
   )
   set_tests_properties(
     draft_judgment_tour_list
@@ -1188,7 +1210,7 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" -E env
       "PATH=${CMAKE_CURRENT_BINARY_DIR}/no-codex-path"
       $<TARGET_FILE:draftc> resolve
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending" --root app
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending/app"
       --assertions=off
   )
   set_tests_properties(
@@ -1201,7 +1223,7 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" -E env
       "PATH=${CMAKE_CURRENT_BINARY_DIR}/no-codex-path"
       $<TARGET_FILE:draftc> judge
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending" --root app
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-pending/app"
       --assertions=off
   )
   set_tests_properties(
@@ -1215,7 +1237,7 @@ if(BUILD_TESTING)
   add_test(
     NAME draft_regeneration_rejects_unknown_site
     COMMAND draftc resolve
-      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-acceptance" --root app
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/agent-acceptance/app"
       --regenerate site-does-not-exist
   )
   set_tests_properties(
@@ -1225,6 +1247,23 @@ if(BUILD_TESTING)
   )
 
   if(DRAFT_NATIVE_HOST)
+    # `run` is a foreground native-host operation. This process-level fixture
+    # proves default-program selection, configured environment/cwd, and the
+    # exact CLI separator contract through the real driver and hosted runtime.
+    add_test(
+      NAME draft_driver_run
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/driver-run-test"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_run_test.cmake"
+    )
+    set_tests_properties(
+      draft_driver_run
+      PROPERTIES LABELS "examples;integration"
+    )
+
     add_test(
       NAME draft_resolve_build_reuses_final_graph
       COMMAND
