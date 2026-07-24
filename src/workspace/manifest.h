@@ -66,6 +66,13 @@ struct WorkspaceManifest {
   std::vector<ProgramConfiguration> programs;
 };
 
+// Structural equality compares the complete parsed operator configuration in
+// source-preserving program/list order. It is intended for an embedding's
+// invalidation decision only: it is neither language equality nor a persistent
+// identity/hash operation.
+[[nodiscard]] bool same_workspace_manifest(const WorkspaceManifest &left,
+                                           const WorkspaceManifest &right);
+
 // Applies one more-specific build layer to an already copied less-specific
 // layer. Scalar options replace earlier values; repeated native inputs append
 // in source order so a workspace can supply common inputs and one program can

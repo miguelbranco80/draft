@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "backend/build_policy.h"
 #include "backend/foreign_summaries.h"
 #include "backend/toolchain.h"
 #include "compile/compiler.h"
@@ -133,15 +134,8 @@ struct CompilerConfiguration {
 // manifest source order. No value enters semantic identity except target and
 // runtime_assertions through CompileWorkspaceOptions.
 struct EffectiveProgramConfiguration {
-  TargetProfile target;
-  NativeArtifactKind artifact_kind = NativeArtifactKind::Executable;
-  NativeOptimizationLevel optimization = NativeOptimizationLevel::O0;
-  RuntimeAssertionMode runtime_assertions = RuntimeAssertionMode::On;
-  bool emit_debug_symbols = false;
-  std::optional<std::filesystem::path> output_path;
-  std::vector<ForeignProviderInput> foreign_providers;
+  ResolvedBuildPolicy build;
   std::vector<ForeignProviderAudit> foreign_provider_audits;
-  std::vector<RuntimeAssetInput> runtime_assets;
   std::vector<std::string> arguments;
   std::vector<std::string> environment;
   std::optional<std::filesystem::path> working_directory;

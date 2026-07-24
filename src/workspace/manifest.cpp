@@ -19,6 +19,29 @@
 namespace draft {
 namespace {
 
+[[nodiscard]] bool same_build_defaults(const BuildDefaults &left,
+                                       const BuildDefaults &right) {
+  return left.target == right.target &&
+      left.optimization == right.optimization &&
+      left.artifact_kind == right.artifact_kind &&
+      left.output == right.output &&
+      left.debug_symbols == right.debug_symbols &&
+      left.assertions == right.assertions &&
+      left.providers == right.providers &&
+      left.provider_summaries == right.provider_summaries &&
+      left.runtime_assets == right.runtime_assets;
+}
+
+[[nodiscard]] bool same_program_configuration(
+    const ProgramConfiguration &left,
+    const ProgramConfiguration &right) {
+  return left.name == right.name && left.root == right.root &&
+      same_build_defaults(left.build, right.build) &&
+      left.arguments == right.arguments &&
+      left.working_directory == right.working_directory &&
+      left.environment == right.environment;
+}
+
 enum class SectionKind {
   TopLevel,
   Build,
@@ -184,6 +207,24 @@ enum class SectionKind {
 }
 
 } // namespace
+
+bool same_workspace_manifest(const WorkspaceManifest &left,
+                             const WorkspaceManifest &right) {
+  if (left.present != right.present || left.path != right.path ||
+      left.default_program != right.default_program ||
+      left.excludes != right.excludes ||
+      !same_build_defaults(left.build, right.build) ||
+      left.programs.size() != right.programs.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.programs.size(); ++index) {
+    if (!same_program_configuration(left.programs[index],
+                                    right.programs[index])) {
+      return false;
+    }
+  }
+  return true;
+}
 
 void merge_build_defaults(BuildDefaults &destination,
                           const BuildDefaults &overrides) {

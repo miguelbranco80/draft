@@ -6,6 +6,7 @@
 // expanded-projection, and nested-workspace trees are absent, and only
 // target-selected surface procedure declarations named `main` create roots.
 
+#include "backend/build_policy.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "workspace/manifest.h"
@@ -221,6 +222,35 @@ void test_workspace_manifest(TestState &state) {
   EXPECT(state, effective.providers.size() == 2);
   EXPECT(state, effective.providers[0] == "common=object:common.o");
   EXPECT(state, effective.providers[1] == "editor=archive:editor.a");
+
+  // Structural comparison belongs to the parsed value model rather than an
+  // embedding. Every source-preserving row participates, while an independent
+  // copy compares equal without becoming a persistent manifest identity.
+  draft::WorkspaceManifest copied = manifest;
+  EXPECT(state, draft::same_workspace_manifest(manifest, copied));
+  copied.programs[0].arguments.push_back("extra.txt");
+  EXPECT(state, !draft::same_workspace_manifest(manifest, copied));
+
+  // Both command and IDE clients consume this one typed interpretation. Paths
+  // are rooted at the workspace but deliberately remain uninspected until the
+  // summary/native operation that owns the physical input.
+  draft::ResolvedBuildPolicy policy;
+  EXPECT(state,
+         draft::resolve_build_policy(
+             tree.workspace, effective, draft::make_aarch64_macos_profile(),
+             policy, reason));
+  EXPECT(state, reason.empty());
+  EXPECT(state, policy.target.facts.file_tag == "aarch64-macos");
+  EXPECT(state,
+         policy.optimization == draft::NativeOptimizationLevel::O2);
+  EXPECT(state, policy.runtime_assertions);
+  EXPECT(state, policy.foreign_providers.size() == 2);
+  if (policy.foreign_providers.size() == 2) {
+    EXPECT(state,
+           policy.foreign_providers[0].path == tree.workspace / "common.o");
+    EXPECT(state,
+           policy.foreign_providers[1].path == tree.workspace / "editor.a");
+  }
 }
 
 void test_discovery(TestState &state) {

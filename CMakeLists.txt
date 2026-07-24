@@ -263,6 +263,7 @@ add_library(
   draft_compiler
   src/assembly/aarch64.cpp
   src/assembly/analyze.cpp
+  src/backend/build_policy.cpp
   src/backend/foreign_inputs.cpp
   src/backend/foreign_summaries.cpp
   "${DRAFT_RUNTIME_BUNDLE}"

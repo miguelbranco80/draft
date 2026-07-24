@@ -89,52 +89,6 @@ void append_location(std::string &output, const SourceManager &sources,
   return SourceRange::invalid();
 }
 
-// Manifest and effective-configuration comparisons are structural session
-// invalidation tests, never language equality or persistent hashes. Reading the
-// small manifest on each foreground operation keeps saved configuration live;
-// equality prevents an unchanged file from rebuilding root discovery or
-// discarding the last checked graph.
-[[nodiscard]] bool same_build_defaults(const BuildDefaults &left,
-                                       const BuildDefaults &right) {
-  return left.target == right.target &&
-      left.optimization == right.optimization &&
-      left.artifact_kind == right.artifact_kind &&
-      left.output == right.output &&
-      left.debug_symbols == right.debug_symbols &&
-      left.assertions == right.assertions &&
-      left.providers == right.providers &&
-      left.provider_summaries == right.provider_summaries &&
-      left.runtime_assets == right.runtime_assets;
-}
-
-[[nodiscard]] bool same_program_configuration(
-    const ProgramConfiguration &left,
-    const ProgramConfiguration &right) {
-  return left.name == right.name && left.root == right.root &&
-      same_build_defaults(left.build, right.build) &&
-      left.arguments == right.arguments &&
-      left.working_directory == right.working_directory &&
-      left.environment == right.environment;
-}
-
-[[nodiscard]] bool same_workspace_manifest(const WorkspaceManifest &left,
-                                           const WorkspaceManifest &right) {
-  if (left.present != right.present || left.path != right.path ||
-      left.default_program != right.default_program ||
-      left.excludes != right.excludes ||
-      !same_build_defaults(left.build, right.build) ||
-      left.programs.size() != right.programs.size()) {
-    return false;
-  }
-  for (std::size_t index = 0; index < left.programs.size(); ++index) {
-    if (!same_program_configuration(left.programs[index],
-                                    right.programs[index])) {
-      return false;
-    }
-  }
-  return true;
-}
-
 [[nodiscard]] bool same_foreign_effect(const ForeignAuditEffect &left,
                                        const ForeignAuditEffect &right) {
   return left.kind == right.kind &&
@@ -172,24 +126,28 @@ void append_location(std::string &output, const SourceManager &sources,
 [[nodiscard]] bool same_program_policy(
     const EffectiveProgramConfiguration &left,
     const EffectiveProgramConfiguration &right) {
-  if (left.target.facts.identity != right.target.facts.identity ||
-      left.artifact_kind != right.artifact_kind ||
-      left.optimization != right.optimization ||
-      left.runtime_assertions != right.runtime_assertions ||
-      left.emit_debug_symbols != right.emit_debug_symbols ||
-      left.output_path != right.output_path ||
-      left.foreign_providers.size() != right.foreign_providers.size() ||
+  if (left.build.target.facts.identity != right.build.target.facts.identity ||
+      left.build.artifact_kind != right.build.artifact_kind ||
+      left.build.optimization != right.build.optimization ||
+      left.build.runtime_assertions != right.build.runtime_assertions ||
+      left.build.emit_debug_symbols != right.build.emit_debug_symbols ||
+      left.build.output_path != right.build.output_path ||
+      left.build.foreign_providers.size() !=
+          right.build.foreign_providers.size() ||
       left.foreign_provider_audits.size() !=
           right.foreign_provider_audits.size() ||
-      left.runtime_assets.size() != right.runtime_assets.size() ||
+      left.build.runtime_assets.size() != right.build.runtime_assets.size() ||
       left.arguments != right.arguments ||
       left.environment != right.environment ||
       left.working_directory != right.working_directory) {
     return false;
   }
-  for (std::size_t index = 0; index < left.foreign_providers.size(); ++index) {
-    const ForeignProviderInput &left_input = left.foreign_providers[index];
-    const ForeignProviderInput &right_input = right.foreign_providers[index];
+  for (std::size_t index = 0; index < left.build.foreign_providers.size();
+       ++index) {
+    const ForeignProviderInput &left_input =
+        left.build.foreign_providers[index];
+    const ForeignProviderInput &right_input =
+        right.build.foreign_providers[index];
     if (left_input.provider != right_input.provider ||
         left_input.kind != right_input.kind ||
         left_input.path != right_input.path) {
@@ -203,9 +161,12 @@ void append_location(std::string &output, const SourceManager &sources,
       return false;
     }
   }
-  for (std::size_t index = 0; index < left.runtime_assets.size(); ++index) {
-    if (left.runtime_assets[index].name != right.runtime_assets[index].name ||
-        left.runtime_assets[index].path != right.runtime_assets[index].path) {
+  for (std::size_t index = 0; index < left.build.runtime_assets.size();
+       ++index) {
+    if (left.build.runtime_assets[index].name !=
+            right.build.runtime_assets[index].name ||
+        left.build.runtime_assets[index].path !=
+            right.build.runtime_assets[index].path) {
       return false;
     }
   }
@@ -229,102 +190,25 @@ CompilerSession::~CompilerSession() {
 bool CompilerSession::resolve_program_configuration(
     const WorkspaceManifest &manifest, std::string_view root,
     EffectiveProgramConfiguration &result, DiagnosticSink &diagnostics) const {
-  const BuildDefaults build = effective_build_defaults(manifest, root);
+  BuildDefaults defaults = effective_build_defaults(manifest, root);
   EffectiveProgramConfiguration resolved;
-  resolved.target = configuration_.target;
   std::string reason;
 
   // A user-selected target is an IDE command override. Otherwise the manifest
   // may specialize each named root, with the create-time host target remaining
-  // the fallback for roots that say nothing.
-  if (!configuration_.target_is_explicit && build.target.has_value()) {
-    if (!select_builtin_target_profile(*build.target, resolved.target,
-                                       reason) ||
-        !validate_target_profile(resolved.target, reason)) {
-      diagnostics.error(SourceRange::invalid(),
-                        "program '" + std::string(root) +
-                            "' has an invalid target: " + reason);
-      return false;
-    }
+  // the fallback for roots that say nothing. Remove the lower-priority target
+  // spelling before shared interpretation so an explicitly selected target is
+  // a genuine replacement, not a post-parse patch.
+  if (configuration_.target_is_explicit)
+    defaults.target.reset();
+  if (!resolve_build_policy(configuration_.workspace_directory, defaults,
+                            configuration_.target, resolved.build, reason)) {
+    diagnostics.error(SourceRange::invalid(),
+                      "program '" + std::string(root) + "': " + reason);
+    return false;
   }
-  if (build.artifact_kind.has_value()) {
-    const std::optional<NativeArtifactKind> kind =
-        parse_native_artifact_kind(*build.artifact_kind);
-    if (!kind.has_value()) {
-      diagnostics.error(SourceRange::invalid(),
-                        "program '" + std::string(root) +
-                            "' has invalid artifact kind '" +
-                            *build.artifact_kind + "'");
-      return false;
-    }
-    resolved.artifact_kind = *kind;
-  }
-  if (build.optimization.has_value()) {
-    if (*build.optimization == "O0") {
-      resolved.optimization = NativeOptimizationLevel::O0;
-    } else if (*build.optimization == "O2") {
-      resolved.optimization = NativeOptimizationLevel::O2;
-    } else {
-      diagnostics.error(SourceRange::invalid(),
-                        "program '" + std::string(root) +
-                            "' has invalid optimization '" +
-                            *build.optimization + "'");
-      return false;
-    }
-  }
-  if (build.debug_symbols.has_value())
-    resolved.emit_debug_symbols = *build.debug_symbols;
-  if (build.assertions.has_value()) {
-    resolved.runtime_assertions = *build.assertions ? RuntimeAssertionMode::On
-                                                    : RuntimeAssertionMode::Off;
-  }
-  if (build.output.has_value()) {
-    const std::filesystem::path path(*build.output);
-    resolved.output_path =
-        path.is_absolute() ? path : configuration_.workspace_directory / path;
-  }
-
-  // Native mappings use the same backend-owned public parsers as draftc. The
-  // manifest layer supplies only precedence and workspace-relative path policy;
-  // it does not acquire a second artifact grammar inside the IDE.
-  std::vector<ForeignProviderSummaryInput> summaries;
-  for (const std::string &spelling : build.providers) {
-    ForeignProviderInput input;
-    if (!parse_foreign_provider_input(
-            resolve_manifest_mapping_path(configuration_.workspace_directory,
-                                          spelling),
-            input, reason)) {
-      diagnostics.error(SourceRange::invalid(),
-                        "program '" + std::string(root) + "': " + reason);
-      return false;
-    }
-    resolved.foreign_providers.push_back(std::move(input));
-  }
-  for (const std::string &spelling : build.provider_summaries) {
-    ForeignProviderSummaryInput input;
-    if (!parse_foreign_provider_summary_input(
-            resolve_manifest_mapping_path(configuration_.workspace_directory,
-                                          spelling),
-            input, reason)) {
-      diagnostics.error(SourceRange::invalid(),
-                        "program '" + std::string(root) + "': " + reason);
-      return false;
-    }
-    summaries.push_back(std::move(input));
-  }
-  for (const std::string &spelling : build.runtime_assets) {
-    RuntimeAssetInput input;
-    if (!parse_runtime_asset_input(
-            resolve_manifest_mapping_path(configuration_.workspace_directory,
-                                          spelling),
-            input, reason)) {
-      diagnostics.error(SourceRange::invalid(),
-                        "program '" + std::string(root) + "': " + reason);
-      return false;
-    }
-    resolved.runtime_assets.push_back(std::move(input));
-  }
-  if (!load_foreign_provider_summaries(summaries, resolved.foreign_providers,
+  if (!load_foreign_provider_summaries(resolved.build.provider_summaries,
+                                       resolved.build.foreign_providers,
                                        resolved.foreign_provider_audits,
                                        diagnostics)) {
     return false;
@@ -474,7 +358,7 @@ bool CompilerSession::refresh_root_options(const WorkspaceManifest &manifest,
   for (ConfiguredProgramSelection &row : configured) {
     WorkspaceLoadOptions program_options = workspace_options;
     program_options.package_options.file_tag =
-        row.configuration.target.facts.file_tag;
+        row.configuration.build.target.facts.file_tag;
     const ExecutablePackageInspectionResult inspected =
         inspect_executable_package(discovery_sources, row.selection,
                                    program_options, diagnostics);
@@ -530,13 +414,28 @@ bool CompilerSession::refresh_root_options(const WorkspaceManifest &manifest,
   std::size_t selected = 0;
   for (const WorkspacePackageSelection &selection : selections) {
     EffectiveProgramConfiguration program_configuration;
-    if (!resolve_program_configuration(manifest,
-                                       selection.identity.root_relative_path,
-                                       program_configuration, diagnostics)) {
+    const auto configured_row = std::lower_bound(
+        configured.begin(), configured.end(),
+        selection.identity.root_relative_path,
+        [](const ConfiguredProgramSelection &row, std::string_view root) {
+          return row.program->root < root;
+        });
+    if (configured_row != configured.end() &&
+        configured_row->program->root ==
+            selection.identity.root_relative_path) {
+      // Named rows were resolved before target-sensitive root inspection. Move
+      // that exact snapshot into the published option instead of rereading its
+      // provider summaries and reparsing native mappings a second time. A root
+      // refresh is therefore one coherent observation of external policy.
+      program_configuration = std::move(configured_row->configuration);
+    } else if (!resolve_program_configuration(
+                   manifest, selection.identity.root_relative_path,
+                   program_configuration, diagnostics)) {
       return false;
     }
     PackageLoadOptions package_options = workspace_options.package_options;
-    package_options.file_tag = program_configuration.target.facts.file_tag;
+    package_options.file_tag =
+        program_configuration.build.target.facts.file_tag;
     const PackageLoadResult loaded =
         load_package(discovery_sources, selection.physical_directory.string(),
                      package_options, diagnostics);
@@ -722,23 +621,23 @@ const EffectiveProgramConfiguration &CompilerSession::active_program() const {
 
 std::filesystem::path CompilerSession::default_output_path() const {
   const EffectiveProgramConfiguration &program = active_program();
-  switch (program.artifact_kind) {
+  switch (program.build.artifact_kind) {
   case NativeArtifactKind::Executable:
-    return build_directory_ / (program.target.facts.object_format == "coff"
+    return build_directory_ / (program.build.target.facts.object_format == "coff"
                                    ? "program.exe"
                                    : "program");
   case NativeArtifactKind::Object:
-    return build_directory_ / (program.target.facts.object_format == "coff"
+    return build_directory_ / (program.build.target.facts.object_format == "coff"
                                    ? "program.obj"
                                    : "program.o");
   case NativeArtifactKind::StaticLibrary:
-    return program.target.facts.object_format == "coff"
+    return program.build.target.facts.object_format == "coff"
                ? build_directory_ / "program.lib"
                : build_directory_ / "libprogram.a";
   case NativeArtifactKind::DynamicLibrary:
-    if (program.target.facts.object_format == "coff")
+    if (program.build.target.facts.object_format == "coff")
       return build_directory_ / "program.dll";
-    return build_directory_ / (program.target.facts.object_format == "elf"
+    return build_directory_ / (program.build.target.facts.object_format == "elf"
                                    ? "libprogram.so"
                                    : "libprogram.dylib");
   case NativeArtifactKind::Assembly:
@@ -850,7 +749,7 @@ bool CompilerSession::select_target(TargetProfile target,
 }
 
 const TargetProfile &CompilerSession::target() const {
-  return active_program().target;
+  return active_program().build.target;
 }
 
 bool CompilerSession::target_is_explicit() const {
@@ -882,14 +781,16 @@ CompilerSession::source_path(std::size_t index) const {
 CompileWorkspaceOptions CompilerSession::compile_options() const {
   CompileWorkspaceOptions options;
   const EffectiveProgramConfiguration &program = active_program();
-  options.target = program.target;
+  options.target = program.build.target;
   options.workspace.workspace_directory =
       configuration_.workspace_directory.string();
   options.workspace.core_files = embedded_core_files();
   options.workspace.core_content_identity = embedded_core_content_identity();
-  options.configuration.runtime_assertions = program.runtime_assertions;
+  options.configuration.runtime_assertions = program.build.runtime_assertions
+      ? RuntimeAssertionMode::On
+      : RuntimeAssertionMode::Off;
   options.emit_program_entry =
-      program.artifact_kind == NativeArtifactKind::Executable;
+      program.build.artifact_kind == NativeArtifactKind::Executable;
   options.foreign_provider_audits = program.foreign_provider_audits;
   options.work_executor = work_executor_;
   return options;
@@ -1002,7 +903,7 @@ void CompilerSession::rebuild_tooling_index() {
   // which are deterministic compiler products. The view never re-enumerates
   // the filesystem or constructs a second dependency graph.
   packages += "Target: ";
-  packages += active_program().target.facts.file_tag;
+  packages += active_program().build.target.facts.file_tag;
   packages += "\nPackages and dependencies\n";
   for (std::size_t package_index = 0;
        package_index < compiled.graph.packages.size(); ++package_index) {
@@ -1285,11 +1186,11 @@ CheckResult CompilerSession::build_checked() {
   options.lower_mir = true;
   options.emit_native_output = true;
   options.native_output.output_kind =
-      program.artifact_kind == NativeArtifactKind::Assembly
+      program.build.artifact_kind == NativeArtifactKind::Assembly
           ? LlvmNativeOutputKind::Assembly
           : LlvmNativeOutputKind::Object;
-  options.native_output.optimization = program.optimization;
-  options.emit_debug_information = program.emit_debug_symbols;
+  options.native_output.optimization = program.build.optimization;
+  options.emit_debug_information = program.build.emit_debug_symbols;
   if (!continue_compiled_workspace(sources, options, compiled, diagnostics)) {
     publish_diagnostics(sources, diagnostics);
     return {false, diagnostic_count_};
@@ -1298,21 +1199,21 @@ CheckResult CompilerSession::build_checked() {
   NativeBuildOptions native;
   native.build_directory = build_directory_.string();
   native.output_path =
-      program.output_path.value_or(default_output_path()).string();
-  native.artifact_kind = program.artifact_kind;
-  native.optimization = program.optimization;
-  native.emit_debug_symbols = program.emit_debug_symbols;
-  native.foreign_providers = program.foreign_providers;
-  native.runtime_assets = program.runtime_assets;
+      program.build.output_path.value_or(default_output_path()).string();
+  native.artifact_kind = program.build.artifact_kind;
+  native.optimization = program.build.optimization;
+  native.emit_debug_symbols = program.build.emit_debug_symbols;
+  native.foreign_providers = program.build.foreign_providers;
+  native.runtime_assets = program.build.runtime_assets;
   native.work_executor = options.work_executor;
   const NativeBuildResult built =
-      build_native_artifact(program.target, compiled, native, diagnostics);
+      build_native_artifact(program.build.target, compiled, native, diagnostics);
   if (!built.ok) {
     publish_diagnostics(sources, diagnostics);
     return {false, diagnostic_count_};
   }
   built_output_path_ = built.output_path;
-  built_artifact_kind_ = program.artifact_kind;
+  built_artifact_kind_ = program.build.artifact_kind;
   publish_diagnostics(sources, diagnostics);
   return {true, diagnostic_count_};
 }

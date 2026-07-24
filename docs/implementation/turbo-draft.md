@@ -104,11 +104,15 @@ filesystem browser.
 
 The manifest is operator configuration, not a language or dependency manifest.
 The compiler service resolves workspace defaults followed by the matching
-program overrides into one immutable root record. It parses provider artifacts,
-provider summaries, and runtime assets at that native boundary; Draft receives
-only the resulting artifact kind/path and copied run arguments, environment,
-and working directory. The manifest does not list source files, redefine
-package discovery, or become a dependency manager.
+program overrides into one immutable root record. One backend-owned build-policy
+operation interprets that merged record for both `draftc` and the compiler
+service; target, artifact, optimization, provider, summary, asset, and relative
+path grammar therefore have no IDE-specific copy. Root discovery retains the
+already-resolved record used for target-specific inspection instead of reading
+provider summaries again while publishing the root table. Draft receives only
+the resulting artifact kind/path and copied run arguments, environment, and
+working directory. The manifest does not list source files, redefine package
+discovery, or become a dependency manager.
 
 ## Synchronous checking transaction
 
