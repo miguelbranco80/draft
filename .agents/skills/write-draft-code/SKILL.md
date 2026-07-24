@@ -130,11 +130,12 @@ expansions for the selected target:
 ```sh
 build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
-build/draftc check path/to/workspace --root package
-build/draftc expand path/to/workspace --root package --out /tmp/expanded-source
-build/draftc resolve path/to/workspace --root package --build -o /tmp/program
-build/draftc test path/to/workspace --root package
-build/draftc build path/to/workspace --root package -o /tmp/program
+build/draftc check path/to/workspace/package
+build/draftc expand path/to/workspace/package --out /tmp/expanded-source
+build/draftc resolve path/to/workspace/package --build -o /tmp/program
+build/draftc test path/to/workspace/package
+build/draftc build path/to/workspace/package -o /tmp/program
+build/draftc run path/to/workspace/package -- argument
 /tmp/program
 ```
 

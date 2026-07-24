@@ -212,7 +212,7 @@ extend it.
 Generate a header for the selected library root and exact artifact target:
 
 ```sh
-build/draftc emit-c-header project --root library \
+build/draftc emit-c-header project/library \
   --target x86_64-linux -o /tmp/library.h
 ```
 
@@ -254,7 +254,7 @@ The resolver or CLI maps non-system providers to an object, archive, or shared
 library for the current invocation:
 
 ```sh
-build/draftc build path/to/workspace --root package \
+build/draftc build path/to/workspace/package \
   --provider zlib=archive:/absolute/path/to/libz.a
 ```
 
@@ -448,7 +448,7 @@ assembly
 Example:
 
 ```sh
-build/draftc build path/to/workspace --root package \
+build/draftc build path/to/workspace/package \
   --target aarch64-linux \
   --kind static-library \
   -o /tmp/libexample.a

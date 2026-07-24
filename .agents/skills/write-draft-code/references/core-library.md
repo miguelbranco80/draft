@@ -1,8 +1,11 @@
 # Current Draft Core Library
 
 This is an applied index of the public core surface in this checkout. Core
-packages are ordinary Draft source under [`core/`](../../../../core); inspect
-the imported package before calling it. The specification's library contract
+packages are authored as ordinary Draft source under
+[`core/`](../../../../core), then embedded byte-for-byte in `draftc`; inspect
+the imported package before calling it. An installed compiler therefore uses
+its exact versioned core without a checkout or environment path. The
+specification's library contract
 is in [`docs/specification/02-types-memory-runtime.md`](../../../../docs/specification/02-types-memory-runtime.md#section-7).
 
 This file intentionally records conspicuous absences. A familiar-looking name

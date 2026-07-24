@@ -259,7 +259,7 @@ retain completed dependency body products and update their explicit current
 selection; they do not replay semantic checking over already-enriched tables.
 This is an implementation guarantee against duplicate body-derived state, not
 a persistent cache or a way for same-wave proposals to observe one another.
-Use `draftc resolve <workspace> --root <package> --regenerate` to reconsider every fresh expansion,
+Use `draftc resolve <package> --regenerate` to reconsider every fresh expansion,
 or append one exact `site-...` identity to reconsider only that site. This is
 the deliberate source-changing operation; changing `--model` alone is not.
 

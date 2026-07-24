@@ -49,15 +49,17 @@ One directory is one package, compilation unit, namespace, visibility boundary,
 and synthesis-context boundary. Every selected `.draft` file declares the same
 short package name.
 
-The current CLI takes the workspace directory explicitly. A single-root command
-defaults to package `.`, or accepts one normalized workspace-relative
-`--root`; `app` and `lib` are ordinary directory names. `build <workspace>`
-without selectors discovers all visible packages with a surface package-level
-`main`, while repeated `--root` options select an exact subset. Root/target
-manifests live under `project/.draft/resolutions/`, and generated source objects
-are shared by content identity under `project/.draft/generated/`. Test and
-benchmark evidence is also workspace-owned under `project/.draft/evidence/`;
-selecting a child root never creates a nested package-local `.draft` store.
+Package commands take the package directory itself. `draftc` searches upward
+for the nearest `draft.workspace`; its directory owns imports and `.draft/`
+state. With no marked ancestor, the supplied package is a standalone workspace.
+`app` and `lib` remain ordinary directory names. `build <directory>` recursively
+discovers every visible package with a surface package-level `main` below that
+scope; name a narrower directory to narrow the build. Nested marked workspaces
+are independent and are not traversed. Resolution manifests live under
+`workspace/.draft/resolutions/`, generated source objects under
+`workspace/.draft/generated/`, and evidence under
+`workspace/.draft/evidence/`; selecting a child package never creates a nested
+package-local store.
 
 Recognized direct children are:
 
@@ -92,13 +94,12 @@ Another source file repeats the imports it uses. Imports do not re-export.
 `draft bench`. Both are excluded from ordinary package compilation. A
 conventional `package.draft` is useful but has no privileged semantics.
 
-Turbo Draft opens an explicit workspace directory rather than inferring one
-from the shell's current directory. It discovers executable roots without a
-project file. Optional `<workspace>/draft.project` contains a
-`draft-project-v1` header, required workspace-relative `root`, and optional
-direct-child `source` (default `package.draft`) to choose the initial row;
-`--root` overrides it. The file does not enumerate sources, alter imports, or
-replace the compiler's `.draft/` resolution and evidence state. F5 always
+`draft.workspace` is an optional durable build/run configuration as well as the
+workspace boundary. It may name programs, a default program, discovery
+exclusions, and compiler/run defaults; it never enumerates source files,
+downloads dependencies, or changes language semantics. Turbo Draft uses the
+same upward boundary discovery and may use the named default; `--source`
+optionally chooses the initial direct-child file. F5 always
 checks/builds/runs the root associated with the active editor buffer.
 Files is populated from the compiler's target-selected reachable workspace
 graph, while Buffers lists open documents. Check and F5 submit the active buffer
@@ -161,13 +162,13 @@ saved expansions for the selected target, use the provider-free sequence:
 ```sh
 build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
-build/draftc check path/to/workspace --root package --target aarch64-macos
-build/draftc check path/to/workspace --root package --target aarch64-linux
-build/draftc check path/to/workspace --root package --target x86_64-linux
-build/draftc check path/to/workspace --root package --target x86_64-windows
-build/draftc expand path/to/workspace --root package --out /tmp/expanded-source \
+build/draftc check path/to/workspace/package --target aarch64-macos
+build/draftc check path/to/workspace/package --target aarch64-linux
+build/draftc check path/to/workspace/package --target x86_64-linux
+build/draftc check path/to/workspace/package --target x86_64-windows
+build/draftc expand path/to/workspace/package --out /tmp/expanded-source \
   --target aarch64-macos
-build/draftc resolve path/to/workspace --root package --build -o /tmp/program \
+build/draftc resolve path/to/workspace/package --build -o /tmp/program \
   --target aarch64-macos
 ```
 
@@ -189,8 +190,8 @@ build/draftc target --target aarch64-macos
 build/draftc target --target aarch64-linux
 build/draftc target --target x86_64-linux
 build/draftc target --target x86_64-windows
-build/draftc emit-llvm path/to/workspace --root package --target aarch64-macos
-build/draftc emit-c-header path/to/workspace --root package -o /tmp/package.h \
+build/draftc emit-llvm path/to/workspace/package --target aarch64-macos
+build/draftc emit-c-header path/to/workspace/package -o /tmp/package.h \
   --target aarch64-macos
 ```
 
@@ -214,20 +215,45 @@ Resolution commits only after the complete program checks; native lowering then
 continues the returned graph without another front-end construction. It does
 not implicitly execute tests, benchmarks, or judgments.
 
-The positional path is always the workspace. Single-root commands default to
-root `.`, while `--root package/path` selects a child package; names such as
-`app` and `lib` have no special meaning. `build <workspace>` without selectors
-discovers every visible ordinary package with a surface package-level `main`.
-Use repeated `--root` options for an exact subset. Default outputs mirror each
-root path under `.draft/build/<target-file-tag>/`; `-o` requires exactly one
-selected root.
+The positional path names the exact package for check/test/resolve-like
+commands and a recursive search scope for `build`; names such as `app` and
+`lib` have no special meaning. `build .` discovers every visible ordinary
+package with a surface package-level `main` in the current workspace. Name a
+package or subtree to narrow it. Default outputs mirror each root path under
+`.draft/build/<target-file-tag>/`; `-o` requires exactly one discovered root.
+
+For one durable workspace configuration, use the closed line-oriented marker:
+
+```text
+draft-workspace-v1
+default = editor
+exclude = build
+
+[build]
+target = aarch64-macos
+optimization = O0
+
+[program editor]
+root = apps/editor
+argument = document.txt
+working-directory = .
+environment = DRAFT_MODE=development
+```
+
+Workspace build defaults apply first, matching program overrides apply second,
+and explicit CLI options win. Repeated CLI provider/environment inputs replace
+their configured lists. `draftc run apps/editor -- document.txt` builds one
+exact executable, inherits the terminal, and passes bytes after `--` literally;
+those arguments replace configured `argument` rows. The driver invokes no
+shell. Ordinary `draftc build .` still builds every discovered program rather
+than silently selecting the configured default.
 
 ## Native validation
 
 On a matching native host:
 
 ```sh
-build/draftc build path/to/workspace --root package \
+build/draftc build path/to/workspace/package \
   --target aarch64-macos \
   -O0 \
   -o /tmp/draft-program
@@ -258,10 +284,10 @@ and on Linux it retains DWARF in the primary artifact.
 For a library or artifact-specific task, select the actual kind:
 
 ```sh
-build/draftc build path/to/workspace --root package --kind object -o /tmp/package.o
-build/draftc build path/to/workspace --root package --kind static-library -o /tmp/libpackage.a
-build/draftc build path/to/workspace --root package --kind dynamic-library -o /tmp/libpackage.dylib
-build/draftc build path/to/workspace --root package --kind assembly -o /tmp/package-assembly
+build/draftc build path/to/workspace/package --kind object -o /tmp/package.o
+build/draftc build path/to/workspace/package --kind static-library -o /tmp/libpackage.a
+build/draftc build path/to/workspace/package --kind dynamic-library -o /tmp/libpackage.dylib
+build/draftc build path/to/workspace/package --kind assembly -o /tmp/package-assembly
 ```
 
 Use `.so` on Linux. Validate generated headers with an independent C compiler
@@ -273,8 +299,8 @@ that a C consumer sees the intended layout and symbols.
 Use the driver timing report before changing compiler architecture for speed:
 
 ```sh
-build/draftc check path/to/workspace --root package --timings
-build/draftc build path/to/workspace --root package -o /tmp/program --timings=all
+build/draftc check path/to/workspace/package --timings
+build/draftc build path/to/workspace/package -o /tmp/program --timings=all
 ```
 
 `--timings` reports major wall-clock phases and work counters to stderr.
@@ -352,14 +378,14 @@ with a `test_` prefix, exactly one `^testing.Test` argument, and no result.
 Run:
 
 ```sh
-build/draftc test path/to/workspace --root package --target aarch64-macos -O0
+build/draftc test path/to/workspace/package --target aarch64-macos -O0
 ```
 
 Use `*_bench.draft`, a `bench_` prefix, and exactly one
 `^benchmark.Benchmark` for benchmarks:
 
 ```sh
-build/draftc bench path/to/workspace --root package --verify \
+build/draftc bench path/to/workspace/package --verify \
   --target aarch64-macos -O2
 ```
 
