@@ -12,8 +12,8 @@ opens an explicit Overwrite/Discard/Cancel choice.
 Build and run from the repository root on AArch64 macOS:
 
 ```sh
-build/draftc build examples/turbo-editor -O2 -o /tmp/turbo-editor
-/tmp/turbo-editor path/to/file.draft another-file.txt
+build/draftc run examples/turbo-editor -O2 -- \
+  path/to/file.draft another-file.txt
 ```
 
 Use the mouse or arrows to move, Shift plus movement to select, Ctrl-S to save,
@@ -25,5 +25,5 @@ memory.
 For a noninteractive native smoke:
 
 ```sh
-/tmp/turbo-editor --smoke
+build/draftc run examples/turbo-editor -O2 -- --smoke
 ```

@@ -1,4 +1,5 @@
 draft-workspace-v1
+default = acceptance
 
 [program acceptance]
 root = app

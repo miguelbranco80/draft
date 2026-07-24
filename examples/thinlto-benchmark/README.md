@@ -9,9 +9,7 @@ boundary.
 Build and run the correctness smoke program:
 
 ```sh
-build/draftc build examples/thinlto-benchmark/app -O2 \
-  -o /tmp/draft-thinlto-benchmark
-/tmp/draft-thinlto-benchmark
+build/draftc run examples/thinlto-benchmark
 ```
 
 Run the isolated benchmark samples:

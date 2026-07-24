@@ -1,4 +1,5 @@
 draft-workspace-v1
+default = agent-judgment-mix
 
 [program agent-judgment-mix]
 root = app

@@ -1,0 +1,4 @@
+draft-workspace-v1
+
+[build]
+kind = dynamic-library

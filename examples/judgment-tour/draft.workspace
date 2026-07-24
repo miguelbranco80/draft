@@ -1,4 +1,5 @@
 draft-workspace-v1
+default = judgment-tour
 
 [program judgment-tour]
 root = app

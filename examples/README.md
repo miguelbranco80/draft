@@ -14,22 +14,25 @@ checked or built with:
 
 ```sh
 build/draftc check examples/language-tour
-build/draftc build examples/language-tour -o /tmp/draft-language-tour
-/tmp/draft-language-tour
+build/draftc run examples/language-tour
 ```
 
-The positional directory is always the workspace. A package in that directory
-is root `.`, so the commands above need no conventionally named child. In a
+The positional directory selects a package or recursive build scope. Its nearest
+ancestor `draft.workspace` establishes the workspace boundary; without one, the
+selected directory is a standalone workspace whose root is `.`. In a
 multi-package workspace, select a child explicitly or let `build` discover all
 packages with a surface package-level `main`:
 
 ```sh
 build/draftc check examples/packages/app
 build/draftc build examples/packages
+build/draftc run examples/packages
 ```
 
 Here `app` imports `lib/math` from the same workspace. `lib/math` is compiled as
-its dependency but is not an executable target because it has no `main`.
+its dependency but is not an executable target because it has no `main`. The
+workspace's single named program is the durable `run` default; aggregate
+`build` still discovers every executable rather than using that default.
 
 ## Qualification matrix
 
@@ -109,7 +112,7 @@ policy rather than missing backend features.
 | [`assembly`](assembly/) | Typed parsed AArch64 assembly with integer, flags, memory, floating conversion, and SIMD register classes; compile-time selection leaves a valid no-assembly program on x86-64. |
 | [`external-assembly`](external-assembly/) | Target-qualified Mach-O/AArch64 ELF/x86-64 ELF/AMD64 COFF `.s` discovery and one C-ABI symbol implemented by separate assembly files. |
 | [`c-interop`](c-interop/) | A small foreign libc import and a Draft procedure exported with a C linker name. |
-| [`c-library`](c-library/) | The full Draft-as-C-library fixture: generated headers, C-compatible records, enums, unions, callbacks, aggregates, TLS, and re-entry into ordinary Draft code. It is driven by the C client integration test rather than as a standalone executable. |
+| [`c-library`](c-library/) | The full Draft-as-C-library fixture: generated headers, C-compatible records, enums, unions, callbacks, aggregates, TLS, and re-entry into ordinary Draft code. `draftc build examples/c-library` uses its durable dynamic-library policy; the C client integration test exercises the result. |
 | [`foreign-provider`](foreign-provider/) | A foreign block supplied by an explicitly configured external object provider. It requires the matching provider artifact when built. |
 
 ## Agent and validation examples

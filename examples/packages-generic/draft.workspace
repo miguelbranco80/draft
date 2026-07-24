@@ -1,4 +1,5 @@
 draft-workspace-v1
+default = packages-generic
 
 [program packages-generic]
 root = app

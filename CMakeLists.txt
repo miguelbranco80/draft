@@ -1265,6 +1265,25 @@ if(BUILD_TESTING)
       PROPERTIES LABELS "examples;integration"
     )
 
+    # The exhaustive example inventory also owns the public command-shape
+    # proof. Run every ordinary executable from a private copy, selecting
+    # dedicated multi-package workspaces by their checked-in default program.
+    add_test(
+      NAME draft_example_direct_run
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DMATRIX=${CMAKE_CURRENT_SOURCE_DIR}/examples/qualification.tsv"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/example-direct-run"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_example_direct_run_test.cmake"
+    )
+    set_tests_properties(
+      draft_example_direct_run
+      PROPERTIES LABELS "examples;integration"
+    )
+
     add_test(
       NAME draft_resolve_build_reuses_final_graph
       COMMAND

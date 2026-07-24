@@ -1,5 +1,13 @@
 draft-workspace-v1
+default = asteroids
 
 [program asteroids]
 root = app
 optimization = O2
+provider[aarch64-macos] = raylib=shared-library:../../build/raylib-provider/libraylib.6.0.0.dylib
+provider[aarch64-linux] = raylib=shared-library:../../build/raylib-provider/libraylib.so.6.0.0
+provider[x86_64-linux] = raylib=shared-library:../../build/raylib-provider/libraylib.so.6.0.0
+provider[x86_64-windows] = raylib=archive:../../build/raylib-provider/raylib.lib
+working-directory = ../../build/raylib-provider
+environment = DYLD_LIBRARY_PATH=.
+environment = LD_LIBRARY_PATH=.

@@ -9,8 +9,7 @@ code.
 Build and run it on a matching native target, for example AArch64 macOS:
 
 ```sh
-build/draftc build examples/tetris --target aarch64-macos -O2 -o /tmp/draft-tetris
-/tmp/draft-tetris
+build/draftc run examples/tetris --target aarch64-macos -O2
 ```
 
 On GNU/Linux, select `--target aarch64-linux` or `--target x86_64-linux` for
@@ -67,7 +66,7 @@ For automation whose standard input is not a terminal, the executable provides
 one narrow conformance path:
 
 ```sh
-/tmp/draft-tetris --smoke
+build/draftc run examples/tetris --target aarch64-macos -O2 -- --smoke
 ```
 
 Raw mode turns Ctrl-C into an ordinary byte so the program can clean up. An

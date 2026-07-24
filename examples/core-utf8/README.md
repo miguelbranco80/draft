@@ -16,8 +16,7 @@ On a supported native host:
 ```sh
 build/draftc check examples/core-utf8
 build/draftc test examples/core-utf8
-build/draftc build examples/core-utf8 -o /tmp/draft-core-utf8
-/tmp/draft-core-utf8
+build/draftc run examples/core-utf8
 ```
 
 The example is deliberately explicit. A future `for rune in text` syntax can

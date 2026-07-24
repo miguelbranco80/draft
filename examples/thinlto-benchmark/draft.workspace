@@ -1,4 +1,5 @@
 draft-workspace-v1
+default = thinlto-benchmark
 
 [program thinlto-benchmark]
 root = app

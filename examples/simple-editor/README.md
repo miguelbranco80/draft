@@ -7,8 +7,7 @@ but it is not intended to become the future full-screen Draft editor.
 Build and run it on a native AArch64 macOS host with:
 
 ```sh
-build/draftc build examples/simple-editor -o /tmp/draft-simple-editor
-/tmp/draft-simple-editor path/to/file.txt
+build/draftc run examples/simple-editor -- path/to/file.txt
 ```
 
 An unavailable path starts with an empty buffer; `w` creates or replaces it.

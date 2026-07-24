@@ -1,4 +1,5 @@
 draft-workspace-v1
+default = pending
 
 [program pending]
 root = app

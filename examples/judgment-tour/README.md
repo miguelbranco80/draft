@@ -14,9 +14,7 @@ contacts Codex:
 
 ```sh
 build/draftc check examples/judgment-tour/app
-build/draftc build examples/judgment-tour/app \
-  -o /tmp/draft-judgment-tour
-/tmp/draft-judgment-tour
+build/draftc run examples/judgment-tour
 ```
 
 ## Inspect and run judgments
