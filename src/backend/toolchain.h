@@ -86,9 +86,10 @@ struct NativeBuildOptions {
   std::string build_directory;
   std::string output_path;
   NativeArtifactKind artifact_kind = NativeArtifactKind::Executable;
-  // O0 is the fast-build default. O2 optimizes each complete semantic-package
-  // module independently before native emission; it never changes semantic
-  // scheduling, package granularity, source identity, or resolution pins.
+  // O0 is the fast-build default. O2 prepares one complete module per semantic
+  // package, then performs one whole-artifact ThinLTO link before native
+  // emission. It never changes semantic scheduling, source identity, or
+  // resolution pins.
   NativeOptimizationLevel optimization = NativeOptimizationLevel::O0;
   // Linked debug companions are deliberately opt-in. The compiled package
   // modules must have been constructed with matching debug information when

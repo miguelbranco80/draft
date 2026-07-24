@@ -44,15 +44,17 @@ enum class LlvmNativeOutputKind {
 
 // NativeOptimizationLevel selects one complete compiler-owned LLVM pipeline.
 // O0 preserves the canonical lowered module and asks the target machine for its
-// fastest no-optimization code generation. O2 runs LLVM's default O2 module
-// pipeline and selects its matching default code-generation level. The enum is
-// deliberately closed: arbitrary pass strings and the accidental optimization
-// menus of individual LLVM releases are not part of Draft's command contract.
+// fastest no-optimization code generation. Production O2 uses package pre-link
+// pipelines plus one workspace ThinLTO operation and selects LLVM's matching
+// default code-generation level. The enum is deliberately closed: arbitrary
+// pass strings and the accidental optimization menus of individual LLVM
+// releases are not part of Draft's command contract.
 //
 // Optimization changes derived native bytes only. It does not enter source,
 // target, resolved-program, synthesis, or semantic-product identity. O2 keeps
-// whole-package granularity; native-only O0 may use deterministic internal
-// units so target-machine work can run concurrently.
+// one input module per semantic package and one whole-artifact ThinLTO
+// decision; native-only O0 may use deterministic internal units so target-
+// machine work can run concurrently.
 enum class NativeOptimizationLevel {
   O0,
   O2,

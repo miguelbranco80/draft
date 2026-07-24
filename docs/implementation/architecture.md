@@ -110,9 +110,10 @@ interface discovery installs declarations and types, then semantic continuation
 checks bodies, effects, denials, and completed interfaces on those same package
 rows. A native `build` continues that graph directly through procedure-owned
 MIR and package-owned LLVM units, then invokes only the remaining platform
-tools; O2 uses one complete module per semantic package while a large native-
-only O0 object build may use several units. It does not reload or recheck
-handwritten source.
+tools. O2 prepares one summary-bearing module per semantic package, then one
+workspace ThinLTO product imports and emits their native outputs; a large
+native-only O0 object build may use several package units. It does not reload
+or recheck handwritten source.
 `--timings` exposes resolution rounds as in-memory source transitions. A
 checked complete-file overlay is parsed into the existing workspace graph;
 package/root/import IDs remain stable. Target selection, source generations,
@@ -366,8 +367,9 @@ orchestration.
   including non-artifact checks. One explicit artifact closure later selects
   the runtime procedures admitted to the exact native dependency executor. A
   package LLVM unit borrows its completed ordered MIR slots only after their
-  executor edges complete. O2 owns one complete package unit; native-only O0
-  may own fixed-size internal units. LLVM is an emission/optimization back end
+  executor edges complete. O2 owns one complete package input plus one explicit
+  workspace ThinLTO product depending on every such input; native-only O0 may
+  own fixed-size internal units. LLVM is an emission/optimization back end
   rather than Draft's semantic model.
 
 HIR storage expressions retain the minimum alignment guaranteed by their exact

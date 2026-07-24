@@ -80,6 +80,7 @@ enum class SemanticProductKind {
   MirProcedure,
   PackageAssembly,
   PackageLlvmUnit,
+  WorkspaceThinLto,
   ArtifactLayout,
 };
 

@@ -434,6 +434,8 @@ std::string_view semantic_product_kind_name(SemanticProductKind kind) {
     return "package assembly";
   case SemanticProductKind::PackageLlvmUnit:
     return "package LLVM unit";
+  case SemanticProductKind::WorkspaceThinLto:
+    return "workspace ThinLTO";
   case SemanticProductKind::ArtifactLayout:
     return "artifact layout";
   }

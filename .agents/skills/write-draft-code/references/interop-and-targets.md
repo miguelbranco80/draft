@@ -458,8 +458,10 @@ The source-level `foreign` and `export` declarations do not change between
 static and dynamic linking. Artifact kind selects how resolved symbols are
 packaged.
 
-For non-assembly native builds, the bootstrap emits one internal linker-input
-object per semantic package through its linked LLVM 22 C-API adapter. Final
+For non-assembly native builds, O0 emits internal linker-input objects from
+package units through linked LLVM 22. O2 prepares one summary module per
+semantic package and obtains package-associated native outputs from one
+whole-artifact ThinLTO operation. Final
 executables and libraries also include the exact target's hosted-runtime object
 embedded in `draftc`. `--kind object` deliberately leaves runtime and foreign
 references unresolved; it publishes one relocatably linked package-graph object
@@ -477,17 +479,20 @@ no fake dSYM is emitted. These are compiler build/host requirements, not Draft
 package dependencies or resolution-manifest inputs.
 Windows uses matching Clang/lld-link and `llvm-lib`, with `.exe`, `.obj`,
 `.lib`, and `.dll` defaults. Linked PE outputs built with `--debug-symbols`
-publish a sibling PDB; a DLL
-also publishes its import `.lib` companion. Its bootstrap links `LLVM-C.dll`
-because LLVM's monolithic libLLVM dylib is unavailable on Windows.
+publish a sibling PDB; a DLL also publishes its import `.lib` companion. Its
+bootstrap links the static LLVM LTO and AArch64/X86 component closure because
+LLVM's monolithic libLLVM dylib is unavailable on Windows and the C-only DLL
+does not expose ThinLTO's summary and resolution APIs.
 
 After complete lowering, one explicit artifact layout orders each package's
 LLVM units followed, for the root, by the exact compiler-embedded hosted
-runtime and then its package-assembly inputs. O2 and compiler assembly use one
-complete unit; native-only O0 object builds may use fixed internal units. Every selected row becomes
-an independent native work-graph task. Workers own isolated LLVM contexts or
-private assembler paths and return task-indexed bytes; the hosted-runtime row
-borrows immutable embedded bytes.
+runtime and then its package-assembly inputs. Retained LLVM text and any
+compiler-assembly request use one complete input unit per package; native-only
+O0 object builds may use fixed internal units. O2
+instead adds one workspace ThinLTO task after all package summary inputs are
+ready. Its LLVM backend threads own disjoint output buffers; ordinary O0 and
+assembler workers own isolated LLVM contexts or private assembler paths. The
+hosted-runtime row borrows immutable embedded bytes.
 Diagnostics and artifact publication occur only after the join, in stable
 task-ID order. Native changes must preserve the one-worker/four-worker
 determinism gate and the real embedded LLVM/external-Clang parity gate for all

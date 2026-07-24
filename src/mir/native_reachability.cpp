@@ -480,6 +480,14 @@ NativeReachabilityResult compute_native_reachability(
   for (std::size_t index = 0; index < live_globals.size(); ++index) {
     if (live_globals[index]) result.live_globals.push_back(index);
   }
+  result.procedure_roots = input.procedure_roots;
+  result.global_roots = input.global_roots;
+  const auto canonicalize_roots = [](std::vector<NativeSymbolIdentity> &roots) {
+    std::sort(roots.begin(), roots.end(), identity_less);
+    roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+  };
+  canonicalize_roots(result.procedure_roots);
+  canonicalize_roots(result.global_roots);
   result.ok = true;
   return result;
 }

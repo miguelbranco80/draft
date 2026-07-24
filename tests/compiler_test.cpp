@@ -3172,10 +3172,10 @@ void test_multi_package_native_pipeline(TestState &state) {
   }
 }
 
-// A normal native command asks the dependency-ready package task for final
-// bytes. The copyable compiler result retains those bytes and discards LLVM
-// text, proving that the later artifact stage has no textual input available
-// to reparse or re-emit accidentally.
+// A normal O2 native command asks dependency-ready package tasks for summary
+// bitcode, then publishes one workspace ThinLTO product. The copyable package
+// result receives its final bytes from that global product and discards LLVM
+// text, proving that neither phase reparses textual IR.
 void test_native_output_is_a_package_product(TestState &state) {
   draft::SourceManager sources;
   draft::DiagnosticSink diagnostics;
@@ -3218,20 +3218,124 @@ void test_native_output_is_a_package_product(TestState &state) {
       root->native_outputs.front().optimization ==
           draft::NativeOptimizationLevel::O2);
   EXPECT(state, root->artifact_layout.ok);
+  EXPECT(state, result.semantic_products.thinlto.is_valid());
+  if (result.semantic_products.thinlto.is_valid()) {
+    const draft::SemanticProduct &thinlto = result.semantic_graph.products[
+        result.semantic_products.thinlto.value];
+    EXPECT(state,
+           thinlto.kind == draft::SemanticProductKind::WorkspaceThinLto);
+    EXPECT(state, thinlto.state == draft::SemanticProductState::Complete);
+    EXPECT(state,
+           !result.semantic_products
+                .package_by_product[result.semantic_products.thinlto.value]
+                .is_valid());
+    const draft::PackageSemanticProducts &products =
+        result.semantic_products.packages[result.graph.root_package.value];
+    EXPECT(state, products.package_llvm_units.size() == 1);
+    if (products.package_llvm_units.size() == 1) {
+      EXPECT(state,
+             std::find(
+                 thinlto.dependencies.begin(),
+                 thinlto.dependencies.end(),
+                 products.package_llvm_units.front()) !=
+                 thinlto.dependencies.end());
+    }
+    EXPECT(state, !root->artifact_layout.inputs.empty());
+    if (!root->artifact_layout.inputs.empty()) {
+      EXPECT(state,
+             root->artifact_layout.inputs.front().producer ==
+                 result.semantic_products.thinlto);
+    }
+  }
   const std::string report = timings.render();
   EXPECT(state,
-      report.find("LLVM package emission: workspace:hello") !=
+      report.find("LLVM ThinLTO package preparation: workspace:hello") !=
           std::string::npos);
+  EXPECT(state,
+      report.find("LLVM whole-artifact ThinLTO") != std::string::npos);
   EXPECT(state, report.find("LLVM native bytes:") != std::string::npos);
+}
+
+// The retained package module is the observable pre-link input: app calls the
+// hidden math definition through an ordinary cross-package declaration. O2
+// ThinLTO must see both package summaries together and remove that call from
+// final app assembly while preserving the hidden authored main artifact root.
+// This is the focused regression which distinguishes whole-artifact O2 from
+// the earlier package-local optimization path.
+void test_o2_thinlto_imports_across_packages(TestState &state) {
+  draft::SourceManager sources;
+  draft::DiagnosticSink diagnostics;
+  draft::CompileWorkspaceOptions options;
+  options.target = draft::make_aarch64_macos_profile();
+  options.workspace.workspace_directory =
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/packages";
+  options.lower_mir = true;
+  options.emit_llvm = true;
+  options.emit_native_output = true;
+  options.native_output.output_kind =
+      draft::LlvmNativeOutputKind::Assembly;
+  options.native_output.optimization = draft::NativeOptimizationLevel::O2;
+  options.emit_program_entry = false;
+  options.semantic_worker_count = 4;
+  const draft::CompileWorkspaceResult result = draft::compile_workspace(
+      sources,
+      std::string(DRAFT_SOURCE_DIRECTORY) + "/examples/packages/app",
+      std::move(options),
+      diagnostics);
+  if (diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(sources, diagnostics);
+  }
+  EXPECT(state, result.ok);
+  EXPECT(state, !diagnostics.has_errors());
+  EXPECT(state, result.graph.root_package.is_valid());
+  EXPECT(state, result.semantic_products.thinlto.is_valid());
+  if (!result.ok || !result.graph.root_package.is_valid() ||
+      !result.semantic_products.thinlto.is_valid()) {
+    return;
+  }
+
+  const std::optional<draft::CompiledPackage> &root =
+      result.packages[result.graph.root_package.value];
+  EXPECT(state, root.has_value());
+  if (!root.has_value())
+    return;
+  static constexpr std::string_view translate =
+      "draft.workspace.lib_2Fmath.translate";
+  const std::size_t call = root->llvm_module.text.find("call ");
+  const std::size_t symbol = root->llvm_module.text.find(translate, call);
+  const std::size_t line_end = root->llvm_module.text.find('\n', call);
+  EXPECT(state, call != std::string::npos);
+  EXPECT(state, symbol != std::string::npos);
+  EXPECT(state, line_end != std::string::npos && symbol < line_end);
+  EXPECT(state, root->native_outputs.size() == 1);
+  if (root->native_outputs.size() == 1) {
+    const std::string &assembly = root->native_outputs.front().bytes;
+    EXPECT(state,
+           assembly.find("_draft.workspace.app.main:") != std::string::npos);
+    EXPECT(state,
+           assembly.find("bl\t_draft.workspace.lib_2Fmath.translate") ==
+               std::string::npos);
+  }
+
+  const draft::SemanticProduct &thinlto = result.semantic_graph.products[
+      result.semantic_products.thinlto.value];
+  std::size_t package_inputs = 0;
+  for (const draft::SemanticProductId dependency : thinlto.dependencies) {
+    if (result.semantic_graph.products[dependency.value].kind ==
+        draft::SemanticProductKind::PackageLlvmUnit) {
+      ++package_inputs;
+    }
+  }
+  EXPECT(state, package_inputs == 2);
 }
 
 // Native-only O0 emission partitions a large live package into fixed units so
 // LLVM machine-code generation can use the same deterministic ready set as MIR
 // lowering. The boundary is a compiler scheduling choice, not a semantic or
 // worker-count choice: 131 live procedures form three 48-procedure units with
-// either one or four workers. O2 must retain one complete package unit so LLVM
-// can optimize across every authored procedure.
-void test_o0_native_units_are_deterministic_and_o2_is_package_wide(
+// either one or four workers. O2 must retain one complete package input so its
+// ThinLTO summary covers every authored procedure before the workspace link.
+void test_o0_native_units_are_deterministic_and_o2_uses_one_package_input(
     TestState &state) {
   draft::test::TemporaryDirectory temporary_directory{
       "draft-bootstrap-o0-unit-test"};
@@ -5191,7 +5295,8 @@ int main() {
   test_target_lowering_continues_checked_graph(state);
   test_multi_package_native_pipeline(state);
   test_native_output_is_a_package_product(state);
-  test_o0_native_units_are_deterministic_and_o2_is_package_wide(state);
+  test_o2_thinlto_imports_across_packages(state);
+  test_o0_native_units_are_deterministic_and_o2_uses_one_package_input(state);
   test_native_pipeline_overlaps_empty_unit_with_other_mir(state);
   test_native_emission_uses_artifact_reachability(state);
   test_main_remains_live_without_hosted_entry_wrapper(state);

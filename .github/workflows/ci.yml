@@ -163,8 +163,9 @@ jobs:
           persist-credentials: false
 
       # LLVM does not offer the monolithic libLLVM dylib on Windows. Its
-      # official development archive contains LLVM-C.dll, Clang, lld-link,
-      # llvm-lib, headers, and CMake exports from one exact release. Cache the
+      # official development archive contains the static LTO/target libraries,
+      # Clang, lld-link, llvm-lib, headers, and CMake exports from one exact
+      # release. Cache the
       # extracted tree by release and official SHA-256 so ordinary CI runs do
       # not repeatedly transfer the large upstream package.
       - name: Restore LLVM 22 development archive

@@ -17,6 +17,7 @@
 
 #include "backend/llvm_package.h"
 #include "backend/llvm_object_emitter.h"
+#include "backend/llvm_thinlto.h"
 #include "interop/c_abi.h"
 #include "mir/mir.h"
 #include "sema/analyzer.h"
@@ -53,13 +54,16 @@ struct LlvmPackageEmissionPhaseTimings {
 };
 
 // llvm_text owns the pre-optimization module only when explicitly retained.
-// native owns the exact object/assembly result when requested. Backend source
-// errors are published into the supplied DiagnosticSink; native.adapter
-// failures remain in native.failure for the coordinator to diagnose once.
+// An O0 native request completes in native. An O2 native request completes in
+// thinlto_bitcode so the workspace-wide ThinLTO task can see every package
+// before producing native bytes. Backend source errors are published into the
+// supplied DiagnosticSink; adapter failures remain in their value result for
+// the coordinator to diagnose once.
 struct LlvmPackageEmissionResult {
   bool ok = false;
   std::string llvm_text;
   LlvmObjectEmissionResult native;
+  LlvmThinLtoBitcodeResult thinlto_bitcode;
   LlvmPackageEmissionPhaseTimings phase_timings;
 };
 

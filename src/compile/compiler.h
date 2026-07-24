@@ -89,11 +89,12 @@ struct CompileWorkspaceOptions {
   CompileWorkspaceStage stage = CompileWorkspaceStage::Complete;
   bool lower_mir = false;
   bool emit_llvm = false;
-  // A native-producing command can request that each package-owned LLVM task
-  // immediately produce object or assembly bytes. O2 stays package-wide while
-  // native-only O0 may use deterministic internal units. Those bytes remain
-  // command-local derived products and let final artifact assembly avoid a
-  // second broad LLVM phase after every package has finished lowering.
+  // A native-producing command requests native bytes through the same closed
+  // lowering graph. O0 package units emit object or assembly bytes directly;
+  // O2 package tasks stop at summary-bearing bitcode and one workspace
+  // ThinLTO task produces the final package-associated bytes. Native-only O0
+  // may use deterministic internal units. All outputs remain command-local
+  // derived products.
   bool emit_native_output = false;
   LlvmObjectEmissionOptions native_output;
   // Native debug information is opt-in so an ordinary development build does
@@ -181,13 +182,14 @@ struct PackageArtifactLayout {
   std::vector<PackageArtifactInput> inputs;
 };
 
-// PackageNativeOutput is the copyable terminal product of one package LLVM
-// unit task. No LLVM context or module escapes the worker: bytes own exactly one
+// PackageNativeOutput is the copyable terminal native product associated with
+// one package. No LLVM context or module escapes a worker: bytes own exactly one
 // object or assembly unit, while configuration records the choices used to
 // create them so a later artifact request cannot silently consume a mismatched
-// product. One package owns one unit for O2, assembly, and retained LLVM text;
-// a native-only O0 object build may own several deterministic units. Phase
-// timings are observations only and never enter identity.
+// product. Native-only O0 object builds create these rows directly from fixed
+// package units. O2 first creates summary-bearing package bitcode, then one
+// workspace ThinLTO product publishes at most one row back to each contributing
+// package. Phase timings are observations only and never enter identity.
 struct PackageNativeOutput {
   bool ok = false;
   LlvmNativeOutputKind output_kind = LlvmNativeOutputKind::Object;
@@ -267,9 +269,10 @@ struct CompiledPackage {
   // remains independently owned by semantic-product side-table rows in both
   // modes.
   LlvmIrResult llvm_module;
-  // Canonical LLVM-unit order within this package. Each row is independently
-  // emitted and later appears at the same index in artifact_layout. O2 always
-  // has exactly one row so optimization sees the complete semantic package.
+  // Canonical native-output order within this package. Each row later appears
+  // at the same index in artifact_layout. O0 rows correspond to independently
+  // emitted package units. O2 has at most one row returned by the workspace
+  // ThinLTO operation; a package optimized to no native contribution has none.
   std::vector<PackageNativeOutput> native_outputs;
   PackageArtifactLayout artifact_layout;
 };
@@ -464,8 +467,11 @@ struct PackageSemanticProducts {
   // Each package_llvm_units row depends on only the live procedure MIR assigned
   // to that deterministic unit plus package declarations, target ABI facts,
   // and artifact reachability. O2 and retained-IR modes publish exactly one
-  // row; native-only O0 object emission may publish several. artifact_layout is
-  // the publication barrier over every unit and package assembly input.
+  // row; native-only O0 object emission may publish several. In O2 the row
+  // owns summary-bearing package bitcode and the workspace ThinLTO product is
+  // the native producer named by artifact_layout. In O0 the unit itself is the
+  // native producer. artifact_layout is the final publication barrier over
+  // every native and package assembly input.
   std::vector<SemanticProductId> package_llvm_units;
   SemanticProductId artifact_layout;
   // Parallel to the package TypeStore after at least one body wave.
@@ -491,6 +497,11 @@ struct WorkspaceSemanticProducts {
   // rows from command-selected artifact roots. It has no package owner because
   // cross-package procedure/global edges are its semantic purpose.
   SemanticProductId artifact_reachability;
+  // Present only for native O2. The row depends on every package LLVM unit and
+  // owns the one global ThinLTO decision plus its parallel backend outputs. It
+  // has no package owner; publication distributes at most one native output
+  // back to each contributing package in canonical input order.
+  SemanticProductId thinlto;
   std::vector<PackageSemanticProducts> packages;
   std::vector<PackageId> package_by_product;
   // Parallel to SemanticProductGraph. Non-constant products contain an invalid

@@ -120,8 +120,8 @@ must be supplied separately when a Draft object/archive is consumed.
 The Windows process adapter invokes tools with `CreateProcessW`, exact UTF-8 to
 UTF-16 argument conversion, CRT-correct quoting, combined output capture, and
 an explicit inherited-handle list. Native Windows CI builds the bootstrap
-against the official LLVM-C 22 distribution, builds and launches the complete
-ordinary example inventory, exercises exact COFF package assembly and foreign
+against the official LLVM 22 development distribution, builds and launches the
+complete ordinary example inventory, exercises exact COFF package assembly and foreign
 objects, and compiles a C client against a generated header and Draft DLL.
 Off-host command/COFF tests alone do not qualify the hosted runtime.
 

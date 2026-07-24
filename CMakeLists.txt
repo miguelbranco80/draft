@@ -67,17 +67,24 @@ if(NOT LLVM_PACKAGE_VERSION MATCHES "^22\\.")
 endif()
 message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} from ${LLVM_DIR}")
 separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
-# Unix distributions may publish the monolithic libLLVM target. LLVM cannot
-# build that dylib on Windows; its official Windows package instead exports the
-# C API as LLVM-C.dll. The adapter below uses only llvm-c headers and symbols,
-# so these are equivalent host-link products rather than two compiler modes.
+# Unix distributions normally publish the monolithic libLLVM target. LLVM
+# cannot build that dylib on Windows, so the Windows bootstrap links the
+# equivalent static LTO and AArch64/X86 component closure. ThinLTO requires
+# LLVM's C++ LTO and module-summary APIs; LLVM-C.dll alone is no longer a
+# sufficient implementation boundary even though ordinary module construction
+# continues to use the stable C API.
 if(TARGET LLVM)
-  set(DRAFT_LLVM_LIBRARY_TARGET LLVM)
-elseif(WIN32 AND TARGET LLVM-C)
-  set(DRAFT_LLVM_LIBRARY_TARGET LLVM-C)
+  set(DRAFT_LLVM_LIBRARY_TARGETS LLVM)
+elseif(WIN32)
+  llvm_map_components_to_libnames(
+    DRAFT_LLVM_LIBRARY_TARGETS
+    LTO
+    AArch64
+    X86
+  )
 else()
   message(FATAL_ERROR
-    "LLVM 22 distribution does not export the required LLVM or LLVM-C target"
+    "LLVM 22 distribution does not export the required LLVM LTO components"
   )
 endif()
 
@@ -202,12 +209,17 @@ add_library(draft_build_options INTERFACE)
 # compiler target alone carries the LLVM link dependency to its consumers.
 add_library(
   draft_llvm_backend OBJECT
+  src/backend/llvm_initialization.cpp
   src/backend/llvm_object_emitter.cpp
   src/backend/llvm_package_emitter.cpp
+  src/backend/llvm_thinlto.cpp
 )
 target_include_directories(
   draft_llvm_backend
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+target_include_directories(
+  draft_llvm_backend
   SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS}
 )
 target_compile_options(draft_llvm_backend PRIVATE ${LLVM_DEFINITIONS_LIST})
@@ -314,7 +326,7 @@ target_include_directories(draft_compiler PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/sr
 target_link_libraries(
   draft_compiler
   PUBLIC draft_build_options Threads::Threads
-  PRIVATE ${DRAFT_LLVM_LIBRARY_TARGET}
+  PRIVATE ${DRAFT_LLVM_LIBRARY_TARGETS}
 )
 # The bootstrap compiler is also consumed behind the draft_compiler_service
 # shared-library boundary. Position-independent objects keep that embedding

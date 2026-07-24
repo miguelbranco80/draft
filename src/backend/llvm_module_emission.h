@@ -15,6 +15,7 @@
 #pragma once
 
 #include "backend/llvm_object_emitter.h"
+#include "backend/llvm_thinlto.h"
 
 #include <llvm-c/Types.h>
 
@@ -27,6 +28,16 @@ namespace draft {
 // must otherwise consider its IR consumed: optimization and instrumentation
 // intentionally mutate it. module_name is a logical diagnostic label only.
 [[nodiscard]] LlvmObjectEmissionResult emit_constructed_llvm_module_in_process(
+    const TargetProfile &target, std::string_view module_name,
+    LLVMModuleRef module, LlvmObjectEmissionOptions options);
+
+// Verifies and mutates one task-owned module through the O2 ThinLTO pre-link
+// pipeline, then serializes it with a module summary and bitcode hash entirely
+// in memory. options must select O2. AddressSanitizer attributes are attached
+// here so imported definitions retain their instrumentation contract; the
+// actual ASan pass runs later in the whole-artifact backend.
+[[nodiscard]] LlvmThinLtoBitcodeResult
+prepare_constructed_llvm_module_for_thinlto(
     const TargetProfile &target, std::string_view module_name,
     LLVMModuleRef module, LlvmObjectEmissionOptions options);
 

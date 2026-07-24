@@ -7,6 +7,7 @@
 
 #include "backend/llvm_object_emitter.h"
 
+#include "backend/llvm_initialization.h"
 #include "backend/llvm_module_emission.h"
 
 #include <llvm-c/Analysis.h>
@@ -19,7 +20,6 @@
 
 #include <cassert>
 #include <chrono>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -194,26 +194,6 @@ private:
   return result;
 }
 
-// Target registration mutates LLVM process-global registries and must finish
-// before any worker performs lookup. std::call_once gives every later worker a
-// happens-before edge; after this function the registered metadata is
-// read-only.
-void initialize_native_llvm() {
-  static std::once_flag initialized;
-  std::call_once(initialized, []() {
-    LLVMInitializeAArch64TargetInfo();
-    LLVMInitializeAArch64Target();
-    LLVMInitializeAArch64TargetMC();
-    LLVMInitializeAArch64AsmParser();
-    LLVMInitializeAArch64AsmPrinter();
-    LLVMInitializeX86TargetInfo();
-    LLVMInitializeX86Target();
-    LLVMInitializeX86TargetMC();
-    LLVMInitializeX86AsmParser();
-    LLVMInitializeX86AsmPrinter();
-  });
-}
-
 [[nodiscard]] bool select_relocation_model(TargetRelocationModel model,
                                            LLVMRelocMode &llvm_model,
                                            std::string &failure) {
@@ -363,7 +343,7 @@ LlvmObjectEmissionResult emit_constructed_llvm_module_in_process(
   PhaseTimer initialization_timing(
       options.collect_phase_timings,
       result.phase_timings.target_initialization_nanoseconds);
-  initialize_native_llvm();
+  initialize_draft_llvm_targets();
   initialization_timing.finish();
   if (LLVMIsMultithreaded() == 0) {
     return fail("initialization",
@@ -463,9 +443,11 @@ LlvmObjectEmissionResult emit_constructed_llvm_module_in_process(
                     "' but profile requires '" + target.llvm_data_layout + "'");
   }
 
-  // O2 is one stable compiler-owned pipeline over the complete semantic-package
-  // module. Run it before instrumentation so sanitizer checks describe the
-  // optimized memory operations which will actually reach code generation.
+  // This direct adapter's O2 mode is the package-local external-oracle and
+  // focused-test path. Production package emission uses ThinLTO preparation
+  // instead, then runs its final pipeline after the workspace thin link. Run
+  // this local pipeline before instrumentation so sanitizer checks describe
+  // the optimized memory operations which will actually reach code generation.
   // The complete input module was verified once above. Ordinary compilation
   // does not ask LLVM to repeat that whole-module check after every pass: that
   // diagnostic mode changes an O2 pipeline from useful validation into work

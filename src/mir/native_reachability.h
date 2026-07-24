@@ -118,13 +118,18 @@ struct NativeReachabilityInput {
 // procedure/global payloads. live_* indices are strictly increasing. An
 // unknown-target row is separately retained for diagnostics and qualification;
 // its body remains live, while no unrelated definition is guessed into the
-// artifact. failure is nonempty only when identities are duplicated or an
-// internal Draft reference/root has no corresponding definition.
+// artifact. procedure_roots and global_roots retain the validated root
+// identities in canonical identity order so a later optimizer can keep hidden
+// roots even when no emitted module references them. failure is nonempty only
+// when identities are duplicated or an internal Draft reference/root has no
+// corresponding definition.
 struct NativeReachabilityResult {
   bool ok = false;
   std::vector<std::size_t> live_procedures;
   std::vector<std::size_t> live_globals;
   std::vector<std::size_t> unknown_target_procedures;
+  std::vector<NativeSymbolIdentity> procedure_roots;
+  std::vector<NativeSymbolIdentity> global_roots;
   std::string failure;
 };
 

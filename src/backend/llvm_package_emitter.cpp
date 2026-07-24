@@ -281,10 +281,20 @@ public:
     }
 
     if (options_.native_options.has_value()) {
-      result.native = emit_constructed_llvm_module_in_process(
-          target_, module_name, module_.value, *options_.native_options);
-      if (!result.native.ok)
-        return result;
+      if (options_.native_options->optimization ==
+          NativeOptimizationLevel::O2) {
+        result.thinlto_bitcode =
+            prepare_constructed_llvm_module_for_thinlto(
+                target_, module_name, module_.value,
+                *options_.native_options);
+        if (!result.thinlto_bitcode.ok)
+          return result;
+      } else {
+        result.native = emit_constructed_llvm_module_in_process(
+            target_, module_name, module_.value, *options_.native_options);
+        if (!result.native.ok)
+          return result;
+      }
     } else {
       char *message = nullptr;
       const int status =
@@ -880,12 +890,6 @@ private:
     return std::nullopt;
   }
 
-  [[nodiscard]] std::string package_symbol_name(const PackageIdentity &identity,
-                                                std::string_view name) const {
-    return "draft." + encoded_name(identity.root_identity) + "." +
-           encoded_name(identity.root_relative_path) + "." + encoded_name(name);
-  }
-
   [[nodiscard]] std::string symbol_name(SymbolId symbol_id) const {
     if (const std::optional<std::string> native =
             native_symbol_name(symbol_id)) {
@@ -894,13 +898,13 @@ private:
     for (const ImportedSymbol &imported :
          semantic_.imported_symbols_for_read()) {
       if (imported.proxy == symbol_id) {
-        return package_symbol_name(
+        return llvm_package_symbol_name(
             {imported.root_identity, imported.root_relative_path},
             imported.public_name);
       }
     }
     const Symbol &symbol = semantic_.symbols.symbol(symbol_id);
-    return package_symbol_name(
+    return llvm_package_symbol_name(
         options_.module.package,
         symbol.linkage_name.empty() ? symbol.name : symbol.linkage_name);
   }
@@ -1445,7 +1449,7 @@ private:
       return LLVMConstNull(llvm_type(type_id));
     }
 
-    const std::string name = package_symbol_name(
+    const std::string name = llvm_package_symbol_name(
         {value.root_identity, value.root_relative_path}, value.text);
     LLVMValueRef function = LLVMGetNamedFunction(module_.value, name.c_str());
     if (function == nullptr) {
@@ -3831,7 +3835,7 @@ private:
   [[nodiscard]] LLVMValueRef validation_function(
       const ValidationEntry &entry) {
     const std::string name =
-        package_symbol_name(entry.package, entry.procedure);
+        llvm_package_symbol_name(entry.package, entry.procedure);
     LLVMValueRef function = LLVMGetNamedFunction(module_.value, name.c_str());
     if (function != nullptr)
       return function;
@@ -3976,6 +3980,13 @@ private:
 };
 
 } // namespace
+
+std::string llvm_package_symbol_name(
+    const PackageIdentity &package, std::string_view declaration_name) {
+  return "draft." + encoded_name(package.root_identity) + "." +
+      encoded_name(package.root_relative_path) + "." +
+      encoded_name(declaration_name);
+}
 
 LlvmPackageEmissionResult emit_llvm_package_direct(
     const TargetProfile &target, const SourceManager &sources,

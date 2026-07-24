@@ -122,6 +122,12 @@ dependency never unlocks its consumer.
 Parsed assembly consumes the same checked-body frontier as direct effects and
 runs in that ready executor rather than waiting for a workspace-wide native
 phase. It is therefore available to `check` as well as later artifact commands.
+O2 package LLVM tasks publish summary-bearing bitcode rather than native bytes.
+One package-less `WorkspaceThinLto` product depends on every package unit, runs
+LLVM's internally parallel backends, and publishes native buffers back to
+package artifact layouts in canonical order. This is command-local memoization
+of completed graph products, not a cross-process cache; no ThinLTO cache is
+configured.
 Per-package phase and declaration-generation counters are deleted. Source
 transitions supersede exact product rows; body initialization and closure reuse
 are derived from retained product/payload invariants rather than a parallel

@@ -240,14 +240,16 @@ but native execution requires the matching host toolchain and runtime.
 
 Native `build`, `resolve --build`, `test`, and `bench` default to `-O0`; pass
 `-O2` when the task requires optimized code. Native-only O0 object builds may
-split a package above 48 live procedures into fixed internal units. O2 runs
-within each complete semantic-package LLVM module, while packages remain
-independently emitted. The choice may change derived native products, not Draft
-semantics, assertions, or resolution pins. Validation evidence distinguishes
-O0 and O2 policy, so use `bench -O2` when measuring optimized code. `emit-llvm`
-remains the canonical pre-optimization inspection; use
-`build --kind assembly -O2` to inspect optimized native output. Do not invent
-O1, O3, size optimization, LTO, arbitrary pass, or granularity flags.
+split a package above 48 live procedures into fixed internal units. O2 prepares
+one summary-bearing module per semantic package, then runs whole-artifact
+ThinLTO with cross-package importing and parallel native backends. The choice
+may change derived native products, not Draft semantics, assertions, or
+resolution pins. Validation evidence distinguishes O0 and O2 policy, so use
+`bench -O2` when measuring optimized code. `emit-llvm` remains the canonical
+pre-optimization inspection; use `build --kind assembly -O2` to inspect final
+post-ThinLTO output. Do not invent O1, O3, size optimization, an
+LTO/granularity flag, or arbitrary pass strings. O2 has no persistent ThinLTO
+cache.
 Ordinary `build` and `resolve --build` also omit source-level debug metadata;
 pass `--debug-symbols` only when the requested result will be debugged or its
 debug contract is under test. On macOS this publishes a dSYM, on Windows a PDB,

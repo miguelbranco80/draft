@@ -142,9 +142,11 @@ bool prepare_native_object_plan(
               : std::string{};
           task.input_bytes = native.bytes;
         } else {
-          // Retained LLVM text is deliberately package-wide. Splitting it
-          // would make the qualification oracle compare a different
-          // optimization unit from production O2 and complicate inspection.
+          // Retained LLVM text is deliberately package-wide. The external
+          // Clang route is a construction, ABI, and artifact oracle; it cannot
+          // reproduce production's one in-memory workspace ThinLTO operation
+          // from independent text tasks. Keeping one text module per semantic
+          // package nevertheless preserves the exact pre-link input boundary.
           if (layout.index != 0 || next_unit != 0 ||
               !package->llvm_module.ok || package->llvm_module.text.empty()) {
             reason = "compiled package " + std::to_string(package_index) +

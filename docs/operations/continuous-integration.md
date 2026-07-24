@@ -12,9 +12,9 @@ the four implemented native host/target pairs:
   utilities;
 - `ubuntu-24.04` builds the bootstrap with GCC ASan/UBSan and runs the complete
   x86-64 SysV/ELF Draft path with the same LLVM 22 tool family.
-- `windows-2022` builds the MSVC bootstrap against the official LLVM-C 22
-  archive and runs the x86-64 Win64/PE path with matching Clang, lld-link,
-  llvm-lib, UCRT, and Windows SDK components.
+- `windows-2022` builds the MSVC bootstrap against the official LLVM 22
+  development archive and runs the x86-64 Win64/PE path with matching Clang,
+  lld-link, llvm-lib, UCRT, and Windows SDK components.
 
 All jobs treat warnings as errors. The macOS/Linux jobs build the complete test
 suite and run it on the host. On each of those matching pairs CMake includes
@@ -42,7 +42,8 @@ Draft program configuration.
 ## Host toolchains and resolved inputs
 
 Pull-request and release CI pins LLVM 22 as a bootstrap compiler component and
-links its C API through the narrow in-process backend adapter. The selected
+links its C and C++ LTO APIs behind narrow in-process backend adapters. The
+selected
 `LLVMConfig.cmake` path is explicit in every job. Clang, lld, Apple ld, SDKs,
 LLVM utilities, and sanitizer runtimes remain host build configuration. CMake's
 selected LLVM directory supplies the default absolute paths for matching Clang,
@@ -52,7 +53,8 @@ program dependencies, and they do not appear in resolution manifests.
 
 Windows uses the official `clang+llvm` development archive rather than the
 smaller tool-only installer because the bootstrap needs LLVM headers, CMake
-exports, and `LLVM-C.dll`. CI verifies the upstream SHA-256 before extraction
+exports, static LTO/target libraries, and native tools. CI verifies the upstream
+SHA-256 before extraction
 and caches that immutable tree by version and digest. The Visual Studio
 developer environment supplies the matching Windows SDK include/library paths
 to the Clang processes launched by `draftc`.

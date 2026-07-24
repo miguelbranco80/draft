@@ -31,8 +31,10 @@
 // because it depends only on checked bodies and target facts, and is retained
 // before artifact selection. After artifact reachability selects runtime work,
 // one closed dependency executor lowers procedure-owned MIR, constructs each
-// package-owned LLVM unit as soon as its assigned MIR completes, and constructs
-// its artifact layout. The coordinator publishes those private outputs through
+// package-owned LLVM unit as soon as its assigned MIR completes. O0 units emit
+// native bytes directly; O2 package units publish summary bitcode into one
+// workspace ThinLTO task whose internally parallel backends feed the package
+// artifact layouts. The coordinator publishes those private outputs through
 // canonical semantic waves.
 // Within an unchanged source generation, CompileWorkspaceProgress advances so
 // native lowering can continue checked state without reloading source. A
@@ -52,6 +54,7 @@
 #include "base/timing.h"
 #include "base/work_graph.h"
 #include "backend/llvm_package_emitter.h"
+#include "backend/llvm_thinlto.h"
 #include "elaborator/generated_source.h"
 #include "elaborator/resolution_overlay.h"
 #include "elaborator/resolution_store.h"
@@ -1089,6 +1092,9 @@ void bind_handwritten_program_identity(
       affected_packages(schedule, std::vector<PackageId>(
           changed_packages.begin(), changed_packages.end()));
   std::vector<SemanticProductId> superseded;
+  if (result.semantic_products.thinlto.is_valid()) {
+    superseded.push_back(result.semantic_products.thinlto);
+  }
   if (result.semantic_products.artifact_reachability.is_valid()) {
     superseded.push_back(result.semantic_products.artifact_reachability);
   }
@@ -1141,6 +1147,7 @@ void bind_handwritten_program_identity(
     }
   }
   result.semantic_products.artifact_reachability = {};
+  result.semantic_products.thinlto = {};
   result.native_reachability = {};
   for (std::size_t index = 0; index < affected.size(); ++index) {
     if (!affected[index] || !result.packages[index].has_value()) continue;
@@ -1313,6 +1320,9 @@ void bind_handwritten_program_identity(
   // successor. selected is transitively closed for an interface change, so no
   // active consumer remains blocked on a superseded dependency.
   std::vector<SemanticProductId> superseded;
+  if (result.semantic_products.thinlto.is_valid()) {
+    superseded.push_back(result.semantic_products.thinlto);
+  }
   if (result.semantic_products.artifact_reachability.is_valid()) {
     superseded.push_back(result.semantic_products.artifact_reachability);
   }
@@ -1401,6 +1411,7 @@ void bind_handwritten_program_identity(
     }
   }
   result.semantic_products.artifact_reachability = {};
+  result.semantic_products.thinlto = {};
   result.native_reachability = {};
 
   for (auto position = schedule.consumer_first_order.rbegin();
@@ -7001,6 +7012,9 @@ struct PackageLlvmUnitTaskSlot {
   bool collect_phase_timings = false;
   LlvmIrResult llvm;
   PackageNativeOutput native;
+  std::string thinlto_bitcode;
+  std::vector<std::string> thinlto_preserved_symbols;
+  LlvmObjectEmissionPhaseTimings thinlto_prelink_phase_timings;
   LlvmPackageEmissionPhaseTimings direct_phase_timings;
   std::size_t package_index = 0;
   std::size_t unit_index = 0;
@@ -7053,6 +7067,42 @@ llvm_native_phase_timing_events(
   return children;
 }
 
+// Package preparation is still independently schedulable in O2, but it stops
+// at summary-bearing bitcode. Keep that cost separate from the later global
+// thin link so timings do not misleadingly attribute cross-package work to the
+// package whose product happens to publish first.
+[[nodiscard]] std::vector<CompletedTimingEvent>
+llvm_thinlto_prelink_timing_events(
+    const LlvmPackageEmissionPhaseTimings &direct_phase,
+    const LlvmObjectEmissionPhaseTimings &phase) {
+  std::vector<CompletedTimingEvent> children =
+      llvm_native_phase_timing_events(
+          direct_phase, phase, LlvmNativeOutputKind::Object);
+  for (CompletedTimingEvent &event : children) {
+    if (event.name == "LLVM O2 optimization")
+      event.name = "LLVM ThinLTO pre-link O2";
+    if (event.name == "native output copy")
+      event.name = "LLVM summary-bitcode serialization";
+  }
+  return children;
+}
+
+[[nodiscard]] std::vector<CompletedTimingEvent>
+llvm_thinlto_phase_timing_events(const LlvmThinLtoPhaseTimings &phase) {
+  std::vector<CompletedTimingEvent> children;
+  children.reserve(3);
+  const auto append = [&](std::string_view name, std::uint64_t elapsed) {
+    if (elapsed != 0) children.push_back({std::string(name), elapsed});
+  };
+  append("LLVM ThinLTO input and symbol resolution",
+         phase.input_loading_nanoseconds);
+  append("LLVM thin link and parallel backends",
+         phase.thin_link_and_backends_nanoseconds);
+  append("LLVM ThinLTO native output copy",
+         phase.output_copy_nanoseconds);
+  return children;
+}
+
 struct PackageLlvmUnitWaveExecution {
   std::vector<PackageLlvmUnitTaskSlot> *slots = nullptr;
   std::vector<SemanticProductOutcome> *outcomes = nullptr;
@@ -7098,7 +7148,18 @@ struct PackageLlvmUnitWaveExecution {
   slot.llvm.ok = emitted.ok;
   slot.llvm.text = std::move(emitted.llvm_text);
   if (emitted.ok && slot.native_options.has_value()) {
-    if (!emitted.native.ok) {
+    if (slot.native_options->optimization ==
+        NativeOptimizationLevel::O2) {
+      if (!emitted.thinlto_bitcode.ok) {
+        outcome.diagnostics.error(
+            SourceRange::invalid(), emitted.thinlto_bitcode.failure);
+      } else {
+        slot.thinlto_bitcode =
+            std::move(emitted.thinlto_bitcode.bitcode);
+        slot.thinlto_prelink_phase_timings =
+            emitted.thinlto_bitcode.phase_timings;
+      }
+    } else if (!emitted.native.ok) {
       outcome.diagnostics.error(
           SourceRange::invalid(), emitted.native.failure);
     } else {
@@ -7114,14 +7175,117 @@ struct PackageLlvmUnitWaveExecution {
       std::chrono::steady_clock::now() - started).count();
   assert(elapsed >= 0 && "package LLVM task duration must be nonnegative");
   slot.elapsed_nanoseconds = static_cast<std::uint64_t>(elapsed);
-  const bool native_ok =
-      !slot.native_options.has_value() || slot.native.ok;
+  const bool native_ok = !slot.native_options.has_value() ||
+      (slot.native_options->optimization == NativeOptimizationLevel::O2
+           ? !slot.thinlto_bitcode.empty()
+           : slot.native.ok);
   outcome.kind = slot.llvm.ok && native_ok
       ? SemanticProductOutcomeKind::Complete
       : SemanticProductOutcomeKind::Error;
   if (outcome.kind == SemanticProductOutcomeKind::Error) {
     outcome.failure = "package failed LLVM unit emission";
   }
+  return true;
+}
+
+// WorkspaceThinLtoTaskSlot owns the sole whole-artifact optimization barrier.
+// unit_slots names exactly one package module per contributing package in
+// canonical workspace order. The task borrows the fixed package-unit array,
+// consumes only completed summary bitcode, and writes package-indexed native
+// outputs which later layout tasks may read through their exact WorkGraph edge.
+// No output is placed in CompiledPackage until semantic publication.
+struct WorkspaceThinLtoTaskSlot {
+  const TargetProfile *target = nullptr;
+  const std::vector<PackageLlvmUnitTaskSlot> *units = nullptr;
+  std::vector<std::size_t> unit_slots;
+  LlvmObjectEmissionOptions options;
+  std::size_t worker_count = 1;
+  std::vector<std::vector<PackageNativeOutput>> outputs_by_package;
+  LlvmThinLtoPhaseTimings phase_timings;
+  std::uint64_t elapsed_nanoseconds = 0;
+};
+
+struct WorkspaceThinLtoWaveExecution {
+  WorkspaceThinLtoTaskSlot *slot = nullptr;
+  SemanticProductOutcome *outcome = nullptr;
+};
+
+[[nodiscard]] bool execute_workspace_thinlto_task(
+    void *opaque_context,
+    WorkTaskId task,
+    std::string &failure) {
+  auto &context =
+      *static_cast<WorkspaceThinLtoWaveExecution *>(opaque_context);
+  if (task != 0 || context.slot == nullptr || context.outcome == nullptr) {
+    failure = "workspace ThinLTO worker received an invalid task slot";
+    return false;
+  }
+  WorkspaceThinLtoTaskSlot &slot = *context.slot;
+  SemanticProductOutcome &outcome = *context.outcome;
+  if (slot.target == nullptr || slot.units == nullptr ||
+      slot.unit_slots.empty() || slot.outputs_by_package.empty()) {
+    failure = "workspace ThinLTO worker received incomplete inputs";
+    return false;
+  }
+
+  std::vector<LlvmThinLtoModuleInput> inputs;
+  inputs.reserve(slot.unit_slots.size());
+  for (const std::size_t unit_slot : slot.unit_slots) {
+    if (unit_slot >= slot.units->size()) {
+      failure = "workspace ThinLTO names an out-of-range package unit";
+      return false;
+    }
+    const PackageLlvmUnitTaskSlot &unit = (*slot.units)[unit_slot];
+    if (unit.unit_count != 1 || unit.unit_index != 0 ||
+        unit.thinlto_bitcode.empty() ||
+        unit.package_index >= slot.outputs_by_package.size()) {
+      failure = "workspace ThinLTO package input is incomplete";
+      return false;
+    }
+    inputs.push_back({
+        display_package_identity(unit.options.package),
+        unit.thinlto_bitcode,
+        unit.thinlto_preserved_symbols});
+  }
+
+  const auto started = std::chrono::steady_clock::now();
+  LlvmThinLtoResult emitted = emit_llvm_thinlto_in_process(
+      *slot.target, inputs, slot.options, slot.worker_count);
+  const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - started).count();
+  assert(elapsed >= 0 && "workspace ThinLTO duration must be nonnegative");
+  slot.elapsed_nanoseconds = static_cast<std::uint64_t>(elapsed);
+  slot.phase_timings = emitted.phase_timings;
+  if (!emitted.ok) {
+    outcome.diagnostics.error(SourceRange::invalid(), emitted.failure);
+    outcome.kind = SemanticProductOutcomeKind::Error;
+    outcome.failure = "workspace failed ThinLTO emission";
+    return true;
+  }
+
+  for (LlvmThinLtoModuleOutput &output : emitted.outputs) {
+    if (output.module_index >= slot.unit_slots.size() ||
+        output.bytes.empty()) {
+      failure = "workspace ThinLTO returned an invalid native output";
+      return false;
+    }
+    const PackageLlvmUnitTaskSlot &unit =
+        (*slot.units)[slot.unit_slots[output.module_index]];
+    std::vector<PackageNativeOutput> &package_outputs =
+        slot.outputs_by_package[unit.package_index];
+    if (!package_outputs.empty()) {
+      failure = "workspace ThinLTO returned multiple outputs for one package";
+      return false;
+    }
+    PackageNativeOutput native;
+    native.ok = true;
+    native.output_kind = slot.options.output_kind;
+    native.optimization = slot.options.optimization;
+    native.instrumentation = slot.options.instrumentation;
+    native.bytes = std::move(output.bytes);
+    package_outputs.push_back(std::move(native));
+  }
+  outcome.kind = SemanticProductOutcomeKind::Complete;
   return true;
 }
 
@@ -7132,6 +7296,7 @@ struct PackageLlvmUnitWaveExecution {
 enum class NativePipelineTaskKind {
   MirProcedure,
   PackageLlvmUnit,
+  WorkspaceThinLto,
   ArtifactLayout,
 };
 
@@ -7151,6 +7316,8 @@ struct NativePipelineTask {
 struct NativePipelineLayoutTaskSlot {
   std::vector<const LlvmIrResult *> units;
   std::vector<SemanticProductId> unit_products;
+  const std::vector<PackageNativeOutput> *thinlto_outputs = nullptr;
+  SemanticProductId thinlto_product;
   std::size_t assembly_source_count = 0;
   bool include_hosted_runtime = false;
   SemanticProductId runtime_product;
@@ -7166,6 +7333,7 @@ struct NativePipelineExecution {
   const std::vector<NativePipelineTask> *tasks = nullptr;
   MirProcedureWaveExecution mir;
   PackageLlvmUnitWaveExecution units;
+  WorkspaceThinLtoWaveExecution thinlto;
   std::vector<NativePipelineLayoutTaskSlot> *layouts = nullptr;
   std::vector<SemanticProductOutcome> *layout_outcomes = nullptr;
 };
@@ -7186,6 +7354,10 @@ struct NativePipelineExecution {
       return nullptr;
     }
     return &(*execution.units.outcomes)[task.slot];
+  case NativePipelineTaskKind::WorkspaceThinLto:
+    if (task.slot != 0)
+      return nullptr;
+    return execution.thinlto.outcome;
   case NativePipelineTaskKind::ArtifactLayout:
     if (execution.layout_outcomes == nullptr ||
         task.slot >= execution.layout_outcomes->size()) {
@@ -7228,6 +7400,12 @@ struct NativePipelineExecution {
         static_cast<WorkTaskId>(task.slot),
         failure);
     break;
+  case NativePipelineTaskKind::WorkspaceThinLto:
+    invoked = execute_workspace_thinlto_task(
+        &execution.thinlto,
+        static_cast<WorkTaskId>(task.slot),
+        failure);
+    break;
   case NativePipelineTaskKind::ArtifactLayout: {
     if (execution.layouts == nullptr ||
         task.slot >= execution.layouts->size()) {
@@ -7250,15 +7428,24 @@ struct NativePipelineExecution {
         return false;
       }
     }
+    const bool use_thinlto = slot.thinlto_outputs != nullptr;
+    if (use_thinlto && !slot.thinlto_product.is_valid()) {
+      failure = "native pipeline layout has no ThinLTO producer";
+      return false;
+    }
+    const std::size_t native_output_count = use_thinlto
+        ? slot.thinlto_outputs->size()
+        : slot.units.size();
     slot.layout.inputs.reserve(
-        slot.units.size() + (slot.include_hosted_runtime ? 1 : 0) +
+        native_output_count + (slot.include_hosted_runtime ? 1 : 0) +
         slot.assembly_source_count);
     for (std::size_t unit_index = 0;
-         unit_index < slot.units.size(); ++unit_index) {
+         unit_index < native_output_count; ++unit_index) {
       slot.layout.inputs.push_back({
           PackageArtifactInputKind::PackageLlvmUnit,
           unit_index,
-          slot.unit_products[unit_index]});
+          use_thinlto ? slot.thinlto_product
+                      : slot.unit_products[unit_index]});
     }
     if (slot.include_hosted_runtime) {
       if (!slot.runtime_product.is_valid()) {
@@ -7294,16 +7481,18 @@ struct NativePipelineExecution {
 
 // Appends the complete artifact-live native subgraph, then executes it through
 // one dependency scheduler. O2, assembly, and retained-IR requests keep one
-// complete LLVM unit per semantic package because whole-package optimization or
-// inspection requires that scope. A native-only O0 object request may instead
-// divide a large package into fixed 48-procedure units. The partition follows
+// complete LLVM unit per semantic package because ThinLTO summary construction
+// and inspection require that scope. A native-only O0 object request may
+// instead divide a large package into fixed 48-procedure units. The partition follows
 // canonical live-MIR order and never worker count, so scheduling changes neither
 // object membership nor final link order.
 //
 // Each LLVM unit depends only on its assigned MIR procedures and direct-
-// reference products. ArtifactLayout depends on every unit for its package.
-// Consequently LLVM construction can begin for one chunk while unrelated MIR
-// is still lowering, and independent units can enter LLVM concurrently.
+// reference products. O0 ArtifactLayout rows depend on their package units. O2
+// has one WorkspaceThinLto product depending on all package units, and every
+// layout consumes that product. Consequently LLVM construction can begin for
+// one chunk while unrelated MIR is still lowering; package pre-link work runs
+// concurrently, then LLVM's ThinLTO backends use the compiler's worker budget.
 // SemanticProductGraph outcomes are nevertheless published through ordinary
 // frozen ready waves after the closed executor joins, preserving canonical
 // diagnostics and graph state.
@@ -7345,6 +7534,8 @@ struct NativePipelineExecution {
   // benchmark and deterministic artifact coverage.
   constexpr std::size_t kO0ProcedureUnitSize = 48;
   const bool emit_package_units = emit_llvm || emit_native_output;
+  const bool use_thinlto = emit_native_output &&
+      native_output.optimization == NativeOptimizationLevel::O2;
   const bool split_o0_object_units =
       emit_native_output && !emit_llvm &&
       native_output.output_kind == LlvmNativeOutputKind::Object &&
@@ -7374,11 +7565,14 @@ struct NativePipelineExecution {
   std::vector<SemanticProductOutcome> unit_outcomes(unit_count);
   std::vector<std::vector<std::size_t>> unit_slots_by_package(package_count);
   std::vector<std::vector<WorkTaskId>> unit_tasks_by_package(package_count);
+  WorkspaceThinLtoTaskSlot thinlto_slot;
+  SemanticProductOutcome thinlto_outcome;
+  WorkTaskId thinlto_task = std::numeric_limits<WorkTaskId>::max();
   std::vector<NativePipelineLayoutTaskSlot> layout_slots(package_count);
   std::vector<SemanticProductOutcome> layout_outcomes(package_count);
   std::size_t layout_count = 0;
   std::vector<NativePipelineTask> tasks;
-  tasks.reserve(mir_count + unit_count +
+  tasks.reserve(mir_count + unit_count + (use_thinlto ? 1 : 0) +
                 (emit_package_units ? package_count : 0));
   WorkGraph execution_graph;
 
@@ -7470,6 +7664,12 @@ struct NativePipelineExecution {
   }
 
   if (emit_package_units) {
+    if (result.semantic_products.thinlto.is_valid()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "workspace ThinLTO product is not empty before native scheduling");
+      return false;
+    }
     std::size_t unit_slot_index = 0;
     for (std::size_t package_index = 0;
          package_index < package_count; ++package_index) {
@@ -7593,6 +7793,69 @@ struct NativePipelineExecution {
           slot.options.validation_entries.assign(
               validation_entries.begin(), validation_entries.end());
         }
+        if (use_thinlto) {
+          // A root with no generated/default-visible caller—most notably an
+          // authored main in object, archive, or assembly output—must remain a
+          // native definition even though all ordinary Draft symbols are
+          // hidden. Explicit C exports already carry default visibility and do
+          // not need a second preservation rule.
+          for (const SemanticProductId reference_product :
+               products.native_reference_summaries) {
+            if (!reference_product.is_valid() ||
+                reference_product.value >=
+                    result.semantic_products.native_reference_by_product.size()) {
+              continue;
+            }
+            const std::optional<NativeProcedureReferenceSummary> &reference =
+                result.semantic_products
+                    .native_reference_by_product[reference_product.value];
+            if (!reference.has_value() ||
+                std::find(
+                    result.native_reachability.procedure_roots.begin(),
+                    result.native_reachability.procedure_roots.end(),
+                    reference->procedure) ==
+                    result.native_reachability.procedure_roots.end()) {
+              continue;
+            }
+            const bool is_c_export = std::any_of(
+                package.bodies.package.native_bindings.begin(),
+                package.bodies.package.native_bindings.end(),
+                [&](const NativeBinding &binding) {
+                  return binding.symbol == reference->local_symbol &&
+                      binding.kind == NativeBindingKind::CExport;
+                });
+            if (is_c_export)
+              continue;
+            const std::string symbol = llvm_package_symbol_name(
+                reference->procedure.package, reference->procedure.name);
+            if (std::find(
+                    slot.thinlto_preserved_symbols.begin(),
+                    slot.thinlto_preserved_symbols.end(),
+                    symbol) == slot.thinlto_preserved_symbols.end()) {
+              slot.thinlto_preserved_symbols.push_back(symbol);
+            }
+          }
+          for (const NativeSymbolIdentity &root :
+               result.native_reachability.global_roots) {
+            if (root.package != package.identity)
+              continue;
+            const std::string symbol = llvm_package_symbol_name(
+                root.package, root.name);
+            if (std::find(
+                    slot.thinlto_preserved_symbols.begin(),
+                    slot.thinlto_preserved_symbols.end(),
+                    symbol) == slot.thinlto_preserved_symbols.end()) {
+              slot.thinlto_preserved_symbols.push_back(symbol);
+            }
+          }
+          // The symbol-resolution adapter performs linear membership checks
+          // because these root sets are normally tiny. Sorting here preserves
+          // canonical diagnostics and input state independently of the order
+          // in which procedure and global roots were discovered.
+          std::sort(
+              slot.thinlto_preserved_symbols.begin(),
+              slot.thinlto_preserved_symbols.end());
+        }
         const WorkTaskId unit_task = append_execution_task(
             NativePipelineTaskKind::PackageLlvmUnit,
             unit_slot_index,
@@ -7604,6 +7867,55 @@ struct NativePipelineExecution {
       }
     }
 
+    if (use_thinlto) {
+      std::vector<SemanticProductId> dependencies{
+          result.semantic_products.target};
+      std::vector<WorkTaskId> execution_dependencies;
+      dependencies.reserve(unit_count + 1);
+      execution_dependencies.reserve(unit_count);
+      thinlto_slot.unit_slots.reserve(unit_count);
+      for (std::size_t package_index = 0;
+           package_index < package_count; ++package_index) {
+        if (!result.packages[package_index].has_value())
+          continue;
+        if (unit_slots_by_package[package_index].size() != 1 ||
+            unit_tasks_by_package[package_index].size() != 1 ||
+            result.semantic_products.packages[package_index]
+                    .package_llvm_units.size() != 1) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "O2 requires exactly one ThinLTO input per semantic package");
+          return false;
+        }
+        thinlto_slot.unit_slots.push_back(
+            unit_slots_by_package[package_index].front());
+        execution_dependencies.push_back(
+            unit_tasks_by_package[package_index].front());
+        dependencies.push_back(
+            result.semantic_products.packages[package_index]
+                .package_llvm_units.front());
+      }
+      result.semantic_products.thinlto = append_workspace_semantic_product(
+          result,
+          SemanticProductKind::WorkspaceThinLto,
+          dependencies,
+          {},
+          false,
+          diagnostics);
+      if (!result.semantic_products.thinlto.is_valid())
+        return false;
+      thinlto_slot.target = &target;
+      thinlto_slot.units = &unit_slots;
+      thinlto_slot.options = native_output;
+      thinlto_slot.worker_count = worker_count;
+      thinlto_slot.outputs_by_package.resize(package_count);
+      thinlto_task = append_execution_task(
+          NativePipelineTaskKind::WorkspaceThinLto,
+          0,
+          result.semantic_products.thinlto,
+          std::move(execution_dependencies));
+    }
+
     for (std::size_t package_index = 0;
          package_index < package_count; ++package_index) {
       if (!result.packages[package_index].has_value()) continue;
@@ -7612,8 +7924,12 @@ struct NativePipelineExecution {
           result.semantic_products.packages[package_index];
       const bool include_hosted_runtime =
           package_index == result.graph.root_package.value;
-      std::vector<SemanticProductId> dependencies =
-          products.package_llvm_units;
+      std::vector<SemanticProductId> dependencies;
+      if (use_thinlto) {
+        dependencies.push_back(result.semantic_products.thinlto);
+      } else {
+        dependencies = products.package_llvm_units;
+      }
       dependencies.push_back(products.package_assembly);
       if (include_hosted_runtime)
         dependencies.push_back(result.semantic_products.target);
@@ -7632,15 +7948,26 @@ struct NativePipelineExecution {
       for (std::size_t unit_slot : unit_slots_by_package[package_index]) {
         slot.units.push_back(&unit_slots[unit_slot].llvm);
       }
+      if (use_thinlto) {
+        slot.thinlto_outputs =
+            &thinlto_slot.outputs_by_package[package_index];
+        slot.thinlto_product = result.semantic_products.thinlto;
+      }
       slot.assembly_source_count = package.assembly_sources.size();
       slot.include_hosted_runtime = include_hosted_runtime;
       slot.runtime_product = result.semantic_products.target;
       slot.assembly_product = products.package_assembly;
+      std::vector<WorkTaskId> layout_dependencies;
+      if (use_thinlto) {
+        layout_dependencies.push_back(thinlto_task);
+      } else {
+        layout_dependencies = unit_tasks_by_package[package_index];
+      }
       append_execution_task(
           NativePipelineTaskKind::ArtifactLayout,
           package_index,
           products.artifact_layout,
-          unit_tasks_by_package[package_index]);
+          std::move(layout_dependencies));
       ++layout_count;
     }
   }
@@ -7695,6 +8022,8 @@ struct NativePipelineExecution {
   execution.tasks = &tasks;
   execution.mir = {&mir_slots, &mir_outcomes};
   execution.units = {&unit_slots, &unit_outcomes};
+  execution.thinlto = {use_thinlto ? &thinlto_slot : nullptr,
+                       use_thinlto ? &thinlto_outcome : nullptr};
   execution.layouts = &layout_slots;
   execution.layout_outcomes = &layout_outcomes;
   const WorkGraphRunResult scheduled = work_executor.run(
@@ -7812,7 +8141,6 @@ struct NativePipelineExecution {
       const NativePipelineTask &task = tasks[wave_tasks[index]];
       const PackageId owner =
           result.semantic_products.package_by_product[product.value];
-      CompiledPackage &package = *result.packages[owner.value];
       switch (task.kind) {
       case NativePipelineTaskKind::MirProcedure:
         result.semantic_products.mir_procedure_by_product[product.value] =
@@ -7822,6 +8150,14 @@ struct NativePipelineExecution {
         }
         break;
       case NativePipelineTaskKind::PackageLlvmUnit: {
+        if (!owner.is_valid() || owner.value >= result.packages.size() ||
+            !result.packages[owner.value].has_value()) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "LLVM unit has no valid package owner");
+          return false;
+        }
+        CompiledPackage &package = *result.packages[owner.value];
         PackageLlvmUnitTaskSlot &unit = unit_slots[task.slot];
         if (unit.package_index != owner.value ||
             unit.unit_index != package.native_outputs.size()) {
@@ -7833,15 +8169,33 @@ struct NativePipelineExecution {
         if (unit.unit_count == 1) {
           package.llvm_module = std::move(unit.llvm);
         }
-        package.native_outputs.push_back(std::move(unit.native));
+        const bool prepared_for_thinlto = !unit.thinlto_bitcode.empty();
+        if (!prepared_for_thinlto) {
+          package.native_outputs.push_back(std::move(unit.native));
+        }
         if (timings != nullptr) {
           timings->add_counter("LLVM package units emitted", 1);
           timings->add_counter("direct LLVM package units", 1);
           timings->add_counter(
               "LLVM IR bytes",
               static_cast<std::uint64_t>(package.llvm_module.text.size()));
-          const PackageNativeOutput &native = package.native_outputs.back();
-          if (native.ok) {
+          if (prepared_for_thinlto) {
+            timings->add_counter(
+                "LLVM ThinLTO bitcode bytes",
+                static_cast<std::uint64_t>(unit.thinlto_bitcode.size()));
+            if (timings->output() == TimingOutput::All) {
+              timings->record_completed_event_group(
+                  "LLVM ThinLTO package preparation: " +
+                      display_package_identity(package.identity),
+                  unit.elapsed_nanoseconds,
+                  TimingVisibility::Detail,
+                  llvm_thinlto_prelink_timing_events(
+                      unit.direct_phase_timings,
+                      unit.thinlto_prelink_phase_timings));
+            }
+          } else if (!package.native_outputs.empty() &&
+                     package.native_outputs.back().ok) {
+            const PackageNativeOutput &native = package.native_outputs.back();
             timings->add_counter(
                 "LLVM native bytes",
                 static_cast<std::uint64_t>(native.bytes.size()));
@@ -7866,10 +8220,61 @@ struct NativePipelineExecution {
         }
         break;
       }
-      case NativePipelineTaskKind::ArtifactLayout:
-        package.artifact_layout =
+      case NativePipelineTaskKind::WorkspaceThinLto: {
+        if (owner.is_valid() ||
+            product != result.semantic_products.thinlto) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "workspace ThinLTO product has a package owner");
+          return false;
+        }
+        for (std::size_t package_index = 0;
+             package_index < thinlto_slot.outputs_by_package.size();
+             ++package_index) {
+          if (!result.packages[package_index].has_value())
+            continue;
+          CompiledPackage &package = *result.packages[package_index];
+          if (!package.native_outputs.empty()) {
+            diagnostics.error(
+                SourceRange::invalid(),
+                "ThinLTO publication found existing package native outputs");
+            return false;
+          }
+          package.native_outputs =
+              std::move(thinlto_slot.outputs_by_package[package_index]);
+          if (timings != nullptr) {
+            for (const PackageNativeOutput &native : package.native_outputs) {
+              timings->add_counter(
+                  "LLVM native bytes",
+                  static_cast<std::uint64_t>(native.bytes.size()));
+            }
+          }
+        }
+        if (timings != nullptr) {
+          timings->add_counter("workspace ThinLTO tasks", 1);
+          if (timings->output() == TimingOutput::All) {
+            timings->record_completed_event_group(
+                "LLVM whole-artifact ThinLTO",
+                thinlto_slot.elapsed_nanoseconds,
+                TimingVisibility::Detail,
+                llvm_thinlto_phase_timing_events(
+                    thinlto_slot.phase_timings));
+          }
+        }
+        break;
+      }
+      case NativePipelineTaskKind::ArtifactLayout: {
+        if (!owner.is_valid() || owner.value >= result.packages.size() ||
+            !result.packages[owner.value].has_value()) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "artifact layout has no valid package owner");
+          return false;
+        }
+        result.packages[owner.value]->artifact_layout =
             std::move(layout_slots[task.slot].layout);
         break;
+      }
       }
     }
     semantic_wave = freeze_semantic_ready_wave(result.semantic_graph);

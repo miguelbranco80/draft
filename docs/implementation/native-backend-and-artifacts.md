@@ -65,16 +65,22 @@ SDKs, startup objects, and system libraries remain operational host inputs.
 
 ## Native optimization boundary
 
-Status: parallel native-only O0 units and package-wide O2 implemented.
+Status: parallel native-only O0 units and whole-artifact O2 ThinLTO implemented.
 
-O2 begins only after the compiler has emitted one complete LLVM module per
-semantic package. It runs LLVM's version-selected `default<O2>` pipeline over
-that complete module, then creates code using `LLVMCodeGenLevelDefault`.
+O2 begins with one complete LLVM module per semantic package. Independent
+package tasks run LLVM's `thinlto-pre-link<O2>` pipeline, construct a module
+summary, and serialize summary-bearing bitcode in memory. One explicit
+workspace product then gives every package buffer and exact linker resolution
+to LLVM's ThinLTO driver. LLVM constructs the combined index, imports profitable
+definitions across package boundaries, and runs its native backends in parallel
+using the compiler's worker budget. No persistent ThinLTO cache or temporary
+bitcode tree participates.
+
 Native-only O0 object emission performs no LLVM middle-end transformation. A
 package with at most 48 live procedures uses one module; a larger package uses
 fixed 48-procedure units, each with `LLVMCodeGenLevelNone`. Retained LLVM text
 and compiler-produced assembly remain package-wide even at O0. AddressSanitizer,
-when selected by validation, runs after optimization so it instruments the
+when selected by validation, runs after ThinLTO importing so it instruments the
 memory operations which survive into code generation.
 
 The adapter verifies each supplied unit once before its selected pipeline.
@@ -83,21 +89,23 @@ repeat whole-module verification after every pass. A malformed compiler output
 therefore still fails at the backend boundary, while valid production builds do
 not pay a verifier cost proportional to LLVM's pass count.
 
-Each native worker owns the module, target machine, pass options, and output
-buffer for the complete operation. Different packages therefore remain safe to
-optimize concurrently while procedures inside one package are visible to the
-same LLVM pipeline. There is no cross-package LTO and no user-supplied pass
-string. The external Clang qualification route receives the corresponding
-`-O0` or `-O2` spelling so parity tests compare equivalent optimization modes.
+Each O0 worker owns its module, target machine, pass options, and output buffer.
+Each O2 package worker owns its module and summary buffer; the joined ThinLTO
+operation owns the combined index and task-indexed output buffers. ThinLTO's
+backend threads write disjoint buffers, and the compiler publishes them in
+canonical package order after the join. There is no user-supplied pass string.
+The external Clang qualification route receives the corresponding `-O0` or
+`-O2` spelling, but remains a package-local construction/ABI/artifact oracle;
+it is not a second implementation of Draft's cross-package ThinLTO topology.
 
-Optimization is artifact configuration rather than Draft program meaning. It
-does not enter the semantic product graph, source/resolved-program identity,
-synthesis context, target profile, or package granularity. The canonical LLVM
-module retained by the compiler and printed by `emit-llvm` is pre-optimization;
-direct package tasks pass that same task-private module to native emission,
-while explicit textual-oracle input is parsed into its own task-private module.
-This keeps the inspectable lowering stable without imposing a print/reparse
-boundary on ordinary package objects.
+Optimization is artifact configuration rather than Draft program meaning. O2
+appends a `WorkspaceThinLto` backend product to the command-local work graph,
+but does not enter source/resolved-program identity, synthesis context, or the
+target profile. The canonical LLVM module retained by the compiler and printed
+by `emit-llvm` is pre-optimization. O2 serializes the task-private constructed
+module directly after its pre-link pipeline; it never prints and reparses text.
+This keeps inspectable lowering stable while giving the optimizer one combined
+workspace summary.
 
 Test and benchmark harnesses use the same native option. Because their evidence
 asserts facts about an executed binary, the validation policy identity records

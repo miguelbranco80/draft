@@ -18,6 +18,7 @@
 #include "workspace/workspace.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace draft {
@@ -57,5 +58,13 @@ struct LlvmIrResult {
   // Owns LLVMPrintModuleToString output only when retention was requested.
   std::string text;
 };
+
+// Returns the deterministic LLVM/linker identity for one non-native Draft
+// declaration. The operation is shared by module construction and the
+// workspace ThinLTO coordinator when it names a hidden artifact root such as
+// an authored main without a hosted wrapper. Native bindings use their exact
+// decoded linker spelling and must not call this helper.
+[[nodiscard]] std::string llvm_package_symbol_name(
+    const PackageIdentity &package, std::string_view declaration_name);
 
 } // namespace draft

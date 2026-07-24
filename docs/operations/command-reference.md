@@ -225,19 +225,20 @@ to the loader. The complete vendored example is
 Native builds default to `-O0`, which skips LLVM middle-end optimization and
 selects LLVM's fastest no-optimization target-machine level. A native-only O0
 object build splits packages larger than 48 artifact-live procedures into fixed
-48-procedure LLVM units that can emit concurrently. `-O2` runs LLVM's default
-O2 pipeline independently over each complete semantic-package module, then uses
-the matching default target-machine optimization level. Compiler-produced
-assembly and retained LLVM text remain package-wide at both levels. Authored
-package assembly is copied or assembled exactly as written.
+48-procedure LLVM units that can emit concurrently. `-O2` prepares one complete
+summary-bearing module per semantic package, then runs one whole-artifact
+ThinLTO operation. LLVM may import procedures across package boundaries and
+runs its native backends in parallel. Compiler-produced assembly and retained
+LLVM text remain package-wide at both levels. Authored package assembly is
+copied or assembled exactly as written.
 
 Optimization may change only derived native products. It does not change source
 semantics, assertions, resolution pins, synthesis context, or resolved-program
 identity. The O0 object partition is canonical and independent of worker count.
-`emit-llvm` deliberately prints the
-canonical pre-optimization package modules; use `build --kind assembly -O2` to
-inspect optimized native assembly. Draft currently exposes only `-O0` and
-`-O2`, and performs no cross-package LTO.
+`emit-llvm` deliberately prints the canonical pre-optimization package modules;
+use `build --kind assembly -O2` to inspect final post-ThinLTO assembly. Draft
+currently exposes only `-O0` and `-O2`. There is no LTO mode or granularity flag
+and no persistent ThinLTO cache.
 
 Ordinary builds omit LLVM source-location metadata and platform debug
 companions. Pass `--debug-symbols` to construct full source locations and, for
@@ -297,7 +298,7 @@ Windows defaults to `.exe`, `.obj`, `.lib`, and `.dll` names. With
 sibling `.pdb`; a DLL
 publishes its import `.lib` as a second companion. The command prints both
 companion paths when present. A native Windows compiler build links the official
-LLVM-C 22 development distribution; matching Clang/lld-link/llvm-lib and an x64
+LLVM 22 development distribution; matching Clang/lld-link/llvm-lib and an x64
 Visual Studio/Windows SDK environment are operational prerequisites. Ordinary
 `check`, `emit-llvm`, `emit-c-header`, and `build` work on that host. The
 bootstrap Windows validation runner, durable resolution-store lock, and Codex
@@ -416,8 +417,8 @@ failure revokes that exact key. Benchmark validation uses one warmup and ten
 process-isolated samples. `--verify` is a readable CI/release spelling; the
 benchmark still executes and records fresh evidence.
 
-Both commands default to `-O0` and accept the same compiler-owned native-unit
-pipeline as `build`; O2 remains package-wide. The selected level is part of the
+Both commands default to `-O0` and accept the same compiler-owned native
+pipeline as `build`; O2 uses whole-artifact ThinLTO. The selected level is part of the
 validation policy identity, so O0 and O2 runs produce distinct evidence keys;
 it remains absent from resolved-program identity. In particular, pass `-O2`
 when the recorded benchmark should measure optimized code.
