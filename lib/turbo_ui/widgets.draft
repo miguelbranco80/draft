@@ -36,18 +36,18 @@ control_style :: proc(
     enabled: bool,
 ) -> tui.Style {
     if !enabled {
-        return state^.theme.disabled
+        return state.theme.disabled
     }
     if interaction.held {
-        return state^.theme.active
+        return state.theme.active
     }
     if interaction.hot {
-        return state^.theme.hot
+        return state.theme.hot
     }
-    if scope_accepts_keyboard(state) && state^.focused_id == id {
-        return state^.theme.selected
+    if scope_accepts_keyboard(state) && state.focused_id == id {
+        return state.theme.selected
     }
-    return state^.theme.button
+    return state.theme.button
 }
 
 // text_columns measures one trusted widget label using the same pinned
@@ -118,7 +118,7 @@ paint_button :: proc(
 ) -> bool {
     (face, shadowed) := button_face(bounds, interaction.held)
     style_value := control_style(state, id, interaction, enabled)
-    if !fill_rect(state^.surface, state^.clip, face, ' ', style_value) {
+    if !fill_rect(state.surface, state.clip, face, ' ', style_value) {
         return false
     }
     if shadowed && !interaction.held {
@@ -129,11 +129,11 @@ paint_button :: proc(
             height = 1,
         }
         if !fill_rect(
-            state^.surface,
-            state^.clip,
+            state.surface,
+            state.clip,
             shadow,
             Shadow_Glyph,
-            state^.theme.shadow,
+            state.theme.shadow,
         ) {
             return false
         }
@@ -149,16 +149,16 @@ paint_button :: proc(
         right = '>'
     }
     painted := put_clipped(
-        state^.surface,
-        state^.clip,
+        state.surface,
+        state.clip,
         Point{column = face.column, row = face.row},
         left,
         style_value,
     )
     if face.width > 1 {
         painted = painted && put_clipped(
-            state^.surface,
-            state^.clip,
+            state.surface,
+            state.clip,
             Point{column = rect_right(face) - 1, row = face.row},
             right,
             style_value,
@@ -183,8 +183,8 @@ paint_button :: proc(
         origin.column += (interior.width - label_columns) / 2
     }
     return write_access_text(
-        state^.surface,
-        intersect(state^.clip, interior),
+        state.surface,
+        intersect(state.clip, interior),
         origin,
         label_text,
         access_key,
@@ -201,7 +201,7 @@ paint_label :: proc(
     label: string,
     style_value: tui.Style,
 ) -> bool {
-    if !fill_rect(state^.surface, state^.clip, bounds, ' ', style_value) {
+    if !fill_rect(state.surface, state.clip, bounds, ' ', style_value) {
         return false
     }
     if bounds.width < 2 || bounds.height == 0 {
@@ -214,8 +214,8 @@ paint_label :: proc(
         height = 1,
     }
     return write_clipped(
-        state^.surface,
-        intersect(state^.clip, label_clip),
+        state.surface,
+        intersect(state.clip, label_clip),
         Point{column = label_clip.column, row = label_clip.row},
         label,
         style_value,
@@ -230,9 +230,9 @@ pub label :: proc(
     text: string,
     enabled: bool = true,
 ) -> bool {
-    style_value := state^.theme.text
+    style_value := state.theme.text
     if !enabled {
-        style_value = state^.theme.disabled
+        style_value = state.theme.disabled
     }
     return paint_label(state, bounds, text, style_value)
 }
@@ -256,15 +256,15 @@ pub button :: proc(
     }
     activated := enabled && interaction.activated
     if enabled && !activated && scope_accepts_keyboard(state) &&
-        !state^.event_handled && state^.event.kind == .key {
-        key := state^.event.key
+        !state.event_handled && state.event.kind == .key {
+        key := state.event.key
         access := access_key != 0 && key.code == .character && key.alt &&
             !key.control &&
             ascii_lower(key.byte_value) == ascii_lower(access_key)
         if access || (role == .default_action && key.code == .enter) ||
             (role == .cancel_action && key.code == .escape) {
             activated = true
-            state^.event_handled = true
+            state.event_handled = true
         }
     }
     paint_button(
@@ -296,14 +296,14 @@ pub checkbox :: proc(
         interaction = interact(state, id, bounds)
     }
     style_value := control_style(state, id, interaction, enabled)
-    fill_rect(state^.surface, state^.clip, bounds, ' ', style_value)
+    fill_rect(state.surface, state.clip, bounds, ' ', style_value)
     marker := "[ ]"
     if value^ {
         marker = "[x]"
     }
     write_clipped(
-        state^.surface,
-        intersect(state^.clip, bounds),
+        state.surface,
+        intersect(state.clip, bounds),
         Point{column = bounds.column, row = bounds.row},
         marker,
         style_value,
@@ -316,8 +316,8 @@ pub checkbox :: proc(
             height = 1,
         }
         write_clipped(
-            state^.surface,
-            intersect(state^.clip, label_bounds),
+            state.surface,
+            intersect(state.clip, label_bounds),
             Point{column = label_bounds.column, row = label_bounds.row},
             label,
             style_value,
@@ -347,14 +347,14 @@ pub radio_button :: proc(
         interaction = interact(state, id, bounds)
     }
     style_value := control_style(state, id, interaction, enabled)
-    fill_rect(state^.surface, state^.clip, bounds, ' ', style_value)
+    fill_rect(state.surface, state.clip, bounds, ' ', style_value)
     marker := "( )"
     if value^ == choice {
         marker = "(•)"
     }
     write_clipped(
-        state^.surface,
-        intersect(state^.clip, bounds),
+        state.surface,
+        intersect(state.clip, bounds),
         Point{column = bounds.column, row = bounds.row},
         marker,
         style_value,
@@ -367,8 +367,8 @@ pub radio_button :: proc(
             height = 1,
         }
         write_clipped(
-            state^.surface,
-            intersect(state^.clip, label_bounds),
+            state.surface,
+            intersect(state.clip, label_bounds),
             Point{column = label_bounds.column, row = label_bounds.row},
             label_text,
             style_value,
@@ -406,23 +406,23 @@ pub splitter :: proc(
     }
     reaches := mouse_reaches_current_scope(state, separator)
     if reaches {
-        state^.hot_id = id
+        state.hot_id = id
     }
-    if !state^.event_handled && reaches && state^.event.kind == .mouse &&
-        state^.event.mouse.action == .press &&
-        state^.event.mouse.button == .primary {
-        state^.active_id = id
-        state^.active_kind = .splitter
-        state^.event_handled = true
+    if !state.event_handled && reaches && state.event.kind == .mouse &&
+        state.event.mouse.action == .press &&
+        state.event.mouse.button == .primary {
+        state.active_id = id
+        state.active_kind = .splitter
+        state.event_handled = true
     }
-    dragging := state^.active_id == id && state^.active_kind == .splitter &&
-        state^.event.kind == .mouse
-    if dragging && state^.event.mouse.action == .move &&
-        state^.event.mouse.primary_down {
-        coordinate := state^.event.mouse.position.column
+    dragging := state.active_id == id && state.active_kind == .splitter &&
+        state.event.kind == .mouse
+    if dragging && state.event.mouse.action == .move &&
+        state.event.mouse.primary_down {
+        coordinate := state.event.mouse.position.column
         origin := bounds.column
         if axis == .vertical {
-            coordinate = state^.event.mouse.position.row
+            coordinate = state.event.mouse.position.row
             origin = bounds.row
         }
         if coordinate < origin {
@@ -436,13 +436,13 @@ pub splitter :: proc(
                 value^ = maximum
             }
         }
-        state^.event_handled = true
+        state.event_handled = true
     }
-    if dragging && state^.event.mouse.action == .release &&
-        state^.event.mouse.button == .primary {
-        state^.active_id = No_Widget
-        state^.active_kind = .none
-        state^.event_handled = true
+    if dragging && state.event.mouse.action == .release &&
+        state.event.mouse.button == .primary {
+        state.active_id = No_Widget
+        state.active_kind = .none
+        state.event_handled = true
     }
     separator = Rect{column = bounds.column + value^, row = bounds.row, width = 1, height = bounds.height}
     glyph := '│'
@@ -450,26 +450,26 @@ pub splitter :: proc(
         separator = Rect{column = bounds.column, row = bounds.row + value^, width = bounds.width, height = 1}
         glyph = '─'
     }
-    fill_rect(state^.surface, state^.clip, separator, glyph, state^.theme.border)
+    fill_rect(state.surface, state.clip, separator, glyph, state.theme.border)
     return value^ != old
 }
 
 // status_bar paints one application-owned message across a single rectangle.
 pub status_bar :: proc(state: ^State, bounds: Rect, text: string) {
-    paint_label(state, bounds, text, state^.theme.status)
+    paint_label(state, bounds, text, state.theme.status)
 }
 
 // status_bar_bytes is the mutable-byte counterpart for application-formatted
 // counts and paths. It borrows bytes only for this frame, fills the complete
 // bar exactly like status_bar, and applies the same UTF-8 clipping policy.
 pub status_bar_bytes :: proc(state: ^State, bounds: Rect, text: []u8) {
-    fill_rect(state^.surface, state^.clip, bounds, ' ', state^.theme.status)
+    fill_rect(state.surface, state.clip, bounds, ' ', state.theme.status)
     write_clipped_bytes(
-        state^.surface,
-        intersect(state^.clip, bounds),
+        state.surface,
+        intersect(state.clip, bounds),
         Point{column = bounds.column, row = bounds.row},
         text,
-        state^.theme.status,
+        state.theme.status,
     )
 }
 
@@ -484,11 +484,11 @@ pub dialog_begin :: proc(
     result := begin_window(state, window, title)
     if result.visible {
         result.painted = result.painted && fill_rect(
-            state^.surface,
-            state^.clip,
+            state.surface,
+            state.clip,
             result.content,
             ' ',
-            state^.theme.dialog,
+            state.theme.dialog,
         )
     }
     return result

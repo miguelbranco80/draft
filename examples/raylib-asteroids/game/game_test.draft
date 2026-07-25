@@ -10,9 +10,9 @@ import core/testing
 // clear_asteroids releases every inline slot for focused state construction.
 // No cleanup is required because an Asteroid owns no indirect resource.
 clear_asteroids :: proc(game: ^Game) {
-    for index: usize = 0; index < len(game^.asteroids); index += 1 {
+    for index: usize = 0; index < len(game.asteroids); index += 1 {
         empty: Asteroid
-        game^.asteroids[index] = empty
+        game.asteroids[index] = empty
     }
 }
 

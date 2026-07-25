@@ -27,7 +27,7 @@ combo_popup_bounds :: proc(
         width = bounds.width,
         height = visible + 2,
     }
-    return clamp_rect(result, surface_bounds(state^.surface))
+    return clamp_rect(result, surface_bounds(state.surface))
 }
 
 // combo_box paints the closed field and opens/toggles its popup on activation.
@@ -60,21 +60,21 @@ pub combo_box :: proc(
     if enabled {
         interaction = interact(state, id, bounds)
     }
-    if enabled && !state^.event_handled && has_focus(state, id) &&
-        state^.event.kind == .key && len(items) != 0 {
-        key := state^.event.key
+    if enabled && !state.event_handled && has_focus(state, id) &&
+        state.event.kind == .key && len(items) != 0 {
+        key := state.event.key
         if key.code == .up && selected^ > 0 {
             selected^ -= 1
-            state^.event_handled = true
+            state.event_handled = true
         } else if key.code == .down && selected^ + 1 < len(items) {
             selected^ += 1
-            state^.event_handled = true
+            state.event_handled = true
         } else if key.code == .home {
             selected^ = 0
-            state^.event_handled = true
+            state.event_handled = true
         } else if key.code == .end {
             selected^ = len(items) - 1
-            state^.event_handled = true
+            state.event_handled = true
         }
     }
     if enabled && interaction.activated && len(items) != 0 &&
@@ -82,9 +82,9 @@ pub combo_box :: proc(
         if popup_is_open(state, popup_id) {
             popup_close(state)
         } else {
-            combo^.highlighted = selected^
-            combo^.scroll = 0
-            combo^.pressed = ~cast[usize](0)
+            combo.highlighted = selected^
+            combo.scroll = 0
+            combo.pressed = ~cast[usize](0)
             popup_open(
                 state,
                 popup_id,
@@ -93,17 +93,17 @@ pub combo_box :: proc(
         }
     }
 
-    style_value := state^.theme.input
+    style_value := state.theme.input
     if !enabled {
-        style_value = state^.theme.disabled
+        style_value = state.theme.disabled
     } else if popup_is_open(state, popup_id) || interaction.hot ||
         has_focus(state, id) {
-        style_value = state^.theme.input_focused
+        style_value = state.theme.input_focused
     }
-    fill_rect(state^.surface, state^.clip, bounds, ' ', style_value)
+    fill_rect(state.surface, state.clip, bounds, ' ', style_value)
     if bounds.width != 0 {
         arrow := Point{column = rect_right(bounds) - 1, row = bounds.row}
-        put_clipped(state^.surface, state^.clip, arrow, '▼', style_value)
+        put_clipped(state.surface, state.clip, arrow, '▼', style_value)
     }
     if bounds.width > 2 && len(items) != 0 {
         text_bounds := Rect{
@@ -113,8 +113,8 @@ pub combo_box :: proc(
             height = 1,
         }
         write_clipped(
-            state^.surface,
-            intersect(state^.clip, text_bounds),
+            state.surface,
+            intersect(state.clip, text_bounds),
             Point{column = text_bounds.column, row = text_bounds.row},
             items[selected^],
             style_value,
@@ -137,7 +137,7 @@ pub combo_box_popup :: proc(
     if !popup_is_open(state, popup_id) {
         return false
     }
-    popup := begin_popup(state, popup_id, state^.popup_bounds)
+    popup := begin_popup(state, popup_id, state.popup_bounds)
     if !popup.visible {
         return false
     }
@@ -146,51 +146,51 @@ pub combo_box_popup :: proc(
         end_popup(state, popup)
         return false
     }
-    if combo^.highlighted >= len(items) {
-        combo^.highlighted = len(items) - 1
+    if combo.highlighted >= len(items) {
+        combo.highlighted = len(items) - 1
     }
     visible := popup.content.height
     maximum := maximum_scroll(len(items), visible)
-    if combo^.scroll > maximum {
-        combo^.scroll = maximum
+    if combo.scroll > maximum {
+        combo.scroll = maximum
     }
 
-    if !state^.event_handled && state^.event.kind == .key {
-        key := state^.event.key
+    if !state.event_handled && state.event.kind == .key {
+        key := state.event.key
         if key.code == .up {
-            if combo^.highlighted > 0 {
-                combo^.highlighted -= 1
+            if combo.highlighted > 0 {
+                combo.highlighted -= 1
             }
-            state^.event_handled = true
+            state.event_handled = true
         } else if key.code == .down {
-            if combo^.highlighted + 1 < len(items) {
-                combo^.highlighted += 1
+            if combo.highlighted + 1 < len(items) {
+                combo.highlighted += 1
             }
-            state^.event_handled = true
+            state.event_handled = true
         } else if key.code == .home {
-            combo^.highlighted = 0
-            state^.event_handled = true
+            combo.highlighted = 0
+            state.event_handled = true
         } else if key.code == .end {
-            combo^.highlighted = len(items) - 1
-            state^.event_handled = true
+            combo.highlighted = len(items) - 1
+            state.event_handled = true
         } else if key.code == .enter {
-            changed := selected^ != combo^.highlighted
-            selected^ = combo^.highlighted
+            changed := selected^ != combo.highlighted
+            selected^ = combo.highlighted
             popup_close(state)
             end_popup(state, popup)
             return changed
         }
     }
-    if combo^.highlighted < combo^.scroll {
-        combo^.scroll = combo^.highlighted
-    } else if visible != 0 && combo^.highlighted >= combo^.scroll + visible {
-        combo^.scroll = combo^.highlighted - visible + 1
+    if combo.highlighted < combo.scroll {
+        combo.scroll = combo.highlighted
+    } else if visible != 0 && combo.highlighted >= combo.scroll + visible {
+        combo.scroll = combo.highlighted - visible + 1
     }
 
     activated := false
     activated_index: usize
     for row: usize = 0; row < visible; row += 1 {
-        index := combo^.scroll + row
+        index := combo.scroll + row
         if index >= len(items) {
             break
         }
@@ -202,31 +202,31 @@ pub combo_box_popup :: proc(
         }
         hovered := mouse_reaches_current_scope(state, row_bounds)
         if hovered {
-            combo^.highlighted = index
+            combo.highlighted = index
         }
-        if !state^.event_handled && state^.event.kind == .mouse {
-            mouse := state^.event.mouse
+        if !state.event_handled && state.event.kind == .mouse {
+            mouse := state.event.mouse
             if hovered && mouse.action == .press && mouse.button == .primary {
-                state^.active_id = popup_id
-                state^.active_kind = .widget
-                combo^.pressed = index
-                state^.event_handled = true
+                state.active_id = popup_id
+                state.active_kind = .widget
+                combo.pressed = index
+                state.event_handled = true
             } else if mouse.action == .release && mouse.button == .primary &&
-                state^.active_id == popup_id && state^.active_kind == .widget &&
-                combo^.pressed == index {
-                activated = hovered && combo^.pressed == index
+                state.active_id == popup_id && state.active_kind == .widget &&
+                combo.pressed == index {
+                activated = hovered && combo.pressed == index
                 activated_index = index
-                combo^.pressed = ~cast[usize](0)
-                state^.active_id = No_Widget
-                state^.active_kind = .none
-                state^.event_handled = true
+                combo.pressed = ~cast[usize](0)
+                state.active_id = No_Widget
+                state.active_kind = .none
+                state.event_handled = true
             }
         }
-        style_value := state^.theme.menu
-        if index == combo^.highlighted {
-            style_value = state^.theme.menu_selected
+        style_value := state.theme.menu
+        if index == combo.highlighted {
+            style_value = state.theme.menu_selected
         }
-        fill_rect(state^.surface, state^.clip, row_bounds, ' ', style_value)
+        fill_rect(state.surface, state.clip, row_bounds, ' ', style_value)
         if row_bounds.width > 2 {
             text_bounds := Rect{
                 column = row_bounds.column + 1,
@@ -235,22 +235,22 @@ pub combo_box_popup :: proc(
                 height = 1,
             }
             write_clipped(
-                state^.surface,
-                intersect(state^.clip, text_bounds),
+                state.surface,
+                intersect(state.clip, text_bounds),
                 Point{column = text_bounds.column, row = text_bounds.row},
                 items[index],
                 style_value,
             )
         }
     }
-    if !state^.event_handled && state^.event.kind == .mouse &&
-        state^.event.mouse.action == .release &&
-        state^.event.mouse.button == .primary &&
-        state^.active_id == popup_id && state^.active_kind == .widget {
-        combo^.pressed = ~cast[usize](0)
-        state^.active_id = No_Widget
-        state^.active_kind = .none
-        state^.event_handled = true
+    if !state.event_handled && state.event.kind == .mouse &&
+        state.event.mouse.action == .release &&
+        state.event.mouse.button == .primary &&
+        state.active_id == popup_id && state.active_kind == .widget {
+        combo.pressed = ~cast[usize](0)
+        state.active_id = No_Widget
+        state.active_kind = .none
+        state.event_handled = true
     }
     changed := false
     if activated {

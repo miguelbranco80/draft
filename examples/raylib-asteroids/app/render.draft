@@ -245,11 +245,11 @@ draw_status :: proc(state: ^game.Game, labels: Labels) {
     value_color := foreground_color()
     raylib.draw_text(labels.title, 24, 18, 28, accent_color())
     raylib.draw_text(labels.score, 625, 22, 18, label_color)
-    draw_unsigned(state^.score, 690, 19, value_color)
+    draw_unsigned(state.score, 690, 19, value_color)
     raylib.draw_text(labels.lives, 760, 22, 18, label_color)
-    draw_unsigned(cast[u64](state^.lives), 815, 19, value_color)
+    draw_unsigned(cast[u64](state.lives), 815, 19, value_color)
     raylib.draw_text(labels.wave, 865, 22, 18, label_color)
-    draw_unsigned(cast[u64](state^.wave), 918, 19, value_color)
+    draw_unsigned(cast[u64](state.wave), 918, 19, value_color)
     raylib.draw_text(labels.controls, 24, 690, 16, dim_color())
 }
 
@@ -279,12 +279,12 @@ render :: proc(state: ^game.Game, thrust: bool, labels: Labels) {
     raylib.clear_background(background_color())
     draw_starfield()
 
-    for asteroid in state^.asteroids {
+    for asteroid in state.asteroids {
         if asteroid.active {
             draw_asteroid(asteroid)
         }
     }
-    for bullet in state^.bullets {
+    for bullet in state.bullets {
         if bullet.active {
             raylib.draw_circle(
                 native_vector(bullet.position),
@@ -293,9 +293,9 @@ render :: proc(state: ^game.Game, thrust: bool, labels: Labels) {
             )
         }
     }
-    draw_ship(state^.ship, thrust && !state^.game_over)
+    draw_ship(state.ship, thrust && !state.game_over)
     draw_status(state, labels)
-    if state^.game_over {
+    if state.game_over {
         draw_game_over(labels)
     }
 }

@@ -113,15 +113,15 @@ apply_action :: proc(game: ^Game, action: Action) -> Action_Outcome {
         outcome.quit = true
         return outcome
     case .toggle_pause:
-        if !game^.game_over {
-            game^.paused = !game^.paused
+        if !game.game_over {
+            game.paused = !game.paused
             outcome.changed = true
             outcome.reset_fall = true
         }
         return outcome
     case .restart:
-        if game^.game_over {
-            restart_seed := random.next_u64(&game^.generator)
+        if game.game_over {
+            restart_seed := random.next_u64(&game.generator)
             game_init(game, restart_seed)
             outcome.changed = true
             outcome.reset_fall = true
@@ -136,13 +136,13 @@ apply_action :: proc(game: ^Game, action: Action) -> Action_Outcome {
     case .rotate_counterclockwise:
         outcome.changed = game_rotate_counterclockwise(game)
     case .soft_drop:
-        if !game^.paused && !game^.game_over {
+        if !game.paused && !game.game_over {
             result := game_soft_drop(game)
             outcome.changed = true
             outcome.reset_fall = result != .moved
         }
     case .hard_drop:
-        if !game^.paused && !game^.game_over {
+        if !game.paused && !game.game_over {
             result := game_hard_drop(game)
             outcome.changed = true
             outcome.reset_fall = result != .moved
@@ -199,8 +199,8 @@ run_interactive :: proc(
                 return .output_failed
             }
             desired := tui.surface(&renderer)
-            if current_columns != desired^.columns ||
-                current_rows != desired^.rows {
+            if current_columns != desired.columns ||
+                current_rows != desired.rows {
                 tui.renderer_resize(&renderer, current_columns, current_rows)
                 needs_render = true
             }
@@ -282,8 +282,8 @@ run_smoke :: proc() -> int {
     tui.renderer_init(&renderer, Layout_Columns, Layout_Rows)
     defer tui.renderer_destroy(&renderer)
     desired := tui.surface(&renderer)
-    if !paint_game(&renderer, &game) || desired^.columns == 0 ||
-        desired^.rows == 0 {
+    if !paint_game(&renderer, &game) || desired.columns == 0 ||
+        desired.rows == 0 {
         return 1
     }
     if os.write_text_all(os.standard_output, "tetris smoke ok\n") != .none {

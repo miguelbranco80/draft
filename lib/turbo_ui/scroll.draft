@@ -146,7 +146,7 @@ pub scrollbar_vertical :: proc(
     total, visible: usize,
     offset: ^usize,
 ) -> bool {
-    assert(state^.frame_open, "turbo_ui scrollbar outside a frame")
+    assert(state.frame_open, "turbo_ui scrollbar outside a frame")
     assert(id != No_Widget, "turbo_ui widget ID zero is reserved")
     geometry := scrollbar_geometry(bounds, total, visible, offset^)
     if offset^ > geometry.maximum {
@@ -155,19 +155,19 @@ pub scrollbar_vertical :: proc(
     old := offset^
     reaches := mouse_reaches_current_scope(state, bounds)
     if reaches {
-        state^.hot_id = id
+        state.hot_id = id
     }
 
-    if !state^.event_handled && reaches && geometry.maximum != 0 &&
-        state^.event.kind == .mouse {
-        mouse := state^.event.mouse
+    if !state.event_handled && reaches && geometry.maximum != 0 &&
+        state.event.kind == .mouse {
+        mouse := state.event.mouse
         if mouse.action == .wheel {
             if mouse.wheel_delta < 0 {
                 scroll_backward(offset, Scroll_Wheel_Rows)
             } else if mouse.wheel_delta > 0 {
                 scroll_forward(offset, geometry.maximum, Scroll_Wheel_Rows)
             }
-            state^.event_handled = true
+            state.event_handled = true
         } else if mouse.action == .press && mouse.button == .primary {
             page := visible
             if page == 0 {
@@ -175,20 +175,20 @@ pub scrollbar_vertical :: proc(
             }
             if point_in_rect(mouse.position, geometry.up) {
                 scroll_backward(offset, 1)
-                state^.active_id = id
-                state^.active_kind = .scrollbar
-                state^.scrollbar_repeat_direction = -1
+                state.active_id = id
+                state.active_kind = .scrollbar
+                state.scrollbar_repeat_direction = -1
             } else if point_in_rect(mouse.position, geometry.down) {
                 scroll_forward(offset, geometry.maximum, 1)
-                state^.active_id = id
-                state^.active_kind = .scrollbar
-                state^.scrollbar_repeat_direction = 1
+                state.active_id = id
+                state.active_kind = .scrollbar
+                state.scrollbar_repeat_direction = 1
             } else if point_in_rect(mouse.position, geometry.thumb) {
-                state^.active_id = id
-                state^.active_kind = .scrollbar
-                state^.scrollbar_grab_offset =
+                state.active_id = id
+                state.active_kind = .scrollbar
+                state.scrollbar_grab_offset =
                     mouse.position.row - geometry.thumb.row
-                state^.scrollbar_repeat_direction = 0
+                state.scrollbar_repeat_direction = 0
             } else if point_in_rect(mouse.position, geometry.track) {
                 if mouse.position.row < geometry.thumb.row {
                     scroll_backward(offset, page)
@@ -196,20 +196,20 @@ pub scrollbar_vertical :: proc(
                     scroll_forward(offset, geometry.maximum, page)
                 }
             }
-            state^.event_handled = true
+            state.event_handled = true
         }
     }
 
-    dragging := state^.active_id == id && state^.active_kind == .scrollbar &&
-        state^.event.kind == .mouse
-    if dragging && state^.scrollbar_repeat_direction == 0 &&
-        state^.event.mouse.action == .move &&
-        state^.event.mouse.primary_down && geometry.track.height != 0 {
+    dragging := state.active_id == id && state.active_kind == .scrollbar &&
+        state.event.kind == .mouse
+    if dragging && state.scrollbar_repeat_direction == 0 &&
+        state.event.mouse.action == .move &&
+        state.event.mouse.primary_down && geometry.track.height != 0 {
         travel := geometry.track.height - geometry.thumb.height
         desired := geometry.track.row
-        if state^.event.mouse.position.row > state^.scrollbar_grab_offset {
-            desired = state^.event.mouse.position.row -
-                state^.scrollbar_grab_offset
+        if state.event.mouse.position.row > state.scrollbar_grab_offset {
+            desired = state.event.mouse.position.row -
+                state.scrollbar_grab_offset
         }
         if desired < geometry.track.row {
             desired = geometry.track.row
@@ -228,61 +228,61 @@ pub scrollbar_vertical :: proc(
             numerator += cast[u128](travel / 2)
             offset^ = cast[usize](numerator / cast[u128](travel))
         }
-        state^.event_handled = true
+        state.event_handled = true
     }
-    if dragging && state^.event.mouse.action == .move &&
-        !state^.event.mouse.primary_down {
+    if dragging && state.event.mouse.action == .move &&
+        !state.event.mouse.primary_down {
         // Some terminal/multiplexer paths lose the release report but later
         // motion states the button is no longer held. Treat that authoritative
         // observation as release so an arrow cannot repeat forever.
-        state^.active_id = No_Widget
-        state^.active_kind = .none
-        state^.scrollbar_grab_offset = 0
-        state^.scrollbar_repeat_direction = 0
-        state^.event_handled = true
+        state.active_id = No_Widget
+        state.active_kind = .none
+        state.scrollbar_grab_offset = 0
+        state.scrollbar_repeat_direction = 0
+        state.event_handled = true
     }
-    if dragging && state^.event.mouse.action == .release &&
-        state^.event.mouse.button == .primary {
-        state^.active_id = No_Widget
-        state^.active_kind = .none
-        state^.scrollbar_grab_offset = 0
-        state^.scrollbar_repeat_direction = 0
-        state^.event_handled = true
+    if dragging && state.event.mouse.action == .release &&
+        state.event.mouse.button == .primary {
+        state.active_id = No_Widget
+        state.active_kind = .none
+        state.scrollbar_grab_offset = 0
+        state.scrollbar_repeat_direction = 0
+        state.event_handled = true
     }
 
-    if !state^.event_handled && state^.event.kind == .repeat &&
-        scope_accepts_keyboard(state) && state^.active_id == id &&
-        state^.active_kind == .scrollbar {
-        if state^.scrollbar_repeat_direction < 0 {
+    if !state.event_handled && state.event.kind == .repeat &&
+        scope_accepts_keyboard(state) && state.active_id == id &&
+        state.active_kind == .scrollbar {
+        if state.scrollbar_repeat_direction < 0 {
             scroll_backward(offset, 1)
-            state^.event_handled = true
-        } else if state^.scrollbar_repeat_direction > 0 {
+            state.event_handled = true
+        } else if state.scrollbar_repeat_direction > 0 {
             scroll_forward(offset, geometry.maximum, 1)
-            state^.event_handled = true
+            state.event_handled = true
         }
     }
 
     // Recompute after interaction so the thumb in this frame represents the
     // newly published offset rather than lagging by one input event.
     geometry = scrollbar_geometry(bounds, total, visible, offset^)
-    fill_rect(state^.surface, state^.clip, bounds, '░', state^.theme.disabled)
-    arrow_style := state^.theme.text
+    fill_rect(state.surface, state.clip, bounds, '░', state.theme.disabled)
+    arrow_style := state.theme.text
     if geometry.maximum == 0 {
-        arrow_style = state^.theme.disabled
+        arrow_style = state.theme.disabled
     }
     if !rect_empty(geometry.up) {
-        fill_rect(state^.surface, state^.clip, geometry.up, '▲', arrow_style)
+        fill_rect(state.surface, state.clip, geometry.up, '▲', arrow_style)
     }
     if !rect_empty(geometry.down) {
-        fill_rect(state^.surface, state^.clip, geometry.down, '▼', arrow_style)
+        fill_rect(state.surface, state.clip, geometry.down, '▼', arrow_style)
     }
     if !rect_empty(geometry.thumb) {
         fill_rect(
-            state^.surface,
-            state^.clip,
+            state.surface,
+            state.clip,
             geometry.thumb,
             '█',
-            state^.theme.selected,
+            state.theme.selected,
         )
     }
     return offset^ != old
@@ -292,6 +292,6 @@ pub scrollbar_vertical :: proc(
 // next repeat pulse. It exposes only the timer obligation, not the captured
 // widget or direction, so application code cannot forge scrollbar ownership.
 pub scrollbar_repeat_active :: proc(state: ^State) -> bool {
-    return state^.active_kind == .scrollbar &&
-        state^.scrollbar_repeat_direction != 0
+    return state.active_kind == .scrollbar &&
+        state.scrollbar_repeat_direction != 0
 }

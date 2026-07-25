@@ -145,25 +145,25 @@ pub Decoder :: struct {
 // Keeping reset in one operation prevents a completed or abandoned sequence
 // from leaking a modifier parameter into the next key.
 reset_decoder :: proc(decoder: ^Decoder) {
-    decoder^.state = .plain
-    decoder^.first_parameter = 0
-    decoder^.modifier_parameter = 0
-    decoder^.parameter_index = 0
-    decoder^.mouse_code = 0
-    decoder^.mouse_column = 0
-    decoder^.mouse_row = 0
-    decoder^.mouse_parameter_index = 0
+    decoder.state = .plain
+    decoder.first_parameter = 0
+    decoder.modifier_parameter = 0
+    decoder.parameter_index = 0
+    decoder.mouse_code = 0
+    decoder.mouse_column = 0
+    decoder.mouse_row = 0
+    decoder.mouse_parameter_index = 0
 }
 
 // append_mouse_digit accumulates one of the three SGR fields. Values saturate
 // above the terminal package's 65535 coordinate domain; completion rejects the
 // resulting report rather than wrapping it into a valid cell.
 append_mouse_digit :: proc(decoder: ^Decoder, digit: u32) {
-    destination := &decoder^.mouse_code
-    if decoder^.mouse_parameter_index == 1 {
-        destination = &decoder^.mouse_column
-    } else if decoder^.mouse_parameter_index == 2 {
-        destination = &decoder^.mouse_row
+    destination := &decoder.mouse_code
+    if decoder.mouse_parameter_index == 1 {
+        destination = &decoder.mouse_column
+    } else if decoder.mouse_parameter_index == 2 {
+        destination = &decoder.mouse_row
     }
     if destination^ <= 65535 {
         destination^ = destination^ * 10 + digit
@@ -180,11 +180,11 @@ complete_mouse :: proc(
     decoder: ^Decoder,
     final_byte: u8,
 ) {
-    code := decoder^.mouse_code
-    column := decoder^.mouse_column
-    row := decoder^.mouse_row
+    code := decoder.mouse_code
+    column := decoder.mouse_column
+    row := decoder.mouse_row
     valid_final := final_byte == cast[u8]('M') || final_byte == cast[u8]('m')
-    if !valid_final || decoder^.mouse_parameter_index != 2 ||
+    if !valid_final || decoder.mouse_parameter_index != 2 ||
         column == 0 || row == 0 || column > 65535 || row > 65535 {
         return
     }
@@ -233,8 +233,8 @@ complete_mouse :: proc(
             result.action = .press
         }
     }
-    decoder^.pending_mouse = result
-    decoder^.mouse_ready = true
+    decoder.pending_mouse = result
+    decoder.mouse_ready = true
 }
 
 // byte_key constructs one exact ordinary-byte result. Control-shaped bytes are
@@ -362,24 +362,24 @@ apply_modifier :: proc(key: ^Key, parameter: u16) -> bool {
     case 0, 1:
         return true
     case 2:
-        key^.shift = true
+        key.shift = true
     case 3:
-        key^.alt = true
+        key.alt = true
     case 4:
-        key^.shift = true
-        key^.alt = true
+        key.shift = true
+        key.alt = true
     case 5:
-        key^.control = true
+        key.control = true
     case 6:
-        key^.shift = true
-        key^.control = true
+        key.shift = true
+        key.control = true
     case 7:
-        key^.alt = true
-        key^.control = true
+        key.alt = true
+        key.control = true
     case 8:
-        key^.shift = true
-        key^.alt = true
-        key^.control = true
+        key.shift = true
+        key.alt = true
+        key.control = true
     case:
         return false
     }
@@ -411,18 +411,18 @@ parameter_sequence_key :: proc(
 // Saturation makes hostile or malformed input bounded while retaining every
 // parameter value used by the supported key vocabulary.
 append_parameter_digit :: proc(decoder: ^Decoder, digit: u16) {
-    if decoder^.parameter_index == 0 {
-        if decoder^.first_parameter <= 99 {
-            decoder^.first_parameter = decoder^.first_parameter * 10 + digit
+    if decoder.parameter_index == 0 {
+        if decoder.first_parameter <= 99 {
+            decoder.first_parameter = decoder.first_parameter * 10 + digit
         } else {
-            decoder^.first_parameter = 999
+            decoder.first_parameter = 999
         }
         return
     }
-    if decoder^.modifier_parameter <= 99 {
-        decoder^.modifier_parameter = decoder^.modifier_parameter * 10 + digit
+    if decoder.modifier_parameter <= 99 {
+        decoder.modifier_parameter = decoder.modifier_parameter * 10 + digit
     } else {
-        decoder^.modifier_parameter = 999
+        decoder.modifier_parameter = 999
     }
 }
 
@@ -432,10 +432,10 @@ append_parameter_digit :: proc(decoder: ^Decoder, digit: u16) {
 decode_stream_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
     // Escape restarts a damaged or incomplete sequence. Two consecutive Escape
     // bytes complete the first key while leaving the second pending.
-    if byte == 27 && decoder^.state != .plain {
-        repeated := decoder^.state == .escape
+    if byte == 27 && decoder.state != .plain {
+        repeated := decoder.state == .escape
         reset_decoder(decoder)
-        decoder^.state = .escape
+        decoder.state = .escape
         if repeated {
             return Key{kind = .escape}
         }
@@ -443,22 +443,22 @@ decode_stream_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
         return empty
     }
 
-    switch decoder^.state {
+    switch decoder.state {
     case .plain:
         if byte == 27 {
-            decoder^.state = .escape
+            decoder.state = .escape
             empty: Key
             return empty
         }
         return plain_key(byte, false)
     case .escape:
         if byte == cast[u8]('[') {
-            decoder^.state = .csi
+            decoder.state = .csi
             empty: Key
             return empty
         }
         if byte == cast[u8]('O') {
-            decoder^.state = .ss3
+            decoder.state = .ss3
             empty: Key
             return empty
         }
@@ -466,7 +466,7 @@ decode_stream_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
         return plain_key(byte, true)
     case .csi:
         if byte == cast[u8]('<') {
-            decoder^.state = .csi_mouse
+            decoder.state = .csi_mouse
             empty: Key
             return empty
         }
@@ -475,18 +475,18 @@ decode_stream_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
                 decoder,
                 cast[u16](byte - cast[u8]('0')),
             )
-            decoder^.state = .csi_parameter
+            decoder.state = .csi_parameter
             empty: Key
             return empty
         }
         if byte == cast[u8](';') {
-            decoder^.parameter_index = 1
-            decoder^.state = .csi_parameter
+            decoder.parameter_index = 1
+            decoder.state = .csi_parameter
             empty: Key
             return empty
         }
         if byte >= 0x20 && byte <= 0x3f {
-            decoder^.state = .csi_ignore
+            decoder.state = .csi_ignore
             empty: Key
             return empty
         }
@@ -501,18 +501,18 @@ decode_stream_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
             empty: Key
             return empty
         }
-        if byte == cast[u8](';') && decoder^.parameter_index == 0 {
-            decoder^.parameter_index = 1
+        if byte == cast[u8](';') && decoder.parameter_index == 0 {
+            decoder.parameter_index = 1
             empty: Key
             return empty
         }
         if byte >= 0x20 && byte <= 0x3f {
-            decoder^.state = .csi_ignore
+            decoder.state = .csi_ignore
             empty: Key
             return empty
         }
-        first_parameter := decoder^.first_parameter
-        modifier_parameter := decoder^.modifier_parameter
+        first_parameter := decoder.first_parameter
+        modifier_parameter := decoder.modifier_parameter
         reset_decoder(decoder)
         return parameter_sequence_key(
             first_parameter,
@@ -528,8 +528,8 @@ decode_stream_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
             empty: Key
             return empty
         }
-        if byte == cast[u8](';') && decoder^.mouse_parameter_index < 2 {
-            decoder^.mouse_parameter_index += 1
+        if byte == cast[u8](';') && decoder.mouse_parameter_index < 2 {
+            decoder.mouse_parameter_index += 1
             empty: Key
             return empty
         }
@@ -560,11 +560,11 @@ pub decode_input :: proc(decoder: ^Decoder, byte: u8) -> Input {
     if key.kind != .none {
         return Input{kind = .key, key = key}
     }
-    if decoder^.mouse_ready {
-        mouse := decoder^.pending_mouse
-        decoder^.mouse_ready = false
+    if decoder.mouse_ready {
+        mouse := decoder.pending_mouse
+        decoder.mouse_ready = false
         empty: Mouse
-        decoder^.pending_mouse = empty
+        decoder.pending_mouse = empty
         return Input{kind = .mouse, mouse = mouse}
     }
     empty: Input
@@ -587,7 +587,7 @@ pub decode_key :: proc(decoder: ^Decoder, byte: u8) -> Key {
 // A lone ESC becomes escape; an incomplete CSI/SS3 sequence is discarded. In
 // every case Decoder returns to its zero resting state.
 pub flush_key :: proc(decoder: ^Decoder) -> Key {
-    was_escape := decoder^.state == .escape
+    was_escape := decoder.state == .escape
     reset_decoder(decoder)
     if was_escape {
         return Key{kind = .escape}
@@ -614,5 +614,5 @@ pub flush_input :: proc(decoder: ^Decoder) -> Input {
 // A completed key or mouse result returns the decoder to rest before this
 // query, while a lone Escape and every fragmented control sequence return true.
 pub decoder_pending :: proc(decoder: ^Decoder) -> bool {
-    return decoder^.state != .plain
+    return decoder.state != .plain
 }

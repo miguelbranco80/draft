@@ -36,27 +36,27 @@ Run_Configuration :: struct {
 // service callback can fail. This makes the one destruction path valid after
 // every partial load state.
 run_configuration_init :: proc(configuration: ^Run_Configuration) {
-    array.init(&configuration^.argument_owners)
-    array.init(&configuration^.arguments)
-    array.init(&configuration^.environment_owners)
-    array.init(&configuration^.environment)
+    array.init(&configuration.argument_owners)
+    array.init(&configuration.arguments)
+    array.init(&configuration.environment_owners)
+    array.init(&configuration.environment)
 }
 
 // run_configuration_destroy releases all service copies and is valid after a
 // partially failed load. No cstring pointer is observed after its owner dies.
 run_configuration_destroy :: proc(configuration: ^Run_Configuration) {
-    array.destroy(&configuration^.environment)
-    for index: usize = 0; index < configuration^.environment_owners.length; index += 1 {
-        memory.owned_string_destroy(&configuration^.environment_owners.data[index])
+    array.destroy(&configuration.environment)
+    for index: usize = 0; index < configuration.environment_owners.length; index += 1 {
+        memory.owned_string_destroy(&configuration.environment_owners.data[index])
     }
-    array.destroy(&configuration^.environment_owners)
-    array.destroy(&configuration^.arguments)
-    for index: usize = 0; index < configuration^.argument_owners.length; index += 1 {
-        memory.owned_string_destroy(&configuration^.argument_owners.data[index])
+    array.destroy(&configuration.environment_owners)
+    array.destroy(&configuration.arguments)
+    for index: usize = 0; index < configuration.argument_owners.length; index += 1 {
+        memory.owned_string_destroy(&configuration.argument_owners.data[index])
     }
-    array.destroy(&configuration^.argument_owners)
-    if configuration^.has_working_directory {
-        memory.owned_string_destroy(&configuration^.working_directory)
+    array.destroy(&configuration.argument_owners)
+    if configuration.has_working_directory {
+        memory.owned_string_destroy(&configuration.working_directory)
     }
 }
 
@@ -107,7 +107,7 @@ copy_host_indexed_text :: proc(
 }
 
 navigation_target_destroy :: proc(target: ^Navigation_Target) {
-    memory.owned_string_destroy(&target^.path)
+    memory.owned_string_destroy(&target.path)
     empty: Navigation_Target
     target^ = empty
 }
@@ -116,49 +116,49 @@ navigation_target_copy :: proc(
     destination: ^Navigation_Target,
     source: ^Navigation_Target,
 ) {
-    assert(destination^.path.data == nil,
+    assert(destination.path.data == nil,
         "navigation destination must be empty before copy")
     memory.owned_string_copy_bytes(
-        &destination^.path,
-        memory.owned_string_bytes(&source^.path),
+        &destination.path,
+        memory.owned_string_bytes(&source.path),
     )
-    destination^.start = source^.start
-    destination^.end = source^.end
-    destination^.line = source^.line
-    destination^.column = source^.column
-    destination^.editable = source^.editable
+    destination.start = source.start
+    destination.end = source.end
+    destination.line = source.line
+    destination.column = source.column
+    destination.editable = source.editable
 }
 
 navigation_target_equal :: proc(
     left, right: ^Navigation_Target,
 ) -> bool {
-    return left^.start == right^.start && left^.end == right^.end &&
+    return left.start == right.start && left.end == right.end &&
         byte_views_equal(
-            memory.owned_string_bytes(&left^.path),
-            memory.owned_string_bytes(&right^.path),
+            memory.owned_string_bytes(&left.path),
+            memory.owned_string_bytes(&right.path),
         )
 }
 
 clear_navigation_rows :: proc(app: ^App) {
-    for index: usize = 0; index < app^.navigation_row_count; index += 1 {
-        navigation_target_destroy(&app^.navigation_rows[index])
+    for index: usize = 0; index < app.navigation_row_count; index += 1 {
+        navigation_target_destroy(&app.navigation_rows[index])
     }
-    app^.navigation_row_count = 0
-    app^.navigation_list.cursor = 0
-    app^.navigation_list.offset = 0
+    app.navigation_row_count = 0
+    app.navigation_list.cursor = 0
+    app.navigation_list.offset = 0
 }
 
 truncate_navigation_history :: proc(app: ^App, count: usize) {
-    assert(count <= app^.navigation_history_count,
+    assert(count <= app.navigation_history_count,
         "navigation history truncation exceeds its row count")
-    for index := count; index < app^.navigation_history_count; index += 1 {
-        navigation_target_destroy(&app^.navigation_history[index])
+    for index := count; index < app.navigation_history_count; index += 1 {
+        navigation_target_destroy(&app.navigation_history[index])
     }
-    app^.navigation_history_count = count
+    app.navigation_history_count = count
     if count == 0 {
-        app^.navigation_history_index = 0
-    } else if app^.navigation_history_index >= count {
-        app^.navigation_history_index = count - 1
+        app.navigation_history_index = 0
+    } else if app.navigation_history_index >= count {
+        app.navigation_history_index = count - 1
     }
 }
 
@@ -166,16 +166,16 @@ append_navigation_history :: proc(
     app: ^App,
     target: ^Navigation_Target,
 ) -> bool {
-    if app^.navigation_history_count == Maximum_Navigation_History {
+    if app.navigation_history_count == Maximum_Navigation_History {
         // History is a convenience, not semantic state. Clearing at the fixed
         // bound keeps ownership and ordering obvious without a pointer-moving
         // ring whose oldest entry is practically unreachable in normal use.
         truncate_navigation_history(app, 0)
     }
-    index := app^.navigation_history_count
-    navigation_target_copy(&app^.navigation_history[index], target)
-    app^.navigation_history_count += 1
-    app^.navigation_history_index = index
+    index := app.navigation_history_count
+    navigation_target_copy(&app.navigation_history[index], target)
+    app.navigation_history_count += 1
+    app.navigation_history_index = index
     return true
 }
 
@@ -185,12 +185,12 @@ current_navigation_target :: proc(
 ) {
     buffer := active_buffer(app)
     memory.owned_string_copy_bytes(
-        &target^.path,
+        &target.path,
         turbo_editor.path_bytes(buffer),
     )
-    target^.start = buffer^.cursor
-    target^.end = buffer^.cursor
-    target^.editable = !turbo_editor.is_read_only(buffer)
+    target.start = buffer.cursor
+    target.end = buffer.cursor
+    target.editable = !turbo_editor.is_read_only(buffer)
 }
 
 // record_navigation_transition applies browser-style history semantics. The
@@ -201,14 +201,14 @@ record_navigation_transition :: proc(
     app: ^App,
     destination: ^Navigation_Target,
 ) {
-    if app^.navigation_history_count != 0 {
-        truncate_navigation_history(app, app^.navigation_history_index + 1)
+    if app.navigation_history_count != 0 {
+        truncate_navigation_history(app, app.navigation_history_index + 1)
     }
     current: Navigation_Target
     current_navigation_target(app, &current)
-    needs_current := app^.navigation_history_count == 0 ||
+    needs_current := app.navigation_history_count == 0 ||
         !navigation_target_equal(
-            &app^.navigation_history[app^.navigation_history_count - 1],
+            &app.navigation_history[app.navigation_history_count - 1],
             &current,
         )
     needs_destination := !navigation_target_equal(&current, destination)
@@ -219,7 +219,7 @@ record_navigation_transition :: proc(
     if needs_destination {
         required_rows += 1
     }
-    if app^.navigation_history_count + required_rows >
+    if app.navigation_history_count + required_rows >
         Maximum_Navigation_History {
         // Reserve the complete current/destination pair before appending it.
         // Letting append_navigation_history clear between those two writes
@@ -231,9 +231,9 @@ record_navigation_transition :: proc(
         _ = append_navigation_history(app, &current)
     }
     navigation_target_destroy(&current)
-    if app^.navigation_history_count == 0 ||
+    if app.navigation_history_count == 0 ||
         !navigation_target_equal(
-            &app^.navigation_history[app^.navigation_history_count - 1],
+            &app.navigation_history[app.navigation_history_count - 1],
             destination,
         ) {
         _ = append_navigation_history(app, destination)
@@ -248,38 +248,38 @@ target_from_host :: proc(
     location: draft_compiler_api.Navigation_Location,
     target: ^Navigation_Target,
 ) -> bool {
-    if app^.host.copy_navigation_source_path == nil ||
-        app^.host.navigation_source_editable == nil ||
+    if app.host.copy_navigation_source_path == nil ||
+        app.host.navigation_source_editable == nil ||
         location.end < location.start {
         return false
     }
     if !copy_host_indexed_text(
-        app^.host.user,
-        app^.host.copy_navigation_source_path,
+        app.host.user,
+        app.host.copy_navigation_source_path,
         location.source,
-        &target^.path,
-    ) || target^.path.length == 0 {
+        &target.path,
+    ) || target.path.length == 0 {
         navigation_target_destroy(target)
         return false
     }
-    target^.start = location.start
-    target^.end = location.end
-    target^.line = location.line
-    target^.column = location.column
-    target^.editable = app^.host.navigation_source_editable(
-        app^.host.user,
+    target.start = location.start
+    target.end = location.end
+    target.line = location.line
+    target.column = location.column
+    target.editable = app.host.navigation_source_editable(
+        app.host.user,
         location.source,
     ) != 0
     return true
 }
 
 buffer_index_for_path :: proc(app: ^App, path: []u8) -> usize {
-    for index: usize = 0; index < app^.buffer_count; index += 1 {
-        if byte_views_equal(turbo_editor.path_bytes(&app^.buffers[index]), path) {
+    for index: usize = 0; index < app.buffer_count; index += 1 {
+        if byte_views_equal(turbo_editor.path_bytes(&app.buffers[index]), path) {
             return index
         }
     }
-    return app^.buffer_count
+    return app.buffer_count
 }
 
 // retain_read_only_navigation_source copies a non-workspace source while its
@@ -291,20 +291,20 @@ retain_read_only_navigation_source :: proc(
     location: draft_compiler_api.Navigation_Location,
     target: ^Navigation_Target,
 ) -> bool {
-    if target^.editable {
+    if target.editable {
         return true
     }
-    path := memory.owned_string_bytes(&target^.path)
-    if buffer_index_for_path(app, path) < app^.buffer_count {
+    path := memory.owned_string_bytes(&target.path)
+    if buffer_index_for_path(app, path) < app.buffer_count {
         return true
     }
-    if app^.host.copy_navigation_source_text == nil {
+    if app.host.copy_navigation_source_text == nil {
         return false
     }
     source: memory.Owned_String
     if !copy_host_indexed_text(
-        app^.host.user,
-        app^.host.copy_navigation_source_text,
+        app.host.user,
+        app.host.copy_navigation_source_text,
         location.source,
         &source,
     ) {
@@ -328,20 +328,20 @@ open_navigation_target :: proc(
     target: ^Navigation_Target,
     record_history: bool,
 ) -> bool {
-    path := memory.owned_string_bytes(&target^.path)
+    path := memory.owned_string_bytes(&target.path)
     index := buffer_index_for_path(app, path)
-    if index == app^.buffer_count {
-        if !target^.editable || !init_one_buffer_bytes(app, path) {
+    if index == app.buffer_count {
+        if !target.editable || !init_one_buffer_bytes(app, path) {
             return false
         }
-        index = app^.buffer_count - 1
-        if app^.host.selected_root != nil {
-            app^.buffer_root[index] = app^.host.selected_root(app^.host.user)
-            app^.buffer_has_root[index] = true
+        index = app.buffer_count - 1
+        if app.host.selected_root != nil {
+            app.buffer_root[index] = app.host.selected_root(app.host.user)
+            app.buffer_has_root[index] = true
         }
     }
-    buffer := &app^.buffers[index]
-    if target^.end < target^.start || target^.end > buffer^.bytes.length {
+    buffer := &app.buffers[index]
+    if target.end < target.start || target.end > buffer.bytes.length {
         return false
     }
     if record_history {
@@ -351,11 +351,11 @@ open_navigation_target :: proc(
         return false
     }
     buffer = active_buffer(app)
-    buffer^.anchor = target^.start
-    buffer^.cursor = target^.end
-    buffer^.selection_active = target^.end != target^.start
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
+    buffer.anchor = target.start
+    buffer.cursor = target.end
+    buffer.selection_active = target.end != target.start
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
     focus_editor(app)
     return true
 }
@@ -366,28 +366,28 @@ navigation_status_message :: proc(
 ) {
     switch status {
     case .unavailable:
-        app^.status = "Semantic navigation is unavailable"
+        app.status = "Semantic navigation is unavailable"
     case .current_check_failed:
-        app^.status = "Fix current check errors before semantic navigation"
+        app.status = "Fix current check errors before semantic navigation"
     case .source_not_found:
-        app^.status = "Active document is outside the checked source graph"
+        app.status = "Active document is outside the checked source graph"
     case .no_symbol:
-        app^.status = "No symbol at the cursor"
+        app.status = "No symbol at the cursor"
     case .no_definition:
-        app^.status = "The selected symbol has no source definition"
+        app.status = "The selected symbol has no source definition"
     case .ready:
-        app^.status = "Semantic navigation ready"
+        app.status = "Semantic navigation ready"
     }
 }
 
 prepare_navigation :: proc(app: ^App) -> draft_compiler_api.Navigation_Status {
-    if app^.host.prepare_navigation == nil {
+    if app.host.prepare_navigation == nil {
         return .unavailable
     }
     // Exact semantic locations cannot be read from the retained last-good
     // graph after an edit. Navigation is an explicit semantic command, so it
     // may pay for one complete check here while ordinary typing never does.
-    if app^.semantic_dirty && !refresh_host(app) {
+    if app.semantic_dirty && !refresh_host(app) {
         return .current_check_failed
     }
     buffer := active_buffer(app)
@@ -396,11 +396,11 @@ prepare_navigation :: proc(app: ^App) -> draft_compiler_api.Navigation_Status {
     if len(path) != 0 {
         path_data = cast[rawptr](&path[0])
     }
-    raw_status := app^.host.prepare_navigation(
-        app^.host.user,
+    raw_status := app.host.prepare_navigation(
+        app.host.user,
         path_data,
         len(path),
-        buffer^.cursor,
+        buffer.cursor,
     )
     // The public enum has six fixed C-ABI ordinals, unavailable through ready.
     if raw_status > 5 {
@@ -411,93 +411,93 @@ prepare_navigation :: proc(app: ^App) -> draft_compiler_api.Navigation_Status {
 
 go_to_definition :: proc(app: ^App) -> bool {
     status := prepare_navigation(app)
-    if status != .ready || app^.host.navigation_definition == nil {
+    if status != .ready || app.host.navigation_definition == nil {
         navigation_status_message(app, status)
         return false
     }
     location: draft_compiler_api.Navigation_Location
-    app^.host.navigation_definition(app^.host.user, &location)
+    app.host.navigation_definition(app.host.user, &location)
     target: Navigation_Target
     if !target_from_host(app, location, &target) ||
         !retain_read_only_navigation_source(app, location, &target) {
         navigation_target_destroy(&target)
-        app^.status = "Could not retain the definition source"
+        app.status = "Could not retain the definition source"
         return false
     }
     opened := open_navigation_target(app, &target, true)
     navigation_target_destroy(&target)
     if !opened {
-        app^.status = "Could not open the definition source range"
+        app.status = "Could not open the definition source range"
         return false
     }
-    app^.status = "Definition selected"
+    app.status = "Definition selected"
     return true
 }
 
 find_symbol_usages :: proc(app: ^App) -> bool {
     clear_navigation_rows(app)
     status := prepare_navigation(app)
-    if status != .ready || app^.host.navigation_usage_count == nil ||
-        app^.host.navigation_usage == nil {
+    if status != .ready || app.host.navigation_usage_count == nil ||
+        app.host.navigation_usage == nil {
         navigation_status_message(app, status)
         return false
     }
-    count := app^.host.navigation_usage_count(app^.host.user)
+    count := app.host.navigation_usage_count(app.host.user)
     if count > Maximum_Navigation_Rows {
         count = Maximum_Navigation_Rows
     }
     for index: usize = 0; index < count; index += 1 {
         location: draft_compiler_api.Navigation_Location
-        app^.host.navigation_usage(app^.host.user, index, &location)
-        target := &app^.navigation_rows[app^.navigation_row_count]
+        app.host.navigation_usage(app.host.user, index, &location)
+        target := &app.navigation_rows[app.navigation_row_count]
         if !target_from_host(app, location, target) ||
             !retain_read_only_navigation_source(app, location, target) {
             navigation_target_destroy(target)
             clear_navigation_rows(app)
-            app^.status = "Could not retain semantic usage sources"
+            app.status = "Could not retain semantic usage sources"
             return false
         }
-        app^.navigation_row_count += 1
+        app.navigation_row_count += 1
     }
-    app^.semantic_usages_visible = true
+    app.semantic_usages_visible = true
     turbo_ui.show_window(
-        &app^.ui,
-        app^.windows[:],
-        app^.windows[Window_References].id,
+        &app.ui,
+        app.windows[:],
+        app.windows[Window_References].id,
     )
-    app^.ui.focused_id = 820
-    if app^.navigation_row_count == 0 {
-        app^.status = "No usages found"
+    app.ui.focused_id = 820
+    if app.navigation_row_count == 0 {
+        app.status = "No usages found"
     } else {
-        app^.status = "Usages: Enter opens the selected source range"
+        app.status = "Usages: Enter opens the selected source range"
     }
     return true
 }
 
 navigate_history :: proc(app: ^App, forward: bool) -> bool {
-    if app^.navigation_history_count == 0 ||
-        (!forward && app^.navigation_history_index == 0) ||
-        (forward && app^.navigation_history_index + 1 >=
-            app^.navigation_history_count) {
-        app^.status = "No semantic navigation history in that direction"
+    if app.navigation_history_count == 0 ||
+        (!forward && app.navigation_history_index == 0) ||
+        (forward && app.navigation_history_index + 1 >=
+            app.navigation_history_count) {
+        app.status = "No semantic navigation history in that direction"
         return false
     }
-    previous := app^.navigation_history_index
+    previous := app.navigation_history_index
     if forward {
-        app^.navigation_history_index += 1
+        app.navigation_history_index += 1
     } else {
-        app^.navigation_history_index -= 1
+        app.navigation_history_index -= 1
     }
-    target := &app^.navigation_history[app^.navigation_history_index]
+    target := &app.navigation_history[app.navigation_history_index]
     if !open_navigation_target(app, target, false) {
-        app^.navigation_history_index = previous
-        app^.status = "Could not reopen the navigation history location"
+        app.navigation_history_index = previous
+        app.status = "Could not reopen the navigation history location"
         return false
     }
     if forward {
-        app^.status = "Moved forward in semantic navigation history"
+        app.status = "Moved forward in semantic navigation history"
     } else {
-        app^.status = "Moved back in semantic navigation history"
+        app.status = "Moved back in semantic navigation history"
     }
     return true
 }
@@ -523,11 +523,11 @@ load_run_rows :: proc(
         }
         array.append(owners, owned)
     }
-    array.reserve(pointers, owners^.length)
-    for index: usize = 0; index < owners^.length; index += 1 {
+    array.reserve(pointers, owners.length)
+    for index: usize = 0; index < owners.length; index += 1 {
         array.append(
             pointers,
-            memory.owned_string_cstring(&owners^.data[index]),
+            memory.owned_string_cstring(&owners.data[index]),
         )
     }
     return true
@@ -542,35 +542,35 @@ load_run_configuration :: proc(
 ) -> bool {
     run_configuration_init(configuration)
     if !load_run_rows(
-        app^.host.user,
-        app^.host.run_argument_count,
-        app^.host.copy_run_argument,
-        &configuration^.argument_owners,
-        &configuration^.arguments,
+        app.host.user,
+        app.host.run_argument_count,
+        app.host.copy_run_argument,
+        &configuration.argument_owners,
+        &configuration.arguments,
     ) || !load_run_rows(
-        app^.host.user,
-        app^.host.run_environment_count,
-        app^.host.copy_run_environment,
-        &configuration^.environment_owners,
-        &configuration^.environment,
+        app.host.user,
+        app.host.run_environment_count,
+        app.host.copy_run_environment,
+        &configuration.environment_owners,
+        &configuration.environment,
     ) {
         return false
     }
-    if app^.host.copy_run_working_directory != nil {
-        length := app^.host.copy_run_working_directory(
-            app^.host.user,
+    if app.host.copy_run_working_directory != nil {
+        length := app.host.copy_run_working_directory(
+            app.host.user,
             nil,
             0,
         )
         if length != 0 {
             if !copy_host_text(
-                app^.host.user,
-                app^.host.copy_run_working_directory,
-                &configuration^.working_directory,
+                app.host.user,
+                app.host.copy_run_working_directory,
+                &configuration.working_directory,
             ) {
                 return false
             }
-            configuration^.has_working_directory = true
+            configuration.has_working_directory = true
         }
     }
     return true
@@ -581,9 +581,9 @@ load_run_configuration :: proc(
 // the build so artifact path, arguments, environment, and directory all belong
 // to the same selected root/configuration.
 execute_host_action :: proc(app: ^App, run: bool) {
-    procedure := app^.host.build
+    procedure := app.host.build
     if procedure == nil {
-        app^.status = "No compiler host is attached"
+        app.status = "No compiler host is attached"
         return
     }
     overlays: [Maximum_Buffers]draft_compiler_api.Overlay
@@ -592,49 +592,49 @@ execute_host_action :: proc(app: ^App, run: bool) {
         overlays[:],
     )
     if !valid_overlays {
-        app^.status = "Active file is not part of the active Program"
+        app.status = "Active file is not part of the active Program"
         return
     }
     result: draft_compiler_api.Result
     procedure(
-        app^.host.user,
+        app.host.user,
         &overlays[0],
         overlay_count,
         active_overlay,
         &result,
     )
-    app^.semantic_dirty = false
-    app^.diagnostic_count = result.diagnostic_count
+    app.semantic_dirty = false
+    app.diagnostic_count = result.diagnostic_count
     copy_syntax_spans(app, result.span_count)
     if result.success != 0 {
         if run {
             artifact_kind: draft_compiler_api.Artifact_Kind = .executable
-            if app^.host.artifact_kind != nil {
+            if app.host.artifact_kind != nil {
                 artifact_kind = cast[draft_compiler_api.Artifact_Kind](
-                    app^.host.artifact_kind(app^.host.user),
+                    app.host.artifact_kind(app.host.user),
                 )
             }
             if artifact_kind != .executable {
-                app^.status = "Build completed; selected artifact is not executable"
-            } else if app^.host.copy_artifact_path == nil {
-                app^.status = "Compiler did not expose the built artifact path"
+                app.status = "Build completed; selected artifact is not executable"
+            } else if app.host.copy_artifact_path == nil {
+                app.status = "Compiler did not expose the built artifact path"
             } else {
                 owned_path: memory.Owned_String
                 path_copied := copy_host_text(
-                    app^.host.user,
-                    app^.host.copy_artifact_path,
+                    app.host.user,
+                    app.host.copy_artifact_path,
                     &owned_path,
                 )
                 if !path_copied || owned_path.length == 0 {
                     if path_copied {
                         memory.owned_string_destroy(&owned_path)
                     }
-                    app^.status = "Built artifact path is unavailable"
+                    app.status = "Built artifact path is unavailable"
                 } else {
                     run_configuration: Run_Configuration
                     loaded_run := load_run_configuration(app, &run_configuration)
                     if !loaded_run {
-                        app^.status = "Could not read the selected run configuration"
+                        app.status = "Could not read the selected run configuration"
                         run_configuration_destroy(&run_configuration)
                         memory.owned_string_destroy(&owned_path)
                         refresh_tooling_text(app)
@@ -658,35 +658,35 @@ execute_host_action :: proc(app: ^App, run: bool) {
                     run_configuration_destroy(&run_configuration)
                     memory.owned_string_destroy(&owned_path)
                     if launched.error == .invalid_options {
-                        app^.status = "Selected run configuration is invalid"
+                        app.status = "Selected run configuration is invalid"
                     } else if launched.error != .none {
-                        app^.status = "Could not launch the built program"
+                        app.status = "Could not launch the built program"
                     } else if !launched.exited {
-                        app^.status = "Built program terminated by a signal"
+                        app.status = "Built program terminated by a signal"
                     } else if launched.exit_code != 0 {
-                        app^.status = "Built program returned a nonzero status"
+                        app.status = "Built program returned a nonzero status"
                     } else {
-                        app^.status = "Run completed"
+                        app.status = "Run completed"
                     }
                 }
             }
         } else {
-            app^.status = "Build completed"
+            app.status = "Build completed"
         }
     } else {
-        app^.status = "Build/Run failed; see diagnostics"
+        app.status = "Build/Run failed; see diagnostics"
     }
     refresh_tooling_text(app)
 }
 
 host_action :: proc(app: ^App, run: bool) {
     if run {
-        if app^.host.build == nil {
-            app^.status = "No compiler host is attached"
+        if app.host.build == nil {
+            app.status = "No compiler host is attached"
             return
         }
-        app^.run_requested = true
-        app^.status = "Run requested"
+        app.run_requested = true
+        app.status = "Run requested"
         return
     }
     execute_host_action(app, false)
@@ -705,39 +705,39 @@ byte_views_equal :: proc(left, right: []u8) -> bool {
 }
 
 program_file_index :: proc(app: ^App, path: []u8) -> usize {
-    for index: usize = 0; index < app^.program_file_count; index += 1 {
+    for index: usize = 0; index < app.program_file_count; index += 1 {
         if byte_views_equal(
             path,
-            memory.owned_string_bytes(&app^.program_file_paths[index]),
+            memory.owned_string_bytes(&app.program_file_paths[index]),
         ) {
             return index
         }
     }
-    return app^.program_file_count
+    return app.program_file_count
 }
 
 // open_program_file turns one compiler-discovered Program Files row into an
 // ordinary editor buffer. Reopening a path reuses its unsaved owner; a first
 // open reads the normal file and binds that buffer to the active run root.
 open_program_file :: proc(app: ^App, source_index: usize) -> bool {
-    if source_index >= app^.program_file_count {
+    if source_index >= app.program_file_count {
         return false
     }
-    path := memory.owned_string_bytes(&app^.program_file_paths[source_index])
-    for index: usize = 0; index < app^.buffer_count; index += 1 {
-        if byte_views_equal(turbo_editor.path_bytes(&app^.buffers[index]), path) {
-            app^.program_files.cursor = source_index
+    path := memory.owned_string_bytes(&app.program_file_paths[source_index])
+    for index: usize = 0; index < app.buffer_count; index += 1 {
+        if byte_views_equal(turbo_editor.path_bytes(&app.buffers[index]), path) {
+            app.program_files.cursor = source_index
             return activate_buffer(app, index)
         }
     }
     if !init_one_buffer_bytes(app, path) {
         return false
     }
-    app^.active = app^.buffer_count - 1
-    app^.buffers_list.cursor = app^.active
-    app^.program_files.cursor = source_index
+    app.active = app.buffer_count - 1
+    app.buffers_list.cursor = app.active
+    app.program_files.cursor = source_index
     bind_active_buffer_to_host_root(app)
-    return activate_buffer(app, app^.active)
+    return activate_buffer(app, app.active)
 }
 
 // open_selected_host_source synchronizes the editor's active buffer with the
@@ -745,12 +745,12 @@ open_program_file :: proc(app: ^App, source_index: usize) -> bool {
 // open and are reselected without reloading; a new root consumes one ordinary
 // buffer slot and follows the same explicit disk-load policy as any file.
 open_selected_host_source :: proc(app: ^App) -> bool {
-    if app^.host.copy_source_path == nil {
+    if app.host.copy_source_path == nil {
         return false
     }
     storage: [Host_Path_Capacity]u8
-    length := app^.host.copy_source_path(
-        app^.host.user,
+    length := app.host.copy_source_path(
+        app.host.user,
         cast[[^]u8](&storage[0]),
         len(storage),
     )
@@ -758,30 +758,30 @@ open_selected_host_source :: proc(app: ^App) -> bool {
         return false
     }
     path := storage[:length]
-    selected_root := app^.host.selected_root(app^.host.user)
-    for index: usize = 0; index < app^.buffer_count; index += 1 {
-        if byte_views_equal(turbo_editor.path_bytes(&app^.buffers[index]), path) {
+    selected_root := app.host.selected_root(app.host.user)
+    for index: usize = 0; index < app.buffer_count; index += 1 {
+        if byte_views_equal(turbo_editor.path_bytes(&app.buffers[index]), path) {
             source_index := program_file_index(app, path)
-            if source_index < app^.program_file_count {
-                app^.program_files.cursor = source_index
+            if source_index < app.program_file_count {
+                app.program_files.cursor = source_index
             }
-            app^.buffer_root[index] = selected_root
-            app^.buffer_has_root[index] = true
+            app.buffer_root[index] = selected_root
+            app.buffer_has_root[index] = true
             return activate_buffer(app, index)
         }
     }
     if !init_one_buffer_bytes(app, path) {
         return false
     }
-    app^.active = app^.buffer_count - 1
-    app^.buffers_list.cursor = app^.active
+    app.active = app.buffer_count - 1
+    app.buffers_list.cursor = app.active
     source_index := program_file_index(app, path)
-    if source_index < app^.program_file_count {
-        app^.program_files.cursor = source_index
+    if source_index < app.program_file_count {
+        app.program_files.cursor = source_index
     }
-    app^.buffer_root[app^.active] = selected_root
-    app^.buffer_has_root[app^.active] = true
-    return activate_buffer(app, app^.active)
+    app.buffer_root[app.active] = selected_root
+    app.buffer_has_root[app.active] = true
+    return activate_buffer(app, app.active)
 }
 
 // select_program_root is the single UI transition for Program and Run Settings.
@@ -789,26 +789,26 @@ open_selected_host_source :: proc(app: ^App) -> bool {
 // exact source path published for that root. Failure restores the previous
 // service root before any editor buffer can be compiled under it.
 select_program_root :: proc(app: ^App, selected: usize) -> bool {
-    if app^.host.root_count == nil || app^.host.selected_root == nil ||
-        app^.host.select_root == nil || selected >= app^.host.root_count(app^.host.user) {
+    if app.host.root_count == nil || app.host.selected_root == nil ||
+        app.host.select_root == nil || selected >= app.host.root_count(app.host.user) {
         return false
     }
-    previous := app^.host.selected_root(app^.host.user)
-    if selected != previous && app^.host.select_root(app^.host.user, selected) == 0 {
+    previous := app.host.selected_root(app.host.user)
+    if selected != previous && app.host.select_root(app.host.user, selected) == 0 {
         return false
     }
     refresh_program_roots(app)
     refresh_program_files(app)
     if open_selected_host_source(app) {
-        app^.semantic_dirty = true
+        app.semantic_dirty = true
         refresh_tooling_text(app)
-        if selected < app^.program_root_count {
-            app^.program_roots.cursor = selected
+        if selected < app.program_root_count {
+            app.program_roots.cursor = selected
         }
         return true
     }
     if selected != previous {
-        app^.host.select_root(app^.host.user, previous)
+        app.host.select_root(app.host.user, previous)
     }
     refresh_program_roots(app)
     refresh_program_files(app)
@@ -816,49 +816,49 @@ select_program_root :: proc(app: ^App, selected: usize) -> bool {
 }
 
 cycle_program_root :: proc(app: ^App) {
-    if app^.host.root_count == nil || app^.host.selected_root == nil ||
-        app^.host.select_root == nil {
-        app^.status = "No Program selector is attached"
+    if app.host.root_count == nil || app.host.selected_root == nil ||
+        app.host.select_root == nil {
+        app.status = "No Program selector is attached"
         return
     }
-    count := app^.host.root_count(app^.host.user)
+    count := app.host.root_count(app.host.user)
     if count <= 1 {
-        app^.status = "Workspace has one selectable Program"
+        app.status = "Workspace has one selectable Program"
         return
     }
-    next := (app^.host.selected_root(app^.host.user) + 1) % count
+    next := (app.host.selected_root(app.host.user) + 1) % count
     if !select_program_root(app, next) {
-        app^.status = "Selected Program could not be opened; selection restored"
+        app.status = "Selected Program could not be opened; selection restored"
         return
     }
-    app^.status = "Active Program changed"
+    app.status = "Active Program changed"
 }
 
 cycle_build_target :: proc(app: ^App) {
-    if app^.host.target == nil || app^.host.select_target == nil {
-        app^.status = "No compiler target selector is attached"
+    if app.host.target == nil || app.host.select_target == nil {
+        app.status = "No compiler target selector is attached"
         return
     }
-    previous := app^.host.target(app^.host.user)
+    previous := app.host.target(app.host.user)
     if previous >= 4 {
-        app^.status = "Compiler service returned an unknown target"
+        app.status = "Compiler service returned an unknown target"
         return
     }
     next := (previous + 1) % 4
-    if app^.host.select_target(app^.host.user, cast[u8](next)) == 0 {
-        app^.status = "Could not select the next Draft target"
+    if app.host.select_target(app.host.user, cast[u8](next)) == 0 {
+        app.status = "Could not select the next Draft target"
         return
     }
     refresh_program_roots(app)
     refresh_program_files(app)
     if !open_selected_host_source(app) {
-        app^.host.select_target(app^.host.user, previous)
+        app.host.select_target(app.host.user, previous)
         refresh_program_roots(app)
         refresh_program_files(app)
-        app^.status = "Selected target could not be opened; selection restored"
+        app.status = "Selected target could not be opened; selection restored"
         return
     }
-    app^.semantic_dirty = true
+    app.semantic_dirty = true
     refresh_tooling_text(app)
-    app^.status = "Target changed; Check, Build, or Run refreshes semantics"
+    app.status = "Target changed; Check, Build, or Run refreshes semantics"
 }

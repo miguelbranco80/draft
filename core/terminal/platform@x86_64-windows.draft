@@ -112,7 +112,7 @@ native_get_mode :: proc(
     mode: ^Native_Mode,
 ) -> c_abi.int {
     handle := native_handle(descriptor)
-    if handle == nil || get_console_mode(handle, &mode^.input_mode) == 0 {
+    if handle == nil || get_console_mode(handle, &mode.input_mode) == 0 {
         return -1
     }
     return 0
@@ -127,7 +127,7 @@ native_set_mode :: proc(
         return -1
     }
     handle := native_handle(descriptor)
-    if handle == nil || set_console_mode(handle, mode^.input_mode) == 0 {
+    if handle == nil || set_console_mode(handle, mode.input_mode) == 0 {
         return -1
     }
     return 0
@@ -137,7 +137,7 @@ native_make_raw :: proc(mode: ^Native_Mode) {
     disabled := Enable_Processed_Input | Enable_Line_Input |
         Enable_Echo_Input | Enable_Window_Input | Enable_Mouse_Input |
         Enable_Insert_Mode | Enable_Quick_Edit_Mode | Enable_Auto_Position
-    mode^.input_mode = (mode^.input_mode & ~disabled) |
+    mode.input_mode = (mode.input_mode & ~disabled) |
         Enable_Extended_Flags | Enable_Virtual_Terminal_Input
 }
 
@@ -147,10 +147,10 @@ native_poll_one :: proc(
     descriptor: ^Poll_Descriptor,
     timeout_milliseconds: c_abi.int,
 ) -> c_abi.int {
-    descriptor^.returned_events = 0
-    handle := native_handle(descriptor^.descriptor)
+    descriptor.returned_events = 0
+    handle := native_handle(descriptor.descriptor)
     if handle == nil {
-        descriptor^.returned_events = Poll_Invalid
+        descriptor.returned_events = Poll_Invalid
         return -1
     }
     waited := wait_for_single_object(
@@ -161,10 +161,10 @@ native_poll_one :: proc(
         return 0
     }
     if waited != Wait_Object_0 {
-        descriptor^.returned_events = Poll_Error
+        descriptor.returned_events = Poll_Error
         return -1
     }
-    descriptor^.returned_events = Poll_Input
+    descriptor.returned_events = Poll_Input
     return 1
 }
 
@@ -184,10 +184,10 @@ native_query_size :: proc(
     if width < 0 || height < 0 || width > 65535 || height > 65535 {
         return -1
     }
-    size^.columns = cast[c_abi.unsigned_short](width)
-    size^.rows = cast[c_abi.unsigned_short](height)
-    size^.pixel_width = 0
-    size^.pixel_height = 0
+    size.columns = cast[c_abi.unsigned_short](width)
+    size.rows = cast[c_abi.unsigned_short](height)
+    size.pixel_width = 0
+    size.pixel_height = 0
     return 0
 }
 
@@ -206,12 +206,12 @@ native_begin_screen :: proc(
     mode: ^Native_Output_Mode,
 ) -> bool {
     handle := native_handle(descriptor)
-    if handle == nil || get_console_mode(handle, &mode^.saved_mode) == 0 {
+    if handle == nil || get_console_mode(handle, &mode.saved_mode) == 0 {
         return false
     }
-    mode^.active_mode = mode^.saved_mode | Enable_Processed_Output |
+    mode.active_mode = mode.saved_mode | Enable_Processed_Output |
         Enable_Virtual_Terminal_Processing
-    return set_console_mode(handle, mode^.active_mode) != 0
+    return set_console_mode(handle, mode.active_mode) != 0
 }
 
 native_suspend_screen :: proc(
@@ -219,7 +219,7 @@ native_suspend_screen :: proc(
     mode: ^Native_Output_Mode,
 ) -> bool {
     handle := native_handle(descriptor)
-    return handle != nil && set_console_mode(handle, mode^.saved_mode) != 0
+    return handle != nil && set_console_mode(handle, mode.saved_mode) != 0
 }
 
 native_resume_screen :: proc(
@@ -227,7 +227,7 @@ native_resume_screen :: proc(
     mode: ^Native_Output_Mode,
 ) -> bool {
     handle := native_handle(descriptor)
-    return handle != nil && set_console_mode(handle, mode^.active_mode) != 0
+    return handle != nil && set_console_mode(handle, mode.active_mode) != 0
 }
 
 native_restore_screen :: proc(

@@ -115,10 +115,10 @@ paint_board_cell :: proc(
     game: ^Game,
     board_column, board_row, projected_row: i32,
 ) -> bool {
-    active := piece_contains_world(game^.current, board_column, board_row)
-    value := game^.board[board_index(board_column, board_row)]
+    active := piece_contains_world(game.current, board_column, board_row)
+    value := game.board[board_index(board_column, board_row)]
     if active {
-        value = piece_value(game^.current.kind)
+        value = piece_value(game.current.kind)
     }
     if value != 0 {
         return tui.write_ascii(
@@ -130,9 +130,9 @@ paint_board_cell :: proc(
         )
     }
 
-    ghost := game^.current
+    ghost := game.current
     ghost.row = projected_row
-    if !game^.game_over &&
+    if !game.game_over &&
         piece_contains_world(ghost, board_column, board_row) {
         return tui.write_ascii(
             surface,
@@ -189,19 +189,19 @@ paint_sidebar :: proc(
             surface,
             column,
             row,
-            game^.next,
+            game.next,
             board_row - 1,
         )
     case 6:
         if !tui.write_ascii(surface, column, row, "SCORE  ", plain_style()) {
             return false
         }
-        return paint_unsigned(surface, column + 7, row, game^.score)
+        return paint_unsigned(surface, column + 7, row, game.score)
     case 7:
         if !tui.write_ascii(surface, column, row, "LINES  ", plain_style()) {
             return false
         }
-        return paint_unsigned(surface, column + 7, row, game^.lines)
+        return paint_unsigned(surface, column + 7, row, game.lines)
     case 8:
         if !tui.write_ascii(surface, column, row, "LEVEL  ", plain_style()) {
             return false
@@ -210,7 +210,7 @@ paint_sidebar :: proc(
             surface,
             column + 7,
             row,
-            cast[u64](game^.level),
+            cast[u64](game.level),
         )
     case 10:
         return tui.write_ascii(
@@ -261,7 +261,7 @@ paint_sidebar :: proc(
             plain_style(),
         )
     case 17:
-        if game^.game_over {
+        if game.game_over {
             return tui.write_ascii(
                 surface,
                 column,
@@ -270,7 +270,7 @@ paint_sidebar :: proc(
                 plain_style(),
             )
         }
-        if game^.paused {
+        if game.paused {
             return tui.write_ascii(
                 surface,
                 column,
@@ -287,7 +287,7 @@ paint_sidebar :: proc(
             plain_style(),
         )
     case 18:
-        if game^.game_over {
+        if game.game_over {
             return tui.write_ascii(
                 surface,
                 column,
@@ -310,11 +310,11 @@ paint_clipped_ascii :: proc(
     column, row: usize,
     text: string,
 ) -> bool {
-    if row >= surface^.rows || column >= surface^.columns {
+    if row >= surface.rows || column >= surface.columns {
         return true
     }
     count := len(text)
-    available := surface^.columns - column
+    available := surface.columns - column
     if count > available {
         count = available
     }
@@ -339,7 +339,7 @@ paint_game :: proc(renderer: ^tui.Renderer, game: ^Game) -> bool {
     surface := tui.surface(renderer)
     tui.clear(surface, plain_style())
 
-    if surface^.columns < Layout_Columns || surface^.rows < Layout_Rows {
+    if surface.columns < Layout_Columns || surface.rows < Layout_Rows {
         if !paint_clipped_ascii(surface, 0, 0, "DRAFT TETRIS") {
             return false
         }
@@ -349,8 +349,8 @@ paint_game :: proc(renderer: ^tui.Renderer, game: ^Game) -> bool {
         return paint_clipped_ascii(surface, 0, 2, "Need 50 x 24 cells")
     }
 
-    origin_column := (surface^.columns - Layout_Columns) / 2
-    origin_row := (surface^.rows - Layout_Rows) / 2
+    origin_column := (surface.columns - Layout_Columns) / 2
+    origin_row := (surface.rows - Layout_Rows) / 2
     if !tui.write_ascii(
         surface,
         origin_column,

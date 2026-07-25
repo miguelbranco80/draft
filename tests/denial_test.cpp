@@ -325,7 +325,7 @@ Callback_Box :: struct {
 }
 
 install :: proc(destination: ^Callback_Box, callback: proc()) {
-    destination^.callback = callback
+    destination.callback = callback
 }
 
 danger :: proc() {

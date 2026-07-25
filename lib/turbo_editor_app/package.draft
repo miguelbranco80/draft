@@ -213,12 +213,12 @@ App :: struct {
 }
 
 init_windows :: proc(app: ^App) {
-    array.init(&app^.clipboard)
+    array.init(&app.clipboard)
     // The document is an ordinary desktop window rather than a privileged
     // background layer. Its content remains the reusable turbo_editor view;
     // only this application decides that the view is closable, zoomable, and
     // eligible for Tile/Cascade beside semantic windows.
-    app^.windows[Window_Editor] = turbo_ui.window_init(
+    app.windows[Window_Editor] = turbo_ui.window_init(
         399,
         turbo_ui.Rect{column = 1, row = 1, width = 86, height = 26},
         1,
@@ -226,99 +226,99 @@ init_windows :: proc(app: ^App) {
     // Preserve the old full-desktop editing area on first launch while still
     // giving the editor real chrome and an ordinary restore rectangle. The
     // first Tile/Cascade operation leaves zoom and arranges it normally.
-    app^.windows[Window_Editor].zoomed = true
-    app^.windows[Window_Editor].focus_id = 600
-    app^.windows[Window_Program_Files] = turbo_ui.tool_window_init(
+    app.windows[Window_Editor].zoomed = true
+    app.windows[Window_Editor].focus_id = 600
+    app.windows[Window_Program_Files] = turbo_ui.tool_window_init(
         400,
         turbo_ui.Rect{column = 2, row = 3, width = 28, height = 15},
         2,
     )
-    app^.windows[Window_Open_Files] = turbo_ui.tool_window_init(
+    app.windows[Window_Open_Files] = turbo_ui.tool_window_init(
         401,
         turbo_ui.Rect{column = 18, row = 5, width = 34, height = 13},
         3,
     )
-    app^.windows[Window_Search] = turbo_ui.dialog_window_init(
+    app.windows[Window_Search] = turbo_ui.dialog_window_init(
         402,
         turbo_ui.Rect{column = 20, row = 7, width = 44, height = 7},
         10,
     )
-    app^.windows[Window_Quit] = turbo_ui.dialog_window_init(
+    app.windows[Window_Quit] = turbo_ui.dialog_window_init(
         403,
         turbo_ui.Rect{column = 20, row = 7, width = 48, height = 8},
         11,
     )
-    app^.windows[Window_Diagnostics] = turbo_ui.window_init(
+    app.windows[Window_Diagnostics] = turbo_ui.window_init(
         404,
         turbo_ui.Rect{column = 4, row = 4, width = 76, height = 17},
         5,
     )
-    app^.windows[Window_Programs] = turbo_ui.window_init(
+    app.windows[Window_Programs] = turbo_ui.window_init(
         405,
         turbo_ui.Rect{column = 3, row = 2, width = 82, height = 25},
         4,
     )
-    app^.windows[Window_Declarations] = turbo_ui.window_init(
+    app.windows[Window_Declarations] = turbo_ui.window_init(
         406,
         turbo_ui.Rect{column = 8, row = 4, width = 70, height = 19},
         4,
     )
-    app^.windows[Window_References] = turbo_ui.window_init(
+    app.windows[Window_References] = turbo_ui.window_init(
         407,
         turbo_ui.Rect{column = 10, row = 5, width = 72, height = 19},
         4,
     )
-    app^.windows[Window_Effects] = turbo_ui.window_init(
+    app.windows[Window_Effects] = turbo_ui.window_init(
         408,
         turbo_ui.Rect{column = 12, row = 6, width = 68, height = 17},
         4,
     )
-    app^.windows[Window_Denials] = turbo_ui.window_init(
+    app.windows[Window_Denials] = turbo_ui.window_init(
         409,
         turbo_ui.Rect{column = 14, row = 7, width = 64, height = 15},
         4,
     )
-    app^.windows[Window_Switch_Workspace] = turbo_ui.dialog_window_init(
+    app.windows[Window_Switch_Workspace] = turbo_ui.dialog_window_init(
         410,
         turbo_ui.Rect{column = 12, row = 6, width = 66, height = 9},
         12,
     )
-    app^.windows[Window_Workspace_Confirm] = turbo_ui.dialog_window_init(
+    app.windows[Window_Workspace_Confirm] = turbo_ui.dialog_window_init(
         411,
         turbo_ui.Rect{column = 14, row = 7, width = 62, height = 8},
         13,
     )
-    app^.windows[Window_Replace] = turbo_ui.dialog_window_init(
+    app.windows[Window_Replace] = turbo_ui.dialog_window_init(
         412,
         turbo_ui.Rect{column = 14, row = 5, width = 60, height = 11},
         14,
     )
-    app^.windows[Window_Go_To_Line] = turbo_ui.dialog_window_init(
+    app.windows[Window_Go_To_Line] = turbo_ui.dialog_window_init(
         413,
         turbo_ui.Rect{column = 22, row = 8, width = 38, height = 7},
         15,
     )
-    app^.windows[Window_Help] = turbo_ui.dialog_window_init(
+    app.windows[Window_Help] = turbo_ui.dialog_window_init(
         414,
         turbo_ui.Rect{column = 10, row = 3, width = 70, height = 25},
         16,
     )
-    app^.windows[Window_Open_File] = turbo_ui.dialog_window_init(
+    app.windows[Window_Open_File] = turbo_ui.dialog_window_init(
         415,
         turbo_ui.Rect{column = 13, row = 6, width = 64, height = 9},
         17,
     )
-    app^.windows[Window_Program_Settings] = turbo_ui.window_init(
+    app.windows[Window_Program_Settings] = turbo_ui.window_init(
         416,
         turbo_ui.Rect{column = 7, row = 3, width = 72, height = 22},
         4,
     )
-    app^.windows[Window_Program_Files].visible = false
-    app^.windows[Window_Open_Files].visible = false
-    app^.windows[Window_Search].visible = false
-    app^.windows[Window_Quit].visible = false
+    app.windows[Window_Program_Files].visible = false
+    app.windows[Window_Open_Files].visible = false
+    app.windows[Window_Search].visible = false
+    app.windows[Window_Quit].visible = false
     for index: usize = Window_Diagnostics; index < Window_Count; index += 1 {
-        app^.windows[index].visible = false
+        app.windows[index].visible = false
     }
 }
 
@@ -434,32 +434,32 @@ shortcut_row :: proc(index: usize) -> (string, string) {
 }
 
 init_one_buffer :: proc(app: ^App, path: string) -> bool {
-    if app^.buffer_count == Maximum_Buffers {
+    if app.buffer_count == Maximum_Buffers {
         return false
     }
-    index := app^.buffer_count
-    turbo_editor.buffer_init(&app^.buffers[index], path)
-    load_result := turbo_editor.load(&app^.buffers[index])
+    index := app.buffer_count
+    turbo_editor.buffer_init(&app.buffers[index], path)
+    load_result := turbo_editor.load(&app.buffers[index])
     if load_result == .failed {
-        turbo_editor.buffer_destroy(&app^.buffers[index])
+        turbo_editor.buffer_destroy(&app.buffers[index])
         return false
     }
-    app^.buffer_count += 1
+    app.buffer_count += 1
     return true
 }
 
 init_one_buffer_bytes :: proc(app: ^App, path: []u8) -> bool {
-    if app^.buffer_count == Maximum_Buffers {
+    if app.buffer_count == Maximum_Buffers {
         return false
     }
-    index := app^.buffer_count
-    turbo_editor.buffer_init_bytes(&app^.buffers[index], path)
-    load_result := turbo_editor.load(&app^.buffers[index])
+    index := app.buffer_count
+    turbo_editor.buffer_init_bytes(&app.buffers[index], path)
+    load_result := turbo_editor.load(&app.buffers[index])
     if load_result == .failed {
-        turbo_editor.buffer_destroy(&app^.buffers[index])
+        turbo_editor.buffer_destroy(&app.buffers[index])
         return false
     }
-    app^.buffer_count += 1
+    app.buffer_count += 1
     return true
 }
 
@@ -467,10 +467,10 @@ init_one_buffer_bytes :: proc(app: ^App, path: []u8) -> bool {
 // label but no filesystem authority. Save routes it through Save As; Exit
 // treats its initial dirty bit exactly like authored content.
 init_one_unnamed_buffer :: proc(app: ^App) -> bool {
-    if app^.buffer_count == Maximum_Buffers {
+    if app.buffer_count == Maximum_Buffers {
         return false
     }
-    app^.unnamed_count += 1
+    app.unnamed_count += 1
     storage: [64]u8
     prefix := "Untitled "
     length: usize
@@ -481,7 +481,7 @@ init_one_unnamed_buffer :: proc(app: ^App) -> bool {
     digits_storage: [20]u8
     (digits, valid) := format.unsigned_decimal(
         digits_storage[:],
-        cast[u64](app^.unnamed_count),
+        cast[u64](app.unnamed_count),
     )
     if !valid || length + len(digits) > len(storage) {
         return false
@@ -491,10 +491,10 @@ init_one_unnamed_buffer :: proc(app: ^App) -> bool {
         length += 1
     }
     turbo_editor.buffer_init_unnamed(
-        &app^.buffers[app^.buffer_count],
+        &app.buffers[app.buffer_count],
         storage[:length],
     )
-    app^.buffer_count += 1
+    app.buffer_count += 1
     return true
 }
 
@@ -507,16 +507,16 @@ init_one_read_only_buffer :: proc(
     app: ^App,
     path, source: []u8,
 ) -> bool {
-    if app^.buffer_count == Maximum_Buffers {
+    if app.buffer_count == Maximum_Buffers {
         return false
     }
-    index := app^.buffer_count
+    index := app.buffer_count
     turbo_editor.buffer_init_read_only_bytes(
-        &app^.buffers[index],
+        &app.buffers[index],
         path,
         source,
     )
-    app^.buffer_count += 1
+    app.buffer_count += 1
     return true
 }
 
@@ -529,14 +529,14 @@ init_app :: proc(app: ^App) -> bool {
         }
     } else {
         for index: usize = 1; index < len(arguments) &&
-            app^.buffer_count < Maximum_Buffers; index += 1 {
+            app.buffer_count < Maximum_Buffers; index += 1 {
             if !init_one_buffer(app, arguments[index]) {
                 return false
             }
         }
     }
-    app^.status = "F1 Help  F2 Program Files  Ctrl-S Save  F5 Run  Ctrl-Q Exit"
-    return app^.buffer_count != 0
+    app.status = "F1 Help  F2 Program Files  Ctrl-S Save  F5 Run  Ctrl-Q Exit"
+    return app.buffer_count != 0
 }
 
 // destroy_workspace_documents releases every dynamic owner whose identity is
@@ -545,25 +545,25 @@ init_app :: proc(app: ^App) -> bool {
 // survive, while final application destruction follows it with the remaining
 // process-lifetime owners.
 destroy_workspace_documents :: proc(app: ^App) {
-    for index: usize = 0; index < app^.buffer_count; index += 1 {
-        turbo_editor.buffer_destroy(&app^.buffers[index])
+    for index: usize = 0; index < app.buffer_count; index += 1 {
+        turbo_editor.buffer_destroy(&app.buffers[index])
     }
-    app^.buffer_count = 0
-    for index: usize = 0; index < app^.program_file_count; index += 1 {
-        memory.owned_string_destroy(&app^.program_file_names[index])
-        memory.owned_string_destroy(&app^.program_file_paths[index])
+    app.buffer_count = 0
+    for index: usize = 0; index < app.program_file_count; index += 1 {
+        memory.owned_string_destroy(&app.program_file_names[index])
+        memory.owned_string_destroy(&app.program_file_paths[index])
     }
-    app^.program_file_count = 0
-    for index: usize = 0; index < app^.navigation_row_count; index += 1 {
-        memory.owned_string_destroy(&app^.navigation_rows[index].path)
+    app.program_file_count = 0
+    for index: usize = 0; index < app.navigation_row_count; index += 1 {
+        memory.owned_string_destroy(&app.navigation_rows[index].path)
     }
-    app^.navigation_row_count = 0
+    app.navigation_row_count = 0
     for index: usize = 0;
-        index < app^.navigation_history_count;
+        index < app.navigation_history_count;
         index += 1 {
-        memory.owned_string_destroy(&app^.navigation_history[index].path)
+        memory.owned_string_destroy(&app.navigation_history[index].path)
     }
-    app^.navigation_history_count = 0
+    app.navigation_history_count = 0
 }
 
 // destroy_app is the final balanced counterpart to init_windows/init_app. It
@@ -571,12 +571,12 @@ destroy_workspace_documents :: proc(app: ^App) {
 // and no application operation may observe App afterward.
 destroy_app :: proc(app: ^App) {
     destroy_workspace_documents(app)
-    array.destroy(&app^.clipboard)
+    array.destroy(&app.clipboard)
 }
 
 active_buffer :: proc(app: ^App) -> ^turbo_editor.Buffer {
-    assert(app^.active < app^.buffer_count, "active editor buffer is invalid")
-    return &app^.buffers[app^.active]
+    assert(app.active < app.buffer_count, "active editor buffer is invalid")
+    return &app.buffers[app.active]
 }
 
 // activate_buffer preserves the compiler-source invariant before exposing an
@@ -585,16 +585,16 @@ active_buffer :: proc(app: ^App) -> ^turbo_editor.Buffer {
 // the same compiler root; otherwise a later check or F5 could submit one root's
 // bytes as another root's active source file.
 activate_buffer :: proc(app: ^App, index: usize) -> bool {
-    if index >= app^.buffer_count {
+    if index >= app.buffer_count {
         return false
     }
     root_changed := false
-    if app^.host.select_root != nil && app^.host.selected_root != nil &&
-        app^.buffer_has_root[index] {
-        current := app^.host.selected_root(app^.host.user)
-        required := app^.buffer_root[index]
+    if app.host.select_root != nil && app.host.selected_root != nil &&
+        app.buffer_has_root[index] {
+        current := app.host.selected_root(app.host.user)
+        required := app.buffer_root[index]
         if current != required {
-            if app^.host.select_root(app^.host.user, required) == 0 {
+            if app.host.select_root(app.host.user, required) == 0 {
                 return false
             }
             refresh_program_roots(app)
@@ -602,22 +602,22 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
             root_changed = true
         }
     }
-    app^.active = index
-    app^.buffers_list.cursor = index
-    editor_focus := cast[turbo_ui.Widget_Id](600 + app^.active)
-    app^.windows[Window_Editor].focus_id = editor_focus
+    app.active = index
+    app.buffers_list.cursor = index
+    editor_focus := cast[turbo_ui.Widget_Id](600 + app.active)
+    app.windows[Window_Editor].focus_id = editor_focus
     turbo_ui.show_window(
-        &app^.ui,
-        app^.windows[:],
-        app^.windows[Window_Editor].id,
+        &app.ui,
+        app.windows[:],
+        app.windows[Window_Editor].id,
     )
-    app^.ui.focused_id = editor_focus
-    if turbo_editor.is_read_only(&app^.buffers[index]) {
+    app.ui.focused_id = editor_focus
+    if turbo_editor.is_read_only(&app.buffers[index]) {
         // Syntax spans are tied to the exact active overlay of the latest host
         // check. A compiler-distributed source is not an editable overlay, so
         // retaining the previous buffer's spans would color unrelated offsets.
-        app^.syntax_span_count = 0
-    } else if app^.host.colorize != nil {
+        app.syntax_span_count = 0
+    } else if app.host.colorize != nil {
         refresh_syntax(app)
     }
     if root_changed {
@@ -625,7 +625,7 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
         // document should still remain a lexical-only foreground operation.
         // Refresh copied configuration now and defer semantics until an
         // explicit Check/Build/Run/navigation command.
-        app^.semantic_dirty = true
+        app.semantic_dirty = true
         refresh_tooling_text(app)
     }
     return true
@@ -636,30 +636,30 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
 // an explicit UI/path bound; an overflowing row stops publication rather than
 // retaining a truncated path that could name a different file.
 refresh_program_files :: proc(app: ^App) {
-    for index: usize = 0; index < app^.program_file_count; index += 1 {
-        memory.owned_string_destroy(&app^.program_file_names[index])
-        memory.owned_string_destroy(&app^.program_file_paths[index])
+    for index: usize = 0; index < app.program_file_count; index += 1 {
+        memory.owned_string_destroy(&app.program_file_names[index])
+        memory.owned_string_destroy(&app.program_file_paths[index])
     }
-    app^.program_file_count = 0
-    if app^.host.source_count == nil || app^.host.copy_source_name == nil ||
-        app^.host.copy_source_path_at == nil {
+    app.program_file_count = 0
+    if app.host.source_count == nil || app.host.copy_source_name == nil ||
+        app.host.copy_source_path_at == nil {
         return
     }
-    count := app^.host.source_count(app^.host.user)
+    count := app.host.source_count(app.host.user)
     if count > Maximum_Program_Files {
         count = Maximum_Program_Files
     }
     name_storage: [Program_File_Copy_Capacity]u8
     path_storage: [Program_File_Copy_Capacity]u8
     for index: usize = 0; index < count; index += 1 {
-        name_length := app^.host.copy_source_name(
-            app^.host.user,
+        name_length := app.host.copy_source_name(
+            app.host.user,
             index,
             cast[[^]u8](&name_storage[0]),
             len(name_storage),
         )
-        path_length := app^.host.copy_source_path_at(
-            app^.host.user,
+        path_length := app.host.copy_source_path_at(
+            app.host.user,
             index,
             cast[[^]u8](&path_storage[0]),
             len(path_storage),
@@ -669,32 +669,32 @@ refresh_program_files :: proc(app: ^App) {
             break
         }
         memory.owned_string_copy_bytes(
-            &app^.program_file_names[index],
+            &app.program_file_names[index],
             name_storage[:name_length],
         )
         memory.owned_string_copy_bytes(
-            &app^.program_file_paths[index],
+            &app.program_file_paths[index],
             path_storage[:path_length],
         )
-        app^.program_file_count += 1
+        app.program_file_count += 1
     }
-    if app^.program_files.cursor >= app^.program_file_count {
-        app^.program_files.cursor = 0
-        app^.program_files.offset = 0
+    if app.program_files.cursor >= app.program_file_count {
+        app.program_files.cursor = 0
+        app.program_files.offset = 0
     }
 }
 
 buffer_in_program :: proc(app: ^App, index: usize) -> bool {
-    if index >= app^.buffer_count {
+    if index >= app.buffer_count {
         return false
     }
-    path := turbo_editor.path_bytes(&app^.buffers[index])
+    path := turbo_editor.path_bytes(&app.buffers[index])
     for source_index: usize = 0;
-        source_index < app^.program_file_count;
+        source_index < app.program_file_count;
         source_index += 1 {
         if byte_views_equal(
             path,
-            memory.owned_string_bytes(&app^.program_file_paths[source_index]),
+            memory.owned_string_bytes(&app.program_file_paths[source_index]),
         ) {
             return true
         }
@@ -715,9 +715,9 @@ collect_host_overlays :: proc(
     count: usize
     active_overlay: usize
     found_active := false
-    filter_program := app^.host.source_count != nil
-    for index: usize = 0; index < app^.buffer_count; index += 1 {
-        if index != app^.active && !app^.buffers[index].dirty {
+    filter_program := app.host.source_count != nil
+    for index: usize = 0; index < app.buffer_count; index += 1 {
+        if index != app.active && !app.buffers[index].dirty {
             continue
         }
         if filter_program && !buffer_in_program(app, index) {
@@ -726,23 +726,23 @@ collect_host_overlays :: proc(
         if count == len(overlays) {
             return (0, 0, false)
         }
-        buffer := &app^.buffers[index]
+        buffer := &app.buffers[index]
         path := turbo_editor.path_bytes(buffer)
         path_data: rawptr = nil
         if len(path) != 0 {
             path_data = cast[rawptr](&path[0])
         }
         source_data: rawptr = nil
-        if buffer^.bytes.length != 0 {
-            source_data = cast[rawptr](&buffer^.bytes.data[0])
+        if buffer.bytes.length != 0 {
+            source_data = cast[rawptr](&buffer.bytes.data[0])
         }
         overlays[count] = draft_compiler_api.Overlay{
             path_data = path_data,
             path_length = len(path),
             source_data = source_data,
-            source_length = buffer^.bytes.length,
+            source_length = buffer.bytes.length,
         }
-        if index == app^.active {
+        if index == app.active {
             active_overlay = count
             found_active = true
         }
@@ -753,17 +753,17 @@ collect_host_overlays :: proc(
 
 text_destination :: proc(app: ^App, index: usize) -> [^]u8 {
     assert(index < Text_Window_Count, "tooling text index is invalid")
-    return cast[[^]u8](&app^.tooling_text[index][0])
+    return cast[[^]u8](&app.tooling_text[index][0])
 }
 
 root_name_destination :: proc(app: ^App, index: usize) -> [^]u8 {
     assert(index < Maximum_Program_Roots, "program root index is invalid")
-    return cast[[^]u8](&app^.program_root_names[index][0])
+    return cast[[^]u8](&app.program_root_names[index][0])
 }
 
 package_row_destination :: proc(app: ^App, index: usize) -> [^]u8 {
     assert(index < Maximum_Package_Rows, "package row index is invalid")
-    return cast[[^]u8](&app^.package_rows[index].text[0])
+    return cast[[^]u8](&app.package_rows[index].text[0])
 }
 
 // store_program_root_overflow_label replaces a truncated pathname with complete ASCII
@@ -775,10 +775,10 @@ store_program_root_overflow_label :: proc(app: ^App, index: usize) {
     for byte_index: usize = 0;
         byte_index < len(Program_Root_Overflow_Label);
         byte_index += 1 {
-        app^.program_root_names[index][byte_index] =
+        app.program_root_names[index][byte_index] =
             Program_Root_Overflow_Label[byte_index]
     }
-    app^.program_root_length[index] = len(Program_Root_Overflow_Label)
+    app.program_root_length[index] = len(Program_Root_Overflow_Label)
 }
 
 // store_package_row_overflow_label avoids retaining a truncated UTF-8 prefix
@@ -788,10 +788,10 @@ store_package_row_overflow_label :: proc(app: ^App, index: usize) {
     for byte_index: usize = 0;
         byte_index < len(Package_Row_Overflow_Label);
         byte_index += 1 {
-        app^.package_rows[index].text[byte_index] =
+        app.package_rows[index].text[byte_index] =
             Package_Row_Overflow_Label[byte_index]
     }
-    app^.package_rows[index].length = len(Package_Row_Overflow_Label)
+    app.package_rows[index].length = len(Package_Row_Overflow_Label)
 }
 
 // refresh_program_roots copies the compiler service's deterministic executable
@@ -799,25 +799,25 @@ store_package_row_overflow_label :: proc(app: ^App, index: usize) {
 // version display limit, not a compiler limit. The Build menu may still cycle
 // the service's full count when an unusually large workspace exceeds this view.
 refresh_program_roots :: proc(app: ^App) {
-    app^.program_root_count = 0
-    if app^.host.root_count == nil || app^.host.selected_root == nil ||
-        app^.host.copy_root_name == nil {
+    app.program_root_count = 0
+    if app.host.root_count == nil || app.host.selected_root == nil ||
+        app.host.copy_root_name == nil {
         return
     }
-    count := app^.host.root_count(app^.host.user)
+    count := app.host.root_count(app.host.user)
     if count > Maximum_Program_Roots {
         count = Maximum_Program_Roots
     }
-    app^.program_root_count = count
-    selected := app^.host.selected_root(app^.host.user)
+    app.program_root_count = count
+    selected := app.host.selected_root(app.host.user)
     if selected < count {
-        app^.program_roots.cursor = selected
+        app.program_roots.cursor = selected
     } else {
-        app^.program_roots.cursor = 0
+        app.program_roots.cursor = 0
     }
     for index: usize = 0; index < count; index += 1 {
-        required := app^.host.copy_root_name(
-            app^.host.user,
+        required := app.host.copy_root_name(
+            app.host.user,
             index,
             root_name_destination(app, index),
             Program_Root_Name_Capacity,
@@ -825,7 +825,7 @@ refresh_program_roots :: proc(app: ^App) {
         if required >= Program_Root_Name_Capacity {
             store_program_root_overflow_label(app, index)
         } else {
-            app^.program_root_length[index] = required
+            app.program_root_length[index] = required
         }
     }
 }
@@ -836,40 +836,40 @@ refresh_program_roots :: proc(app: ^App) {
 // package begins expanded so its authored imports are discoverable without an
 // extra gesture. Import rows never retain independent expansion state.
 refresh_package_tree :: proc(app: ^App) {
-    app^.package_row_count = 0
-    if app^.host.package_row_count == nil || app^.host.package_row == nil ||
-        app^.host.copy_package_row_text == nil {
+    app.package_row_count = 0
+    if app.host.package_row_count == nil || app.host.package_row == nil ||
+        app.host.copy_package_row_text == nil {
         return
     }
-    count := app^.host.package_row_count(app^.host.user)
+    count := app.host.package_row_count(app.host.user)
     if count > Maximum_Package_Rows {
         count = Maximum_Package_Rows
     }
     next_seen: [Maximum_Package_Rows]bool
     for index: usize = 0; index < count; index += 1 {
-        row := &app^.package_rows[index]
-        node := &app^.package_nodes[index]
-        app^.host.package_row(app^.host.user, index, &row^.info)
-        node^.depth = cast[usize](row^.info.depth)
-        node^.has_children = row^.info.has_children != 0
-        node^.expanded = false
-        if row^.info.kind == .package_node {
-            package_index := row^.info.package_index
+        row := &app.package_rows[index]
+        node := &app.package_nodes[index]
+        app.host.package_row(app.host.user, index, &row.info)
+        node.depth = cast[usize](row.info.depth)
+        node.has_children = row.info.has_children != 0
+        node.expanded = false
+        if row.info.kind == .package_node {
+            package_index := row.info.package_index
             if package_index < Maximum_Package_Rows {
-                if !app^.package_seen[package_index] {
-                    app^.package_expanded[package_index] = true
+                if !app.package_seen[package_index] {
+                    app.package_expanded[package_index] = true
                 }
-                node^.expanded = app^.package_expanded[package_index]
+                node.expanded = app.package_expanded[package_index]
                 next_seen[package_index] = true
             } else {
                 // The bounded expansion table is a UI limit only. A package
                 // beyond it remains open rather than hiding compiler data that
                 // the user has no persistent bit with which to reveal.
-                node^.expanded = true
+                node.expanded = true
             }
         }
-        required := app^.host.copy_package_row_text(
-            app^.host.user,
+        required := app.host.copy_package_row_text(
+            app.host.user,
             index,
             package_row_destination(app, index),
             Package_Row_Text_Capacity,
@@ -877,24 +877,24 @@ refresh_package_tree :: proc(app: ^App) {
         if required >= Package_Row_Text_Capacity {
             store_package_row_overflow_label(app, index)
         } else {
-            row^.length = required
+            row.length = required
         }
     }
     for index: usize = 0; index < Maximum_Package_Rows; index += 1 {
-        app^.package_seen[index] = next_seen[index]
+        app.package_seen[index] = next_seen[index]
         if !next_seen[index] {
-            app^.package_expanded[index] = false
+            app.package_expanded[index] = false
         }
     }
-    app^.package_row_count = count
+    app.package_row_count = count
 }
 
 bind_active_buffer_to_host_root :: proc(app: ^App) {
-    if app^.active >= app^.buffer_count || app^.host.selected_root == nil {
+    if app.active >= app.buffer_count || app.host.selected_root == nil {
         return
     }
-    app^.buffer_root[app^.active] = app^.host.selected_root(app^.host.user)
-    app^.buffer_has_root[app^.active] = true
+    app.buffer_root[app.active] = app.host.selected_root(app.host.user)
+    app.buffer_has_root[app.active] = true
 }
 
 // refresh_tooling_text copies immutable compiler projections into app-owned
@@ -903,41 +903,41 @@ bind_active_buffer_to_host_root :: proc(app: ^App) {
 // and paint_text_view reports a malformed final grapheme by simply omitting it.
 refresh_tooling_text :: proc(app: ^App) {
     for index: usize = 0; index < Text_Window_Count; index += 1 {
-        app^.tooling_length[index] = 0
-        app^.tooling_views[index].offset = 0
+        app.tooling_length[index] = 0
+        app.tooling_views[index].offset = 0
     }
-    app^.program_configuration_length = 0
-    app^.program_configuration_view.offset = 0
-    if app^.host.copy_program_configuration != nil {
-        required := app^.host.copy_program_configuration(
-            app^.host.user,
-            cast[[^]u8](&app^.program_configuration[0]),
+    app.program_configuration_length = 0
+    app.program_configuration_view.offset = 0
+    if app.host.copy_program_configuration != nil {
+        required := app.host.copy_program_configuration(
+            app.host.user,
+            cast[[^]u8](&app.program_configuration[0]),
             Program_Configuration_Capacity,
         )
         if required >= Program_Configuration_Capacity {
             required = Program_Configuration_Capacity - 1
         }
-        app^.program_configuration_length = required
+        app.program_configuration_length = required
     }
-    if app^.host.copy_diagnostics != nil {
-        required := app^.host.copy_diagnostics(
-            app^.host.user,
+    if app.host.copy_diagnostics != nil {
+        required := app.host.copy_diagnostics(
+            app.host.user,
             text_destination(app, 0),
             Tooling_Text_Capacity,
         )
         if required >= Tooling_Text_Capacity {
             required = Tooling_Text_Capacity - 1
         }
-        app^.tooling_length[0] = required
+        app.tooling_length[0] = required
     }
-    if app^.host.copy_tooling == nil {
+    if app.host.copy_tooling == nil {
         refresh_package_tree(app)
         return
     }
     for section_index: usize = 0; section_index < 5; section_index += 1 {
         destination_index := section_index + 1
-        required := app^.host.copy_tooling(
-            app^.host.user,
+        required := app.host.copy_tooling(
+            app.host.user,
             cast[u8](section_index),
             text_destination(app, destination_index),
             Tooling_Text_Capacity,
@@ -945,7 +945,7 @@ refresh_tooling_text :: proc(app: ^App) {
         if required >= Tooling_Text_Capacity {
             required = Tooling_Text_Capacity - 1
         }
-        app^.tooling_length[destination_index] = required
+        app.tooling_length[destination_index] = required
     }
     refresh_package_tree(app)
 }
@@ -957,28 +957,28 @@ refresh_tooling_text :: proc(app: ^App) {
 copy_syntax_spans :: proc(app: ^App, requested_count: usize) {
     buffer := active_buffer(app)
     count := requested_count
-    if count > len(app^.syntax_spans) {
-        count = len(app^.syntax_spans)
+    if count > len(app.syntax_spans) {
+        count = len(app.syntax_spans)
     }
-    app^.syntax_span_count = 0
-    if app^.host.span == nil {
+    app.syntax_span_count = 0
+    if app.host.span == nil {
         return
     }
     for index: usize = 0; index < count; index += 1 {
         host_span: draft_compiler_api.Span
-        app^.host.span(app^.host.user, index, &host_span)
+        app.host.span(app.host.user, index, &host_span)
         if host_span.start > host_span.end ||
-            host_span.end > buffer^.bytes.length ||
+            host_span.end > buffer.bytes.length ||
             host_span.kind >= turbo_editor.Syntax_Kind_Count {
             continue
         }
-        app^.syntax_spans[app^.syntax_span_count] =
+        app.syntax_spans[app.syntax_span_count] =
             turbo_editor.Syntax_Span{
                 start = host_span.start,
                 end = host_span.end,
                 kind = cast[turbo_editor.Syntax_Kind](host_span.kind),
             }
-        app^.syntax_span_count += 1
+        app.syntax_span_count += 1
     }
 }
 
@@ -986,8 +986,8 @@ copy_syntax_spans :: proc(app: ^App, requested_count: usize) {
 // complete buffer. No workspace discovery, package semantics, diagnostics,
 // effects, MIR, or native work may enter this foreground editing operation.
 refresh_syntax :: proc(app: ^App) {
-    app^.syntax_span_count = 0
-    if app^.host.colorize == nil || turbo_editor.is_read_only(active_buffer(app)) {
+    app.syntax_span_count = 0
+    if app.host.colorize == nil || turbo_editor.is_read_only(active_buffer(app)) {
         return
     }
     buffer := active_buffer(app)
@@ -997,17 +997,17 @@ refresh_syntax :: proc(app: ^App) {
         path_data = cast[rawptr](&path[0])
     }
     source_data: rawptr = nil
-    if buffer^.bytes.length != 0 {
-        source_data = cast[rawptr](&buffer^.bytes.data[0])
+    if buffer.bytes.length != 0 {
+        source_data = cast[rawptr](&buffer.bytes.data[0])
     }
     source := draft_compiler_api.Overlay{
         path_data = path_data,
         path_length = len(path),
         source_data = source_data,
-        source_length = buffer^.bytes.length,
+        source_length = buffer.bytes.length,
     }
     result: draft_compiler_api.Syntax_Result
-    app^.host.colorize(app^.host.user, &source, &result)
+    app.host.colorize(app.host.user, &source, &result)
     if result.success != 0 {
         copy_syntax_spans(app, result.span_count)
     }
@@ -1017,9 +1017,9 @@ refresh_syntax :: proc(app: ^App) {
 // marks semantic products stale, refreshes only lexical styling, and leaves
 // the expensive complete transaction to an explicit semantic command.
 source_changed :: proc(app: ^App) {
-    app^.semantic_dirty = true
+    app.semantic_dirty = true
     refresh_syntax(app)
-    app^.status = "Modified - Check, Build, or Run refreshes diagnostics"
+    app.status = "Modified - Check, Build, or Run refreshes diagnostics"
 }
 
 // refresh_host synchronously checks current bytes and replaces syntax spans
@@ -1028,8 +1028,8 @@ source_changed :: proc(app: ^App) {
 // service retains its last successful program internally. The return value is
 // true only when these exact visible bytes form a complete valid program.
 refresh_host :: proc(app: ^App) -> bool {
-    if app^.host.check == nil {
-        app^.syntax_span_count = 0
+    if app.host.check == nil {
+        app.syntax_span_count = 0
         return false
     }
     overlays: [Maximum_Buffers]draft_compiler_api.Overlay
@@ -1038,29 +1038,29 @@ refresh_host :: proc(app: ^App) -> bool {
         overlays[:],
     )
     if !valid_overlays {
-        app^.syntax_span_count = 0
-        app^.status = "Active file is not part of the active Program"
+        app.syntax_span_count = 0
+        app.status = "Active file is not part of the active Program"
         return false
     }
     result: draft_compiler_api.Result
-    app^.host.check(
-        app^.host.user,
+    app.host.check(
+        app.host.user,
         &overlays[0],
         overlay_count,
         active_overlay,
         &result,
     )
-    app^.semantic_dirty = false
-    app^.diagnostic_count = result.diagnostic_count
+    app.semantic_dirty = false
+    app.diagnostic_count = result.diagnostic_count
     copy_syntax_spans(app, result.span_count)
     if result.success != 0 {
-        app^.status = "Check succeeded; F8 shows diagnostics"
-        if app^.host.source_count != nil &&
-            app^.host.source_count(app^.host.user) != app^.program_file_count {
+        app.status = "Check succeeded; F8 shows diagnostics"
+        if app.host.source_count != nil &&
+            app.host.source_count(app.host.user) != app.program_file_count {
             refresh_program_files(app)
         }
     } else {
-        app^.status = "Check failed: diagnostics retain the last good program"
+        app.status = "Check failed: diagnostics retain the last good program"
     }
     refresh_tooling_text(app)
     return result.success != 0
@@ -1068,79 +1068,79 @@ refresh_host :: proc(app: ^App) -> bool {
 
 save_active_buffer :: proc(app: ^App) {
     if turbo_editor.is_read_only(active_buffer(app)) {
-        app^.status = "Compiler and dependency sources are read-only"
+        app.status = "Compiler and dependency sources are read-only"
     } else if turbo_editor.is_unnamed(active_buffer(app)) {
         request_save_as(app)
     } else if turbo_editor.save(active_buffer(app)) {
-        app^.status = "Saved"
-    } else if active_buffer(app)^.disk_conflict {
-        app^.status = "Disk conflict: Save refused; Alt-X offers overwrite/discard"
+        app.status = "Saved"
+    } else if active_buffer(app).disk_conflict {
+        app.status = "Disk conflict: Save refused; Alt-X offers overwrite/discard"
     } else {
-        app^.status = "Save failed"
+        app.status = "Save failed"
     }
 }
 
 new_file :: proc(app: ^App) {
     if !init_one_unnamed_buffer(app) {
-        app^.status = "Could not create another in-memory document"
+        app.status = "Could not create another in-memory document"
         return
     }
-    app^.active = app^.buffer_count - 1
-    app^.buffers_list.cursor = app^.active
-    app^.buffer_has_root[app^.active] = false
-    if !activate_buffer(app, app^.active) {
-        app^.status = "Could not activate the new document"
+    app.active = app.buffer_count - 1
+    app.buffers_list.cursor = app.active
+    app.buffer_has_root[app.active] = false
+    if !activate_buffer(app, app.active) {
+        app.status = "Could not activate the new document"
         return
     }
-    app^.status = "New document - use Save As to choose its path"
+    app.status = "New document - use Save As to choose its path"
 }
 
 copy_selection :: proc(app: ^App) -> bool {
     buffer := active_buffer(app)
     (start, end, selected) := turbo_editor.selection(buffer)
     if !selected {
-        app^.status = "Nothing is selected"
+        app.status = "Nothing is selected"
         return false
     }
-    array.clear(&app^.clipboard)
-    array.reserve(&app^.clipboard, end - start)
+    array.clear(&app.clipboard)
+    array.reserve(&app.clipboard, end - start)
     bytes := turbo_editor.content(buffer)
     for index := start; index < end; index += 1 {
-        array.append(&app^.clipboard, bytes[index])
+        array.append(&app.clipboard, bytes[index])
     }
-    app^.status = "Copied selection to the IDE clipboard"
+    app.status = "Copied selection to the IDE clipboard"
     return true
 }
 
 cut_selection :: proc(app: ^App) {
     if turbo_editor.is_read_only(active_buffer(app)) {
-        app^.status = "Compiler and dependency sources are read-only"
+        app.status = "Compiler and dependency sources are read-only"
         return
     }
     if copy_selection(app) && turbo_editor.delete_selection(active_buffer(app)) {
         source_changed(app)
-        app^.status = "Cut selection to the IDE clipboard"
+        app.status = "Cut selection to the IDE clipboard"
     }
 }
 
 paste_clipboard :: proc(app: ^App) {
     if turbo_editor.is_read_only(active_buffer(app)) {
-        app^.status = "Compiler and dependency sources are read-only"
+        app.status = "Compiler and dependency sources are read-only"
         return
     }
-    if app^.clipboard.length == 0 {
-        app^.status = "The IDE clipboard is empty"
+    if app.clipboard.length == 0 {
+        app.status = "The IDE clipboard is empty"
         return
     }
-    turbo_editor.insert(active_buffer(app), array.view(&app^.clipboard))
+    turbo_editor.insert(active_buffer(app), array.view(&app.clipboard))
     source_changed(app)
-    app^.status = "Pasted from the IDE clipboard"
+    app.status = "Pasted from the IDE clipboard"
 }
 
 select_all :: proc(app: ^App) {
     turbo_editor.select_all(active_buffer(app))
     focus_editor(app)
-    app^.status = "Selected the complete document"
+    app.status = "Selected the complete document"
 }
 
 // undo_active/redo_active are application commands rather than editor-view
@@ -1150,24 +1150,24 @@ select_all :: proc(app: ^App) {
 // when document bytes actually changed.
 undo_active :: proc(app: ^App) {
     if turbo_editor.is_read_only(active_buffer(app)) {
-        app^.status = "Compiler and dependency sources are read-only"
+        app.status = "Compiler and dependency sources are read-only"
     } else if turbo_editor.undo(active_buffer(app)) {
         source_changed(app)
         focus_editor(app)
-        app^.status = "Undid last edit"
+        app.status = "Undid last edit"
     } else {
-        app^.status = "Nothing to undo"
+        app.status = "Nothing to undo"
     }
 }
 
 redo_active :: proc(app: ^App) {
     if turbo_editor.is_read_only(active_buffer(app)) {
-        app^.status = "Compiler and dependency sources are read-only"
+        app.status = "Compiler and dependency sources are read-only"
     } else if turbo_editor.redo(active_buffer(app)) {
         source_changed(app)
         focus_editor(app)
-        app^.status = "Redid last edit"
+        app.status = "Redid last edit"
     } else {
-        app^.status = "Nothing to redo"
+        app.status = "Nothing to redo"
     }
 }

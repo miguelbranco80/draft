@@ -10,9 +10,9 @@ pub Test :: struct {
 }
 
 pub expect :: proc(test: ^Test, condition: bool) {
-    test^.checks += 1
+    test.checks += 1
     if !condition {
-        test^.failures += 1
+        test.failures += 1
     }
 }
 
@@ -24,5 +24,5 @@ pub expect_message :: proc(test: ^Test, condition: bool, message: string) {
 }
 
 pub failed :: proc(test: ^Test) -> bool {
-    return test^.failures != 0
+    return test.failures != 0
 }

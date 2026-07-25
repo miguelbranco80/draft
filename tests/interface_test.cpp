@@ -895,7 +895,7 @@ pub invoke_box :: proc(box: Callback_Box) {
 }
 
 pub install :: proc(destination: ^Callback_Box, callback: proc()) {
-    destination^.callback = callback
+    destination.callback = callback
 }
 
 pub identity_return :: proc(callback: proc()) -> proc() {

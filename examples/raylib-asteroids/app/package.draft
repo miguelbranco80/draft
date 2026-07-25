@@ -40,42 +40,42 @@ Text_Resources :: struct {
 // caller invokes it only on a zero Text_Resources and destroys the complete set
 // exactly once; allocation failure follows core/memory's assertion policy.
 resources_init :: proc(resources: ^Text_Resources) {
-    memory.owned_string_copy(&resources^.title, "Draft Asteroids")
-    memory.owned_string_copy(&resources^.score, "SCORE")
-    memory.owned_string_copy(&resources^.lives, "LIVES")
-    memory.owned_string_copy(&resources^.wave, "WAVE")
+    memory.owned_string_copy(&resources.title, "Draft Asteroids")
+    memory.owned_string_copy(&resources.score, "SCORE")
+    memory.owned_string_copy(&resources.lives, "LIVES")
+    memory.owned_string_copy(&resources.wave, "WAVE")
     memory.owned_string_copy(
-        &resources^.controls,
+        &resources.controls,
         "A/D or arrows turn   W/up thrust   Space fire   Esc quit",
     )
-    memory.owned_string_copy(&resources^.game_over, "GAME OVER")
-    memory.owned_string_copy(&resources^.restart, "Press R to restart")
+    memory.owned_string_copy(&resources.game_over, "GAME OVER")
+    memory.owned_string_copy(&resources.restart, "Press R to restart")
 }
 
 // resources_destroy ends every cstring borrow after the window has closed.
 // Destruction order is immaterial because the allocations are independent;
 // the explicit reverse order mirrors construction and remains easy to audit.
 resources_destroy :: proc(resources: ^Text_Resources) {
-    memory.owned_string_destroy(&resources^.restart)
-    memory.owned_string_destroy(&resources^.game_over)
-    memory.owned_string_destroy(&resources^.controls)
-    memory.owned_string_destroy(&resources^.wave)
-    memory.owned_string_destroy(&resources^.lives)
-    memory.owned_string_destroy(&resources^.score)
-    memory.owned_string_destroy(&resources^.title)
+    memory.owned_string_destroy(&resources.restart)
+    memory.owned_string_destroy(&resources.game_over)
+    memory.owned_string_destroy(&resources.controls)
+    memory.owned_string_destroy(&resources.wave)
+    memory.owned_string_destroy(&resources.lives)
+    memory.owned_string_destroy(&resources.score)
+    memory.owned_string_destroy(&resources.title)
 }
 
 // resource_labels creates a non-owning record for the renderer. Every pointer
 // remains valid until resources_destroy and raylib reads it synchronously.
 resource_labels :: proc(resources: ^Text_Resources) -> Labels {
     return Labels{
-        title = memory.owned_string_cstring(&resources^.title),
-        score = memory.owned_string_cstring(&resources^.score),
-        lives = memory.owned_string_cstring(&resources^.lives),
-        wave = memory.owned_string_cstring(&resources^.wave),
-        controls = memory.owned_string_cstring(&resources^.controls),
-        game_over = memory.owned_string_cstring(&resources^.game_over),
-        restart = memory.owned_string_cstring(&resources^.restart),
+        title = memory.owned_string_cstring(&resources.title),
+        score = memory.owned_string_cstring(&resources.score),
+        lives = memory.owned_string_cstring(&resources.lives),
+        wave = memory.owned_string_cstring(&resources.wave),
+        controls = memory.owned_string_cstring(&resources.controls),
+        game_over = memory.owned_string_cstring(&resources.game_over),
+        restart = memory.owned_string_cstring(&resources.restart),
     }
 }
 

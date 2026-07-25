@@ -64,16 +64,16 @@ pub Screen :: struct {
 // active must be paired with restore_screen even when the returned error is not
 // none. The output descriptor is borrowed until restoration succeeds.
 pub begin_screen :: proc(screen: ^Screen, output: os.File) -> io.Error {
-    if screen^.state != .inactive || output.descriptor < 0 {
+    if screen.state != .inactive || output.descriptor < 0 {
         return .invalid
     }
     saved_mode: Native_Output_Mode = ---
     if !native_begin_screen(output.descriptor, &saved_mode) {
         return .unavailable
     }
-    screen^.output = output
-    screen^.saved_mode = saved_mode
-    screen^.state = .active
+    screen.output = output
+    screen.saved_mode = saved_mode
+    screen.state = .active
     return os.write_text_all(output, Enter_Screen_Sequence)
 }
 
@@ -82,10 +82,10 @@ pub begin_screen :: proc(screen: ^Screen, output: os.File) -> io.Error {
 // source, keeping complete-frame construction and repaint policy visible in
 // the caller.
 pub write_screen :: proc(screen: ^Screen, source: []u8) -> io.Error {
-    if screen^.state != .active {
+    if screen.state != .active {
         return .invalid
     }
-    return os.write_all(screen^.output, source)
+    return os.write_all(screen.output, source)
 }
 
 // suspend_screen leaves the alternate screen and shows the cursor without
@@ -93,22 +93,22 @@ pub write_screen :: proc(screen: ^Screen, source: []u8) -> io.Error {
 // an inactive Screen. A failed write leaves state active because a prefix may
 // have changed only part of the terminal state and still requires cleanup.
 pub suspend_screen :: proc(screen: ^Screen) -> bool {
-    if screen^.state == .inactive {
+    if screen.state == .inactive {
         return false
     }
-    if screen^.state == .suspended {
+    if screen.state == .suspended {
         return true
     }
-    if os.write_text_all(screen^.output, Leave_Screen_Sequence) != .none {
+    if os.write_text_all(screen.output, Leave_Screen_Sequence) != .none {
         return false
     }
     if !native_suspend_screen(
-        screen^.output.descriptor,
-        &screen^.saved_mode,
+        screen.output.descriptor,
+        &screen.saved_mode,
     ) {
         return false
     }
-    screen^.state = .suspended
+    screen.state = .suspended
     return true
 }
 
@@ -117,20 +117,20 @@ pub suspend_screen :: proc(screen: ^Screen) -> bool {
 // emitted a state-changing prefix; restore_screen must then be able to clean it
 // up. Calling resume on an active Screen is idempotent, while inactive fails.
 pub resume_screen :: proc(screen: ^Screen) -> bool {
-    if screen^.state == .inactive {
+    if screen.state == .inactive {
         return false
     }
-    if screen^.state == .active {
+    if screen.state == .active {
         return true
     }
     if !native_resume_screen(
-        screen^.output.descriptor,
-        &screen^.saved_mode,
+        screen.output.descriptor,
+        &screen.saved_mode,
     ) {
         return false
     }
-    screen^.state = .active
-    return os.write_text_all(screen^.output, Enter_Screen_Sequence) == .none
+    screen.state = .active
+    return os.write_text_all(screen.output, Enter_Screen_Sequence) == .none
 }
 
 // restore_screen resets style, shows the cursor, and returns to the primary
@@ -139,22 +139,22 @@ pub resume_screen :: proc(screen: ^Screen) -> bool {
 // write. A failure from active preserves that state and the borrowed handle so
 // the owner can report or retry cleanup.
 pub restore_screen :: proc(screen: ^Screen) -> bool {
-    if screen^.state == .inactive {
+    if screen.state == .inactive {
         return true
     }
-    if screen^.state == .suspended {
-        screen^.state = .inactive
+    if screen.state == .suspended {
+        screen.state = .inactive
         return true
     }
-    if os.write_text_all(screen^.output, Leave_Screen_Sequence) != .none {
+    if os.write_text_all(screen.output, Leave_Screen_Sequence) != .none {
         return false
     }
     if !native_restore_screen(
-        screen^.output.descriptor,
-        &screen^.saved_mode,
+        screen.output.descriptor,
+        &screen.saved_mode,
     ) {
         return false
     }
-    screen^.state = .inactive
+    screen.state = .inactive
     return true
 }

@@ -70,15 +70,15 @@ native_thread_create :: proc(
 }
 
 native_thread_is_empty :: proc(thread: ^Thread) -> bool {
-    return thread^.handle == cast[Pthread_Handle](0)
+    return thread.handle == cast[Pthread_Handle](0)
 }
 
 native_thread_join :: proc(thread: ^Thread) -> c_abi.int {
-    return pthread_join(thread^.handle, nil)
+    return pthread_join(thread.handle, nil)
 }
 
 native_thread_clear :: proc(thread: ^Thread) {
-    thread^.handle = cast[Pthread_Handle](0)
+    thread.handle = cast[Pthread_Handle](0)
 }
 
 native_thread_current_id :: proc() -> uintptr {

@@ -160,11 +160,11 @@ pub arena_init_with_allocator :: proc(
     block_size: usize,
     backing: runtime.Allocator,
 ) {
-    assert(arena^.blocks == nil, "arena must be empty before initialization")
+    assert(arena.blocks == nil, "arena must be empty before initialization")
     assert(backing.procedure != nil, "arena backing allocator is nil")
     assert(block_size != 0, "arena block size is zero")
-    arena^.backing = backing
-    arena^.block_size = block_size
+    arena.backing = backing
+    arena.block_size = block_size
 }
 
 // Attempts one bump without changing the block on failure. used always counts
@@ -173,17 +173,17 @@ arena_try_allocate_from_block :: proc(
     block: ^Arena_Block,
     size, alignment: usize,
 ) -> rawptr {
-    base := cast[uintptr](block^.storage)
-    cursor := base + cast[uintptr](block^.used)
+    base := cast[uintptr](block.storage)
+    cursor := base + cast[uintptr](block.used)
     address_alignment := cast[uintptr](alignment)
     assert(cursor <= ~cast[uintptr](0) - (address_alignment - 1),
         "arena address alignment overflows")
     aligned := (cursor + address_alignment - 1) & ~(address_alignment - 1)
     offset := cast[usize](aligned - base)
-    if offset > block^.capacity || size > block^.capacity - offset {
+    if offset > block.capacity || size > block.capacity - offset {
         return nil
     }
-    block^.used = offset + size
+    block.used = offset + size
     return cast[rawptr](aligned)
 }
 
@@ -193,18 +193,18 @@ arena_add_block :: proc(
     arena: ^Arena,
     minimum_size, alignment: usize,
 ) -> ^Arena_Block {
-    usable := arena^.block_size
+    usable := arena.block_size
     if usable < minimum_size {
         usable = minimum_size
     }
     assert(usable <= ~cast[usize](0) - (alignment - 1),
         "arena block size overflows")
     capacity := usable + alignment - 1
-    block := new_with_allocator[Arena_Block](arena^.backing)
-    block^.storage = allocate_with_allocator(capacity, 16, arena^.backing)
-    block^.capacity = capacity
-    block^.next = arena^.blocks
-    arena^.blocks = block
+    block := new_with_allocator[Arena_Block](arena.backing)
+    block.storage = allocate_with_allocator(capacity, 16, arena.backing)
+    block.capacity = capacity
+    block.next = arena.blocks
+    arena.blocks = block
     return block
 }
 
@@ -217,11 +217,11 @@ arena_allocate_bytes :: proc(
     if size == 0 {
         return nil
     }
-    assert(arena^.backing.procedure != nil, "arena is not initialized")
+    assert(arena.backing.procedure != nil, "arena is not initialized")
     assert(alignment != 0 && (alignment & (alignment - 1)) == 0,
         "arena alignment must be a power of two")
-    if arena^.blocks != nil {
-        result := arena_try_allocate_from_block(arena^.blocks, size, alignment)
+    if arena.blocks != nil {
+        result := arena_try_allocate_from_block(arena.blocks, size, alignment)
         if result != nil {
             return result
         }
@@ -276,7 +276,7 @@ arena_provider :: proc(
 
 // Returns a non-owning provider record tied to arena's stable address.
 pub arena_allocator :: proc(arena: ^Arena) -> runtime.Allocator {
-    assert(arena^.backing.procedure != nil, "arena is not initialized")
+    assert(arena.backing.procedure != nil, "arena is not initialized")
     return runtime.Allocator{
         procedure = arena_provider,
         user = cast[rawptr](arena),
@@ -286,19 +286,19 @@ pub arena_allocator :: proc(arena: ^Arena) -> runtime.Allocator {
 // Releases every block and returns the initialized arena to its empty state.
 // Existing allocation pointers become invalid together.
 pub arena_reset :: proc(arena: ^Arena) {
-    block := arena^.blocks
+    block := arena.blocks
     for block != nil {
-        next := block^.next
+        next := block.next
         free_bytes_with_allocator(
-            block^.storage,
-            block^.capacity,
+            block.storage,
+            block.capacity,
             16,
-            arena^.backing,
+            arena.backing,
         )
-        free_with_allocator(block, arena^.backing)
+        free_with_allocator(block, arena.backing)
         block = next
     }
-    arena^.blocks = nil
+    arena.blocks = nil
 }
 
 // Releases blocks and clears allocator policy so accidental reuse diagnoses as
@@ -306,8 +306,8 @@ pub arena_reset :: proc(arena: ^Arena) {
 pub arena_destroy :: proc(arena: ^Arena) {
     arena_reset(arena)
     empty: runtime.Allocator
-    arena^.backing = empty
-    arena^.block_size = 0
+    arena.backing = empty
+    arena.block_size = 0
 }
 
 // Buffer is an owning fixed-length allocation. It has no hidden copy, move, or
@@ -330,14 +330,14 @@ pub buffer_init_with_allocator[T: type] :: proc(
     length: usize,
     allocator: runtime.Allocator,
 ) {
-    assert(buffer^.data == nil, "buffer must be empty before initialization")
+    assert(buffer.data == nil, "buffer must be empty before initialization")
     assert(allocator.procedure != nil, "buffer allocator is nil")
     assert(size_of(T) != 0 && length <= ~cast[usize](0) / size_of(T),
         "buffer byte size overflows")
-    buffer^.allocator = allocator
-    buffer^.length = length
+    buffer.allocator = allocator
+    buffer.length = length
     if length != 0 {
-        buffer^.data = cast[[^]T](allocate_with_allocator(
+        buffer.data = cast[[^]T](allocate_with_allocator(
             length * size_of(T),
             align_of(T),
             allocator,
@@ -355,32 +355,32 @@ pub buffer_copy_with_allocator[T: type] :: proc(
     source: []T,
     allocator: runtime.Allocator,
 ) {
-    assert(buffer^.data == nil, "buffer must be empty before copy")
+    assert(buffer.data == nil, "buffer must be empty before copy")
     buffer_init_with_allocator(buffer, len(source), allocator)
     for index: usize = 0; index < len(source); index += 1 {
-        buffer^.data[index] = source[index]
+        buffer.data[index] = source[index]
     }
 }
 
 // Returns a non-owning view whose lifetime ends at buffer_destroy.
 pub buffer_view[T: type] :: proc(buffer: ^Buffer[T]) -> []T {
-    return buffer^.data[:buffer^.length]
+    return buffer.data[:buffer.length]
 }
 
 // Releases the one allocation and clears all ownership metadata.
 pub buffer_destroy[T: type] :: proc(buffer: ^Buffer[T]) {
-    if buffer^.data != nil {
+    if buffer.data != nil {
         free_bytes_with_allocator(
-            cast[rawptr](buffer^.data),
-            buffer^.length * size_of(T),
+            cast[rawptr](buffer.data),
+            buffer.length * size_of(T),
             align_of(T),
-            buffer^.allocator,
+            buffer.allocator,
         )
     }
-    buffer^.data = nil
-    buffer^.length = 0
+    buffer.data = nil
+    buffer.length = 0
     empty: runtime.Allocator
-    buffer^.allocator = empty
+    buffer.allocator = empty
 }
 
 // Owned_String owns a zero-terminated byte copy. Draft string is an immutable
@@ -414,20 +414,20 @@ pub owned_string_copy_bytes_with_allocator :: proc(
     source: []u8,
     allocator: runtime.Allocator,
 ) {
-    assert(owned^.data == nil, "owned string must be empty before copy")
+    assert(owned.data == nil, "owned string must be empty before copy")
     assert(allocator.procedure != nil, "owned string allocator is nil")
     assert(len(source) != ~cast[usize](0), "owned string size overflows")
-    owned^.allocator = allocator
-    owned^.length = len(source)
-    owned^.data = cast[[^]u8](allocate_with_allocator(
+    owned.allocator = allocator
+    owned.length = len(source)
+    owned.data = cast[[^]u8](allocate_with_allocator(
         len(source) + 1,
         1,
         allocator,
     ))
     for index: usize = 0; index < len(source); index += 1 {
-        owned^.data[index] = source[index]
+        owned.data[index] = source[index]
     }
-    owned^.data[len(source)] = 0
+    owned.data[len(source)] = 0
 }
 
 pub owned_string_copy_with_allocator :: proc(
@@ -435,46 +435,46 @@ pub owned_string_copy_with_allocator :: proc(
     source: string,
     allocator: runtime.Allocator,
 ) {
-    assert(owned^.data == nil, "owned string must be empty before copy")
+    assert(owned.data == nil, "owned string must be empty before copy")
     assert(allocator.procedure != nil, "owned string allocator is nil")
     assert(len(source) != ~cast[usize](0), "owned string size overflows")
-    owned^.allocator = allocator
-    owned^.length = len(source)
-    owned^.data = cast[[^]u8](allocate_with_allocator(
+    owned.allocator = allocator
+    owned.length = len(source)
+    owned.data = cast[[^]u8](allocate_with_allocator(
         len(source) + 1,
         1,
         allocator,
     ))
     for index: usize = 0; index < len(source); index += 1 {
-        owned^.data[index] = source[index]
+        owned.data[index] = source[index]
     }
-    owned^.data[len(source)] = 0
+    owned.data[len(source)] = 0
 }
 
 // Both views borrow the handle. The bounded view excludes the terminator; the
 // cstring view includes it implicitly through its zero-termination contract.
 pub owned_string_bytes :: proc(owned: ^Owned_String) -> []u8 {
-    return owned^.data[:owned^.length]
+    return owned.data[:owned.length]
 }
 
 pub owned_string_cstring :: proc(owned: ^Owned_String) -> cstring {
-    return cast[cstring](owned^.data)
+    return cast[cstring](owned.data)
 }
 
 // Ends both borrowed-view lifetimes and clears ownership metadata.
 pub owned_string_destroy :: proc(owned: ^Owned_String) {
-    if owned^.data != nil {
+    if owned.data != nil {
         free_bytes_with_allocator(
-            cast[rawptr](owned^.data),
-            owned^.length + 1,
+            cast[rawptr](owned.data),
+            owned.length + 1,
             1,
-            owned^.allocator,
+            owned.allocator,
         )
     }
-    owned^.data = nil
-    owned^.length = 0
+    owned.data = nil
+    owned.length = 0
     empty: runtime.Allocator
-    owned^.allocator = empty
+    owned.allocator = empty
 }
 
 // Virtual_Region is a move-by-convention hosted mapping handle. reserve creates
@@ -500,12 +500,12 @@ pub virtual_protect :: proc(
     region: ^Virtual_Region,
     protection: Virtual_Protection,
 ) -> bool {
-    if region^.data == nil {
+    if region.data == nil {
         return false
     }
     return native_virtual_protect(
-        region^.data,
-        region^.size,
+        region.data,
+        region.size,
         protection,
     )
 }
@@ -516,13 +516,13 @@ pub virtual_commit :: proc(region: ^Virtual_Region) -> bool {
 
 // Unmaps the complete region and clears the handle only after the OS succeeds.
 pub virtual_release :: proc(region: ^Virtual_Region) -> bool {
-    if region^.data == nil {
+    if region.data == nil {
         return true
     }
-    if !native_virtual_release(region^.data, region^.size) {
+    if !native_virtual_release(region.data, region.size) {
         return false
     }
-    region^.data = nil
-    region^.size = 0
+    region.data = nil
+    region.size = 0
     return true
 }

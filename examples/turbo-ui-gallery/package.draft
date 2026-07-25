@@ -51,30 +51,30 @@ Gallery_State :: struct {
 }
 
 init_gallery :: proc(gallery: ^Gallery_State) {
-    gallery^.windows[Window_Controls] = turbo_ui.window_init(
+    gallery.windows[Window_Controls] = turbo_ui.window_init(
         100,
         turbo_ui.Rect{column = 3, row = 3, width = 38, height = 16},
         1,
     )
-    gallery^.windows[Window_Files] = turbo_ui.window_init(
+    gallery.windows[Window_Files] = turbo_ui.window_init(
         101,
         turbo_ui.Rect{column = 30, row = 6, width = 32, height = 14},
         2,
     )
-    gallery^.windows[Window_Layout] = turbo_ui.window_init(
+    gallery.windows[Window_Layout] = turbo_ui.window_init(
         102,
         turbo_ui.Rect{column = 12, row = 16, width = 52, height = 9},
         3,
     )
-    gallery^.windows[Window_Dialog] = turbo_ui.dialog_window_init(
+    gallery.windows[Window_Dialog] = turbo_ui.dialog_window_init(
         103,
         turbo_ui.Rect{column = 22, row = 8, width = 36, height = 9},
         4,
     )
-    gallery^.windows[Window_Dialog].visible = false
-    gallery^.checked = true
-    gallery^.split = 21
-    gallery^.file_nodes = [9]turbo_ui.Tree_Node{
+    gallery.windows[Window_Dialog].visible = false
+    gallery.checked = true
+    gallery.split = 21
+    gallery.file_nodes = [9]turbo_ui.Tree_Node{
         turbo_ui.Tree_Node{depth = 0, has_children = true, expanded = true},
         turbo_ui.Tree_Node{depth = 1, has_children = true, expanded = true},
         turbo_ui.Tree_Node{depth = 2},
@@ -85,14 +85,14 @@ init_gallery :: proc(gallery: ^Gallery_State) {
         turbo_ui.Tree_Node{depth = 1, has_children = true, expanded = true},
         turbo_ui.Tree_Node{depth = 2},
     }
-    turbo_ui.text_box_set_text(&gallery^.text_box, gallery^.text[:], "Draft UI")
+    turbo_ui.text_box_set_text(&gallery.text_box, gallery.text[:], "Draft UI")
 }
 
 open_dialog :: proc(gallery: ^Gallery_State) {
     turbo_ui.show_modal_window(
-        &gallery^.ui,
-        gallery^.windows[:],
-        gallery^.windows[Window_Dialog].id,
+        &gallery.ui,
+        gallery.windows[:],
+        gallery.windows[Window_Dialog].id,
     )
 }
 
@@ -104,59 +104,59 @@ paint_controls :: proc(
     layout := turbo_ui.layout_begin(content, .vertical, 1, 1)
     check_bounds := turbo_ui.layout_next(&layout, 1)
     turbo_ui.checkbox(
-        &gallery^.ui,
+        &gallery.ui,
         200,
         check_bounds,
         "Enable diagnostics",
-        &gallery^.checked,
+        &gallery.checked,
     )
     radio_bounds := turbo_ui.layout_next(&layout, 1)
     turbo_ui.radio_button(
-        &gallery^.ui,
+        &gallery.ui,
         203,
         radio_bounds,
         "Compact layout",
-        &gallery^.radio,
+        &gallery.radio,
         0,
     )
     radio_bounds = turbo_ui.layout_next(&layout, 1)
     turbo_ui.radio_button(
-        &gallery^.ui,
+        &gallery.ui,
         204,
         radio_bounds,
         "Roomy layout",
-        &gallery^.radio,
+        &gallery.radio,
         1,
     )
     text_bounds := turbo_ui.layout_next(&layout, 1)
     turbo_ui.text_box(
-        &gallery^.ui,
+        &gallery.ui,
         205,
         text_bounds,
-        &gallery^.text_box,
-        gallery^.text[:],
+        &gallery.text_box,
+        gallery.text[:],
     )
     themes := [3]string{"Classic blue", "High contrast", "Monochrome"}
     combo_bounds := turbo_ui.layout_next(&layout, 1)
     turbo_ui.combo_box(
-        &gallery^.ui,
-        &gallery^.combo,
+        &gallery.ui,
+        &gallery.combo,
         Combo_Theme,
         Combo_Theme_Popup,
         combo_bounds,
         themes[:],
-        &gallery^.combo_selection,
+        &gallery.combo_selection,
     )
     button_bounds := turbo_ui.layout_next(&layout, 1)
-    if turbo_ui.button(&gallery^.ui, 201, button_bounds, "Count activation") {
-        gallery^.clicks += 1
+    if turbo_ui.button(&gallery.ui, 201, button_bounds, "Count activation") {
+        gallery.clicks += 1
     }
     dialog_bounds := turbo_ui.layout_next(&layout, 1)
-    if turbo_ui.button(&gallery^.ui, 202, dialog_bounds, "Open dialog") {
+    if turbo_ui.button(&gallery.ui, 202, dialog_bounds, "Open dialog") {
         open_dialog(gallery)
     }
     turbo_ui.status_bar(
-        &gallery^.ui,
+        &gallery.ui,
         turbo_ui.layout_rest(&layout),
         "Tab focuses controls; popups capture input",
     )
@@ -186,28 +186,28 @@ paint_files :: proc(
     }
     visibility: [9]usize
     view := turbo_ui.tree_view(
-        &gallery^.ui,
+        &gallery.ui,
         210,
         211,
         content,
-        gallery^.file_nodes[:],
+        gallery.file_nodes[:],
         visibility[:],
-        &gallery^.files,
+        &gallery.files,
         .click_and_enter,
     )
     for visible_index := view.list.first;
         visible_index < view.list.end;
         visible_index += 1 {
         row := turbo_ui.tree_row_begin(
-            &gallery^.ui,
+            &gallery.ui,
             view,
             visible_index,
-            gallery^.file_nodes[:],
+            gallery.file_nodes[:],
         )
         if row.visible {
             turbo_ui.write_clipped(
-                gallery^.ui.surface,
-                turbo_ui.intersect(gallery^.ui.clip, row.content),
+                gallery.ui.surface,
+                turbo_ui.intersect(gallery.ui.clip, row.content),
                 turbo_ui.Point{
                     column = row.content.column,
                     row = row.content.row,
@@ -230,37 +230,37 @@ paint_layout :: proc(
     }
     maximum := content.width - 2
     turbo_ui.splitter(
-        &gallery^.ui,
+        &gallery.ui,
         220,
         content,
         .horizontal,
-        &gallery^.split,
+        &gallery.split,
         8,
         maximum,
     )
     left := turbo_ui.Rect{
         column = content.column,
         row = content.row,
-        width = gallery^.split,
+        width = gallery.split,
         height = content.height,
     }
     right := turbo_ui.Rect{
-        column = content.column + gallery^.split + 1,
+        column = content.column + gallery.split + 1,
         row = content.row,
-        width = content.width - gallery^.split - 1,
+        width = content.width - gallery.split - 1,
         height = content.height,
     }
-    turbo_ui.fill_rect(gallery^.ui.surface, content, left, ' ', theme.window)
-    turbo_ui.fill_rect(gallery^.ui.surface, content, right, ' ', theme.dialog)
+    turbo_ui.fill_rect(gallery.ui.surface, content, left, ' ', theme.window)
+    turbo_ui.fill_rect(gallery.ui.surface, content, right, ' ', theme.dialog)
     turbo_ui.write_clipped(
-        gallery^.ui.surface,
+        gallery.ui.surface,
         left,
         turbo_ui.Point{column = left.column + 1, row = left.row + 1},
         "Editor pane",
         theme.text,
     )
     turbo_ui.write_clipped(
-        gallery^.ui.surface,
+        gallery.ui.surface,
         right,
         turbo_ui.Point{column = right.column + 1, row = right.row + 1},
         "Diagnostics",
@@ -274,7 +274,7 @@ paint_dialog :: proc(
     theme: turbo_ui.Theme,
 ) {
     turbo_ui.write_clipped(
-        gallery^.ui.surface,
+        gallery.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 2, row = content.row + 1},
         "A reusable immediate-mode dialog.",
@@ -294,7 +294,7 @@ paint_dialog :: proc(
             1,
         )
         close = turbo_ui.button(
-            &gallery^.ui,
+            &gallery.ui,
             230,
             turbo_ui.layout_next(&buttons, 8),
             "OK",
@@ -302,7 +302,7 @@ paint_dialog :: proc(
             .default_action,
         )
         cancel := turbo_ui.button(
-            &gallery^.ui,
+            &gallery.ui,
             231,
             turbo_ui.layout_next(&buttons, 10),
             "Cancel",
@@ -312,7 +312,7 @@ paint_dialog :: proc(
         close = close || cancel
     } else {
         close = turbo_ui.button(
-            &gallery^.ui,
+            &gallery.ui,
             231,
             turbo_ui.Rect{},
             "Cancel",
@@ -322,9 +322,9 @@ paint_dialog :: proc(
     }
     if close {
         turbo_ui.hide_window(
-            &gallery^.ui,
-            gallery^.windows[:],
-            gallery^.windows[Window_Dialog].id,
+            &gallery.ui,
+            gallery.windows[:],
+            gallery.windows[Window_Dialog].id,
         )
     }
 }
@@ -335,63 +335,63 @@ paint_dialog :: proc(
 // and separator rows so the gallery covers the complete menu vocabulary.
 paint_menus :: proc(gallery: ^Gallery_State) {
     file_menu := turbo_ui.begin_menu(
-        &gallery^.ui,
-        &gallery^.menus,
+        &gallery.ui,
+        &gallery.menus,
         Menu_File,
         Menu_File_Popup,
         turbo_ui.Rect{column = 1, row = 1, width = 25, height = 6},
     )
     if turbo_ui.menu_action(
-        &gallery^.ui, &gallery^.menus, &file_menu,
+        &gallery.ui, &gallery.menus, &file_menu,
         250, "Open dialog", "F4",
         access_key = cast[u8]('o'),
     ) {
         open_dialog(gallery)
     }
-    turbo_ui.menu_separator(&gallery^.ui, &file_menu)
+    turbo_ui.menu_separator(&gallery.ui, &file_menu)
     turbo_ui.menu_action(
-        &gallery^.ui, &gallery^.menus, &file_menu,
+        &gallery.ui, &gallery.menus, &file_menu,
         251, "Unavailable action", "", false,
         access_key = cast[u8]('u'),
     )
     if turbo_ui.menu_action(
-        &gallery^.ui, &gallery^.menus, &file_menu,
+        &gallery.ui, &gallery.menus, &file_menu,
         252, "Close active window", "Alt-F3",
-        gallery^.ui.active_window != turbo_ui.No_Widget,
+        gallery.ui.active_window != turbo_ui.No_Widget,
         access_key = cast[u8]('c'),
     ) {
         turbo_ui.hide_window(
-            &gallery^.ui,
-            gallery^.windows[:],
-            gallery^.ui.active_window,
+            &gallery.ui,
+            gallery.windows[:],
+            gallery.ui.active_window,
         )
     }
-    turbo_ui.end_menu(&gallery^.ui, &gallery^.menus, file_menu)
+    turbo_ui.end_menu(&gallery.ui, &gallery.menus, file_menu)
 
     options_menu := turbo_ui.begin_menu(
-        &gallery^.ui,
-        &gallery^.menus,
+        &gallery.ui,
+        &gallery.menus,
         Menu_Options,
         Menu_Options_Popup,
         turbo_ui.Rect{column = 10, row = 1, width = 25, height = 6},
     )
     turbo_ui.menu_check(
-        &gallery^.ui, &gallery^.menus, &options_menu,
-        253, "Diagnostics", &gallery^.checked,
+        &gallery.ui, &gallery.menus, &options_menu,
+        253, "Diagnostics", &gallery.checked,
         access_key = cast[u8]('d'),
     )
-    turbo_ui.menu_separator(&gallery^.ui, &options_menu)
+    turbo_ui.menu_separator(&gallery.ui, &options_menu)
     turbo_ui.menu_radio(
-        &gallery^.ui, &gallery^.menus, &options_menu,
-        254, "Compact", &gallery^.radio, 0,
+        &gallery.ui, &gallery.menus, &options_menu,
+        254, "Compact", &gallery.radio, 0,
         access_key = cast[u8]('c'),
     )
     turbo_ui.menu_radio(
-        &gallery^.ui, &gallery^.menus, &options_menu,
-        255, "Roomy", &gallery^.radio, 1,
+        &gallery.ui, &gallery.menus, &options_menu,
+        255, "Roomy", &gallery.radio, 1,
         access_key = cast[u8]('r'),
     )
-    turbo_ui.end_menu(&gallery^.ui, &gallery^.menus, options_menu)
+    turbo_ui.end_menu(&gallery.ui, &gallery.menus, options_menu)
 }
 
 // paint_gallery is one complete immediate traversal. Window ordering is
@@ -408,39 +408,39 @@ paint_gallery :: proc(
     // refusal over the same physical key.
     if event.kind == .key && event.key.code == .f4 &&
         !event.key.alt && !event.key.control &&
-        gallery^.ui.popup_id == turbo_ui.No_Widget &&
-        !gallery^.windows[Window_Dialog].visible {
+        gallery.ui.popup_id == turbo_ui.No_Widget &&
+        !gallery.windows[Window_Dialog].visible {
         open_dialog(gallery)
         event = turbo_ui.no_event()
     }
     theme := turbo_ui.turbo_theme()
     tui.clear(surface, theme.desktop)
-    desktop := turbo_ui.Rect{row = 1, width = surface^.columns}
-    if surface^.rows > 2 {
-        desktop.height = surface^.rows - 2
+    desktop := turbo_ui.Rect{row = 1, width = surface.columns}
+    if surface.rows > 2 {
+        desktop.height = surface.rows - 2
     }
     modal := turbo_ui.No_Widget
-    if gallery^.windows[Window_Dialog].visible {
-        modal = gallery^.windows[Window_Dialog].id
+    if gallery.windows[Window_Dialog].visible {
+        modal = gallery.windows[Window_Dialog].id
     }
     turbo_ui.begin_window_frame(
-        &gallery^.ui,
+        &gallery.ui,
         surface,
         event,
         theme,
-        gallery^.windows[:],
+        gallery.windows[:],
         desktop,
         modal,
     )
 
     turbo_ui.menu_bar(
-        &gallery^.ui,
-        &gallery^.menus,
-        turbo_ui.Rect{width = surface^.columns, height = 1},
+        &gallery.ui,
+        &gallery.menus,
+        turbo_ui.Rect{width = surface.columns, height = 1},
     )
     turbo_ui.menu_title(
-        &gallery^.ui,
-        &gallery^.menus,
+        &gallery.ui,
+        &gallery.menus,
         Menu_File,
         Menu_File_Popup,
         turbo_ui.Rect{column = 1, width = 8, height = 1},
@@ -449,8 +449,8 @@ paint_gallery :: proc(
         turbo_ui.Rect{column = 1, row = 1, width = 25, height = 6},
     )
     turbo_ui.menu_title(
-        &gallery^.ui,
-        &gallery^.menus,
+        &gallery.ui,
+        &gallery.menus,
         Menu_Options,
         Menu_Options_Popup,
         turbo_ui.Rect{column = 10, width = 11, height = 1},
@@ -458,17 +458,17 @@ paint_gallery :: proc(
         cast[u8]('o'),
         turbo_ui.Rect{column = 10, row = 1, width = 25, height = 6},
     )
-    turbo_ui.menu_bar_end(&gallery^.ui, &gallery^.menus)
+    turbo_ui.menu_bar_end(&gallery.ui, &gallery.menus)
 
     order: [4]usize
-    count := turbo_ui.window_order(gallery^.windows[:], order[:])
+    count := turbo_ui.window_order(gallery.windows[:], order[:])
     for order_index: usize = 0; order_index < count; order_index += 1 {
         index := order[order_index]
-        window := &gallery^.windows[index]
+        window := &gallery.windows[index]
         window_context: turbo_ui.Window_Context
         if index == Window_Dialog {
             window_context = turbo_ui.dialog_begin(
-                &gallery^.ui,
+                &gallery.ui,
                 window,
                 "Message",
             )
@@ -480,7 +480,7 @@ paint_gallery :: proc(
                 title = "Layout"
             }
             window_context = turbo_ui.begin_window(
-                &gallery^.ui,
+                &gallery.ui,
                 window,
                 title,
             )
@@ -498,35 +498,35 @@ paint_gallery :: proc(
             case:
             }
         }
-        turbo_ui.end_window(&gallery^.ui, window_context)
+        turbo_ui.end_window(&gallery.ui, window_context)
         if window_context.close_requested {
-            turbo_ui.hide_window(&gallery^.ui, gallery^.windows[:], window^.id)
+            turbo_ui.hide_window(&gallery.ui, gallery.windows[:], window.id)
         }
     }
 
     paint_menus(gallery)
     themes := [3]string{"Classic blue", "High contrast", "Monochrome"}
     turbo_ui.combo_box_popup(
-        &gallery^.ui,
-        &gallery^.combo,
+        &gallery.ui,
+        &gallery.combo,
         Combo_Theme_Popup,
         themes[:],
-        &gallery^.combo_selection,
+        &gallery.combo_selection,
     )
 
-    if surface^.rows != 0 {
+    if surface.rows != 0 {
         turbo_ui.status_bar(
-            &gallery^.ui,
+            &gallery.ui,
             turbo_ui.Rect{
-                row = surface^.rows - 1,
-                width = surface^.columns,
+                row = surface.rows - 1,
+                width = surface.columns,
                 height = 1,
             },
             "Alt-F menu  F4 dialog  Alt-F3 close  Ctrl-F5 move/size  Tab focus",
         )
     }
-    turbo_ui.end_frame(&gallery^.ui)
-    if turbo_ui.needs_repaint(&gallery^.ui) {
+    turbo_ui.end_frame(&gallery.ui)
+    if turbo_ui.needs_repaint(&gallery.ui) {
         paint_gallery(gallery, surface, turbo_ui.no_event())
     }
 }

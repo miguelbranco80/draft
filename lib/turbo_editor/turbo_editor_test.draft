@@ -23,11 +23,11 @@ remove_test_path :: proc() {
 }
 
 buffer_equals_text :: proc(buffer: ^Buffer, text: string) -> bool {
-    if buffer^.bytes.length != len(text) {
+    if buffer.bytes.length != len(text) {
         return false
     }
     for index: usize = 0; index < len(text); index += 1 {
-        if buffer^.bytes.data[index] != text[index] {
+        if buffer.bytes.data[index] != text[index] {
             return false
         }
     }

@@ -961,11 +961,11 @@ deep_forward :: proc(destination: ^Callback_Box, callback: proc()) {
 }
 
 install :: proc(destination: ^Callback_Box, callback: proc()) {
-    destination^.callback = callback
+    destination.callback = callback
 }
 
 deep_install :: proc(destination: ^^Callback_Box, callback: proc()) {
-    destination^^.callback = callback
+    destination^.callback = callback
 }
 
 // A mutable local copied from a value parameter does not change the value held
@@ -1196,12 +1196,12 @@ install_and_zero :: proc(
     destination: ^Callback_Box,
     callback: proc(),
 ) -> i32 {
-    destination^.callback = callback
+    destination.callback = callback
     return 0
 }
 
 bounce :: proc(node: ^Node) {
-    node^.invoke(node)
+    node.invoke(node)
 }
 
 caller :: proc() {

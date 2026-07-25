@@ -65,9 +65,9 @@ pub seed_u64 :: proc() -> (u64, bool) {
 // xorshift64*'s only absorbing state; all other 64-bit seeds are retained
 // exactly. Reinitializing an existing value intentionally discards its stream.
 pub init :: proc(generator: ^Generator, seed: u64) {
-    generator^.state = seed
-    if generator^.state == 0 {
-        generator^.state = Default_Nonzero_Seed
+    generator.state = seed
+    if generator.state == 0 {
+        generator.state = Default_Nonzero_Seed
     }
 }
 
@@ -75,12 +75,12 @@ pub init :: proc(generator: ^Generator, seed: u64) {
 // XOR, and multiplication operations use Draft's specified u64 wrapping, so
 // the sequence is independent of the backend and host architecture.
 pub next_u64 :: proc(generator: ^Generator) -> u64 {
-    value := generator^.state
+    value := generator.state
     assert(value != 0, "random Generator must be initialized")
     value ~= value >> 12
     value ~= value << 25
     value ~= value >> 27
-    generator^.state = value
+    generator.state = value
     return value * 2685821657736338717
 }
 

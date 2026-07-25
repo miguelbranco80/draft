@@ -162,41 +162,41 @@ pub surface_init_with_allocator :: proc(
     columns, rows: usize,
     allocator: runtime.Allocator,
 ) {
-    assert(surface^.cells.data == nil && surface^.grapheme_bytes.data == nil &&
-        surface^.columns == 0 && surface^.rows == 0,
+    assert(surface.cells.data == nil && surface.grapheme_bytes.data == nil &&
+        surface.columns == 0 && surface.rows == 0,
         "TUI surface must be empty before initialization")
     count := surface_cell_count(columns, rows)
-    memory.buffer_init_with_allocator(&surface^.cells, count, allocator)
-    array.init_with_allocator(&surface^.grapheme_bytes, allocator)
-    surface^.columns = columns
-    surface^.rows = rows
+    memory.buffer_init_with_allocator(&surface.cells, count, allocator)
+    array.init_with_allocator(&surface.grapheme_bytes, allocator)
+    surface.columns = columns
+    surface.rows = rows
     clear(surface, Style{})
 }
 
 // surface_destroy releases both owned allocations and returns Surface to its
 // zero state. No public Cell retains arena storage.
 pub surface_destroy :: proc(surface: ^Surface) {
-    memory.buffer_destroy(&surface^.cells)
-    array.destroy(&surface^.grapheme_bytes)
-    surface^.live_grapheme_bytes = 0
-    surface^.columns = 0
-    surface^.rows = 0
+    memory.buffer_destroy(&surface.cells)
+    array.destroy(&surface.grapheme_bytes)
+    surface.live_grapheme_bytes = 0
+    surface.columns = 0
+    surface.rows = 0
 }
 
 // cell_index translates one proven in-bounds coordinate into row-major storage.
 cell_index :: proc(surface: ^Surface, column, row: usize) -> usize {
-    assert(column < surface^.columns && row < surface^.rows,
+    assert(column < surface.columns && row < surface.rows,
         "TUI cell coordinate is out of bounds")
-    return row * surface^.columns + column
+    return row * surface.columns + column
 }
 
 // forget_grapheme removes one leading cell's live-byte accounting. Arena bytes
 // remain until clear or compaction, so no unrelated cell offset is invalidated.
 forget_grapheme :: proc(surface: ^Surface, cell: Stored_Cell) {
     if cell.kind == .grapheme {
-        assert(cell.byte_length <= surface^.live_grapheme_bytes,
+        assert(cell.byte_length <= surface.live_grapheme_bytes,
             "TUI live grapheme byte accounting underflow")
-        surface^.live_grapheme_bytes -= cell.byte_length
+        surface.live_grapheme_bytes -= cell.byte_length
     }
 }
 
@@ -205,28 +205,28 @@ forget_grapheme :: proc(surface: ^Surface, cell: Stored_Cell) {
 // never leave either an orphaned continuation or half of an old wide glyph.
 clear_glyph_at :: proc(surface: ^Surface, column, row: usize) {
     index := cell_index(surface, column, row)
-    cell := surface^.cells.data[index]
+    cell := surface.cells.data[index]
     if cell.kind == .continuation {
         assert(column > 0, "TUI continuation begins a row")
         lead_index := index - 1
-        lead := surface^.cells.data[lead_index]
+        lead := surface.cells.data[lead_index]
         assert(lead.kind != .continuation && lead.columns == 2,
             "TUI continuation has no wide leading cell")
         forget_grapheme(surface, lead)
-        surface^.cells.data[lead_index] = blank_stored_cell(Style{})
-        surface^.cells.data[index] = blank_stored_cell(Style{})
+        surface.cells.data[lead_index] = blank_stored_cell(Style{})
+        surface.cells.data[index] = blank_stored_cell(Style{})
         return
     }
 
     forget_grapheme(surface, cell)
-    surface^.cells.data[index] = blank_stored_cell(Style{})
+    surface.cells.data[index] = blank_stored_cell(Style{})
     if cell.columns == 2 {
-        assert(column + 1 < surface^.columns,
+        assert(column + 1 < surface.columns,
             "TUI wide cell exceeds its row")
-        continuation := surface^.cells.data[index + 1]
+        continuation := surface.cells.data[index + 1]
         assert(continuation.kind == .continuation,
             "TUI wide cell has no continuation")
-        surface^.cells.data[index + 1] = blank_stored_cell(Style{})
+        surface.cells.data[index + 1] = blank_stored_cell(Style{})
     }
 }
 
@@ -235,34 +235,34 @@ clear_glyph_at :: proc(surface: ^Surface, column, row: usize) {
 // private offsets change. The operation is deterministic and exact.
 compact_graphemes :: proc(surface: ^Surface) {
     replacement: Byte_Array
-    array.init_with_allocator(&replacement, surface^.grapheme_bytes.allocator)
-    array.reserve(&replacement, surface^.live_grapheme_bytes)
-    for index: usize = 0; index < surface^.cells.length; index += 1 {
-        cell := &surface^.cells.data[index]
-        if cell^.kind != .grapheme {
+    array.init_with_allocator(&replacement, surface.grapheme_bytes.allocator)
+    array.reserve(&replacement, surface.live_grapheme_bytes)
+    for index: usize = 0; index < surface.cells.length; index += 1 {
+        cell := &surface.cells.data[index]
+        if cell.kind != .grapheme {
             continue
         }
-        old_start := cell^.byte_start
-        old_end := old_start + cell^.byte_length
-        assert(old_end <= surface^.grapheme_bytes.length,
+        old_start := cell.byte_start
+        old_end := old_start + cell.byte_length
+        assert(old_end <= surface.grapheme_bytes.length,
             "TUI grapheme bytes exceed their arena")
-        cell^.byte_start = replacement.length
+        cell.byte_start = replacement.length
         for byte_index := old_start; byte_index < old_end; byte_index += 1 {
-            array.append(&replacement, surface^.grapheme_bytes.data[byte_index])
+            array.append(&replacement, surface.grapheme_bytes.data[byte_index])
         }
     }
-    assert(replacement.length == surface^.live_grapheme_bytes,
+    assert(replacement.length == surface.live_grapheme_bytes,
         "TUI grapheme compaction lost live bytes")
-    array.destroy(&surface^.grapheme_bytes)
-    surface^.grapheme_bytes = replacement
+    array.destroy(&surface.grapheme_bytes)
+    surface.grapheme_bytes = replacement
 }
 
 // compact_if_useful avoids copying for small or mostly live arenas. Once dead
 // storage exceeds both 1 KiB and all live storage, one linear compaction keeps
 // repeated incremental edits bounded without burdening ordinary frame clears.
 compact_if_useful :: proc(surface: ^Surface) {
-    dead := surface^.grapheme_bytes.length - surface^.live_grapheme_bytes
-    if dead > 1024 && dead > surface^.live_grapheme_bytes {
+    dead := surface.grapheme_bytes.length - surface.live_grapheme_bytes
+    if dead > 1024 && dead > surface.live_grapheme_bytes {
         compact_graphemes(surface)
     }
 }
@@ -270,11 +270,11 @@ compact_if_useful :: proc(surface: ^Surface) {
 // clear replaces every cell with one styled blank and logically empties the
 // grapheme arena while retaining its allocation for the next frame.
 pub clear :: proc(surface: ^Surface, style: Style) {
-    array.clear(&surface^.grapheme_bytes)
-    surface^.live_grapheme_bytes = 0
+    array.clear(&surface.grapheme_bytes)
+    surface.live_grapheme_bytes = 0
     cell := blank_stored_cell(style)
-    for index: usize = 0; index < surface^.cells.length; index += 1 {
-        surface^.cells.data[index] = cell
+    for index: usize = 0; index < surface.cells.length; index += 1 {
+        surface.cells.data[index] = cell
     }
 }
 
@@ -293,14 +293,14 @@ install_scalar :: proc(
         clear_glyph_at(surface, column + 1, row)
     }
     index := cell_index(surface, column, row)
-    surface^.cells.data[index] = Stored_Cell{
+    surface.cells.data[index] = Stored_Cell{
         kind = .scalar,
         scalar = value,
         columns = cast[u8](columns),
         style = style,
     }
     if columns == 2 {
-        surface^.cells.data[index + 1] = Stored_Cell{
+        surface.cells.data[index + 1] = Stored_Cell{
             kind = .continuation,
             style = style,
         }
@@ -317,8 +317,8 @@ pub put_rune :: proc(
     style: Style,
 ) -> bool {
     (columns, printable) := unicode.rune_columns(value)
-    if !printable || row >= surface^.rows || column >= surface^.columns ||
-        columns > surface^.columns - column {
+    if !printable || row >= surface.rows || column >= surface.columns ||
+        columns > surface.columns - column {
         return false
     }
     install_scalar(surface, column, row, value, columns, style)
@@ -351,9 +351,9 @@ pub fill :: proc(
     style: Style,
 ) -> bool {
     (columns, printable) := unicode.rune_columns(value)
-    if !printable || columns != 1 || column > surface^.columns ||
-        row > surface^.rows || width > surface^.columns - column ||
-        height > surface^.rows - row {
+    if !printable || columns != 1 || column > surface.columns ||
+        row > surface.rows || width > surface.columns - column ||
+        height > surface.rows - row {
         return false
     }
     for y: usize = 0; y < height; y += 1 {
@@ -373,8 +373,8 @@ pub write_ascii :: proc(
     text: string,
     style: Style,
 ) -> bool {
-    if row >= surface^.rows || column > surface^.columns ||
-        len(text) > surface^.columns - column {
+    if row >= surface.rows || column > surface.columns ||
+        len(text) > surface.columns - column {
         return false
     }
     for index: usize = 0; index < len(text); index += 1 {
@@ -404,8 +404,8 @@ pub write_ascii_bytes :: proc(
     bytes: []u8,
     style: Style,
 ) -> bool {
-    if row >= surface^.rows || column > surface^.columns ||
-        len(bytes) > surface^.columns - column {
+    if row >= surface.rows || column > surface.columns ||
+        len(bytes) > surface.columns - column {
         return false
     }
     for byte in bytes {
@@ -437,7 +437,7 @@ pub write_utf8 :: proc(
     text: string,
     style: Style,
 ) -> bool {
-    if row >= surface^.rows || column > surface^.columns {
+    if row >= surface.rows || column > surface.columns {
         return false
     }
 
@@ -445,8 +445,8 @@ pub write_utf8 :: proc(
     offset: usize
     for offset < len(text) {
         (end, columns, error) := unicode.next_grapheme(text, offset)
-        if error != .none || columns > surface^.columns - column ||
-            total_columns > surface^.columns - column - columns {
+        if error != .none || columns > surface.columns - column ||
+            total_columns > surface.columns - column - columns {
             return false
         }
         total_columns += columns
@@ -471,14 +471,14 @@ pub write_utf8 :: proc(
             if columns == 2 {
                 clear_glyph_at(surface, target_column + 1, row)
             }
-            start := surface^.grapheme_bytes.length
+            start := surface.grapheme_bytes.length
             for byte_index := offset; byte_index < end; byte_index += 1 {
-                array.append(&surface^.grapheme_bytes, text[byte_index])
+                array.append(&surface.grapheme_bytes, text[byte_index])
             }
             byte_length := end - offset
-            surface^.live_grapheme_bytes += byte_length
+            surface.live_grapheme_bytes += byte_length
             index := cell_index(surface, target_column, row)
-            surface^.cells.data[index] = Stored_Cell{
+            surface.cells.data[index] = Stored_Cell{
                 kind = .grapheme,
                 scalar = first,
                 byte_start = start,
@@ -487,7 +487,7 @@ pub write_utf8 :: proc(
                 style = style,
             }
             if columns == 2 {
-                surface^.cells.data[index + 1] = Stored_Cell{
+                surface.cells.data[index + 1] = Stored_Cell{
                     kind = .continuation,
                     style = style,
                 }
@@ -510,7 +510,7 @@ pub write_utf8_bytes :: proc(
     bytes: []u8,
     style: Style,
 ) -> bool {
-    if row >= surface^.rows || column > surface^.columns {
+    if row >= surface.rows || column > surface.columns {
         return false
     }
 
@@ -518,8 +518,8 @@ pub write_utf8_bytes :: proc(
     offset: usize
     for offset < len(bytes) {
         (end, columns, error) := unicode.next_grapheme_bytes(bytes, offset)
-        if error != .none || columns > surface^.columns - column ||
-            total_columns > surface^.columns - column - columns {
+        if error != .none || columns > surface.columns - column ||
+            total_columns > surface.columns - column - columns {
             return false
         }
         total_columns += columns
@@ -545,14 +545,14 @@ pub write_utf8_bytes :: proc(
             if columns == 2 {
                 clear_glyph_at(surface, target_column + 1, row)
             }
-            start := surface^.grapheme_bytes.length
+            start := surface.grapheme_bytes.length
             for byte_index := offset; byte_index < end; byte_index += 1 {
-                array.append(&surface^.grapheme_bytes, bytes[byte_index])
+                array.append(&surface.grapheme_bytes, bytes[byte_index])
             }
             byte_length := end - offset
-            surface^.live_grapheme_bytes += byte_length
+            surface.live_grapheme_bytes += byte_length
             index := cell_index(surface, target_column, row)
-            surface^.cells.data[index] = Stored_Cell{
+            surface.cells.data[index] = Stored_Cell{
                 kind = .grapheme,
                 scalar = first,
                 byte_start = start,
@@ -561,7 +561,7 @@ pub write_utf8_bytes :: proc(
                 style = style,
             }
             if columns == 2 {
-                surface^.cells.data[index + 1] = Stored_Cell{
+                surface.cells.data[index + 1] = Stored_Cell{
                     kind = .continuation,
                     style = style,
                 }
@@ -581,11 +581,11 @@ pub cell_at :: proc(
     surface: ^Surface,
     column, row: usize,
 ) -> (Cell, bool) {
-    if column >= surface^.columns || row >= surface^.rows {
+    if column >= surface.columns || row >= surface.rows {
         empty: Cell
         return (empty, false)
     }
-    stored := surface^.cells.data[cell_index(surface, column, row)]
+    stored := surface.cells.data[cell_index(surface, column, row)]
     return (Cell{
         value = stored.scalar,
         columns = cast[usize](stored.columns),

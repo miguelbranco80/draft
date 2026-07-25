@@ -183,7 +183,7 @@ apply_raw_mode :: proc(
 // changes unless both native mode operations succeed. An invalid descriptor or
 // repeated begin returns io.Error.invalid; native failure returns unavailable.
 pub begin_raw :: proc(session: ^Session, input: os.File) -> io.Error {
-    if session^.state != .inactive || input.descriptor < 0 {
+    if session.state != .inactive || input.descriptor < 0 {
         return .invalid
     }
 
@@ -196,9 +196,9 @@ pub begin_raw :: proc(session: ^Session, input: os.File) -> io.Error {
         return .unavailable
     }
 
-    session^.input = input
-    session^.saved_mode = saved_mode
-    session^.state = .active
+    session.input = input
+    session.saved_mode = saved_mode
+    session.state = .active
     return .none
 }
 
@@ -209,20 +209,20 @@ pub begin_raw :: proc(session: ^Session, input: os.File) -> io.Error {
 // possible. Applications call this before yielding terminal control; signal
 // installation and process suspension remain explicit application policy.
 pub suspend :: proc(session: ^Session) -> bool {
-    if session^.state == .inactive {
+    if session.state == .inactive {
         return false
     }
-    if session^.state == .suspended {
+    if session.state == .suspended {
         return true
     }
     if native_set_mode(
-        session^.input.descriptor,
+        session.input.descriptor,
         Native_Apply_Now,
-        &session^.saved_mode,
+        &session.saved_mode,
     ) != 0 {
         return false
     }
-    session^.state = .suspended
+    session.state = .suspended
     return true
 }
 
@@ -231,16 +231,16 @@ pub suspend :: proc(session: ^Session) -> bool {
 // Session suspended, so the external terminal-facing mode remains authoritative
 // and the owner may retry without losing its saved mode.
 pub resume :: proc(session: ^Session) -> bool {
-    if session^.state == .inactive {
+    if session.state == .inactive {
         return false
     }
-    if session^.state == .active {
+    if session.state == .active {
         return true
     }
-    if !apply_raw_mode(session^.input, &session^.saved_mode) {
+    if !apply_raw_mode(session.input, &session.saved_mode) {
         return false
     }
-    session^.state = .active
+    session.state = .active
     return true
 }
 
@@ -250,21 +250,21 @@ pub resume :: proc(session: ^Session) -> bool {
 // state retains that state and the saved mode so the owner can report or retry;
 // success never closes the borrowed descriptor.
 pub restore :: proc(session: ^Session) -> bool {
-    if session^.state == .inactive {
+    if session.state == .inactive {
         return true
     }
-    if session^.state == .suspended {
-        session^.state = .inactive
+    if session.state == .suspended {
+        session.state = .inactive
         return true
     }
     if native_set_mode(
-        session^.input.descriptor,
+        session.input.descriptor,
         Native_Apply_Now,
-        &session^.saved_mode,
+        &session.saved_mode,
     ) != 0 {
         return false
     }
-    session^.state = .inactive
+    session.state = .inactive
     return true
 }
 
@@ -310,7 +310,7 @@ pub begin_resize_watch :: proc(
     terminal_file: os.File,
 ) -> (Size, io.Error) {
     empty: Size
-    if watcher^.state != .inactive || terminal_file.descriptor < 0 {
+    if watcher.state != .inactive || terminal_file.descriptor < 0 {
         return (empty, .invalid)
     }
 
@@ -336,10 +336,10 @@ pub begin_resize_watch :: proc(
         return (empty, .unavailable)
     }
 
-    watcher^.terminal_file = terminal_file
-    watcher^.size = initial
-    watcher^.previous_action = previous
-    watcher^.state = .active
+    watcher.terminal_file = terminal_file
+    watcher.size = initial
+    watcher.previous_action = previous
+    watcher.state = .active
     atomic.store(&resize_notification_pending, 1, .relaxed)
     return (initial, .none)
 }
@@ -356,7 +356,7 @@ pub begin_resize_watch :: proc(
 pub poll_resize :: proc(
     watcher: ^Resize_Watcher,
 ) -> (Size, bool, io.Error) {
-    if watcher^.state != .active {
+    if watcher.state != .active {
         empty: Size
         return (empty, false, .invalid)
     }
@@ -368,21 +368,21 @@ pub poll_resize :: proc(
             .relaxed,
         )
         if pending == 0 {
-            return (watcher^.size, false, .none)
+            return (watcher.size, false, .none)
         }
     }
 
-    (observed, error) := query_size(watcher^.terminal_file)
+    (observed, error) := query_size(watcher.terminal_file)
     if error != .none {
         when Native_Resize_Uses_Notifications {
             atomic.store(&resize_notification_pending, 1, .relaxed)
         }
-        return (watcher^.size, false, error)
+        return (watcher.size, false, error)
     }
 
-    changed := observed.columns != watcher^.size.columns ||
-        observed.rows != watcher^.size.rows
-    watcher^.size = observed
+    changed := observed.columns != watcher.size.columns ||
+        observed.rows != watcher.size.rows
+    watcher.size = observed
     return (observed, changed, .none)
 }
 
@@ -392,14 +392,14 @@ pub poll_resize :: proc(
 // the same owner can report or retry instead of admitting a second owner while
 // the first handler may still be installed.
 pub end_resize_watch :: proc(watcher: ^Resize_Watcher) -> bool {
-    if watcher^.state == .inactive {
+    if watcher.state == .inactive {
         return true
     }
-    if !native_end_resize_watch(&watcher^.previous_action) {
+    if !native_end_resize_watch(&watcher.previous_action) {
         return false
     }
 
-    watcher^.state = .inactive
+    watcher.state = .inactive
     atomic.store(&resize_notification_pending, 0, .relaxed)
     atomic.store(&resize_watch_claimed, 0, .release)
     return true
@@ -417,7 +417,7 @@ pub read :: proc(
     destination: []u8,
     timeout: time.Duration,
 ) -> (usize, io.Error) {
-    if session^.state != .active {
+    if session.state != .active {
         return (0, .invalid)
     }
     if len(destination) == 0 {
@@ -425,7 +425,7 @@ pub read :: proc(
     }
 
     descriptor := Poll_Descriptor{
-        descriptor = session^.input.descriptor,
+        descriptor = session.input.descriptor,
         events = Poll_Input,
     }
     ready := native_poll_one(&descriptor, timeout_milliseconds(timeout))
@@ -448,7 +448,7 @@ pub read :: proc(
     // A peer may close after readiness is reported. os.read remains the
     // authority for that race and translates a zero-byte native read to EOF.
     if descriptor.returned_events & Poll_Input != 0 {
-        return os.read(session^.input, destination)
+        return os.read(session.input, destination)
     }
     if descriptor.returned_events & Poll_Hangup != 0 {
         return (0, .end_of_input)
@@ -478,7 +478,7 @@ pub read :: proc(
 // of making terminal restoration wait forever. Applications must still
 // attempt every later restoration step after any error.
 pub discard_pending_input :: proc(session: ^Session) -> io.Error {
-    if session^.state != .active {
+    if session.state != .active {
         return .invalid
     }
 

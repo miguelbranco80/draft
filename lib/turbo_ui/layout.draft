@@ -26,47 +26,47 @@ pub layout_begin :: proc(
 
 pub layout_next :: proc(layout: ^Layout, extent: usize) -> Rect {
     result: Rect
-    if layout^.axis == .horizontal {
-        if extent > layout^.remaining.width {
+    if layout.axis == .horizontal {
+        if extent > layout.remaining.width {
             return result
         }
         result = Rect{
-            column = layout^.remaining.column,
-            row = layout^.remaining.row,
+            column = layout.remaining.column,
+            row = layout.remaining.row,
             width = extent,
-            height = layout^.remaining.height,
+            height = layout.remaining.height,
         }
         consumed := extent
-        if layout^.remaining.width - consumed > layout^.gap {
-            consumed += layout^.gap
+        if layout.remaining.width - consumed > layout.gap {
+            consumed += layout.gap
         } else {
-            consumed = layout^.remaining.width
+            consumed = layout.remaining.width
         }
-        layout^.remaining.column += consumed
-        layout^.remaining.width -= consumed
+        layout.remaining.column += consumed
+        layout.remaining.width -= consumed
         return result
     }
 
-    if extent > layout^.remaining.height {
+    if extent > layout.remaining.height {
         return result
     }
     result = Rect{
-        column = layout^.remaining.column,
-        row = layout^.remaining.row,
-        width = layout^.remaining.width,
+        column = layout.remaining.column,
+        row = layout.remaining.row,
+        width = layout.remaining.width,
         height = extent,
     }
     consumed := extent
-    if layout^.remaining.height - consumed > layout^.gap {
-        consumed += layout^.gap
+    if layout.remaining.height - consumed > layout.gap {
+        consumed += layout.gap
     } else {
-        consumed = layout^.remaining.height
+        consumed = layout.remaining.height
     }
-    layout^.remaining.row += consumed
-    layout^.remaining.height -= consumed
+    layout.remaining.row += consumed
+    layout.remaining.height -= consumed
     return result
 }
 
 pub layout_rest :: proc(layout: ^Layout) -> Rect {
-    return layout^.remaining
+    return layout.remaining
 }

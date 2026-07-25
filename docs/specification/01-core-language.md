@@ -288,6 +288,17 @@ conversion of untyped constants; `%`, binary `~` (XOR), and the other bitwise
 operators require one common integer type. A shift accepts an integer count and
 returns the left operand's integer type. `&&` and `||` accept and return `bool`.
 
+Member selection automatically dereferences one pointer-to-one base. If `value`
+has type `^T`, `value.member` is equivalent to `value^.member`; the same rule
+applies to a numeric tuple selector such as `pair.0` and independently at each
+dot in a chain. The selected member retains the addressability, alignment, nil
+behavior, and effects of the explicit spelling. The rule does not apply in any
+other expression context and does not apply to `[^]T`, `rawptr`, or `cstring`.
+A multi-pointer must first select an element, for example
+`records[index].field`. Explicit postfix `^` remains available for reading,
+writing, or taking the address of the complete pointee, and
+`value^.member` remains valid.
+
 When every numeric operand is untyped, integer-only arithmetic, remainder,
 bitwise, and shift operations use arbitrary-precision integers and produce an
 untyped integer; `/` truncates toward zero, `%` is `a - (a / b) * b`, and

@@ -203,7 +203,7 @@ joins_cluster :: proc(
     current_indic: Indic_Property,
     current_is_pictographic: bool,
 ) -> bool {
-    previous := state^.previous
+    previous := state.previous
     if previous == .carriage_return && current == .line_feed {
         return true
     }
@@ -227,16 +227,16 @@ joins_cluster :: proc(
         current == .spacing_mark || previous == .prepend {
         return true
     }
-    if current_indic == .consonant && state^.indic_consonant &&
-        state^.indic_linker {
+    if current_indic == .consonant && state.indic_consonant &&
+        state.indic_linker {
         return true
     }
-    if previous == .zero_width_joiner && state^.emoji_zwj_ready &&
+    if previous == .zero_width_joiner && state.emoji_zwj_ready &&
         current_is_pictographic {
         return true
     }
     if previous == .regional_indicator && current == .regional_indicator &&
-        state^.regional_count % 2 == 1 {
+        state.regional_count % 2 == 1 {
         return true
     }
     return false
@@ -254,36 +254,36 @@ advance_state :: proc(
     pictographic: bool,
 ) {
     if property == .regional_indicator {
-        state^.regional_count += 1
+        state.regional_count += 1
     } else {
-        state^.regional_count = 0
+        state.regional_count = 0
     }
 
     if property == .zero_width_joiner {
-        state^.emoji_zwj_ready = state^.emoji_extend_prefix
-        state^.emoji_extend_prefix = false
+        state.emoji_zwj_ready = state.emoji_extend_prefix
+        state.emoji_extend_prefix = false
     } else {
-        state^.emoji_zwj_ready = false
+        state.emoji_zwj_ready = false
         if pictographic {
-            state^.emoji_extend_prefix = true
+            state.emoji_extend_prefix = true
         } else if property != .extend {
-            state^.emoji_extend_prefix = false
+            state.emoji_extend_prefix = false
         }
     }
 
     if indic == .consonant {
-        state^.indic_consonant = true
-        state^.indic_linker = false
-    } else if state^.indic_consonant &&
+        state.indic_consonant = true
+        state.indic_linker = false
+    } else if state.indic_consonant &&
         (indic == .extend || indic == .linker) {
         if indic == .linker {
-            state^.indic_linker = true
+            state.indic_linker = true
         }
     } else {
-        state^.indic_consonant = false
-        state^.indic_linker = false
+        state.indic_consonant = false
+        state.indic_linker = false
     }
-    state^.previous = property
+    state.previous = property
 }
 
 // observe_width records one scalar's contribution to the terminal width of

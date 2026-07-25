@@ -98,6 +98,14 @@ address never extends any of those lifetimes.
 - `cstring` promises a zero-terminated byte sequence suitable for C.
 - `rawptr` carries an address without a pointed-to type or ownership contract.
 
+Member selection automatically dereferences one `^T`: `pointer.field` and
+`pointer^.field` access the same storage, and `pointer.0` does the same for a
+tuple pointee. Prefer the concise spelling for members. Use postfix `pointer^`
+when the complete pointee is the value or assignment target. Automatic member
+dereference does not check nil, borrow storage, establish an owner, or extend a
+lifetime. It does not apply to `[^]T`, `rawptr`, or `cstring`; a multi-pointer
+must select an element before selecting a member.
+
 Do not cast an immutable `string` into mutable bytes or a `cstring`. The source
 may not be writable or terminated. `raw_data(text)` is the explicit no-copy
 escape for a native read-only pointer-plus-length contract: it returns `[^]u8`,

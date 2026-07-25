@@ -137,11 +137,11 @@ Computed_Code :: enum i16 {
 }
 
 last_enveloped[N: usize] :: proc(value: ^Value_Envelope[N]) -> i64 {
-    return value^.buffer.values[N + 1]
+    return value.buffer.values[N + 1]
 }
 
 last_narrow[N: u8] :: proc(value: ^Narrow_Value_Buffer[N]) -> i64 {
-    return value^.values[cast[usize](N)]
+    return value.values[cast[usize](N)]
 }
 
 increment_value :: proc(value: i64) -> i64 {
@@ -1000,14 +1000,14 @@ main :: proc() {
     assert(bit_header.delta == 31)
     uninitialized_bits: Bit_Header = ---
     uninitialized_bits_pointer := &uninitialized_bits
-    uninitialized_bits_pointer^.kind = 5
-    assert(uninitialized_bits_pointer^.kind == 5)
-    uninitialized_bits_pointer^.delta = -3
-    assert(uninitialized_bits_pointer^.kind == 5)
-    assert(uninitialized_bits_pointer^.delta == -3)
-    uninitialized_bits_pointer^.active = true
-    assert(uninitialized_bits_pointer^.active)
-    assert(uninitialized_bits_pointer^.delta == -3)
+    uninitialized_bits_pointer.kind = 5
+    assert(uninitialized_bits_pointer.kind == 5)
+    uninitialized_bits_pointer.delta = -3
+    assert(uninitialized_bits_pointer.kind == 5)
+    assert(uninitialized_bits_pointer.delta == -3)
+    uninitialized_bits_pointer.active = true
+    assert(uninitialized_bits_pointer.active)
+    assert(uninitialized_bits_pointer.delta == -3)
     static_assert(size_of(Bit_Header) == 4)
     static_assert(align_of(Bit_Header) == 2)
     static_assert(type_member_offset(Bit_Header, 1) == 0)

@@ -115,16 +115,16 @@ Insert_Input_Result :: enum u8 {
 // be zero-initialized and remain at a stable address until document_destroy.
 // No storage is allocated until the first inserted byte or line.
 document_init :: proc(document: ^Document) {
-    array.init(&document^.bytes)
-    array.init(&document^.lines)
+    array.init(&document.bytes)
+    array.init(&document.lines)
 }
 
 // document_destroy releases both independent allocations and invalidates every
 // slice previously returned by document_line. It must run exactly once after a
 // successful document_init and performs no file I/O.
 document_destroy :: proc(document: ^Document) {
-    array.destroy(&document^.lines)
-    array.destroy(&document^.bytes)
+    array.destroy(&document.lines)
+    array.destroy(&document.bytes)
 }
 
 // document_insert_line copies source into the append-only byte pool and inserts
@@ -138,38 +138,38 @@ document_insert_line :: proc(
     insert_at: usize,
     source: []u8,
 ) {
-    assert(insert_at <= document^.lines.length,
+    assert(insert_at <= document.lines.length,
         "document insertion index is out of bounds")
-    assert(document^.bytes.length <= ~cast[usize](0) - len(source),
+    assert(document.bytes.length <= ~cast[usize](0) - len(source),
         "document byte length overflows")
 
     line := Line{
-        start = document^.bytes.length,
+        start = document.bytes.length,
         length = len(source),
     }
     for byte in source {
-        array.append(&document^.bytes, byte)
+        array.append(&document.bytes, byte)
     }
 
     // Grow by one record before shifting. Moving records from back to front
     // ensures every source record is read before its destination is replaced.
     empty: Line
-    array.append(&document^.lines, empty)
-    cursor := document^.lines.length - 1
+    array.append(&document.lines, empty)
+    cursor := document.lines.length - 1
     for cursor > insert_at {
-        document^.lines.data[cursor] = document^.lines.data[cursor - 1]
+        document.lines.data[cursor] = document.lines.data[cursor - 1]
         cursor -= 1
     }
-    document^.lines.data[insert_at] = line
+    document.lines.data[insert_at] = line
 }
 
 // document_delete_line removes one active record and shifts later records
 // toward the front. Its bytes intentionally remain in the append-only pool so
 // offsets in all surviving records stay valid. index must name an active line.
 document_delete_line :: proc(document: ^Document, index: usize) {
-    assert(index < document^.lines.length,
+    assert(index < document.lines.length,
         "document deletion index is out of bounds")
-    array.remove(&document^.lines, index)
+    array.remove(&document.lines, index)
 }
 
 // document_line returns a mutable byte view borrowed from the Document even
@@ -178,16 +178,16 @@ document_delete_line :: proc(document: ^Document, index: usize) {
 // relocate bytes. The stored bounds assertion documents the central pool
 // invariant and catches an internal representation error near its use.
 document_line :: proc(document: ^Document, index: usize) -> []u8 {
-    assert(index < document^.lines.length,
+    assert(index < document.lines.length,
         "document line index is out of bounds")
-    line := document^.lines.data[index]
-    assert(line.start <= document^.bytes.length &&
-        line.length <= document^.bytes.length - line.start,
+    line := document.lines.data[index]
+    assert(line.start <= document.bytes.length &&
+        line.length <= document.bytes.length - line.start,
         "document line range is outside the byte pool")
     if line.length == 0 {
-        return document^.bytes.data[:0]
+        return document.bytes.data[:0]
     }
-    first := cast[[^]u8](&document^.bytes.data[line.start])
+    first := cast[[^]u8](&document.bytes.data[line.start])
     return first[:line.length]
 }
 
@@ -271,7 +271,7 @@ print_numbered_line :: proc(document: ^Document, index: usize) -> bool {
 // number. Traversal is an ordinary deterministic array walk; deleted byte-pool
 // contents are intentionally invisible.
 list_document :: proc(document: ^Document) -> bool {
-    for index: usize = 0; index < document^.lines.length; index += 1 {
+    for index: usize = 0; index < document.lines.length; index += 1 {
         if !print_numbered_line(document, index) {
             return false
         }
@@ -292,18 +292,18 @@ read_line :: proc(
     array.clear(destination)
 
     for {
-        if input^.next == input^.count {
-            if input^.ended {
-                if destination^.length != 0 {
+        if input.next == input.count {
+            if input.ended {
+                if destination.length != 0 {
                     return .line
                 }
                 return .end_of_input
             }
 
-            (count, error) := os.read(os.standard_input, input^.buffer[:])
+            (count, error) := os.read(os.standard_input, input.buffer[:])
             if error == .end_of_input {
-                input^.ended = true
-                if destination^.length != 0 {
+                input.ended = true
+                if destination.length != 0 {
                     return .line
                 }
                 return .end_of_input
@@ -311,12 +311,12 @@ read_line :: proc(
             if error != .none || count == 0 {
                 return .failed
             }
-            input^.next = 0
-            input^.count = count
+            input.next = 0
+            input.count = count
         }
 
-        byte := input^.buffer[input^.next]
-        input^.next += 1
+        byte := input.buffer[input.next]
+        input.next += 1
         if byte == 10 {
             return .line
         }
@@ -395,7 +395,7 @@ load_document :: proc(
             if current_line.length != 0 {
                 document_insert_line(
                     document,
-                    document^.lines.length,
+                    document.lines.length,
                     array.view(&current_line),
                 )
             }
@@ -411,7 +411,7 @@ load_document :: proc(
             if byte == 10 {
                 document_insert_line(
                     document,
-                    document^.lines.length,
+                    document.lines.length,
                     array.view(&current_line),
                 )
                 array.clear(&current_line)
@@ -442,7 +442,7 @@ save_document :: proc(document: ^Document, path: cstring) -> bool {
 
     newline := [1]u8{10}
     succeeded := true
-    for index: usize = 0; index < document^.lines.length; index += 1 {
+    for index: usize = 0; index < document.lines.length; index += 1 {
         if os.write_all(output, document_line(document, index)) != .none ||
             os.write_all(output, newline[:]) != .none {
             succeeded = false
@@ -551,7 +551,7 @@ run_editor :: proc(document: ^Document, path: cstring) -> int {
         // address has been validated against the current document.
         (line_number, is_number) := parse_line_number(command)
         if is_number {
-            if line_number == 0 || line_number > document^.lines.length {
+            if line_number == 0 || line_number > document.lines.length {
                 if !write_text(os.standard_error, "no such line\n") {
                     array.destroy(&command_storage)
                     return 1
@@ -583,7 +583,7 @@ run_editor :: proc(document: ^Document, path: cstring) -> int {
         }
 
         if bytes_equal_text(command, "p") {
-            if document^.lines.length == 0 {
+            if document.lines.length == 0 {
                 if !write_text(os.standard_error, "buffer is empty\n") {
                     array.destroy(&command_storage)
                     return 1
@@ -596,8 +596,8 @@ run_editor :: proc(document: ^Document, path: cstring) -> int {
         }
 
         if len(command) == 0 || bytes_equal_text(command, "n") {
-            if document^.lines.length == 0 ||
-                cursor + 1 >= document^.lines.length {
+            if document.lines.length == 0 ||
+                cursor + 1 >= document.lines.length {
                 if !write_text(os.standard_error, "no next line\n") {
                     array.destroy(&command_storage)
                     return 1
@@ -615,7 +615,7 @@ run_editor :: proc(document: ^Document, path: cstring) -> int {
         if bytes_equal_text(command, "i") ||
             bytes_equal_text(command, "a") {
             insert_at: usize
-            if document^.lines.length != 0 {
+            if document.lines.length != 0 {
                 insert_at = cursor
                 if bytes_equal_text(command, "a") {
                     insert_at += 1
@@ -645,14 +645,14 @@ run_editor :: proc(document: ^Document, path: cstring) -> int {
         }
 
         if bytes_equal_text(command, "d") {
-            if document^.lines.length == 0 {
+            if document.lines.length == 0 {
                 if !write_text(os.standard_error, "buffer is empty\n") {
                     array.destroy(&command_storage)
                     return 1
                 }
             } else {
                 document_delete_line(document, cursor)
-                if cursor == document^.lines.length && cursor != 0 {
+                if cursor == document.lines.length && cursor != 0 {
                     cursor -= 1
                 }
                 dirty = true
@@ -670,7 +670,7 @@ run_editor :: proc(document: ^Document, path: cstring) -> int {
                 dirty = false
                 if !write_line_number(
                     os.standard_output,
-                    document^.lines.length,
+                    document.lines.length,
                 ) || !write_text(os.standard_output, " lines written\n") {
                     array.destroy(&command_storage)
                     return 1

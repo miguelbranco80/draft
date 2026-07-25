@@ -265,11 +265,11 @@ activate_asteroid :: proc(
     rotation: f32,
     spin_per_tick: f32,
 ) -> bool {
-    for index: usize = 0; index < len(game^.asteroids); index += 1 {
-        if game^.asteroids[index].active {
+    for index: usize = 0; index < len(game.asteroids); index += 1 {
+        if game.asteroids[index].active {
             continue
         }
-        game^.asteroids[index] = Asteroid{
+        game.asteroids[index] = Asteroid{
             active = true,
             size = size,
             position = wrap_position(position),
@@ -294,7 +294,7 @@ random_edge_position :: proc(game: ^Game, edge: u32) -> Vector {
         }
         return Vector{
             x = x,
-            y = random.unit_f32(&game^.generator) * cast[f32](World_Height),
+            y = random.unit_f32(&game.generator) * cast[f32](World_Height),
         }
     }
 
@@ -303,7 +303,7 @@ random_edge_position :: proc(game: ^Game, edge: u32) -> Vector {
         y = cast[f32](World_Height) - 1.0
     }
     return Vector{
-        x = random.unit_f32(&game^.generator) * cast[f32](World_Width),
+        x = random.unit_f32(&game.generator) * cast[f32](World_Width),
         y = y,
     }
 }
@@ -314,7 +314,7 @@ random_edge_position :: proc(game: ^Game, edge: u32) -> Vector {
 // objects, all within Asteroid_Capacity.
 spawn_wave :: proc(game: ^Game) {
     count := Initial_Asteroids
-    additional := game^.wave - 1
+    additional := game.wave - 1
     maximum_additional := Maximum_Wave_Asteroids - Initial_Asteroids
     if additional >= cast[u32](maximum_additional) {
         count = Maximum_Wave_Asteroids
@@ -323,13 +323,13 @@ spawn_wave :: proc(game: ^Game) {
     }
     for index: int = 0; index < count; index += 1 {
         direction_index := cast[u32](
-            random.next_u64(&game^.generator) & 15,
+            random.next_u64(&game.generator) & 15,
         )
         direction := direction_from_index(direction_index)
-        speed := 38.0 + random.unit_f32(&game^.generator) * 42.0
+        speed := 38.0 + random.unit_f32(&game.generator) * 42.0
         position := random_edge_position(game, cast[u32](index))
-        rotation := random.unit_f32(&game^.generator) * 360.0
-        spin := (random.unit_f32(&game^.generator) - 0.5) * 1.2
+        rotation := random.unit_f32(&game.generator) * 360.0
+        spin := (random.unit_f32(&game.generator) - 0.5) * 1.2
         activated := activate_asteroid(
             game,
             .large,
@@ -348,7 +348,7 @@ spawn_wave :: proc(game: ^Game) {
 // finite protection window. It intentionally leaves score, bullets, asteroids,
 // and wave untouched so the same operation is correct after losing a life.
 reset_ship :: proc(game: ^Game) {
-    game^.ship = Ship{
+    game.ship = Ship{
         position = Vector{
             x = cast[f32](World_Width) * 0.5,
             y = cast[f32](World_Height) * 0.5,
@@ -365,9 +365,9 @@ reset_ship :: proc(game: ^Game) {
 pub game_init :: proc(game: ^Game, seed: u64) {
     empty: Game
     game^ = empty
-    random.init(&game^.generator, seed)
-    game^.lives = Initial_Lives
-    game^.wave = 1
+    random.init(&game.generator, seed)
+    game.lives = Initial_Lives
+    game.wave = 1
     reset_ship(game)
     spawn_wave(game)
 }
@@ -376,14 +376,14 @@ pub game_init :: proc(game: ^Game, seed: u64) {
 // orthonormal matrix; alternating left and right therefore returns close to
 // the original direction without normalization or a math-library dependency.
 rotate_ship :: proc(ship: ^Ship, turn_left: bool) {
-    old := ship^.direction
+    old := ship.direction
     if turn_left {
-        ship^.direction = Vector{
+        ship.direction = Vector{
             x = old.x * Turn_Cosine + old.y * Turn_Sine,
             y = -old.x * Turn_Sine + old.y * Turn_Cosine,
         }
     } else {
-        ship^.direction = Vector{
+        ship.direction = Vector{
             x = old.x * Turn_Cosine - old.y * Turn_Sine,
             y = old.x * Turn_Sine + old.y * Turn_Cosine,
         }
@@ -394,19 +394,19 @@ rotate_ship :: proc(ship: ^Ship, turn_left: bool) {
 // nose. Failure because every slot is live is a deliberate no-op; it does not
 // reset the cooldown, so the next tick may fire as soon as a slot expires.
 fire_bullet :: proc(game: ^Game) -> bool {
-    for index: usize = 0; index < len(game^.bullets); index += 1 {
-        if game^.bullets[index].active {
+    for index: usize = 0; index < len(game.bullets); index += 1 {
+        if game.bullets[index].active {
             continue
         }
         nose := vector_add(
-            game^.ship.position,
-            vector_scale(game^.ship.direction, 16.0),
+            game.ship.position,
+            vector_scale(game.ship.direction, 16.0),
         )
         shot_velocity := vector_add(
-            game^.ship.velocity,
-            vector_scale(game^.ship.direction, Bullet_Speed),
+            game.ship.velocity,
+            vector_scale(game.ship.direction, Bullet_Speed),
         )
-        game^.bullets[index] = Bullet{
+        game.bullets[index] = Bullet{
             active = true,
             position = wrap_position(nose),
             velocity = shot_velocity,
@@ -423,37 +423,37 @@ fire_bullet :: proc(game: ^Game) -> bool {
 // square-root based clamp.
 update_ship :: proc(game: ^Game, input: Input) {
     if input.turn_left != input.turn_right {
-        rotate_ship(&game^.ship, input.turn_left)
+        rotate_ship(&game.ship, input.turn_left)
     }
     if input.thrust {
         acceleration := vector_scale(
-            game^.ship.direction,
+            game.ship.direction,
             Ship_Acceleration_Per_Tick,
         )
-        game^.ship.velocity = vector_add(game^.ship.velocity, acceleration)
+        game.ship.velocity = vector_add(game.ship.velocity, acceleration)
     }
-    game^.ship.velocity = vector_scale(
-        game^.ship.velocity,
+    game.ship.velocity = vector_scale(
+        game.ship.velocity,
         Ship_Drag_Per_Tick,
     )
     displacement := vector_scale(
-        game^.ship.velocity,
+        game.ship.velocity,
         cast[f32](Fixed_Step_Seconds),
     )
-    game^.ship.position = wrap_position(
-        vector_add(game^.ship.position, displacement),
+    game.ship.position = wrap_position(
+        vector_add(game.ship.position, displacement),
     )
 
-    if game^.shot_cooldown_ticks != 0 {
-        game^.shot_cooldown_ticks -= 1
+    if game.shot_cooldown_ticks != 0 {
+        game.shot_cooldown_ticks -= 1
     }
-    if input.fire && game^.shot_cooldown_ticks == 0 {
+    if input.fire && game.shot_cooldown_ticks == 0 {
         if fire_bullet(game) {
-            game^.shot_cooldown_ticks = Shot_Cooldown_Ticks
+            game.shot_cooldown_ticks = Shot_Cooldown_Ticks
         }
     }
-    if game^.ship.invulnerability_ticks != 0 {
-        game^.ship.invulnerability_ticks -= 1
+    if game.ship.invulnerability_ticks != 0 {
+        game.ship.invulnerability_ticks -= 1
     }
 }
 
@@ -461,22 +461,22 @@ update_ship :: proc(game: ^Game, input: Input) {
 // lifetime. Movement occurs before the collision pass, so collision queries
 // observe the same positions later rendered for this tick.
 update_bullets :: proc(game: ^Game) {
-    for index: usize = 0; index < len(game^.bullets); index += 1 {
-        bullet := &game^.bullets[index]
-        if !bullet^.active {
+    for index: usize = 0; index < len(game.bullets); index += 1 {
+        bullet := &game.bullets[index]
+        if !bullet.active {
             continue
         }
         displacement := vector_scale(
-            bullet^.velocity,
+            bullet.velocity,
             cast[f32](Fixed_Step_Seconds),
         )
-        bullet^.position = wrap_position(
-            vector_add(bullet^.position, displacement),
+        bullet.position = wrap_position(
+            vector_add(bullet.position, displacement),
         )
-        if bullet^.remaining_ticks <= 1 {
-            bullet^.active = false
+        if bullet.remaining_ticks <= 1 {
+            bullet.active = false
         } else {
-            bullet^.remaining_ticks -= 1
+            bullet.remaining_ticks -= 1
         }
     }
 }
@@ -485,23 +485,23 @@ update_bullets :: proc(game: ^Game) {
 // to a small interval so a long-running game does not lose visible f32
 // precision; gameplay collision does not depend on it.
 update_asteroids :: proc(game: ^Game) {
-    for index: usize = 0; index < len(game^.asteroids); index += 1 {
-        asteroid := &game^.asteroids[index]
-        if !asteroid^.active {
+    for index: usize = 0; index < len(game.asteroids); index += 1 {
+        asteroid := &game.asteroids[index]
+        if !asteroid.active {
             continue
         }
         displacement := vector_scale(
-            asteroid^.velocity,
+            asteroid.velocity,
             cast[f32](Fixed_Step_Seconds),
         )
-        asteroid^.position = wrap_position(
-            vector_add(asteroid^.position, displacement),
+        asteroid.position = wrap_position(
+            vector_add(asteroid.position, displacement),
         )
-        asteroid^.rotation += asteroid^.spin_per_tick
-        if asteroid^.rotation >= 360.0 {
-            asteroid^.rotation -= 360.0
-        } else if asteroid^.rotation < 0.0 {
-            asteroid^.rotation += 360.0
+        asteroid.rotation += asteroid.spin_per_tick
+        if asteroid.rotation >= 360.0 {
+            asteroid.rotation -= 360.0
+        } else if asteroid.rotation < 0.0 {
+            asteroid.rotation += 360.0
         }
     }
 }
@@ -559,9 +559,9 @@ split_asteroid :: proc(game: ^Game, parent: Asteroid) {
 // may immediately reuse that same index, so reading through the old array
 // element after activation would observe a child rather than the parent.
 destroy_asteroid :: proc(game: ^Game, index: usize) {
-    parent := game^.asteroids[index]
-    game^.asteroids[index].active = false
-    game^.score += asteroid_score(parent.size)
+    parent := game.asteroids[index]
+    game.asteroids[index].active = false
+    game.score += asteroid_score(parent.size)
     split_asteroid(game, parent)
 }
 
@@ -571,26 +571,26 @@ destroy_asteroid :: proc(game: ^Game, index: usize) {
 // their immediate publication into the world.
 resolve_bullet_collisions :: proc(game: ^Game) {
     for bullet_index: usize = 0;
-        bullet_index < len(game^.bullets);
+        bullet_index < len(game.bullets);
         bullet_index += 1 {
-        bullet := &game^.bullets[bullet_index]
-        if !bullet^.active {
+        bullet := &game.bullets[bullet_index]
+        if !bullet.active {
             continue
         }
         for asteroid_index: usize = 0;
-            asteroid_index < len(game^.asteroids);
+            asteroid_index < len(game.asteroids);
             asteroid_index += 1 {
-            asteroid := &game^.asteroids[asteroid_index]
-            if !asteroid^.active {
+            asteroid := &game.asteroids[asteroid_index]
+            if !asteroid.active {
                 continue
             }
             if positions_overlap(
-                bullet^.position,
+                bullet.position,
                 2.0,
-                asteroid^.position,
-                asteroid^.radius,
+                asteroid.position,
+                asteroid.radius,
             ) {
-                bullet^.active = false
+                bullet.active = false
                 destroy_asteroid(game, asteroid_index)
                 break
             }
@@ -603,23 +603,23 @@ resolve_bullet_collisions :: proc(game: ^Game) {
 // in the center with cleared velocity; asteroids and bullets continue, making
 // each life part of one persistent wave.
 resolve_ship_collision :: proc(game: ^Game) {
-    if game^.ship.invulnerability_ticks != 0 {
+    if game.ship.invulnerability_ticks != 0 {
         return
     }
-    for index: usize = 0; index < len(game^.asteroids); index += 1 {
-        asteroid := &game^.asteroids[index]
-        if !asteroid^.active {
+    for index: usize = 0; index < len(game.asteroids); index += 1 {
+        asteroid := &game.asteroids[index]
+        if !asteroid.active {
             continue
         }
         if positions_overlap(
-            game^.ship.position,
+            game.ship.position,
             11.0,
-            asteroid^.position,
-            asteroid^.radius,
+            asteroid.position,
+            asteroid.radius,
         ) {
-            game^.lives -= 1
-            if game^.lives == 0 {
-                game^.game_over = true
+            game.lives -= 1
+            if game.lives == 0 {
+                game.game_over = true
             } else {
                 reset_ship(game)
             }
@@ -632,7 +632,7 @@ resolve_ship_collision :: proc(game: ^Game) {
 // exposes no array pointer and its result is independent of inactive contents.
 pub active_asteroid_count :: proc(game: ^Game) -> usize {
     count: usize
-    for asteroid in game^.asteroids {
+    for asteroid in game.asteroids {
         if asteroid.active {
             count += 1
         }
@@ -645,7 +645,7 @@ pub active_asteroid_count :: proc(game: ^Game) -> usize {
 // bullets resolve before the ship; and a cleared wave is replenished only
 // after all collisions. A terminal game is inert until explicit reinitializing.
 pub game_tick :: proc(game: ^Game, input: Input) {
-    if game^.game_over {
+    if game.game_over {
         return
     }
     update_ship(game, input)
@@ -653,8 +653,8 @@ pub game_tick :: proc(game: ^Game, input: Input) {
     update_asteroids(game)
     resolve_bullet_collisions(game)
     resolve_ship_collision(game)
-    if !game^.game_over && active_asteroid_count(game) == 0 {
-        game^.wave += 1
+    if !game.game_over && active_asteroid_count(game) == 0 {
+        game.wave += 1
         spawn_wave(game)
     }
 }

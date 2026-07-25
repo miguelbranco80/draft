@@ -47,10 +47,10 @@ pub text_box_set :: proc(
     for index: usize = 0; index < len(source); index += 1 {
         storage[index] = source[index]
     }
-    field^.length = len(source)
-    field^.cursor = len(source)
-    field^.scroll = 0
-    field^.pending_length = 0
+    field.length = len(source)
+    field.cursor = len(source)
+    field.scroll = 0
+    field.pending_length = 0
     return true
 }
 
@@ -74,10 +74,10 @@ pub text_box_set_text :: proc(
     for index: usize = 0; index < len(source); index += 1 {
         storage[index] = source[index]
     }
-    field^.length = len(source)
-    field^.cursor = len(source)
-    field^.scroll = 0
-    field^.pending_length = 0
+    field.length = len(source)
+    field.cursor = len(source)
+    field.scroll = 0
+    field.pending_length = 0
     return true
 }
 
@@ -85,8 +85,8 @@ pub text_box_bytes :: proc(
     field: ^Text_Box_State,
     storage: []u8,
 ) -> []u8 {
-    assert(field^.length <= len(storage), "turbo_ui text box length exceeds storage")
-    return storage[:field^.length]
+    assert(field.length <= len(storage), "turbo_ui text box length exceeds storage")
+    return storage[:field.length]
 }
 
 insert_bytes :: proc(
@@ -94,19 +94,19 @@ insert_bytes :: proc(
     storage: []u8,
     source: []u8,
 ) -> bool {
-    if field^.length + len(source) > len(storage) {
+    if field.length + len(source) > len(storage) {
         return false
     }
-    index := field^.length
-    for index > field^.cursor {
+    index := field.length
+    for index > field.cursor {
         storage[index + len(source) - 1] = storage[index - 1]
         index -= 1
     }
     for source_index: usize = 0; source_index < len(source); source_index += 1 {
-        storage[field^.cursor + source_index] = source[source_index]
+        storage[field.cursor + source_index] = source[source_index]
     }
-    field^.length += len(source)
-    field^.cursor += len(source)
+    field.length += len(source)
+    field.cursor += len(source)
     return true
 }
 
@@ -115,17 +115,17 @@ erase_range :: proc(
     storage: []u8,
     begin, end: usize,
 ) {
-    assert(begin <= end && end <= field^.length,
+    assert(begin <= end && end <= field.length,
         "turbo_ui text box erase range is invalid")
     source := end
     destination := begin
-    for source < field^.length {
+    for source < field.length {
         storage[destination] = storage[source]
         destination += 1
         source += 1
     }
-    field^.length -= end - begin
-    field^.cursor = begin
+    field.length -= end - begin
+    field.cursor = begin
 }
 
 previous_grapheme :: proc(bytes: []u8, cursor: usize) -> usize {
@@ -205,32 +205,32 @@ accept_character :: proc(
     storage: []u8,
     byte: u8,
 ) -> (bool, bool) {
-    if byte >= 32 && byte < 127 && field^.pending_length == 0 {
+    if byte >= 32 && byte < 127 && field.pending_length == 0 {
         one := [1]u8{byte}
         inserted := insert_bytes(field, storage, one[:])
         return (inserted, !inserted)
     }
-    if field^.pending_length == 0 {
+    if field.pending_length == 0 {
         expected := expected_utf8_length(byte)
         if expected == 0 {
             return (false, false)
         }
-        field^.pending[0] = byte
-        field^.pending_length = 1
+        field.pending[0] = byte
+        field.pending_length = 1
         return (false, false)
     }
     if byte < 0x80 || byte > 0xbf {
-        field^.pending_length = 0
+        field.pending_length = 0
         return accept_character(field, storage, byte)
     }
-    field^.pending[field^.pending_length] = byte
-    field^.pending_length += 1
-    expected := expected_utf8_length(field^.pending[0])
-    if field^.pending_length < expected {
+    field.pending[field.pending_length] = byte
+    field.pending_length += 1
+    expected := expected_utf8_length(field.pending[0])
+    if field.pending_length < expected {
         return (false, false)
     }
-    pending := field^.pending[:field^.pending_length]
-    field^.pending_length = 0
+    pending := field.pending[:field.pending_length]
+    field.pending_length = 0
     if !utf8.valid_bytes(pending) {
         return (false, false)
     }
@@ -243,16 +243,16 @@ ensure_text_cursor_visible :: proc(
     bytes: []u8,
     width: usize,
 ) {
-    if field^.cursor < field^.scroll {
-        field^.scroll = field^.cursor
+    if field.cursor < field.scroll {
+        field.scroll = field.cursor
     }
     if width == 0 {
-        field^.scroll = field^.cursor
+        field.scroll = field.cursor
         return
     }
-    for grapheme_columns(bytes, field^.scroll, field^.cursor) >= width &&
-        field^.scroll < field^.cursor {
-        field^.scroll = next_grapheme(bytes, field^.scroll)
+    for grapheme_columns(bytes, field.scroll, field.cursor) >= width &&
+        field.scroll < field.cursor {
+        field.scroll = next_grapheme(bytes, field.scroll)
     }
 }
 
@@ -264,29 +264,29 @@ paint_text_box :: proc(
     focused: bool,
     enabled: bool,
 ) -> bool {
-    style_value := state^.theme.input
+    style_value := state.theme.input
     if !enabled {
-        style_value = state^.theme.disabled
+        style_value = state.theme.disabled
     } else if focused {
-        style_value = state^.theme.input_focused
+        style_value = state.theme.input_focused
     }
-    if !fill_rect(state^.surface, state^.clip, bounds, ' ', style_value) {
+    if !fill_rect(state.surface, state.clip, bounds, ' ', style_value) {
         return false
     }
     if bounds.width == 0 || bounds.height == 0 {
         return true
     }
     put_clipped(
-        state^.surface,
-        state^.clip,
+        state.surface,
+        state.clip,
         Point{column = bounds.column, row = bounds.row},
         '[',
         style_value,
     )
     if bounds.width > 1 {
         put_clipped(
-            state^.surface,
-            state^.clip,
+            state.surface,
+            state.clip,
             Point{column = rect_right(bounds) - 1, row = bounds.row},
             ']',
             style_value,
@@ -301,34 +301,34 @@ paint_text_box :: proc(
         width = bounds.width - 2,
         height = 1,
     }
-    bytes := storage[:field^.length]
+    bytes := storage[:field.length]
     write_clipped_bytes(
-        state^.surface,
-        intersect(state^.clip, content),
+        state.surface,
+        intersect(state.clip, content),
         Point{column = content.column, row = content.row},
-        bytes[field^.scroll:],
+        bytes[field.scroll:],
         style_value,
     )
     if focused {
         cursor_column := content.column +
-            grapheme_columns(bytes, field^.scroll, field^.cursor)
+            grapheme_columns(bytes, field.scroll, field.cursor)
         if cursor_column < rect_right(content) {
-            if field^.cursor < field^.length {
-                end := next_grapheme(bytes, field^.cursor)
+            if field.cursor < field.length {
+                end := next_grapheme(bytes, field.cursor)
                 write_clipped_bytes(
-                    state^.surface,
-                    intersect(state^.clip, content),
+                    state.surface,
+                    intersect(state.clip, content),
                     Point{column = cursor_column, row = content.row},
-                    storage[field^.cursor:end],
-                    state^.theme.input_cursor,
+                    storage[field.cursor:end],
+                    state.theme.input_cursor,
                 )
             } else {
                 put_clipped(
-                    state^.surface,
-                    intersect(state^.clip, content),
+                    state.surface,
+                    intersect(state.clip, content),
                     Point{column = cursor_column, row = content.row},
                     ' ',
-                    state^.theme.input_cursor,
+                    state.theme.input_cursor,
                 )
             }
         }
@@ -347,9 +347,9 @@ pub text_box :: proc(
     storage: []u8,
     enabled: bool = true,
 ) -> Text_Box_Result {
-    assert(field^.length <= len(storage), "turbo_ui text box length exceeds storage")
-    assert(field^.cursor <= field^.length, "turbo_ui text box cursor exceeds text")
-    assert(single_line_text(storage[:field^.length]),
+    assert(field.length <= len(storage), "turbo_ui text box length exceeds storage")
+    assert(field.cursor <= field.length, "turbo_ui text box cursor exceeds text")
+    assert(single_line_text(storage[:field.length]),
         "turbo_ui text box contains invalid single-line UTF-8")
     result: Text_Box_Result
     focused := enabled && has_focus(state, id)
@@ -358,23 +358,23 @@ pub text_box :: proc(
         interaction = focus_area(state, id, bounds)
     }
     if enabled && interaction.activated && bounds.width > 2 {
-        point := state^.event.mouse.position
+        point := state.event.mouse.position
         desired: usize
         if point.column > bounds.column + 1 {
             desired = point.column - bounds.column - 1
         }
-        field^.cursor = cursor_at_column(
-            storage[:field^.length],
-            field^.scroll,
+        field.cursor = cursor_at_column(
+            storage[:field.length],
+            field.scroll,
             desired,
         )
-        field^.pending_length = 0
+        field.pending_length = 0
         focused = true
     }
 
-    if focused && !state^.event_handled {
-        if state^.event.kind == .text {
-            source := state^.event.text
+    if focused && !state.event_handled {
+        if state.event.kind == .text {
+            source := state.event.text
             if utf8.valid(source) {
                 for index: usize = 0; index < len(source); index += 1 {
                     byte := source[index]
@@ -386,10 +386,10 @@ pub text_box :: proc(
                     result.full = result.full || full
                 }
             }
-            state^.event_handled = true
-        } else if state^.event.kind == .key {
-            key := state^.event.key
-            bytes := storage[:field^.length]
+            state.event_handled = true
+        } else if state.event.kind == .key {
+            key := state.event.key
+            bytes := storage[:field.length]
             if key.code == .character && !key.control && !key.alt {
                 (changed, full) := accept_character(
                     field,
@@ -398,45 +398,45 @@ pub text_box :: proc(
                 )
                 result.changed = changed
                 result.full = full
-                state^.event_handled = true
+                state.event_handled = true
             } else if key.code == .left {
-                field^.cursor = previous_grapheme(bytes, field^.cursor)
-                field^.pending_length = 0
-                state^.event_handled = true
+                field.cursor = previous_grapheme(bytes, field.cursor)
+                field.pending_length = 0
+                state.event_handled = true
             } else if key.code == .right {
-                field^.cursor = next_grapheme(bytes, field^.cursor)
-                field^.pending_length = 0
-                state^.event_handled = true
+                field.cursor = next_grapheme(bytes, field.cursor)
+                field.pending_length = 0
+                state.event_handled = true
             } else if key.code == .home {
-                field^.cursor = 0
-                field^.pending_length = 0
-                state^.event_handled = true
+                field.cursor = 0
+                field.pending_length = 0
+                state.event_handled = true
             } else if key.code == .end {
-                field^.cursor = field^.length
-                field^.pending_length = 0
-                state^.event_handled = true
-            } else if key.code == .backspace && field^.cursor != 0 {
-                begin := previous_grapheme(bytes, field^.cursor)
-                erase_range(field, storage, begin, field^.cursor)
+                field.cursor = field.length
+                field.pending_length = 0
+                state.event_handled = true
+            } else if key.code == .backspace && field.cursor != 0 {
+                begin := previous_grapheme(bytes, field.cursor)
+                erase_range(field, storage, begin, field.cursor)
                 result.changed = true
-                field^.pending_length = 0
-                state^.event_handled = true
-            } else if key.code == .delete && field^.cursor < field^.length {
-                end := next_grapheme(bytes, field^.cursor)
-                erase_range(field, storage, field^.cursor, end)
+                field.pending_length = 0
+                state.event_handled = true
+            } else if key.code == .delete && field.cursor < field.length {
+                end := next_grapheme(bytes, field.cursor)
+                erase_range(field, storage, field.cursor, end)
                 result.changed = true
-                field^.pending_length = 0
-                state^.event_handled = true
+                field.pending_length = 0
+                state.event_handled = true
             } else if key.code == .enter {
                 result.submitted = true
-                field^.pending_length = 0
-                state^.event_handled = true
+                field.pending_length = 0
+                state.event_handled = true
             }
         }
     }
     ensure_text_cursor_visible(
         field,
-        storage[:field^.length],
+        storage[:field.length],
         bounds.width - 2 if bounds.width > 2 else 0,
     )
     paint_text_box(state, bounds, field, storage, focused, enabled)

@@ -80,19 +80,19 @@ zoom_control_rect :: proc(bounds: Rect) -> Rect {
 // forms differently. An empty rectangle means that the current narrow window
 // has room for structural chrome but no title text.
 window_title_rect :: proc(window: ^Window_State) -> Rect {
-    title_column := window^.bounds.column + 2
-    if window^.flags.closable {
+    title_column := window.bounds.column + 2
+    if window.flags.closable {
         title_column += 2
     }
 
-    title_end := rect_right(window^.bounds) - 1
-    zoom_rect := zoom_control_rect(window^.bounds)
+    title_end := rect_right(window.bounds) - 1
+    zoom_rect := zoom_control_rect(window.bounds)
     close_point := Point{
-        column = window^.bounds.column + 1,
-        row = window^.bounds.row,
+        column = window.bounds.column + 1,
+        row = window.bounds.row,
     }
-    zoom_visible := window^.flags.zoomable && !rect_empty(zoom_rect) &&
-        (!window^.flags.closable || !point_in_rect(close_point, zoom_rect))
+    zoom_visible := window.flags.zoomable && !rect_empty(zoom_rect) &&
+        (!window.flags.closable || !point_in_rect(close_point, zoom_rect))
     if zoom_visible {
         // Preserve one border cell between title text and the zoom glyph. The
         // glyph rectangle itself already excludes the upper-right corner.
@@ -103,7 +103,7 @@ window_title_rect :: proc(window: ^Window_State) -> Rect {
     }
     return Rect{
         column = title_column,
-        row = window^.bounds.row,
+        row = window.bounds.row,
         width = title_end - title_column,
         height = 1,
     }
@@ -254,13 +254,13 @@ raise_window :: proc(windows: []Window_State, id: Widget_Id) {
 }
 
 save_active_focus :: proc(state: ^State, windows: []Window_State) {
-    if state^.active_window == No_Widget {
-        state^.desktop_focus = state^.focused_id
+    if state.active_window == No_Widget {
+        state.desktop_focus = state.focused_id
         return
     }
-    index := window_index(windows, state^.active_window)
+    index := window_index(windows, state.active_window)
     if index != len(windows) {
-        windows[index].focus_id = state^.focused_id
+        windows[index].focus_id = state.focused_id
     }
 }
 
@@ -277,27 +277,27 @@ pub activate_window :: proc(
             return false
         }
     }
-    if state^.active_window == id {
+    if state.active_window == id {
         if id != No_Widget {
             raise_window(windows, id)
         }
         return true
     }
     save_active_focus(state, windows)
-    state^.active_window = id
+    state.active_window = id
     if id == No_Widget {
-        state^.focused_id = state^.desktop_focus
+        state.focused_id = state.desktop_focus
     } else {
         index := window_index(windows, id)
-        state^.focused_id = windows[index].focus_id
+        state.focused_id = windows[index].focus_id
         raise_window(windows, id)
     }
     // Applications may activate a window while painting another window's
     // control—for example, a file list can open and raise an editor whose
     // earlier z-order pass has already run. A no-event traversal is then
     // required so pixels and hit-testing observe the same new ordering.
-    if state^.frame_open {
-        state^.repaint_requested = true
+    if state.frame_open {
+        state.repaint_requested = true
     }
     return true
 }
@@ -314,8 +314,8 @@ pub show_window :: proc(
     was_visible := windows[index].visible
     windows[index].visible = true
     activated := activate_window(state, windows, id)
-    if state^.frame_open && !was_visible {
-        state^.repaint_requested = true
+    if state.frame_open && !was_visible {
+        state.repaint_requested = true
     }
     return activated
 }
@@ -331,8 +331,8 @@ pub show_modal_window :: proc(
     if window_index(windows, id) == len(windows) {
         return false
     }
-    if state^.modal_window == No_Widget && state^.active_window != id {
-        state^.modal_return_window = state^.active_window
+    if state.modal_window == No_Widget && state.active_window != id {
+        state.modal_return_window = state.active_window
     }
     return show_window(state, windows, id)
 }
@@ -350,30 +350,30 @@ pub hide_window :: proc(
     }
     was_visible := windows[index].visible
     windows[index].visible = false
-    if state^.popup_id != No_Widget && state^.popup_owner == id {
+    if state.popup_id != No_Widget && state.popup_owner == id {
         popup_close(state)
     }
-    if state^.active_id == id &&
-        (state^.active_kind == .window_drag ||
-            state^.active_kind == .window_resize ||
-            state^.active_kind == .window_close ||
-            state^.active_kind == .window_zoom) {
-        state^.active_id = No_Widget
-        state^.active_kind = .none
+    if state.active_id == id &&
+        (state.active_kind == .window_drag ||
+            state.active_kind == .window_resize ||
+            state.active_kind == .window_close ||
+            state.active_kind == .window_zoom) {
+        state.active_id = No_Widget
+        state.active_kind = .none
     }
-    if state^.keyboard_window == id {
-        state^.keyboard_window = No_Widget
+    if state.keyboard_window == id {
+        state.keyboard_window = No_Widget
     }
-    if state^.active_window == id {
-        state^.active_window = No_Widget
-        state^.focused_id = state^.desktop_focus
+    if state.active_window == id {
+        state.active_window = No_Widget
+        state.focused_id = state.desktop_focus
         next := top_visible_window(windows)
         if next != No_Widget {
             activate_window(state, windows, next)
         }
     }
-    if state^.frame_open && was_visible {
-        state^.repaint_requested = true
+    if state.frame_open && was_visible {
+        state.repaint_requested = true
     }
     return true
 }
@@ -389,7 +389,7 @@ pub activate_next_window :: proc(
     candidate := No_Widget
     candidate_index: usize
     found := false
-    active_index := window_index(windows, state^.active_window)
+    active_index := window_index(windows, state.active_window)
     active_z: u32
     if active_index != len(windows) {
         active_z = windows[active_index].z
@@ -397,7 +397,7 @@ pub activate_next_window :: proc(
 
     for index: usize = 0; index < len(windows); index += 1 {
         window := windows[index]
-        if !window.visible || window.id == state^.active_window {
+        if !window.visible || window.id == state.active_window {
             continue
         }
         after := active_index == len(windows) || window.z > active_z ||
@@ -604,16 +604,16 @@ resized_extent :: proc(
 }
 
 toggle_zoom :: proc(window: ^Window_State, desktop: Rect) {
-    if !window^.flags.zoomable {
+    if !window.flags.zoomable {
         return
     }
-    if window^.zoomed {
-        window^.bounds = clamp_rect(window^.restore_bounds, desktop)
-        window^.zoomed = false
+    if window.zoomed {
+        window.bounds = clamp_rect(window.restore_bounds, desktop)
+        window.zoomed = false
     } else {
-        window^.restore_bounds = window^.bounds
-        window^.bounds = desktop
-        window^.zoomed = true
+        window.restore_bounds = window.bounds
+        window.bounds = desktop
+        window.zoomed = true
     }
 }
 
@@ -625,74 +625,74 @@ apply_keyboard_window_command :: proc(
     state: ^State,
     windows: []Window_State,
 ) {
-    if state^.popup_id != No_Widget || state^.event.kind != .key {
+    if state.popup_id != No_Widget || state.event.kind != .key {
         return
     }
-    key := state^.event.key
-    if state^.keyboard_window == No_Widget && key.code == .f5 && key.control &&
-        state^.active_window != No_Widget {
-        index := window_index(windows, state^.active_window)
+    key := state.event.key
+    if state.keyboard_window == No_Widget && key.code == .f5 && key.control &&
+        state.active_window != No_Widget {
+        index := window_index(windows, state.active_window)
         if index != len(windows) && (windows[index].flags.movable ||
             windows[index].flags.resizable) {
-            state^.keyboard_window = state^.active_window
-            state^.drag_start_rect = windows[index].bounds
-            state^.event_handled = true
+            state.keyboard_window = state.active_window
+            state.drag_start_rect = windows[index].bounds
+            state.event_handled = true
         }
         return
     }
-    if state^.keyboard_window == No_Widget {
-        if key.code == .f3 && key.alt && state^.active_window != No_Widget {
-            state^.window_close_command = state^.active_window
-            state^.event_handled = true
+    if state.keyboard_window == No_Widget {
+        if key.code == .f3 && key.alt && state.active_window != No_Widget {
+            state.window_close_command = state.active_window
+            state.event_handled = true
         }
         return
     }
 
-    index := window_index(windows, state^.keyboard_window)
+    index := window_index(windows, state.keyboard_window)
     if index == len(windows) || !windows[index].visible {
-        state^.keyboard_window = No_Widget
+        state.keyboard_window = No_Widget
         return
     }
     window := &windows[index]
     if key.code == .escape {
-        window^.bounds = state^.drag_start_rect
-        state^.keyboard_window = No_Widget
-        state^.event_handled = true
+        window.bounds = state.drag_start_rect
+        state.keyboard_window = No_Widget
+        state.event_handled = true
         return
     }
     if key.code == .enter {
-        state^.keyboard_window = No_Widget
-        state^.event_handled = true
+        state.keyboard_window = No_Widget
+        state.event_handled = true
         return
     }
     if key.code != .left && key.code != .right &&
         key.code != .up && key.code != .down {
         return
     }
-    if key.shift && window^.flags.resizable && !window^.zoomed {
-        if key.code == .left && window^.bounds.width > window^.minimum_width {
-            window^.bounds.width -= 1
+    if key.shift && window.flags.resizable && !window.zoomed {
+        if key.code == .left && window.bounds.width > window.minimum_width {
+            window.bounds.width -= 1
         } else if key.code == .right {
-            window^.bounds.width += 1
+            window.bounds.width += 1
         } else if key.code == .up &&
-            window^.bounds.height > window^.minimum_height {
-            window^.bounds.height -= 1
+            window.bounds.height > window.minimum_height {
+            window.bounds.height -= 1
         } else if key.code == .down {
-            window^.bounds.height += 1
+            window.bounds.height += 1
         }
-    } else if !key.shift && window^.flags.movable && !window^.zoomed {
-        if key.code == .left && window^.bounds.column > state^.desktop.column {
-            window^.bounds.column -= 1
+    } else if !key.shift && window.flags.movable && !window.zoomed {
+        if key.code == .left && window.bounds.column > state.desktop.column {
+            window.bounds.column -= 1
         } else if key.code == .right {
-            window^.bounds.column += 1
-        } else if key.code == .up && window^.bounds.row > state^.desktop.row {
-            window^.bounds.row -= 1
+            window.bounds.column += 1
+        } else if key.code == .up && window.bounds.row > state.desktop.row {
+            window.bounds.row -= 1
         } else if key.code == .down {
-            window^.bounds.row += 1
+            window.bounds.row += 1
         }
     }
-    window^.bounds = clamp_rect(window^.bounds, state^.desktop)
-    state^.event_handled = true
+    window.bounds = clamp_rect(window.bounds, state.desktop)
+    state.event_handled = true
 }
 
 // begin_window_frame establishes one complete desktop input transaction.
@@ -710,12 +710,12 @@ pub begin_window_frame :: proc(
     desktop: Rect = Rect{},
     modal_window: Widget_Id = No_Widget,
 ) {
-    previous_modal := state^.modal_window
+    previous_modal := state.modal_window
     begin_frame(state, surface, event, theme)
-    state^.modal_window = previous_modal
-    state^.desktop = intersect(desktop, surface_bounds(surface))
+    state.modal_window = previous_modal
+    state.desktop = intersect(desktop, surface_bounds(surface))
     if rect_equal(desktop, Rect{}) {
-        state^.desktop = surface_bounds(surface)
+        state.desktop = surface_bounds(surface)
     }
 
     requested_modal := modal_window
@@ -724,53 +724,53 @@ pub begin_window_frame :: proc(
         (modal_index == len(windows) || !windows[modal_index].visible) {
         requested_modal = No_Widget
     }
-    if requested_modal != state^.modal_window {
+    if requested_modal != state.modal_window {
         if requested_modal != No_Widget {
-            if state^.modal_window == No_Widget &&
-                state^.active_window != requested_modal {
-                state^.modal_return_window = state^.active_window
+            if state.modal_window == No_Widget &&
+                state.active_window != requested_modal {
+                state.modal_return_window = state.active_window
             }
             activate_window(state, windows, requested_modal)
         } else {
-            restore := state^.modal_return_window
-            state^.modal_return_window = No_Widget
-            state^.modal_window = No_Widget
+            restore := state.modal_return_window
+            state.modal_return_window = No_Widget
+            state.modal_window = No_Widget
             if !activate_window(state, windows, restore) {
                 activate_window(state, windows, top_visible_window(windows))
             }
         }
-        state^.modal_window = requested_modal
+        state.modal_window = requested_modal
     }
 
-    active_index := window_index(windows, state^.active_window)
-    if state^.active_window != No_Widget &&
+    active_index := window_index(windows, state.active_window)
+    if state.active_window != No_Widget &&
         (active_index == len(windows) || !windows[active_index].visible) {
-        state^.active_window = No_Widget
+        state.active_window = No_Widget
     }
-    if state^.active_window == No_Widget && requested_modal == No_Widget {
+    if state.active_window == No_Widget && requested_modal == No_Widget {
         top := top_visible_window(windows)
         if top != No_Widget {
             activate_window(state, windows, top)
         }
     }
 
-    if state^.popup_id != No_Widget {
-        owner_valid := state^.popup_owner == requested_modal
+    if state.popup_id != No_Widget {
+        owner_valid := state.popup_owner == requested_modal
         if requested_modal == No_Widget {
-            owner_valid = state^.popup_owner == No_Widget ||
-                state^.popup_owner == state^.active_window
+            owner_valid = state.popup_owner == No_Widget ||
+                state.popup_owner == state.active_window
         }
         if !owner_valid {
             popup_close(state)
         }
     }
 
-    state^.input_scope = state^.active_window
+    state.input_scope = state.active_window
     if requested_modal != No_Widget {
-        state^.input_scope = requested_modal
+        state.input_scope = requested_modal
     }
-    if state^.popup_id != No_Widget {
-        state^.input_scope = state^.popup_id
+    if state.popup_id != No_Widget {
+        state.input_scope = state.popup_id
     }
 
     if event.kind == .mouse {
@@ -779,33 +779,33 @@ pub begin_window_frame :: proc(
         // that no drag remains; a new primary press starts a fresh hit test.
         // Without this repair, target routing below would keep sending every
         // future mouse event to the stale window captured by active_id.
-        window_capture := state^.active_kind == .window_drag ||
-            state^.active_kind == .window_resize ||
-            state^.active_kind == .window_close ||
-            state^.active_kind == .window_zoom
+        window_capture := state.active_kind == .window_drag ||
+            state.active_kind == .window_resize ||
+            state.active_kind == .window_close ||
+            state.active_kind == .window_zoom
         stale_motion := event.mouse.action == .move &&
             !event.mouse.primary_down
         fresh_press := event.mouse.action == .press &&
             event.mouse.button == .primary
         if window_capture && (stale_motion || fresh_press) {
-            state^.active_id = No_Widget
-            state^.active_kind = .none
+            state.active_id = No_Widget
+            state.active_kind = .none
         }
-        if state^.active_kind == .window_drag ||
-            state^.active_kind == .window_resize ||
-            state^.active_kind == .window_close ||
-            state^.active_kind == .window_zoom {
-            state^.target_window = state^.active_id
-        } else if state^.popup_id != No_Widget {
-            state^.target_window = state^.popup_id
+        if state.active_kind == .window_drag ||
+            state.active_kind == .window_resize ||
+            state.active_kind == .window_close ||
+            state.active_kind == .window_zoom {
+            state.target_window = state.active_id
+        } else if state.popup_id != No_Widget {
+            state.target_window = state.popup_id
         } else if requested_modal != No_Widget {
-            state^.target_window = requested_modal
+            state.target_window = requested_modal
         } else {
-            state^.target_window = top_window_at(windows, event.mouse.position)
+            state.target_window = top_window_at(windows, event.mouse.position)
             if event.mouse.action == .press &&
                 event.mouse.button == .primary {
-                activate_window(state, windows, state^.target_window)
-                state^.input_scope = state^.active_window
+                activate_window(state, windows, state.target_window)
+                state.input_scope = state.active_window
             }
         }
     }
@@ -821,100 +821,100 @@ pub begin_window :: proc(
     window: ^Window_State,
     title: string,
 ) -> Window_Context {
-    assert(state^.frame_open, "turbo_ui window outside a frame")
-    assert(state^.current_window == No_Widget,
+    assert(state.frame_open, "turbo_ui window outside a frame")
+    assert(state.current_window == No_Widget,
         "turbo_ui windows may not be nested")
     result := Window_Context{painted = true}
-    if !window^.visible {
+    if !window.visible {
         return result
     }
-    assert(window^.id != No_Widget, "turbo_ui window ID zero is reserved")
+    assert(window.id != No_Widget, "turbo_ui window ID zero is reserved")
 
     // A zero-sized desktop can occur transiently while a terminal is being
     // resized. Avoid subtracting frame coordinates from zero; no chrome or
     // content exists to interact with until a later nonempty frame.
-    if rect_empty(state^.desktop) {
-        state^.current_window = window^.id
+    if rect_empty(state.desktop) {
+        state.current_window = window.id
         result.visible = true
-        result.previous_clip = state^.clip
-        state^.clip = state^.desktop
+        result.previous_clip = state.clip
+        state.clip = state.desktop
         return result
     }
 
-    minimum_width := window^.minimum_width
+    minimum_width := window.minimum_width
     if minimum_width == 0 {
         minimum_width = 16
     }
-    minimum_height := window^.minimum_height
+    minimum_height := window.minimum_height
     if minimum_height == 0 {
         minimum_height = 6
     }
-    if minimum_width > state^.desktop.width {
-        minimum_width = state^.desktop.width
+    if minimum_width > state.desktop.width {
+        minimum_width = state.desktop.width
     }
-    if minimum_height > state^.desktop.height {
-        minimum_height = state^.desktop.height
+    if minimum_height > state.desktop.height {
+        minimum_height = state.desktop.height
     }
-    if window^.zoomed {
-        window^.bounds = state^.desktop
+    if window.zoomed {
+        window.bounds = state.desktop
     } else {
-        if window^.bounds.width < minimum_width {
-            window^.bounds.width = minimum_width
+        if window.bounds.width < minimum_width {
+            window.bounds.width = minimum_width
         }
-        if window^.bounds.height < minimum_height {
-            window^.bounds.height = minimum_height
+        if window.bounds.height < minimum_height {
+            window.bounds.height = minimum_height
         }
-        window^.bounds = clamp_rect(window^.bounds, state^.desktop)
+        window.bounds = clamp_rect(window.bounds, state.desktop)
     }
 
     // Extremely narrow resize transients cannot represent a complete border,
     // let alone two title controls. Paint the available cells and expose an
     // empty content clip until the desktop becomes large enough again.
-    if window^.bounds.width < 3 || window^.bounds.height < 2 {
-        state^.current_window = window^.id
+    if window.bounds.width < 3 || window.bounds.height < 2 {
+        state.current_window = window.id
         result.visible = true
-        result.previous_clip = state^.clip
-        state^.clip = Rect{}
+        result.previous_clip = state.clip
+        state.clip = Rect{}
         result.painted = fill_rect(
-            state^.surface,
-            surface_bounds(state^.surface),
-            window^.bounds,
+            state.surface,
+            surface_bounds(state.surface),
+            window.bounds,
             ' ',
-            state^.theme.window,
+            state.theme.window,
         )
         return result
     }
 
-    active := state^.active_window == window^.id
-    is_target := state^.target_window == window^.id
-    right := rect_right(window^.bounds)
-    bottom := rect_bottom(window^.bounds)
-    close_point := Point{column = window^.bounds.column + 1, row = window^.bounds.row}
-    zoom_rect := zoom_control_rect(window^.bounds)
+    active := state.active_window == window.id
+    is_target := state.target_window == window.id
+    right := rect_right(window.bounds)
+    bottom := rect_bottom(window.bounds)
+    close_point := Point{column = window.bounds.column + 1, row = window.bounds.row}
+    zoom_rect := zoom_control_rect(window.bounds)
     zoom_point := Point{column = zoom_rect.column, row = zoom_rect.row}
     resize_point := Point{column = right - 1, row = bottom - 1}
-    close_visible := window^.flags.closable
-    zoom_visible := window^.flags.zoomable && !rect_empty(zoom_rect) &&
+    close_visible := window.flags.closable
+    zoom_visible := window.flags.zoomable && !rect_empty(zoom_rect) &&
         (!close_visible || !point_in_rect(close_point, zoom_rect))
-    state^.current_window = window^.id
-    state^.clip = state^.desktop
+    state.current_window = window.id
+    state.clip = state.desktop
 
-    if state^.window_close_command == window^.id {
-        if window^.flags.closable {
+    if state.window_close_command == window.id {
+        if window.flags.closable {
             result.close_requested = true
         }
-        state^.window_close_command = No_Widget
+        state.window_close_command = No_Widget
     }
-    if is_target && state^.event.kind == .mouse &&
-        !rect_empty(window^.bounds) {
-        mouse := state^.event.mouse
+    if is_target && state.event.kind == .mouse &&
+        !rect_empty(window.bounds) {
+        mouse := state.event.mouse
         on_close := close_visible && mouse.position.column == close_point.column &&
             mouse.position.row == close_point.row
         on_zoom := zoom_visible && point_in_rect(mouse.position, zoom_rect)
-        on_resize := window^.flags.resizable && !window^.zoomed &&
+        on_resize := window.flags.resizable && !window.zoomed &&
             mouse.position.column == resize_point.column &&
             mouse.position.row == resize_point.row
-        title_begin := window^.bounds.column + 1
+        title_begin := window.bounds.column + 1
         if close_visible {
             title_begin += 2
         }
@@ -924,147 +924,147 @@ pub begin_window :: proc(
             // the complete zoom control.
             title_end = zoom_rect.column - 1
         }
-        on_title := window^.flags.movable && !window^.zoomed &&
-            mouse.position.row == window^.bounds.row &&
+        on_title := window.flags.movable && !window.zoomed &&
+            mouse.position.row == window.bounds.row &&
             mouse.position.column >= title_begin &&
             mouse.position.column < title_end
 
-        if !state^.event_handled && mouse.action == .press &&
+        if !state.event_handled && mouse.action == .press &&
             mouse.button == .primary &&
             (on_close || on_zoom || on_resize || on_title) {
-            state^.active_id = window^.id
-            state^.active_kind = .window_drag
+            state.active_id = window.id
+            state.active_kind = .window_drag
             if on_close {
-                state^.active_kind = .window_close
+                state.active_kind = .window_close
             } else if on_zoom {
-                state^.active_kind = .window_zoom
+                state.active_kind = .window_zoom
             } else if on_resize {
-                state^.active_kind = .window_resize
+                state.active_kind = .window_resize
             }
-            state^.drag_start = mouse.position
-            state^.drag_start_rect = window^.bounds
-            state^.drag_column_offset = mouse.position.column - window^.bounds.column
-            state^.drag_row_offset = mouse.position.row - window^.bounds.row
-            state^.event_handled = true
-        } else if state^.active_id == window^.id &&
-            state^.active_kind == .window_drag &&
+            state.drag_start = mouse.position
+            state.drag_start_rect = window.bounds
+            state.drag_column_offset = mouse.position.column - window.bounds.column
+            state.drag_row_offset = mouse.position.row - window.bounds.row
+            state.event_handled = true
+        } else if state.active_id == window.id &&
+            state.active_kind == .window_drag &&
             mouse.action == .move && mouse.primary_down {
-            window^.bounds.column = moved_origin(
+            window.bounds.column = moved_origin(
                 mouse.position.column,
-                state^.drag_column_offset,
+                state.drag_column_offset,
             )
-            window^.bounds.row = moved_origin(
+            window.bounds.row = moved_origin(
                 mouse.position.row,
-                state^.drag_row_offset,
+                state.drag_row_offset,
             )
-            state^.event_handled = true
-        } else if state^.active_id == window^.id &&
-            state^.active_kind == .window_resize &&
+            state.event_handled = true
+        } else if state.active_id == window.id &&
+            state.active_kind == .window_resize &&
             mouse.action == .move && mouse.primary_down {
-            window^.bounds.width = resized_extent(
-                state^.drag_start_rect.width,
-                state^.drag_start.column,
+            window.bounds.width = resized_extent(
+                state.drag_start_rect.width,
+                state.drag_start.column,
                 mouse.position.column,
                 minimum_width,
             )
-            window^.bounds.height = resized_extent(
-                state^.drag_start_rect.height,
-                state^.drag_start.row,
+            window.bounds.height = resized_extent(
+                state.drag_start_rect.height,
+                state.drag_start.row,
                 mouse.position.row,
                 minimum_height,
             )
-            state^.event_handled = true
-        } else if state^.active_id == window^.id &&
-            (state^.active_kind == .window_drag ||
-                state^.active_kind == .window_resize ||
-                state^.active_kind == .window_close ||
-                state^.active_kind == .window_zoom) &&
+            state.event_handled = true
+        } else if state.active_id == window.id &&
+            (state.active_kind == .window_drag ||
+                state.active_kind == .window_resize ||
+                state.active_kind == .window_close ||
+                state.active_kind == .window_zoom) &&
             mouse.action == .release && mouse.button == .primary {
-            if state^.active_kind == .window_close && on_close {
+            if state.active_kind == .window_close && on_close {
                 result.close_requested = true
-            } else if state^.active_kind == .window_zoom && on_zoom {
-                toggle_zoom(window, state^.desktop)
+            } else if state.active_kind == .window_zoom && on_zoom {
+                toggle_zoom(window, state.desktop)
             }
-            state^.active_id = No_Widget
-            state^.active_kind = .none
-            state^.event_handled = true
+            state.active_id = No_Widget
+            state.active_kind = .none
+            state.event_handled = true
         }
     }
 
-    if window^.zoomed {
-        window^.bounds = state^.desktop
+    if window.zoomed {
+        window.bounds = state.desktop
     } else {
-        window^.bounds = clamp_rect(window^.bounds, state^.desktop)
+        window.bounds = clamp_rect(window.bounds, state.desktop)
     }
-    right = rect_right(window^.bounds)
-    bottom = rect_bottom(window^.bounds)
-    close_point = Point{column = window^.bounds.column + 1, row = window^.bounds.row}
-    zoom_rect = zoom_control_rect(window^.bounds)
+    right = rect_right(window.bounds)
+    bottom = rect_bottom(window.bounds)
+    close_point = Point{column = window.bounds.column + 1, row = window.bounds.row}
+    zoom_rect = zoom_control_rect(window.bounds)
     zoom_point = Point{column = zoom_rect.column, row = zoom_rect.row}
     resize_point = Point{column = right - 1, row = bottom - 1}
-    close_visible = window^.flags.closable
-    zoom_visible = window^.flags.zoomable && !rect_empty(zoom_rect) &&
+    close_visible = window.flags.closable
+    zoom_visible = window.flags.zoomable && !rect_empty(zoom_rect) &&
         (!close_visible || !point_in_rect(close_point, zoom_rect))
 
     result.visible = true
-    result.previous_clip = state^.clip
-    result.content = inset(window^.bounds, 1)
-    state^.clip = result.content
+    result.previous_clip = state.clip
+    result.content = inset(window.bounds, 1)
+    state.clip = result.content
 
     border_kind: Border_Kind = .single
     if active {
         border_kind = .double
     }
     result.painted = draw_shadow(
-        state^.surface,
-        surface_bounds(state^.surface),
-        window^.bounds,
-        state^.theme.shadow,
+        state.surface,
+        surface_bounds(state.surface),
+        window.bounds,
+        state.theme.shadow,
     ) && fill_rect(
-        state^.surface,
-        surface_bounds(state^.surface),
-        window^.bounds,
+        state.surface,
+        surface_bounds(state.surface),
+        window.bounds,
         ' ',
-        state^.theme.window,
+        state.theme.window,
     ) && draw_border(
-        state^.surface,
-        surface_bounds(state^.surface),
-        window^.bounds,
+        state.surface,
+        surface_bounds(state.surface),
+        window.bounds,
         border_kind,
-        state^.theme.border,
+        state.theme.border,
     )
 
-    title_style := state^.theme.title
+    title_style := state.theme.title
     if active {
-        title_style = state^.theme.active_title
+        title_style = state.theme.active_title
     }
     if close_visible {
-        put_clipped(state^.surface, state^.desktop, close_point, '■', title_style)
+        put_clipped(state.surface, state.desktop, close_point, '■', title_style)
     }
     if zoom_visible {
         zoom_glyph := '↕'
-        if window^.zoomed {
+        if window.zoomed {
             zoom_glyph = '↔'
         }
-        put_clipped(state^.surface, state^.desktop, zoom_point, zoom_glyph, title_style)
+        put_clipped(state.surface, state.desktop, zoom_point, zoom_glyph, title_style)
     }
     title_clip := window_title_rect(window)
     if !rect_empty(title_clip) {
         result.painted = result.painted && write_clipped(
-            state^.surface,
+            state.surface,
             title_clip,
             Point{column = title_clip.column, row = title_clip.row},
             title,
             title_style,
         )
     }
-    if window^.flags.resizable && !window^.zoomed {
+    if window.flags.resizable && !window.zoomed {
         put_clipped(
-            state^.surface,
-            state^.desktop,
+            state.surface,
+            state.desktop,
             resize_point,
             '◢',
-            state^.theme.active_title,
+            state.theme.active_title,
         )
     }
     return result
@@ -1083,11 +1083,11 @@ pub window_title_bytes :: proc(
     window: ^Window_State,
     title: []u8,
 ) -> bool {
-    assert(state^.frame_open, "turbo_ui window title outside a frame")
-    assert(state^.current_window == window^.id,
+    assert(state.frame_open, "turbo_ui window title outside a frame")
+    assert(state.current_window == window.id,
         "turbo_ui byte title must follow its window begin")
-    if !window^.visible || rect_empty(window^.bounds) ||
-        window^.bounds.width < 3 || window^.bounds.height < 2 {
+    if !window.visible || rect_empty(window.bounds) ||
+        window.bounds.width < 3 || window.bounds.height < 2 {
         return true
     }
 
@@ -1095,12 +1095,12 @@ pub window_title_bytes :: proc(
     if rect_empty(title_clip) {
         return true
     }
-    title_style := state^.theme.title
-    if state^.active_window == window^.id {
-        title_style = state^.theme.active_title
+    title_style := state.theme.title
+    if state.active_window == window.id {
+        title_style = state.theme.active_title
     }
     return write_clipped_bytes(
-        state^.surface,
+        state.surface,
         title_clip,
         Point{column = title_clip.column, row = title_clip.row},
         title,
@@ -1114,8 +1114,8 @@ pub end_window :: proc(state: ^State, window_context: Window_Context) {
     if !window_context.visible {
         return
     }
-    assert(state^.current_window != No_Widget,
+    assert(state.current_window != No_Widget,
         "turbo_ui window context is not active")
-    state^.clip = window_context.previous_clip
-    state^.current_window = No_Widget
+    state.clip = window_context.previous_clip
+    state.current_window = No_Widget
 }

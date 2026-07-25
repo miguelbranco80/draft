@@ -16,7 +16,7 @@ import core/unicode
 Shadow_Glyph :: '░'
 
 surface_bounds :: proc(surface: ^tui.Surface) -> Rect {
-    return Rect{width = surface^.columns, height = surface^.rows}
+    return Rect{width = surface.columns, height = surface.rows}
 }
 
 // visible_rect applies both the current UI clip and the physical Surface
@@ -72,7 +72,7 @@ pub write_clipped :: proc(
     style_value: tui.Style,
 ) -> bool {
     if origin.row < clip.row || origin.row >= rect_bottom(clip) ||
-        origin.row >= surface^.rows {
+        origin.row >= surface.rows {
         return true
     }
     column := origin.column
@@ -83,11 +83,11 @@ pub write_clipped :: proc(
             return false
         }
         glyph_end := saturated_add(column, columns)
-        if column >= rect_right(clip) || column >= surface^.columns {
+        if column >= rect_right(clip) || column >= surface.columns {
             break
         }
         if column >= clip.column && glyph_end <= rect_right(clip) &&
-            glyph_end <= surface^.columns {
+            glyph_end <= surface.columns {
             if !tui.write_utf8(
                 surface,
                 column,
@@ -142,9 +142,9 @@ write_access_text :: proc(
             access_style.underline = true
             glyph_end := saturated_add(column, columns)
             if column >= clip.column && glyph_end <= rect_right(clip) &&
-                column < surface^.columns && glyph_end <= surface^.columns &&
+                column < surface.columns && glyph_end <= surface.columns &&
                 origin.row >= clip.row && origin.row < rect_bottom(clip) &&
-                origin.row < surface^.rows {
+                origin.row < surface.rows {
                 return tui.write_utf8(
                     surface,
                     column,
@@ -174,7 +174,7 @@ pub write_clipped_bytes :: proc(
     style_value: tui.Style,
 ) -> bool {
     if origin.row < clip.row || origin.row >= rect_bottom(clip) ||
-        origin.row >= surface^.rows {
+        origin.row >= surface.rows {
         return true
     }
     column := origin.column
@@ -185,11 +185,11 @@ pub write_clipped_bytes :: proc(
             return false
         }
         glyph_end := saturated_add(column, columns)
-        if column >= rect_right(clip) || column >= surface^.columns {
+        if column >= rect_right(clip) || column >= surface.columns {
             break
         }
         if column >= clip.column && glyph_end <= rect_right(clip) &&
-            glyph_end <= surface^.columns {
+            glyph_end <= surface.columns {
             data := cast[[^]u8](&bytes[offset])
             if !tui.write_utf8_bytes(
                 surface,

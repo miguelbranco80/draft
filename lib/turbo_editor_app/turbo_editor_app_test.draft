@@ -41,8 +41,8 @@ fake_check :: c proc(
     _ = overlay_count
     _ = active_overlay
     state := cast[^Fake_Foreground_State](user)
-    state^.check_count += 1
-    result^.success = 1
+    state.check_count += 1
+    result.success = 1
 }
 
 fake_colorize :: c proc(
@@ -52,21 +52,21 @@ fake_colorize :: c proc(
 ) {
     _ = source
     state := cast[^Fake_Foreground_State](user)
-    state^.colorize_count += 1
-    result^.success = 1
+    state.colorize_count += 1
+    result.success = 1
 }
 
 fake_selected_root :: c proc(user: rawptr) -> usize {
     state := cast[^Fake_Root_State](user)
-    return state^.selected
+    return state.selected
 }
 
 fake_select_root :: c proc(user: rawptr, index: usize) -> u8 {
     state := cast[^Fake_Root_State](user)
-    if state^.fail_selection != 0 {
+    if state.fail_selection != 0 {
         return 0
     }
-    state^.selected = index
+    state.selected = index
     return 1
 }
 
@@ -136,15 +136,15 @@ fake_navigation_path :: c proc(
     state := cast[^Fake_Navigation_State](user)
     if index == 0 {
         return fake_copy_bytes(
-            state^.first_path,
-            state^.first_length,
+            state.first_path,
+            state.first_length,
             destination,
             capacity,
         )
     }
     return fake_copy_bytes(
-        state^.second_path,
-        state^.second_length,
+        state.second_path,
+        state.second_length,
         destination,
         capacity,
     )
@@ -172,7 +172,7 @@ fake_build :: c proc(
     _ = overlays
     _ = overlay_count
     _ = active_overlay
-    result^.success = 1
+    result.success = 1
 }
 
 fake_artifact_path :: c proc(
@@ -647,23 +647,23 @@ test_editor_is_a_normal_tileable_window :: proc(test: ^testing.Test) {
 
     editor := &app.windows[Window_Editor]
     files := &app.windows[Window_Program_Files]
-    files_bounds := files^.bounds
-    testing.expect(test, editor^.flags.tileable)
-    testing.expect(test, editor^.flags.zoomable)
-    testing.expect(test, editor^.zoomed)
-    testing.expect(test, !files^.flags.tileable)
+    files_bounds := files.bounds
+    testing.expect(test, editor.flags.tileable)
+    testing.expect(test, editor.flags.zoomable)
+    testing.expect(test, editor.zoomed)
+    testing.expect(test, !files.flags.tileable)
 
     desktop := turbo_ui.Rect{column = 0, row = 1, width = 80, height = 22}
     testing.expect(test, turbo_ui.tile_windows(app.windows[:], desktop) == 1)
-    testing.expect(test, turbo_ui.rect_equal(editor^.bounds, desktop))
-    testing.expect(test, !editor^.zoomed)
-    testing.expect(test, turbo_ui.rect_equal(files^.bounds, files_bounds))
+    testing.expect(test, turbo_ui.rect_equal(editor.bounds, desktop))
+    testing.expect(test, !editor.zoomed)
+    testing.expect(test, turbo_ui.rect_equal(files.bounds, files_bounds))
 
-    turbo_ui.hide_window(&app.ui, app.windows[:], editor^.id)
-    testing.expect(test, !editor^.visible)
+    turbo_ui.hide_window(&app.ui, app.windows[:], editor.id)
+    testing.expect(test, !editor.visible)
     testing.expect(test, activate_buffer(&app, 0))
-    testing.expect(test, editor^.visible)
-    testing.expect(test, app.ui.active_window == editor^.id)
+    testing.expect(test, editor.visible)
+    testing.expect(test, app.ui.active_window == editor.id)
     testing.expect(test, app.ui.focused_id == 600)
 
     // Startup shows one understandable document surface, not a pile of
@@ -767,7 +767,7 @@ test_editing_shortcuts_apply_the_advertised_commands :: proc(test: ^testing.Test
     defer destroy_app(&app)
     buffer := active_buffer(&app)
     turbo_editor.insert_text(buffer, "one two one\nlast")
-    testing.expect(test, buffer^.bytes.length == len("one two one\nlast"))
+    testing.expect(test, buffer.bytes.length == len("one two one\nlast"))
 
     (remaining, quit) := handle_global_key(&app, turbo_ui.key_event(
         turbo_ui.Key_Event{
@@ -777,7 +777,7 @@ test_editing_shortcuts_apply_the_advertised_commands :: proc(test: ^testing.Test
         },
     ))
     testing.expect(test, !quit && remaining.kind == .none)
-    testing.expect(test, buffer^.bytes.length == 0)
+    testing.expect(test, buffer.bytes.length == 0)
     (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
         turbo_ui.Key_Event{
             code = .character,
@@ -786,7 +786,7 @@ test_editing_shortcuts_apply_the_advertised_commands :: proc(test: ^testing.Test
         },
     ))
     testing.expect(test, !quit && remaining.kind == .none)
-    testing.expect(test, buffer^.bytes.length == len("one two one\nlast"))
+    testing.expect(test, buffer.bytes.length == len("one two one\nlast"))
 
     testing.expect(test, turbo_ui.text_box_set_text(
         &app.search_box,
@@ -829,7 +829,7 @@ test_editing_shortcuts_apply_the_advertised_commands :: proc(test: ^testing.Test
         },
     ))
     testing.expect(test, !quit && remaining.kind == .none)
-    testing.expect(test, buffer^.bytes.data[0] == cast[u8]('O'))
+    testing.expect(test, buffer.bytes.data[0] == cast[u8]('O'))
     (second_start, second_end, second_selected) = turbo_editor.selection(buffer)
     testing.expect(test, second_selected && second_start == 8 && second_end == 11)
 
@@ -860,7 +860,7 @@ test_editing_shortcuts_apply_the_advertised_commands :: proc(test: ^testing.Test
     ))
     submit_go_to_line(&app)
     testing.expect(test, !app.windows[Window_Go_To_Line].visible)
-    testing.expect(test, buffer^.cursor == 12)
+    testing.expect(test, buffer.cursor == 12)
 }
 
 // New/Cut/Copy/Paste are ordinary document operations, not placeholder menu
@@ -888,9 +888,9 @@ test_document_and_clipboard_shortcuts_are_real :: proc(test: ^testing.Test) {
         if index == 1 {
             testing.expect(test, app.clipboard.length == len("draft"))
         } else if index == 2 {
-            testing.expect(test, buffer^.bytes.length == 0)
+            testing.expect(test, buffer.bytes.length == 0)
         } else if index == 3 {
-            testing.expect(test, buffer^.bytes.length == len("draft"))
+            testing.expect(test, buffer.bytes.length == len("draft"))
         }
     }
 
@@ -905,11 +905,11 @@ test_document_and_clipboard_shortcuts_are_real :: proc(test: ^testing.Test) {
     testing.expect(test, !quit && remaining.kind == .none)
     testing.expect(test, app.buffer_count == 2 && app.active == 1)
     testing.expect(test, turbo_editor.is_unnamed(active_buffer(&app)))
-    testing.expect(test, active_buffer(&app)^.dirty)
+    testing.expect(test, active_buffer(&app).dirty)
 
     paste_clipboard(&app)
     testing.expect(test,
-        active_buffer(&app)^.bytes.length == len("draft"))
+        active_buffer(&app).bytes.length == len("draft"))
 }
 
 // Semantic shortcuts consume structured host locations, preserve exact byte

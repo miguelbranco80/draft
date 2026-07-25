@@ -141,7 +141,7 @@ native_begin_resize_watch :: proc(previous: ^Native_Signal_Action) -> bool {
     if native_sigaction(Native_Resize_Signal, nil, previous) != 0 {
         return false
     }
-    if previous^.handler != nil {
+    if previous.handler != nil {
         return false
     }
 

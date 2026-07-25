@@ -125,9 +125,9 @@ Command_Line :: struct {
 // append_byte writes into the exactly precomputed command-line allocation.
 // Exhaustion is an internal size-proof failure, not user-controlled recovery.
 append_byte :: proc(bytes: ^Command_Line, value: u8) {
-    assert(bytes^.length < bytes^.capacity, "command-line capacity exhausted")
-    bytes^.data[bytes^.length] = value
-    bytes^.length += 1
+    assert(bytes.length < bytes.capacity, "command-line capacity exhausted")
+    bytes.data[bytes.length] = value
+    bytes.length += 1
 }
 
 // append_quoted_argument emits one argv element under CommandLineToArgvW/CRT
@@ -190,9 +190,9 @@ build_command_line :: proc(
     if source_bytes > (~cast[usize](0) - framing_bytes) / 2 {
         return false
     }
-    bytes^.capacity = source_bytes * 2 + framing_bytes
-    bytes^.data = cast[[^]u8](native_malloc(bytes^.capacity))
-    if bytes^.data == nil {
+    bytes.capacity = source_bytes * 2 + framing_bytes
+    bytes.data = cast[[^]u8](native_malloc(bytes.capacity))
+    if bytes.data == nil {
         return false
     }
     append_quoted_argument(bytes, path)

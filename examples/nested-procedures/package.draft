@@ -44,10 +44,10 @@ local_layout[T: type, N: usize] :: proc(value: T, values: [N]T) -> T {
     Tuple_Alias :: (Alias, u32)
     Box_Alias :: Local_Box[u32]
     read :: proc(pair: ^Pair, box: ^Local_Box[u32]) -> Alias {
-        if box^.inner > 0 {
-            return pair^.head
+        if box.inner > 0 {
+            return pair.head
         }
-        return box^.outer
+        return box.outer
     }
 
     pair := Pair{head = value, tail = values}

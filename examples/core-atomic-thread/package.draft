@@ -10,8 +10,8 @@ Work :: struct {
 
 increment :: proc(user: rawptr) {
     work := cast[^Work](user)
-    for index: u64 = 0; index < work^.iterations; index += 1 {
-        atomic.fetch_add(work^.counter, 1, .relaxed)
+    for index: u64 = 0; index < work.iterations; index += 1 {
+        atomic.fetch_add(work.counter, 1, .relaxed)
     }
 }
 

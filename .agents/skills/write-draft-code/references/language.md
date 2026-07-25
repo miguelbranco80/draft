@@ -217,8 +217,14 @@ string      non-owning immutable byte slice
 simd[N]T    target-approved fixed vector
 ```
 
-Use `&value` for an address and postfix `pointer^` for dereference. Use
-`ptr_offset(pointer, count)` and `ptr_sub(left, right)` for pointer movement;
+Use `&value` for an address. Member selection automatically dereferences one
+`^T`, so write `pointer.field` or `tuple_pointer.0`; a chained selector applies
+the rule again wherever its current base is another `^T`. This concise spelling
+has exactly the nil behavior, effects, addressability, alignment, ownership, and
+lifetime of `pointer^.field`. Postfix `pointer^` remains necessary when the
+complete pointee is the value or assignment target. The rule does not apply to
+`[^]T`, `rawptr`, or `cstring`; select a multi-pointer element before its member.
+Use `ptr_offset(pointer, count)` and `ptr_sub(left, right)` for pointer movement;
 ordinary integer operators do not perform pointer arithmetic. `[^]T` indexing
 is inherently unchecked. Construct a bounded slice with `pointer[:length]`.
 
@@ -346,7 +352,9 @@ not magic. A zero `Result` selects its first `.err` alternative.
 Postfix call/index/member/dereference bind most tightly; then prefix; then
 multiplicative/shift/bitwise-AND; additive/bitwise-OR/binary-`~` XOR;
 comparison; `&&`; `||`; and the conditional expression. Comparisons do not
-chain.
+chain. Automatic `^T` member dereference is part of checking the member
+selector; it is not a general implicit conversion and does not consume another
+postfix operator from the source.
 
 Assignment is a statement. Compound assignment evaluates its lvalue once.
 `&&` and `||` short-circuit. The conditional expression evaluates only its

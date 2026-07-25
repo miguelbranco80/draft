@@ -110,26 +110,26 @@ pub Buffer :: struct {
 }
 
 pub buffer_init :: proc(buffer: ^Buffer, path: string) {
-    array.init(&buffer^.bytes)
-    array.init(&buffer^.disk_bytes)
-    array.init(&buffer^.line_starts)
-    array.append(&buffer^.line_starts, 0)
-    array.init(&buffer^.history)
-    array.init(&buffer^.history_bytes)
-    memory.owned_string_copy(&buffer^.path, path)
+    array.init(&buffer.bytes)
+    array.init(&buffer.disk_bytes)
+    array.init(&buffer.line_starts)
+    array.append(&buffer.line_starts, 0)
+    array.init(&buffer.history)
+    array.init(&buffer.history_bytes)
+    memory.owned_string_copy(&buffer.path, path)
 }
 
 // buffer_init_bytes is the C/host boundary counterpart. The exact pathname is
 // copied before the caller's view expires and receives the same owned
 // terminator as the ordinary string form.
 pub buffer_init_bytes :: proc(buffer: ^Buffer, path: []u8) {
-    array.init(&buffer^.bytes)
-    array.init(&buffer^.disk_bytes)
-    array.init(&buffer^.line_starts)
-    array.append(&buffer^.line_starts, 0)
-    array.init(&buffer^.history)
-    array.init(&buffer^.history_bytes)
-    memory.owned_string_copy_bytes(&buffer^.path, path)
+    array.init(&buffer.bytes)
+    array.init(&buffer.disk_bytes)
+    array.init(&buffer.line_starts)
+    array.append(&buffer.line_starts, 0)
+    array.init(&buffer.history)
+    array.init(&buffer.history_bytes)
+    memory.owned_string_copy_bytes(&buffer.path, path)
 }
 
 // buffer_init_unnamed creates an empty writable document whose borrowed label
@@ -137,8 +137,8 @@ pub buffer_init_bytes :: proc(buffer: ^Buffer, path: []u8) {
 // dirty so Exit cannot discard it silently even before the first typed byte.
 pub buffer_init_unnamed :: proc(buffer: ^Buffer, label: []u8) {
     buffer_init_bytes(buffer, label)
-    buffer^.unnamed = true
-    buffer^.dirty = true
+    buffer.unnamed = true
+    buffer.dirty = true
 }
 
 // buffer_init_read_only_bytes constructs a complete clean buffer from bytes
@@ -151,41 +151,41 @@ pub buffer_init_read_only_bytes :: proc(
     path, source: []u8,
 ) {
     buffer_init_bytes(buffer, path)
-    copy_bytes(&buffer^.bytes, source)
-    copy_bytes(&buffer^.disk_bytes, source)
+    copy_bytes(&buffer.bytes, source)
+    copy_bytes(&buffer.disk_bytes, source)
     rebuild_line_starts(buffer)
-    buffer^.read_only = true
+    buffer.read_only = true
 }
 
 pub buffer_destroy :: proc(buffer: ^Buffer) {
-    memory.owned_string_destroy(&buffer^.path)
-    array.destroy(&buffer^.history_bytes)
-    array.destroy(&buffer^.history)
-    array.destroy(&buffer^.line_starts)
-    array.destroy(&buffer^.disk_bytes)
-    array.destroy(&buffer^.bytes)
+    memory.owned_string_destroy(&buffer.path)
+    array.destroy(&buffer.history_bytes)
+    array.destroy(&buffer.history)
+    array.destroy(&buffer.line_starts)
+    array.destroy(&buffer.disk_bytes)
+    array.destroy(&buffer.bytes)
 }
 
 pub path_bytes :: proc(buffer: ^Buffer) -> []u8 {
-    return memory.owned_string_bytes(&buffer^.path)
+    return memory.owned_string_bytes(&buffer.path)
 }
 
 pub content :: proc(buffer: ^Buffer) -> []u8 {
-    return array.view(&buffer^.bytes)
+    return array.view(&buffer.bytes)
 }
 
 pub is_read_only :: proc(buffer: ^Buffer) -> bool {
-    return buffer^.read_only
+    return buffer.read_only
 }
 
 pub is_unnamed :: proc(buffer: ^Buffer) -> bool {
-    return buffer^.unnamed
+    return buffer.unnamed
 }
 
 clear_history :: proc(buffer: ^Buffer) {
-    array.clear(&buffer^.history)
-    array.clear(&buffer^.history_bytes)
-    buffer^.history_index = 0
+    array.clear(&buffer.history)
+    array.clear(&buffer.history_bytes)
+    buffer.history_index = 0
 }
 
 copy_bytes :: proc(destination: ^Byte_Array, source: []u8) {
@@ -201,11 +201,11 @@ copy_bytes :: proc(destination: ^Byte_Array, source: []u8) {
 // full rebuild belongs only to load/reload where every source byte changed at
 // once and is already being copied.
 rebuild_line_starts :: proc(buffer: ^Buffer) {
-    array.clear(&buffer^.line_starts)
-    array.append(&buffer^.line_starts, 0)
-    for index: usize = 0; index < buffer^.bytes.length; index += 1 {
-        if buffer^.bytes.data[index] == cast[u8]('\n') {
-            array.append(&buffer^.line_starts, index + 1)
+    array.clear(&buffer.line_starts)
+    array.append(&buffer.line_starts, 0)
+    for index: usize = 0; index < buffer.bytes.length; index += 1 {
+        if buffer.bytes.data[index] == cast[u8]('\n') {
+            array.append(&buffer.line_starts, index + 1)
         }
     }
 }
@@ -214,15 +214,15 @@ rebuild_line_starts :: proc(buffer: ^Buffer) {
 // Buffer mutations maintain a nonempty sorted table and every public caller
 // supplies an offset at or before bytes.length, making binary search exact.
 line_for_offset :: proc(buffer: ^Buffer, offset: usize) -> usize {
-    assert(buffer^.line_starts.length != 0,
+    assert(buffer.line_starts.length != 0,
         "editor line index must contain row zero")
-    assert(offset <= buffer^.bytes.length,
+    assert(offset <= buffer.bytes.length,
         "editor line lookup offset is invalid")
     lower: usize
-    upper := buffer^.line_starts.length
+    upper := buffer.line_starts.length
     for lower < upper {
         middle := lower + (upper - lower) / 2
-        if buffer^.line_starts.data[middle] <= offset {
+        if buffer.line_starts.data[middle] <= offset {
             lower = middle + 1
         } else {
             upper = middle
@@ -243,20 +243,20 @@ insert_line_starts :: proc(buffer: ^Buffer, at: usize, source: []u8) {
         }
     }
     first_shifted := line_for_offset(buffer, at) + 1
-    old_length := buffer^.line_starts.length
-    array.reserve(&buffer^.line_starts, old_length + newline_count)
-    buffer^.line_starts.length = old_length + newline_count
+    old_length := buffer.line_starts.length
+    array.reserve(&buffer.line_starts, old_length + newline_count)
+    buffer.line_starts.length = old_length + newline_count
 
     cursor := old_length
     for cursor > first_shifted {
         cursor -= 1
-        buffer^.line_starts.data[cursor + newline_count] =
-            buffer^.line_starts.data[cursor] + len(source)
+        buffer.line_starts.data[cursor + newline_count] =
+            buffer.line_starts.data[cursor] + len(source)
     }
     inserted: usize
     for index: usize = 0; index < len(source); index += 1 {
         if source[index] == cast[u8]('\n') {
-            buffer^.line_starts.data[first_shifted + inserted] = at + index + 1
+            buffer.line_starts.data[first_shifted + inserted] = at + index + 1
             inserted += 1
         }
     }
@@ -275,23 +275,23 @@ delete_line_starts :: proc(buffer: ^Buffer, at, count: usize) {
     end := at + count
     first_removed := line_for_offset(buffer, at) + 1
     after_removed := first_removed
-    for after_removed < buffer^.line_starts.length &&
-        buffer^.line_starts.data[after_removed] <= end {
+    for after_removed < buffer.line_starts.length &&
+        buffer.line_starts.data[after_removed] <= end {
         after_removed += 1
     }
     removed := after_removed - first_removed
     destination := first_removed
     for source := after_removed;
-        source < buffer^.line_starts.length;
+        source < buffer.line_starts.length;
         source += 1 {
-        buffer^.line_starts.data[destination] =
-            buffer^.line_starts.data[source] - count
+        buffer.line_starts.data[destination] =
+            buffer.line_starts.data[source] - count
         destination += 1
     }
-    old_length := buffer^.line_starts.length
-    buffer^.line_starts.length -= removed
-    for index := buffer^.line_starts.length; index < old_length; index += 1 {
-        buffer^.line_starts.data[index] = 0
+    old_length := buffer.line_starts.length
+    buffer.line_starts.length -= removed
+    for index := buffer.line_starts.length; index < old_length; index += 1 {
+        buffer.line_starts.data[index] = 0
     }
 }
 
@@ -344,31 +344,31 @@ read_path :: proc(path: cstring, destination: ^Byte_Array) -> Load_Result {
 }
 
 pub load :: proc(buffer: ^Buffer) -> Load_Result {
-    if buffer^.read_only {
+    if buffer.read_only {
         return .failed
     }
     result := read_path(
-        memory.owned_string_cstring(&buffer^.path),
-        &buffer^.bytes,
+        memory.owned_string_cstring(&buffer.path),
+        &buffer.bytes,
     )
     if result == .failed {
         return result
     }
     if result == .new_file {
-        array.clear(&buffer^.bytes)
+        array.clear(&buffer.bytes)
     }
     rebuild_line_starts(buffer)
-    copy_bytes(&buffer^.disk_bytes, array.view(&buffer^.bytes))
+    copy_bytes(&buffer.disk_bytes, array.view(&buffer.bytes))
     clear_history(buffer)
-    buffer^.cursor = 0
-    buffer^.anchor = 0
-    buffer^.selection_active = false
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
-    buffer^.scroll_line = 0
-    buffer^.scroll_column = 0
-    buffer^.dirty = false
-    buffer^.disk_conflict = false
+    buffer.cursor = 0
+    buffer.anchor = 0
+    buffer.selection_active = false
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
+    buffer.scroll_line = 0
+    buffer.scroll_column = 0
+    buffer.dirty = false
+    buffer.disk_conflict = false
     return result
 }
 
@@ -380,26 +380,26 @@ pub save :: proc(
     buffer: ^Buffer,
     overwrite_conflict: bool = false,
 ) -> bool {
-    if buffer^.read_only || buffer^.unnamed {
+    if buffer.read_only || buffer.unnamed {
         return false
     }
-    if buffer^.disk_conflict && !overwrite_conflict {
+    if buffer.disk_conflict && !overwrite_conflict {
         return false
     }
     (handle, error) := os.create_for_writing(
-        memory.owned_string_cstring(&buffer^.path),
+        memory.owned_string_cstring(&buffer.path),
     )
     if error != .none {
         return false
     }
-    written := os.write_all(handle, array.view(&buffer^.bytes)) == .none
+    written := os.write_all(handle, array.view(&buffer.bytes)) == .none
     closed := os.close(&handle)
     if !written || !closed {
         return false
     }
-    copy_bytes(&buffer^.disk_bytes, array.view(&buffer^.bytes))
-    buffer^.dirty = false
-    buffer^.disk_conflict = false
+    copy_bytes(&buffer.disk_bytes, array.view(&buffer.bytes))
+    buffer.dirty = false
+    buffer.disk_conflict = false
     return true
 }
 
@@ -411,7 +411,7 @@ pub save :: proc(
 // Entering a path in the explicit Save As dialog is the overwrite authority;
 // this layer does not add a second confirmation policy.
 pub save_as :: proc(buffer: ^Buffer, path: []u8) -> bool {
-    if buffer^.read_only || len(path) == 0 {
+    if buffer.read_only || len(path) == 0 {
         return false
     }
     replacement: memory.Owned_String
@@ -423,18 +423,18 @@ pub save_as :: proc(buffer: ^Buffer, path: []u8) -> bool {
         memory.owned_string_destroy(&replacement)
         return false
     }
-    written := os.write_all(handle, array.view(&buffer^.bytes)) == .none
+    written := os.write_all(handle, array.view(&buffer.bytes)) == .none
     closed := os.close(&handle)
     if !written || !closed {
         memory.owned_string_destroy(&replacement)
         return false
     }
-    memory.owned_string_destroy(&buffer^.path)
-    buffer^.path = replacement
-    copy_bytes(&buffer^.disk_bytes, array.view(&buffer^.bytes))
-    buffer^.dirty = false
-    buffer^.disk_conflict = false
-    buffer^.unnamed = false
+    memory.owned_string_destroy(&buffer.path)
+    buffer.path = replacement
+    copy_bytes(&buffer.disk_bytes, array.view(&buffer.bytes))
+    buffer.dirty = false
+    buffer.disk_conflict = false
+    buffer.unnamed = false
     return true
 }
 
@@ -443,13 +443,13 @@ pub save_as :: proc(buffer: ^Buffer, path: []u8) -> bool {
 // and marked conflicted for explicit user resolution; no automatic merge or
 // overwrite occurs.
 pub poll_disk :: proc(buffer: ^Buffer) -> Disk_Result {
-    if buffer^.read_only {
+    if buffer.read_only {
         return .unchanged
     }
     observed: Byte_Array
     array.init(&observed)
     result := read_path(
-        memory.owned_string_cstring(&buffer^.path),
+        memory.owned_string_cstring(&buffer.path),
         &observed,
     )
     if result == .new_file {
@@ -460,27 +460,27 @@ pub poll_disk :: proc(buffer: ^Buffer) -> Disk_Result {
         array.destroy(&observed)
         return .failed
     }
-    if bytes_equal(array.view(&observed), array.view(&buffer^.disk_bytes)) {
+    if bytes_equal(array.view(&observed), array.view(&buffer.disk_bytes)) {
         array.destroy(&observed)
         return .unchanged
     }
-    if buffer^.dirty {
-        buffer^.disk_conflict = true
+    if buffer.dirty {
+        buffer.disk_conflict = true
         array.destroy(&observed)
         return .conflict
     }
-    copy_bytes(&buffer^.bytes, array.view(&observed))
-    copy_bytes(&buffer^.disk_bytes, array.view(&observed))
+    copy_bytes(&buffer.bytes, array.view(&observed))
+    copy_bytes(&buffer.disk_bytes, array.view(&observed))
     rebuild_line_starts(buffer)
     array.destroy(&observed)
     clear_history(buffer)
-    if buffer^.cursor > buffer^.bytes.length {
-        buffer^.cursor = buffer^.bytes.length
+    if buffer.cursor > buffer.bytes.length {
+        buffer.cursor = buffer.bytes.length
     }
-    buffer^.selection_active = false
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
-    buffer^.disk_conflict = false
+    buffer.selection_active = false
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
+    buffer.disk_conflict = false
     return .reloaded
 }
 
@@ -488,35 +488,35 @@ pub poll_disk :: proc(buffer: ^Buffer) -> Disk_Result {
 // history, selection, cursor, or dirty state and are therefore safe for the
 // inverse operations used by undo/redo.
 insert_raw :: proc(buffer: ^Buffer, at: usize, source: []u8) {
-    assert(at <= buffer^.bytes.length, "editor insertion offset is invalid")
-    assert(len(source) <= ~cast[usize](0) - buffer^.bytes.length,
+    assert(at <= buffer.bytes.length, "editor insertion offset is invalid")
+    assert(len(source) <= ~cast[usize](0) - buffer.bytes.length,
         "editor byte length overflows")
     insert_line_starts(buffer, at, source)
-    old_length := buffer^.bytes.length
-    array.reserve(&buffer^.bytes, old_length + len(source))
-    buffer^.bytes.length = old_length + len(source)
+    old_length := buffer.bytes.length
+    array.reserve(&buffer.bytes, old_length + len(source))
+    buffer.bytes.length = old_length + len(source)
     cursor := old_length
     for cursor > at {
         cursor -= 1
-        buffer^.bytes.data[cursor + len(source)] = buffer^.bytes.data[cursor]
+        buffer.bytes.data[cursor + len(source)] = buffer.bytes.data[cursor]
     }
     for index: usize = 0; index < len(source); index += 1 {
-        buffer^.bytes.data[at + index] = source[index]
+        buffer.bytes.data[at + index] = source[index]
     }
 }
 
 delete_raw :: proc(buffer: ^Buffer, at, count: usize) {
-    assert(at <= buffer^.bytes.length &&
-        count <= buffer^.bytes.length - at,
+    assert(at <= buffer.bytes.length &&
+        count <= buffer.bytes.length - at,
         "editor deletion range is invalid")
     delete_line_starts(buffer, at, count)
-    old_length := buffer^.bytes.length
+    old_length := buffer.bytes.length
     for index := at; index + count < old_length; index += 1 {
-        buffer^.bytes.data[index] = buffer^.bytes.data[index + count]
+        buffer.bytes.data[index] = buffer.bytes.data[index + count]
     }
-    buffer^.bytes.length -= count
-    for index := buffer^.bytes.length; index < old_length; index += 1 {
-        buffer^.bytes.data[index] = 0
+    buffer.bytes.length -= count
+    for index := buffer.bytes.length; index < old_length; index += 1 {
+        buffer.bytes.data[index] = 0
     }
 }
 
@@ -532,14 +532,14 @@ prepare_history_append :: proc(
     if payload_size > History_Byte_Limit || record_count > History_Limit {
         return false
     }
-    for index := buffer^.history_index; index < buffer^.history.length; index += 1 {
+    for index := buffer.history_index; index < buffer.history.length; index += 1 {
         empty: Edit
-        buffer^.history.data[index] = empty
+        buffer.history.data[index] = empty
     }
-    buffer^.history.length = buffer^.history_index
+    buffer.history.length = buffer.history_index
 
-    exceeds_records := buffer^.history.length > History_Limit - record_count
-    exceeds_bytes := buffer^.history_bytes.length >
+    exceeds_records := buffer.history.length > History_Limit - record_count
+    exceeds_bytes := buffer.history_bytes.length >
         History_Byte_Limit - payload_size
     if exceeds_records || exceeds_bytes {
         clear_history(buffer)
@@ -548,9 +548,9 @@ prepare_history_append :: proc(
 }
 
 append_history_bytes :: proc(buffer: ^Buffer, source: []u8) -> usize {
-    start := buffer^.history_bytes.length
+    start := buffer.history_bytes.length
     for byte in source {
-        array.append(&buffer^.history_bytes, byte)
+        array.append(&buffer.history_bytes, byte)
     }
     return start
 }
@@ -570,7 +570,7 @@ record_edit :: proc(
         return
     }
     start := append_history_bytes(buffer, source)
-    array.append(&buffer^.history, Edit{
+    array.append(&buffer.history, Edit{
         kind = kind,
         at = at,
         byte_start = start,
@@ -578,7 +578,7 @@ record_edit :: proc(
         before_cursor = before_cursor,
         after_cursor = after_cursor,
     })
-    buffer^.history_index = buffer^.history.length
+    buffer.history_index = buffer.history.length
 }
 
 // record_replace stores old and replacement bytes in one joined record pair. The caller
@@ -599,7 +599,7 @@ record_replace :: proc(
     }
     old_start := append_history_bytes(buffer, old)
     replacement_start := append_history_bytes(buffer, replacement)
-    array.append(&buffer^.history, Edit{
+    array.append(&buffer.history, Edit{
         kind = .delete,
         at = at,
         byte_start = old_start,
@@ -607,7 +607,7 @@ record_replace :: proc(
         before_cursor = before_cursor,
         after_cursor = at,
     })
-    array.append(&buffer^.history, Edit{
+    array.append(&buffer.history, Edit{
         kind = .insert,
         joined_to_previous = true,
         at = at,
@@ -616,42 +616,42 @@ record_replace :: proc(
         before_cursor = at,
         after_cursor = after_cursor,
     })
-    buffer^.history_index = buffer^.history.length
+    buffer.history_index = buffer.history.length
     return true
 }
 
 pub selection :: proc(buffer: ^Buffer) -> (usize, usize, bool) {
-    if !buffer^.selection_active || buffer^.anchor == buffer^.cursor {
-        return (buffer^.cursor, buffer^.cursor, false)
+    if !buffer.selection_active || buffer.anchor == buffer.cursor {
+        return (buffer.cursor, buffer.cursor, false)
     }
-    if buffer^.anchor < buffer^.cursor {
-        return (buffer^.anchor, buffer^.cursor, true)
+    if buffer.anchor < buffer.cursor {
+        return (buffer.anchor, buffer.cursor, true)
     }
-    return (buffer^.cursor, buffer^.anchor, true)
+    return (buffer.cursor, buffer.anchor, true)
 }
 
 pub clear_selection :: proc(buffer: ^Buffer) {
-    buffer^.anchor = buffer^.cursor
-    buffer^.selection_active = false
+    buffer.anchor = buffer.cursor
+    buffer.selection_active = false
 }
 
 // select_all uses the same anchor/cursor representation as Shift movement.
 // Empty documents intentionally have no active selection while still placing
 // both endpoints at byte zero.
 pub select_all :: proc(buffer: ^Buffer) {
-    buffer^.anchor = 0
-    buffer^.cursor = buffer^.bytes.length
-    buffer^.selection_active = buffer^.bytes.length != 0
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
+    buffer.anchor = 0
+    buffer.cursor = buffer.bytes.length
+    buffer.selection_active = buffer.bytes.length != 0
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
 }
 
 delete_range :: proc(buffer: ^Buffer, start, end: usize) {
     if end <= start {
         return
     }
-    before := buffer^.cursor
-    deleted := cast[[^]u8](&buffer^.bytes.data[start])
+    before := buffer.cursor
+    deleted := cast[[^]u8](&buffer.bytes.data[start])
     record_edit(
         buffer,
         .delete,
@@ -661,15 +661,15 @@ delete_range :: proc(buffer: ^Buffer, start, end: usize) {
         start,
     )
     delete_raw(buffer, start, end - start)
-    buffer^.cursor = start
+    buffer.cursor = start
     clear_selection(buffer)
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
-    buffer^.dirty = true
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
+    buffer.dirty = true
 }
 
 pub delete_selection :: proc(buffer: ^Buffer) -> bool {
-    if buffer^.read_only {
+    if buffer.read_only {
         return false
     }
     (start, end, selected) := selection(buffer)
@@ -681,28 +681,28 @@ pub delete_selection :: proc(buffer: ^Buffer) -> bool {
 }
 
 pub insert :: proc(buffer: ^Buffer, source: []u8) {
-    if buffer^.read_only {
+    if buffer.read_only {
         return
     }
     delete_selection(buffer)
     if len(source) == 0 {
         return
     }
-    before := buffer^.cursor
+    before := buffer.cursor
     record_edit(
         buffer,
         .insert,
-        buffer^.cursor,
+        buffer.cursor,
         source,
         before,
         before + len(source),
     )
-    insert_raw(buffer, buffer^.cursor, source)
-    buffer^.cursor += len(source)
+    insert_raw(buffer, buffer.cursor, source)
+    buffer.cursor += len(source)
     clear_selection(buffer)
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
-    buffer^.dirty = true
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
+    buffer.dirty = true
 }
 
 // insert_text is the immutable-string adapter for paste/IME events. The
@@ -720,22 +720,22 @@ pub insert_text :: proc(buffer: ^Buffer, text: string) {
 }
 
 line_start :: proc(buffer: ^Buffer, offset: usize) -> usize {
-    return buffer^.line_starts.data[line_for_offset(buffer, offset)]
+    return buffer.line_starts.data[line_for_offset(buffer, offset)]
 }
 
 line_end :: proc(buffer: ^Buffer, offset: usize) -> usize {
     line := line_for_offset(buffer, offset)
-    if line + 1 < buffer^.line_starts.length {
-        return buffer^.line_starts.data[line + 1] - 1
+    if line + 1 < buffer.line_starts.length {
+        return buffer.line_starts.data[line + 1] - 1
     }
-    return buffer^.bytes.length
+    return buffer.bytes.length
 }
 
 previous_grapheme :: proc(buffer: ^Buffer, offset: usize) -> usize {
     start := line_start(buffer, offset)
     previous := start
     cursor := start
-    bytes := array.view(&buffer^.bytes)
+    bytes := array.view(&buffer.bytes)
     for cursor < offset {
         previous = cursor
         (end, _, _) := unicode.next_grapheme_bytes(bytes, cursor)
@@ -755,21 +755,21 @@ previous_text_unit :: proc(buffer: ^Buffer, offset: usize) -> usize {
     if offset == 0 {
         return 0
     }
-    if buffer^.bytes.data[offset - 1] == cast[u8]('\n') {
+    if buffer.bytes.data[offset - 1] == cast[u8]('\n') {
         return offset - 1
     }
     return previous_grapheme(buffer, offset)
 }
 
 next_grapheme :: proc(buffer: ^Buffer, offset: usize) -> usize {
-    if offset >= buffer^.bytes.length {
-        return buffer^.bytes.length
+    if offset >= buffer.bytes.length {
+        return buffer.bytes.length
     }
-    if buffer^.bytes.data[offset] == cast[u8]('\n') {
+    if buffer.bytes.data[offset] == cast[u8]('\n') {
         return offset + 1
     }
     (end, _, _) := unicode.next_grapheme_bytes(
-        array.view(&buffer^.bytes),
+        array.view(&buffer.bytes),
         offset,
     )
     if end <= offset {
@@ -780,48 +780,48 @@ next_grapheme :: proc(buffer: ^Buffer, offset: usize) -> usize {
 
 prepare_movement :: proc(buffer: ^Buffer, old_cursor: usize, extend: bool) {
     if extend {
-        if !buffer^.selection_active {
-            buffer^.anchor = old_cursor
-            buffer^.selection_active = true
+        if !buffer.selection_active {
+            buffer.anchor = old_cursor
+            buffer.selection_active = true
         }
     } else {
         clear_selection(buffer)
     }
-    buffer^.reveal_cursor = true
+    buffer.reveal_cursor = true
 }
 
 pub move_left :: proc(buffer: ^Buffer, extend: bool = false) {
-    old := buffer^.cursor
-    if buffer^.cursor > 0 {
-        if buffer^.bytes.data[buffer^.cursor - 1] == cast[u8]('\n') {
-            buffer^.cursor -= 1
+    old := buffer.cursor
+    if buffer.cursor > 0 {
+        if buffer.bytes.data[buffer.cursor - 1] == cast[u8]('\n') {
+            buffer.cursor -= 1
         } else {
-            buffer^.cursor = previous_grapheme(buffer, buffer^.cursor)
+            buffer.cursor = previous_grapheme(buffer, buffer.cursor)
         }
     }
     prepare_movement(buffer, old, extend)
-    buffer^.preferred_column_valid = false
+    buffer.preferred_column_valid = false
 }
 
 pub move_right :: proc(buffer: ^Buffer, extend: bool = false) {
-    old := buffer^.cursor
-    buffer^.cursor = next_grapheme(buffer, buffer^.cursor)
+    old := buffer.cursor
+    buffer.cursor = next_grapheme(buffer, buffer.cursor)
     prepare_movement(buffer, old, extend)
-    buffer^.preferred_column_valid = false
+    buffer.preferred_column_valid = false
 }
 
 pub move_home :: proc(buffer: ^Buffer, extend: bool = false) {
-    old := buffer^.cursor
-    buffer^.cursor = line_start(buffer, buffer^.cursor)
+    old := buffer.cursor
+    buffer.cursor = line_start(buffer, buffer.cursor)
     prepare_movement(buffer, old, extend)
-    buffer^.preferred_column_valid = false
+    buffer.preferred_column_valid = false
 }
 
 pub move_end :: proc(buffer: ^Buffer, extend: bool = false) {
-    old := buffer^.cursor
-    buffer^.cursor = line_end(buffer, buffer^.cursor)
+    old := buffer.cursor
+    buffer.cursor = line_end(buffer, buffer.cursor)
     prepare_movement(buffer, old, extend)
-    buffer^.preferred_column_valid = false
+    buffer.preferred_column_valid = false
 }
 
 // word_byte follows Draft's source identifier vocabulary: ASCII letters,
@@ -839,58 +839,58 @@ word_byte :: proc(byte: u8) -> bool {
 // grapheme helpers ensure malformed/non-ASCII input is crossed only at safe
 // recovery boundaries and always makes progress.
 pub move_word_left :: proc(buffer: ^Buffer, extend: bool = false) {
-    old := buffer^.cursor
-    cursor := buffer^.cursor
+    old := buffer.cursor
+    cursor := buffer.cursor
     for cursor > 0 {
         previous := previous_text_unit(buffer, cursor)
-        if word_byte(buffer^.bytes.data[previous]) {
+        if word_byte(buffer.bytes.data[previous]) {
             break
         }
         cursor = previous
     }
     for cursor > 0 {
         previous := previous_text_unit(buffer, cursor)
-        if !word_byte(buffer^.bytes.data[previous]) {
+        if !word_byte(buffer.bytes.data[previous]) {
             break
         }
         cursor = previous
     }
-    buffer^.cursor = cursor
+    buffer.cursor = cursor
     prepare_movement(buffer, old, extend)
-    buffer^.preferred_column_valid = false
+    buffer.preferred_column_valid = false
 }
 
 // move_word_right crosses the current word when inside one, then separators up
 // to the next word start. This is the conventional Ctrl-Right destination and
 // composes with Shift selection through the common movement transition.
 pub move_word_right :: proc(buffer: ^Buffer, extend: bool = false) {
-    old := buffer^.cursor
-    cursor := buffer^.cursor
-    for cursor < buffer^.bytes.length &&
-        word_byte(buffer^.bytes.data[cursor]) {
+    old := buffer.cursor
+    cursor := buffer.cursor
+    for cursor < buffer.bytes.length &&
+        word_byte(buffer.bytes.data[cursor]) {
         cursor = next_grapheme(buffer, cursor)
     }
-    for cursor < buffer^.bytes.length &&
-        !word_byte(buffer^.bytes.data[cursor]) {
+    for cursor < buffer.bytes.length &&
+        !word_byte(buffer.bytes.data[cursor]) {
         cursor = next_grapheme(buffer, cursor)
     }
-    buffer^.cursor = cursor
+    buffer.cursor = cursor
     prepare_movement(buffer, old, extend)
-    buffer^.preferred_column_valid = false
+    buffer.preferred_column_valid = false
 }
 
 pub move_file_start :: proc(buffer: ^Buffer, extend: bool = false) {
-    old := buffer^.cursor
-    buffer^.cursor = 0
+    old := buffer.cursor
+    buffer.cursor = 0
     prepare_movement(buffer, old, extend)
-    buffer^.preferred_column_valid = false
+    buffer.preferred_column_valid = false
 }
 
 pub move_file_end :: proc(buffer: ^Buffer, extend: bool = false) {
-    old := buffer^.cursor
-    buffer^.cursor = buffer^.bytes.length
+    old := buffer.cursor
+    buffer.cursor = buffer.bytes.length
     prepare_movement(buffer, old, extend)
-    buffer^.preferred_column_valid = false
+    buffer.preferred_column_valid = false
 }
 
 // go_to_line moves to the first byte of a one-based document line. Zero and
@@ -898,20 +898,20 @@ pub move_file_end :: proc(buffer: ^Buffer, extend: bool = false) {
 // or viewport state. The successful transition uses the retained line-start
 // table and requests one cursor reveal; it never rescans source bytes.
 pub go_to_line :: proc(buffer: ^Buffer, one_based_line: usize) -> bool {
-    if one_based_line == 0 || one_based_line > buffer^.line_starts.length {
+    if one_based_line == 0 || one_based_line > buffer.line_starts.length {
         return false
     }
-    buffer^.cursor = buffer^.line_starts.data[one_based_line - 1]
+    buffer.cursor = buffer.line_starts.data[one_based_line - 1]
     clear_selection(buffer)
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
     return true
 }
 
 display_column :: proc(buffer: ^Buffer, start, end: usize) -> usize {
     column: usize
     cursor := start
-    bytes := array.view(&buffer^.bytes)
+    bytes := array.view(&buffer.bytes)
     for cursor < end {
         (next, width, error) := unicode.next_grapheme_bytes(bytes, cursor)
         if next <= cursor {
@@ -933,7 +933,7 @@ offset_at_column :: proc(
 ) -> usize {
     column: usize
     cursor := start
-    bytes := array.view(&buffer^.bytes)
+    bytes := array.view(&buffer.bytes)
     for cursor < end {
         (next, width, error) := unicode.next_grapheme_bytes(bytes, cursor)
         if next <= cursor {
@@ -953,15 +953,15 @@ offset_at_column :: proc(
 }
 
 move_vertical :: proc(buffer: ^Buffer, upward, extend: bool) {
-    old := buffer^.cursor
-    current_start := line_start(buffer, buffer^.cursor)
-    if !buffer^.preferred_column_valid {
-        buffer^.preferred_column = display_column(
+    old := buffer.cursor
+    current_start := line_start(buffer, buffer.cursor)
+    if !buffer.preferred_column_valid {
+        buffer.preferred_column = display_column(
             buffer,
             current_start,
-            buffer^.cursor,
+            buffer.cursor,
         )
-        buffer^.preferred_column_valid = true
+        buffer.preferred_column_valid = true
     }
     target_start: usize
     target_end: usize
@@ -973,19 +973,19 @@ move_vertical :: proc(buffer: ^Buffer, upward, extend: bool) {
         target_end = current_start - 1
         target_start = line_start(buffer, target_end)
     } else {
-        current_end := line_end(buffer, buffer^.cursor)
-        if current_end == buffer^.bytes.length {
+        current_end := line_end(buffer, buffer.cursor)
+        if current_end == buffer.bytes.length {
             prepare_movement(buffer, old, extend)
             return
         }
         target_start = current_end + 1
         target_end = line_end(buffer, target_start)
     }
-    buffer^.cursor = offset_at_column(
+    buffer.cursor = offset_at_column(
         buffer,
         target_start,
         target_end,
-        buffer^.preferred_column,
+        buffer.preferred_column,
     )
     prepare_movement(buffer, old, extend)
 }
@@ -999,34 +999,34 @@ pub move_down :: proc(buffer: ^Buffer, extend: bool = false) {
 }
 
 pub backspace :: proc(buffer: ^Buffer) -> bool {
-    if buffer^.read_only {
+    if buffer.read_only {
         return false
     }
     if delete_selection(buffer) {
         return true
     }
-    if buffer^.cursor == 0 {
+    if buffer.cursor == 0 {
         return false
     }
-    start := buffer^.cursor - 1
-    if buffer^.bytes.data[start] != cast[u8]('\n') {
-        start = previous_grapheme(buffer, buffer^.cursor)
+    start := buffer.cursor - 1
+    if buffer.bytes.data[start] != cast[u8]('\n') {
+        start = previous_grapheme(buffer, buffer.cursor)
     }
-    delete_range(buffer, start, buffer^.cursor)
+    delete_range(buffer, start, buffer.cursor)
     return true
 }
 
 pub delete_forward :: proc(buffer: ^Buffer) -> bool {
-    if buffer^.read_only {
+    if buffer.read_only {
         return false
     }
     if delete_selection(buffer) {
         return true
     }
-    if buffer^.cursor == buffer^.bytes.length {
+    if buffer.cursor == buffer.bytes.length {
         return false
     }
-    delete_range(buffer, buffer^.cursor, next_grapheme(buffer, buffer^.cursor))
+    delete_range(buffer, buffer.cursor, next_grapheme(buffer, buffer.cursor))
     return true
 }
 
@@ -1041,7 +1041,7 @@ undo_primitive :: proc(buffer: ^Buffer, edit: Edit) {
     } else {
         if edit.byte_length != 0 {
             source_data := cast[[^]u8](
-                &buffer^.history_bytes.data[edit.byte_start],
+                &buffer.history_bytes.data[edit.byte_start],
             )
             source := source_data[:edit.byte_length]
             insert_raw(buffer, edit.at, source)
@@ -1050,33 +1050,33 @@ undo_primitive :: proc(buffer: ^Buffer, edit: Edit) {
 }
 
 pub undo :: proc(buffer: ^Buffer) -> bool {
-    if buffer^.read_only {
+    if buffer.read_only {
         return false
     }
-    if buffer^.history_index == 0 {
+    if buffer.history_index == 0 {
         return false
     }
-    edit := buffer^.history.data[buffer^.history_index - 1]
+    edit := buffer.history.data[buffer.history_index - 1]
     undo_primitive(buffer, edit)
-    buffer^.history_index -= 1
+    buffer.history_index -= 1
     before_cursor := edit.before_cursor
     if edit.joined_to_previous {
-        assert(buffer^.history_index != 0,
+        assert(buffer.history_index != 0,
             "joined editor history must have a preceding record")
-        previous := buffer^.history.data[buffer^.history_index - 1]
+        previous := buffer.history.data[buffer.history_index - 1]
         assert(!previous.joined_to_previous,
             "editor replacement history groups exactly two records")
         undo_primitive(buffer, previous)
-        buffer^.history_index -= 1
+        buffer.history_index -= 1
         before_cursor = previous.before_cursor
     }
-    buffer^.cursor = before_cursor
+    buffer.cursor = before_cursor
     clear_selection(buffer)
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
-    buffer^.dirty = !bytes_equal(
-        array.view(&buffer^.bytes),
-        array.view(&buffer^.disk_bytes),
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
+    buffer.dirty = !bytes_equal(
+        array.view(&buffer.bytes),
+        array.view(&buffer.disk_bytes),
     )
     return true
 }
@@ -1088,7 +1088,7 @@ redo_primitive :: proc(buffer: ^Buffer, edit: Edit) {
     if edit.kind == .insert {
         if edit.byte_length != 0 {
             source_data := cast[[^]u8](
-                &buffer^.history_bytes.data[edit.byte_start],
+                &buffer.history_bytes.data[edit.byte_start],
             )
             source := source_data[:edit.byte_length]
             insert_raw(buffer, edit.at, source)
@@ -1101,32 +1101,32 @@ redo_primitive :: proc(buffer: ^Buffer, edit: Edit) {
 }
 
 pub redo :: proc(buffer: ^Buffer) -> bool {
-    if buffer^.read_only {
+    if buffer.read_only {
         return false
     }
-    if buffer^.history_index == buffer^.history.length {
+    if buffer.history_index == buffer.history.length {
         return false
     }
-    edit := buffer^.history.data[buffer^.history_index]
+    edit := buffer.history.data[buffer.history_index]
     assert(!edit.joined_to_previous,
         "redo must begin at an atomic history group boundary")
     redo_primitive(buffer, edit)
-    buffer^.history_index += 1
+    buffer.history_index += 1
     after_cursor := edit.after_cursor
-    if buffer^.history_index < buffer^.history.length &&
-        buffer^.history.data[buffer^.history_index].joined_to_previous {
-        joined := buffer^.history.data[buffer^.history_index]
+    if buffer.history_index < buffer.history.length &&
+        buffer.history.data[buffer.history_index].joined_to_previous {
+        joined := buffer.history.data[buffer.history_index]
         redo_primitive(buffer, joined)
-        buffer^.history_index += 1
+        buffer.history_index += 1
         after_cursor = joined.after_cursor
     }
-    buffer^.cursor = after_cursor
+    buffer.cursor = after_cursor
     clear_selection(buffer)
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
-    buffer^.dirty = !bytes_equal(
-        array.view(&buffer^.bytes),
-        array.view(&buffer^.disk_bytes),
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
+    buffer.dirty = !bytes_equal(
+        array.view(&buffer.bytes),
+        array.view(&buffer.disk_bytes),
     )
     return true
 }
@@ -1159,12 +1159,12 @@ pub Replace_All_Result :: struct {
 }
 
 bytes_match_at :: proc(buffer: ^Buffer, needle: []u8, at: usize) -> bool {
-    if len(needle) > buffer^.bytes.length ||
-        at > buffer^.bytes.length - len(needle) {
+    if len(needle) > buffer.bytes.length ||
+        at > buffer.bytes.length - len(needle) {
         return false
     }
     for index: usize = 0; index < len(needle); index += 1 {
-        if buffer^.bytes.data[at + index] != needle[index] {
+        if buffer.bytes.data[at + index] != needle[index] {
             return false
         }
     }
@@ -1172,11 +1172,11 @@ bytes_match_at :: proc(buffer: ^Buffer, needle: []u8, at: usize) -> bool {
 }
 
 select_match :: proc(buffer: ^Buffer, start, length: usize) {
-    buffer^.anchor = start
-    buffer^.cursor = start + length
-    buffer^.selection_active = true
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
+    buffer.anchor = start
+    buffer.cursor = start + length
+    buffer.selection_active = true
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
 }
 
 // find_forward_range returns the first match start in [begin,end), where end
@@ -1220,11 +1220,11 @@ find_reverse_range :: proc(
 // literal; case folding and Unicode normalization require separate policies.
 pub find_next :: proc(buffer: ^Buffer, needle: []u8) -> Find_Result {
     result: Find_Result
-    if len(needle) == 0 || len(needle) > buffer^.bytes.length {
+    if len(needle) == 0 || len(needle) > buffer.bytes.length {
         return result
     }
-    candidate_count := buffer^.bytes.length - len(needle) + 1
-    start := buffer^.cursor
+    candidate_count := buffer.bytes.length - len(needle) + 1
+    start := buffer.cursor
     if start > candidate_count {
         start = candidate_count
     }
@@ -1245,11 +1245,11 @@ pub find_next :: proc(buffer: ^Buffer, needle: []u8) -> Find_Result {
 // match rather than selecting it again until a real one-match wrap occurs.
 pub find_previous :: proc(buffer: ^Buffer, needle: []u8) -> Find_Result {
     result: Find_Result
-    if len(needle) == 0 || len(needle) > buffer^.bytes.length {
+    if len(needle) == 0 || len(needle) > buffer.bytes.length {
         return result
     }
-    candidate_count := buffer^.bytes.length - len(needle) + 1
-    start := buffer^.cursor
+    candidate_count := buffer.bytes.length - len(needle) + 1
+    start := buffer.cursor
     (selected_start, _, selected) := selection(buffer)
     if selected {
         start = selected_start
@@ -1284,7 +1284,7 @@ pub replace_selected :: proc(
     buffer: ^Buffer,
     needle, replacement: []u8,
 ) -> Replace_Result {
-    if buffer^.read_only {
+    if buffer.read_only {
         return .read_only
     }
     (start, end, selected) := selection(buffer)
@@ -1302,18 +1302,18 @@ pub replace_selected :: proc(
         }
     }
     if same {
-        buffer^.cursor = end
+        buffer.cursor = end
         clear_selection(buffer)
-        buffer^.reveal_cursor = true
+        buffer.reveal_cursor = true
         return .replaced
     }
-    old_data := cast[[^]u8](&buffer^.bytes.data[start])
+    old_data := cast[[^]u8](&buffer.bytes.data[start])
     if !record_replace(
         buffer,
         start,
         old_data[:end - start],
         replacement,
-        buffer^.cursor,
+        buffer.cursor,
         start + len(replacement),
     ) {
         return .history_limit
@@ -1322,11 +1322,11 @@ pub replace_selected :: proc(
     if len(replacement) != 0 {
         insert_raw(buffer, start, replacement)
     }
-    buffer^.cursor = start + len(replacement)
+    buffer.cursor = start + len(replacement)
     clear_selection(buffer)
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
-    buffer^.dirty = true
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
+    buffer.dirty = true
     return .replaced
 }
 
@@ -1340,16 +1340,16 @@ pub replace_all :: proc(
     needle, replacement: []u8,
 ) -> Replace_All_Result {
     result := Replace_All_Result{completed = true}
-    if buffer^.read_only {
+    if buffer.read_only {
         result.completed = false
         return result
     }
-    if len(needle) == 0 || len(needle) > buffer^.bytes.length {
+    if len(needle) == 0 || len(needle) > buffer.bytes.length {
         return result
     }
-    final_length := buffer^.bytes.length
+    final_length := buffer.bytes.length
     source: usize
-    last_start := buffer^.bytes.length - len(needle)
+    last_start := buffer.bytes.length - len(needle)
     for source <= last_start {
         if bytes_match_at(buffer, needle, source) {
             result.count += 1
@@ -1375,11 +1375,11 @@ pub replace_all :: proc(
     candidate: Byte_Array
     array.init(&candidate)
     array.reserve(&candidate, final_length)
-    before_cursor := buffer^.cursor
+    before_cursor := buffer.cursor
     after_cursor: usize
     cursor_mapped := false
     source = 0
-    for source < buffer^.bytes.length {
+    for source < buffer.bytes.length {
         if source <= last_start &&
             bytes_match_at(buffer, needle, source) {
             output_start := candidate.length
@@ -1397,7 +1397,7 @@ pub replace_all :: proc(
                 after_cursor = candidate.length
                 cursor_mapped = true
             }
-            array.append(&candidate, buffer^.bytes.data[source])
+            array.append(&candidate, buffer.bytes.data[source])
             source += 1
         }
     }
@@ -1407,12 +1407,12 @@ pub replace_all :: proc(
     assert(candidate.length == final_length,
         "replace-all size preflight must match constructed bytes")
 
-    old := array.view(&buffer^.bytes)
+    old := array.view(&buffer.bytes)
     replacement_document := array.view(&candidate)
     if bytes_equal(old, replacement_document) {
         array.destroy(&candidate)
         clear_selection(buffer)
-        buffer^.reveal_cursor = true
+        buffer.reveal_cursor = true
         return result
     }
     if !record_replace(
@@ -1427,20 +1427,20 @@ pub replace_all :: proc(
         result.completed = false
         return result
     }
-    old_length := buffer^.bytes.length
+    old_length := buffer.bytes.length
     delete_raw(buffer, 0, old_length)
     if candidate.length != 0 {
         insert_raw(buffer, 0, array.view(&candidate))
     }
     array.destroy(&candidate)
-    buffer^.cursor = after_cursor
+    buffer.cursor = after_cursor
     clear_selection(buffer)
-    buffer^.preferred_column_valid = false
-    buffer^.reveal_cursor = true
-    buffer^.dirty = true
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
+    buffer.dirty = true
     return result
 }
 
 pub can_close :: proc(buffer: ^Buffer, force: bool = false) -> bool {
-    return force || !buffer^.dirty
+    return force || !buffer.dirty
 }

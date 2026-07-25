@@ -17,20 +17,20 @@ pub require_max_time :: proc(
     benchmark: ^Benchmark,
     maximum: time.Duration,
 ) {
-    benchmark^.maximum_time = maximum
+    benchmark.maximum_time = maximum
 }
 
 pub measure :: proc(benchmark: ^Benchmark, operation: proc()) {
     begin := time.monotonic_now()
     operation()
     elapsed := time.monotonic_now() - begin
-    benchmark^.last_time = elapsed
-    benchmark^.samples += 1
-    if benchmark^.maximum_time > 0 && elapsed > benchmark^.maximum_time {
-        benchmark^.failures += 1
+    benchmark.last_time = elapsed
+    benchmark.samples += 1
+    if benchmark.maximum_time > 0 && elapsed > benchmark.maximum_time {
+        benchmark.failures += 1
     }
 }
 
 pub failed :: proc(benchmark: ^Benchmark) -> bool {
-    return benchmark^.failures != 0
+    return benchmark.failures != 0
 }

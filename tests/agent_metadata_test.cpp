@@ -727,7 +727,7 @@ Counter :: struct {
 }
 
 counter_add :: proc(counter: ^Counter, amount: i64) {
-    counter^.value += amount
+    counter.value += amount
 }
 
 main :: proc() -> int {
@@ -807,7 +807,7 @@ main :: proc() -> int {
     }
     if (declaration.name == "counter_add") {
       EXPECT(state,
-          declaration.source.find("counter^.value += amount") !=
+          declaration.source.find("counter.value += amount") !=
               std::string::npos);
       saw_counter_add = true;
     }

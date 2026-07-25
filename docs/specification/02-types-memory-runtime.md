@@ -116,6 +116,13 @@ one-past address also has undefined behavior. Calling a nil procedure pointer
 or an address that does not name a compatible procedure is undefined behavior.
 
 `^T` addresses one value. `[^]T` supports unchecked indexing.
+Member selection on `^T` automatically dereferences that one value, so
+`pointer.field` and `pointer^.field` denote the same storage and have the same
+undefined behavior when `pointer` is nil or invalid. This is syntax compression,
+not a checked access, borrow, ownership transfer, or lifetime extension. The
+rule is deliberately absent for `[^]T`: select an element with
+`pointer[index]` before selecting one of its members. Postfix `pointer^` remains
+the operation for accessing the complete pointee outside member selection.
 `pointer[:length]` constructs a `[]T` from a `[^]T` and a `usize` length; nil is
 valid only with zero length, and otherwise the caller must provide that many
 live, aligned elements. Slices and strings are small value views and do not own

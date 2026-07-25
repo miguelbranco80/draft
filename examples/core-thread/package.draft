@@ -35,16 +35,16 @@ worker :: proc(user: rawptr) {
     // The mutex protects both the payload and the ready flag. Signaling while
     // holding it gives the waiting thread one simple, auditable publication
     // edge; the wait loop also handles permitted spurious wakeups.
-    thread.mutex_lock(work^.mutex)
-    work^.observation^.value = 42
-    work^.observation^.context_index = snapshot.user_index
-    work^.observation^.temporary_is_thread_owned =
+    thread.mutex_lock(work.mutex)
+    work.observation.value = 42
+    work.observation.context_index = snapshot.user_index
+    work.observation.temporary_is_thread_owned =
         snapshot.temp_allocator.procedure != snapshot.allocator.procedure
-    work^.observation^.initial_thread_local = initial_thread_local
-    work^.observation^.final_thread_local = local_counter
-    work^.observation^.ready = true
-    thread.condition_signal(work^.condition)
-    thread.mutex_unlock(work^.mutex)
+    work.observation.initial_thread_local = initial_thread_local
+    work.observation.final_thread_local = local_counter
+    work.observation.ready = true
+    thread.condition_signal(work.condition)
+    thread.mutex_unlock(work.mutex)
 }
 
 main :: proc() {

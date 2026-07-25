@@ -172,6 +172,29 @@ Effect analysis snapshots values in the same source sequence, then stores the
 summaries in physical order before substituting callee contracts. Indirect calls
 have no declaration metadata and retain the exact positional-arity rule.
 
+## Automatic pointer member dereference
+
+Status: implemented for named aggregate members, numeric tuple members,
+chained selection, and distinct pointer types.
+
+Member checking first checks the selector base as an ordinary expression and
+unwraps its runtime scalar shape. When that shape is `Pointer`, the body checker
+inserts the same addressable `HirExpressionKind::Dereference` node used for an
+authored postfix `^`, then performs ordinary tuple or named-member resolution on
+the pointee. The inserted node carries the pointee's natural alignment and the
+source range of the pointer expression. A chain such as `outer.inner.value`
+therefore repeats this decision at each member node and makes every implicit
+storage traversal explicit in checked HIR.
+
+`MultiPointer` is intentionally excluded. It does not identify one element
+until indexing or explicit dereference has selected one, so member checking
+reports the ordinary missing-member diagnostic rather than guessing an index.
+Explicit `pointer^.field` remains legal and reaches the same member path. MIR,
+effect discovery, write-back summaries, denial analysis, packed-field
+alignment, and LLVM lowering need no alternate case because both surface
+spellings have identical HIR. The transformation neither inserts a nil check
+nor changes ownership, lifetime, evaluation order, or ABI.
+
 ## C variadic call checking
 
 Status: scalar/pointer C variadic imports and calls implemented; aggregate tails

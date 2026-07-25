@@ -134,7 +134,7 @@ pub tree_view :: proc(
     if visible_count == 0 {
         return result
     }
-    result.selected_node = visible[model^.cursor]
+    result.selected_node = visible[model.cursor]
 
     if list_result.activated {
         node_index := visible[list_result.activated_index]
@@ -142,59 +142,59 @@ pub tree_view :: proc(
             nodes[node_index].expanded = !nodes[node_index].expanded
             result.toggled = true
             result.toggled_node = node_index
-            state^.repaint_requested = true
+            state.repaint_requested = true
         } else {
             result.activated = true
             result.activated_node = node_index
         }
     }
 
-    if !state^.event_handled && has_focus(state, body_id) &&
-        state^.event.kind == .key {
-        key := state^.event.key
-        node_index := visible[model^.cursor]
+    if !state.event_handled && has_focus(state, body_id) &&
+        state.event.kind == .key {
+        key := state.event.key
+        node_index := visible[model.cursor]
         node := &nodes[node_index]
         moved := false
         if key.code == .right {
-            if node^.has_children && !node^.expanded {
-                node^.expanded = true
+            if node.has_children && !node.expanded {
+                node.expanded = true
                 result.toggled = true
                 result.toggled_node = node_index
-            } else if node^.has_children && model^.cursor + 1 < visible_count &&
-                nodes[visible[model^.cursor + 1]].depth > node^.depth {
-                model^.cursor += 1
+            } else if node.has_children && model.cursor + 1 < visible_count &&
+                nodes[visible[model.cursor + 1]].depth > node.depth {
+                model.cursor += 1
                 moved = true
             }
-            state^.event_handled = true
+            state.event_handled = true
         } else if key.code == .left {
-            if node^.has_children && node^.expanded {
-                node^.expanded = false
+            if node.has_children && node.expanded {
+                node.expanded = false
                 result.toggled = true
                 result.toggled_node = node_index
-            } else if node^.depth != 0 {
-                parent_depth := node^.depth - 1
-                candidate := model^.cursor
+            } else if node.depth != 0 {
+                parent_depth := node.depth - 1
+                candidate := model.cursor
                 for candidate != 0 {
                     candidate -= 1
                     if nodes[visible[candidate]].depth == parent_depth {
-                        model^.cursor = candidate
+                        model.cursor = candidate
                         moved = true
                         break
                     }
                 }
             }
-            state^.event_handled = true
+            state.event_handled = true
         }
         if moved {
             keep_list_cursor_visible(model, list_result.item_bounds.height)
         }
         if moved {
-            result.list.cursor = model^.cursor
+            result.list.cursor = model.cursor
             result.list.selection_changed = true
-            result.selected_node = visible[model^.cursor]
+            result.selected_node = visible[model.cursor]
         }
         if moved || result.toggled {
-            state^.repaint_requested = true
+            state.repaint_requested = true
         }
     }
     return result
@@ -244,8 +244,8 @@ pub tree_row_begin :: proc(
             marker = '-'
         }
         put_clipped(
-            state^.surface,
-            intersect(state^.clip, result.bounds),
+            state.surface,
+            intersect(state.clip, result.bounds),
             Point{
                 column = result.bounds.column + indentation,
                 row = result.bounds.row,
@@ -280,8 +280,8 @@ pub tree_row_bytes :: proc(
         return true
     }
     return write_clipped_bytes(
-        state^.surface,
-        intersect(state^.clip, row.content),
+        state.surface,
+        intersect(state.clip, row.content),
         Point{column = row.content.column, row = row.content.row},
         text,
         row.style,

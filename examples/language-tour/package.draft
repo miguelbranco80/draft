@@ -114,6 +114,14 @@ increment :: proc(value: ^u64) {
     value^ += 1
 }
 
+// increment_reading demonstrates the member-only pointer shorthand. Because
+// reading has type ^Reading, reading.value denotes the same caller-owned field
+// as reading^.value. The concise spelling does not check nil or change the
+// pointer's ownership and lifetime contract.
+increment_reading :: proc(reading: ^Reading) {
+    reading.value += 1
+}
+
 // mark_finished is the deferred state transition used by deferred_value. The
 // caller owns the boolean and keeps it alive through the call.
 mark_finished :: proc(finished: ^bool) {
@@ -183,6 +191,8 @@ main :: proc() {
     preferred := select[Reading](readings[0], readings[1], false)
     wrapped := Box[Reading]{value = preferred}
     assert(wrapped.value.value == 20)
+    increment_reading(&wrapped.value)
+    assert(wrapped.value.value == 21)
     assert(adjusted_total(offset = 3, base = 10) == 23)
     assert(adjusted_total(10) == 21)
 

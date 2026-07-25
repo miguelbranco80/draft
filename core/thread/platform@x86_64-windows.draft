@@ -98,21 +98,21 @@ native_thread_create :: proc(
 }
 
 native_thread_is_empty :: proc(thread: ^Thread) -> bool {
-    return thread^.handle == nil
+    return thread.handle == nil
 }
 
 native_thread_join :: proc(thread: ^Thread) -> c_abi.int {
-    if wait_for_single_object(thread^.handle, Infinite) != Wait_Object_0 {
+    if wait_for_single_object(thread.handle, Infinite) != Wait_Object_0 {
         return -1
     }
-    if close_handle(thread^.handle) == 0 {
+    if close_handle(thread.handle) == 0 {
         return -1
     }
     return 0
 }
 
 native_thread_clear :: proc(thread: ^Thread) {
-    thread^.handle = nil
+    thread.handle = nil
 }
 
 native_thread_current_id :: proc() -> uintptr {
@@ -129,7 +129,7 @@ native_mutex_init :: proc(mutex: ^Mutex) -> c_abi.int {
 }
 
 native_mutex_destroy :: proc(mutex: ^Mutex) -> c_abi.int {
-    mutex^.opaque = nil
+    mutex.opaque = nil
     return 0
 }
 
@@ -156,7 +156,7 @@ native_condition_init :: proc(condition: ^Condition) -> c_abi.int {
 }
 
 native_condition_destroy :: proc(condition: ^Condition) -> c_abi.int {
-    condition^.opaque = nil
+    condition.opaque = nil
     return 0
 }
 

@@ -14,14 +14,14 @@ main :: proc() {
 
     value := memory.new[Aligned_Value]()
     assert(cast[uintptr](value) % 64 == 0)
-    assert(value^.word == 0)
-    value^.word = 42
-    assert(value^.word == 42)
+    assert(value.word == 0)
+    value.word = 42
+    assert(value.word == 42)
     memory.free(value)
 
     explicit := memory.new_with_allocator[Aligned_Value](provided.allocator)
     assert(cast[uintptr](explicit) % 64 == 0)
-    assert(explicit^.word == 0)
+    assert(explicit.word == 0)
     memory.free_with_allocator(explicit, provided.allocator)
 
     values := cast[[^]u64](memory.allocate(4 * size_of(u64), 64))
@@ -45,8 +45,8 @@ main :: proc() {
     // but is reclaimed as one thread-owned lifetime group.
     temporary := memory.temporary_new[Aligned_Value]()
     assert(cast[uintptr](temporary) % 64 == 0)
-    assert(temporary^.word == 0)
-    temporary^.word = 73
+    assert(temporary.word == 0)
+    temporary.word = 73
     temp_resized := memory.resize_with_allocator(
         cast[rawptr](temporary),
         size_of(Aligned_Value),
@@ -55,7 +55,7 @@ main :: proc() {
         context.temp_allocator,
     )
     assert(cast[uintptr](temp_resized) % 64 == 0)
-    assert(cast[^Aligned_Value](temp_resized)^.word == 73)
+    assert(cast[^Aligned_Value](temp_resized).word == 73)
     memory.reset_temporary()
 
     arena: memory.Arena
@@ -63,8 +63,8 @@ main :: proc() {
     arena_storage := memory.arena_allocator(&arena)
     arena_value := memory.new_with_allocator[Aligned_Value](arena_storage)
     assert(cast[uintptr](arena_value) % 64 == 0)
-    arena_value^.word = 81
-    assert(arena_value^.word == 81)
+    arena_value.word = 81
+    assert(arena_value.word == 81)
     memory.arena_reset(&arena)
     reused := memory.new_with_allocator[u64](arena_storage)
     reused^ = 17

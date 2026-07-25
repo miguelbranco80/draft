@@ -85,27 +85,27 @@ line_number :: proc(buffer: ^Buffer, offset: usize) -> usize {
 }
 
 line_at_number :: proc(buffer: ^Buffer, number: usize) -> usize {
-    if number >= buffer^.line_starts.length {
-        return buffer^.bytes.length
+    if number >= buffer.line_starts.length {
+        return buffer.bytes.length
     }
-    return buffer^.line_starts.data[number]
+    return buffer.line_starts.data[number]
 }
 
 ensure_cursor_visible :: proc(buffer: ^Buffer, text_bounds: turbo_ui.Rect) {
-    row := line_number(buffer, buffer^.cursor)
-    if row < buffer^.scroll_line {
-        buffer^.scroll_line = row
+    row := line_number(buffer, buffer.cursor)
+    if row < buffer.scroll_line {
+        buffer.scroll_line = row
     } else if text_bounds.height != 0 &&
-        row >= buffer^.scroll_line + text_bounds.height {
-        buffer^.scroll_line = row - text_bounds.height + 1
+        row >= buffer.scroll_line + text_bounds.height {
+        buffer.scroll_line = row - text_bounds.height + 1
     }
-    start := line_start(buffer, buffer^.cursor)
-    column := display_column(buffer, start, buffer^.cursor)
-    if column < buffer^.scroll_column {
-        buffer^.scroll_column = column
+    start := line_start(buffer, buffer.cursor)
+    column := display_column(buffer, start, buffer.cursor)
+    if column < buffer.scroll_column {
+        buffer.scroll_column = column
     } else if text_bounds.width != 0 &&
-        column >= buffer^.scroll_column + text_bounds.width {
-        buffer^.scroll_column = column - text_bounds.width + 1
+        column >= buffer.scroll_column + text_bounds.width {
+        buffer.scroll_column = column - text_bounds.width + 1
     }
 }
 
@@ -114,13 +114,13 @@ mouse_offset :: proc(
     text_bounds: turbo_ui.Rect,
     point: turbo_ui.Point,
 ) -> usize {
-    row := buffer^.scroll_line
+    row := buffer.scroll_line
     if point.row >= text_bounds.row {
         row += point.row - text_bounds.row
     }
     start := line_at_number(buffer, row)
     end := line_end(buffer, start)
-    column := buffer^.scroll_column
+    column := buffer.scroll_column
     if point.column >= text_bounds.column {
         column += point.column - text_bounds.column
     }
@@ -151,8 +151,8 @@ apply_key :: proc(
         return result
     }
 
-    old_length := buffer^.bytes.length
-    old_history := buffer^.history_index
+    old_length := buffer.bytes.length
+    old_history := buffer.history_index
     switch key.code {
     case .character:
         if !key.alt && !key.control {
@@ -215,8 +215,8 @@ apply_key :: proc(
         }
     case:
     }
-    result.changed = buffer^.bytes.length != old_length ||
-        buffer^.history_index != old_history
+    result.changed = buffer.bytes.length != old_length ||
+        buffer.history_index != old_history
     return result
 }
 
@@ -274,7 +274,7 @@ paint_gutter :: proc(
     if current {
         style_value = theme.current_gutter
     }
-    turbo_ui.fill_rect(state^.surface, bounds, bounds, ' ', style_value)
+    turbo_ui.fill_rect(state.surface, bounds, bounds, ' ', style_value)
     storage: [20]u8
     (digits, valid) := format.unsigned_decimal(storage[:], cast[u64](line + 1))
     if !valid {
@@ -285,7 +285,7 @@ paint_gutter :: proc(
         column += bounds.width - len(digits) - 1
     }
     tui.write_ascii_bytes(
-        state^.surface,
+        state.surface,
         column,
         bounds.row,
         digits,
@@ -303,7 +303,7 @@ paint_text_row :: proc(
     theme: Editor_Theme,
 ) {
     (selection_start, selection_end, has_selection) := selection(buffer)
-    bytes := array.view(&buffer^.bytes)
+    bytes := array.view(&buffer.bytes)
     logical_column: usize
     offset := start
     for offset < end {
@@ -320,10 +320,10 @@ paint_text_row :: proc(
                 error = .invalid_encoding
             }
         }
-        visible_start := logical_column >= buffer^.scroll_column
+        visible_start := logical_column >= buffer.scroll_column
         screen_column := bounds.column
         if visible_start {
-            screen_column += logical_column - buffer^.scroll_column
+            screen_column += logical_column - buffer.scroll_column
         }
         style_value := style_for_offset(spans, span_index, offset, theme)
         if has_selection && offset < selection_end && next > selection_start {
@@ -337,7 +337,7 @@ paint_text_row :: proc(
                     draw_width = available
                 }
                 turbo_ui.fill_rect(
-                    state^.surface,
+                    state.surface,
                     bounds,
                     turbo_ui.Rect{
                         column = screen_column,
@@ -351,7 +351,7 @@ paint_text_row :: proc(
             } else if error == .none && width <= available {
                 data := cast[[^]u8](&bytes[offset])
                 tui.write_utf8_bytes(
-                    state^.surface,
+                    state.surface,
                     screen_column,
                     bounds.row,
                     data[:next - offset],
@@ -359,7 +359,7 @@ paint_text_row :: proc(
                 )
             } else if error != .none {
                 tui.put_rune(
-                    state^.surface,
+                    state.surface,
                     screen_column,
                     bounds.row,
                     '\u{fffd}',
@@ -371,13 +371,13 @@ paint_text_row :: proc(
         offset = next
     }
 
-    if buffer^.cursor >= start && buffer^.cursor <= end {
-        cursor_column := display_column(buffer, start, buffer^.cursor)
-        if cursor_column >= buffer^.scroll_column {
-            screen_column := bounds.column + cursor_column - buffer^.scroll_column
+    if buffer.cursor >= start && buffer.cursor <= end {
+        cursor_column := display_column(buffer, start, buffer.cursor)
+        if cursor_column >= buffer.scroll_column {
+            screen_column := bounds.column + cursor_column - buffer.scroll_column
             if screen_column < turbo_ui.rect_right(bounds) {
                 (cell, valid) := tui.cell_at(
-                    state^.surface,
+                    state.surface,
                     screen_column,
                     bounds.row,
                 )
@@ -390,7 +390,7 @@ paint_text_row :: proc(
                     cursor_style.reverse = !cursor_style.reverse
                 }
                 tui.put_rune(
-                    state^.surface,
+                    state.surface,
                     screen_column,
                     bounds.row,
                     value,
@@ -427,54 +427,54 @@ pub edit :: proc(
         height = bounds.height,
     }
     focus := turbo_ui.focus_area(state, id, text_bounds)
-    if state^.event.kind == .mouse {
-        mouse := state^.event.mouse
+    if state.event.kind == .mouse {
+        mouse := state.event.mouse
         if focus.activated || (focus.held && mouse.action == .move) {
-            old := buffer^.cursor
-            buffer^.cursor = mouse_offset(buffer, text_bounds, mouse.position)
+            old := buffer.cursor
+            buffer.cursor = mouse_offset(buffer, text_bounds, mouse.position)
             prepare_movement(buffer, old, mouse.shift || mouse.action == .move)
-            buffer^.preferred_column_valid = false
+            buffer.preferred_column_valid = false
         } else if focus.hot && mouse.action == .wheel {
             if mouse.wheel_delta < 0 {
-                if buffer^.scroll_line > 2 {
-                    buffer^.scroll_line -= 3
+                if buffer.scroll_line > 2 {
+                    buffer.scroll_line -= 3
                 } else {
-                    buffer^.scroll_line = 0
+                    buffer.scroll_line = 0
                 }
             } else if mouse.wheel_delta > 0 {
-                if buffer^.scroll_line <= ~cast[usize](0) - 3 {
-                    buffer^.scroll_line += 3
+                if buffer.scroll_line <= ~cast[usize](0) - 3 {
+                    buffer.scroll_line += 3
                 }
             }
             maximum_scroll: usize
-            if buffer^.line_starts.length > text_bounds.height {
-                maximum_scroll = buffer^.line_starts.length - text_bounds.height
+            if buffer.line_starts.length > text_bounds.height {
+                maximum_scroll = buffer.line_starts.length - text_bounds.height
             }
-            if buffer^.scroll_line > maximum_scroll {
-                buffer^.scroll_line = maximum_scroll
+            if buffer.scroll_line > maximum_scroll {
+                buffer.scroll_line = maximum_scroll
             }
-            state^.event_handled = true
+            state.event_handled = true
         }
     }
-    if turbo_ui.has_focus(state, id) && !state^.event_handled {
-        if state^.event.kind == .key {
-            result = apply_key(buffer, state^.event.key, text_bounds.height)
-            state^.event_handled = true
-        } else if state^.event.kind == .text {
-            insert_text(buffer, state^.event.text)
+    if turbo_ui.has_focus(state, id) && !state.event_handled {
+        if state.event.kind == .key {
+            result = apply_key(buffer, state.event.key, text_bounds.height)
+            state.event_handled = true
+        } else if state.event.kind == .text {
+            insert_text(buffer, state.event.text)
             result.changed = true
-            state^.event_handled = true
+            state.event_handled = true
         }
     }
 
-    if buffer^.reveal_cursor {
+    if buffer.reveal_cursor {
         ensure_cursor_visible(buffer, text_bounds)
-        buffer^.reveal_cursor = false
+        buffer.reveal_cursor = false
     }
-    turbo_ui.fill_rect(state^.surface, bounds, bounds, ' ', theme.text)
-    current_line := line_number(buffer, buffer^.cursor)
-    start := line_at_number(buffer, buffer^.scroll_line)
-    line := buffer^.scroll_line
+    turbo_ui.fill_rect(state.surface, bounds, bounds, ' ', theme.text)
+    current_line := line_number(buffer, buffer.cursor)
+    start := line_at_number(buffer, buffer.scroll_line)
+    line := buffer.scroll_line
     span_index: usize
     for span_index < len(spans) && spans[span_index].end <= start {
         span_index += 1
@@ -510,7 +510,7 @@ pub edit :: proc(
             &span_index,
             theme,
         )
-        if end == buffer^.bytes.length {
+        if end == buffer.bytes.length {
             break
         }
         start = end + 1

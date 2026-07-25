@@ -143,11 +143,11 @@ surface_contains_text :: proc(
     if len(needle) == 0 {
         return true
     }
-    if len(needle) > surface^.columns {
+    if len(needle) > surface.columns {
         return false
     }
-    last_column := surface^.columns - len(needle)
-    for row: usize = 0; row < surface^.rows; row += 1 {
+    last_column := surface.columns - len(needle)
+    for row: usize = 0; row < surface.rows; row += 1 {
         for start: usize = 0; start <= last_column; start += 1 {
             matches := true
             for index: usize = 0; index < len(needle); index += 1 {
@@ -171,8 +171,8 @@ surface_contains_text :: proc(
 // active piece, or its ghost. It deliberately checks the public cell view
 // rather than terminal escape bytes.
 surface_has_black_background :: proc(surface: ^tui.Surface) -> bool {
-    for row: usize = 0; row < surface^.rows; row += 1 {
-        for column: usize = 0; column < surface^.columns; column += 1 {
+    for row: usize = 0; row < surface.rows; row += 1 {
+        for column: usize = 0; column < surface.columns; column += 1 {
             (cell, valid) := tui.cell_at(surface, column, row)
             if !valid || !cell.style.background.indexed ||
                 cell.style.background.index != Black_Palette_Index {

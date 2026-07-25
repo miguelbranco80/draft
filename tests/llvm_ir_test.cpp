@@ -203,8 +203,8 @@ Record :: struct {
 }
 
 increment :: proc(record: ^Record) -> u32 {
-    record^.value += 1
-    return record^.value
+    record.value += 1
+    return record.value
 }
 )draft");
   if (!emitted.ok) std::cerr << emitted.diagnostics;
@@ -242,10 +242,10 @@ Record :: struct {
 }
 
 update :: proc(record: ^Record) -> i16 {
-    record^.small += 1
-    record^.signed_value = -3
-    record^.flag = !record^.flag
-    return cast[i16](record^.small) + record^.signed_value
+    record.small += 1
+    record.signed_value = -3
+    record.flag = !record.flag
+    return cast[i16](record.small) + record.signed_value
 }
 )draft");
   if (!emitted.ok) std::cerr << emitted.diagnostics;

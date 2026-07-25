@@ -18,60 +18,60 @@ import lib/turbo_ui
 // all desktop windows, allowing the shared popup layer to remain topmost.
 paint_app_menu_bar :: proc(app: ^App, surface: ^tui.Surface) {
     turbo_ui.menu_bar(
-        &app^.ui,
-        &app^.menus,
-        turbo_ui.Rect{width = surface^.columns, height = 1},
+        &app.ui,
+        &app.menus,
+        turbo_ui.Rect{width = surface.columns, height = 1},
     )
     turbo_ui.menu_title(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_File, Menu_File_Popup,
         turbo_ui.Rect{column = 1, width = 7, height = 1},
         "File", cast[u8]('f'),
         turbo_ui.Rect{column = 1, row = 1, width = 35, height = 12},
     )
     turbo_ui.menu_title(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Edit, Menu_Edit_Popup,
         turbo_ui.Rect{column = 8, width = 7, height = 1},
         "Edit", cast[u8]('e'),
         turbo_ui.Rect{column = 8, row = 1, width = 32, height = 9},
     )
     turbo_ui.menu_title(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Search, Menu_Search_Popup,
         turbo_ui.Rect{column = 15, width = 9, height = 1},
         "Search", cast[u8]('s'),
         turbo_ui.Rect{column = 15, row = 1, width = 40, height = 15},
     )
     turbo_ui.menu_title(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Run, Menu_Run_Popup,
         turbo_ui.Rect{column = 24, width = 6, height = 1},
         "Run", cast[u8]('r'),
         turbo_ui.Rect{column = 24, row = 1, width = 31, height = 5},
     )
     turbo_ui.menu_title(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Workspace, Menu_Workspace_Popup,
         turbo_ui.Rect{column = 30, width = 12, height = 1},
         "Workspace", cast[u8]('k'),
         turbo_ui.Rect{column = 30, row = 1, width = 37, height = 6},
     )
     turbo_ui.menu_title(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Window, Menu_Window_Popup,
         turbo_ui.Rect{column = 42, width = 9, height = 1},
         "Window", cast[u8]('w'),
         turbo_ui.Rect{column = 42, row = 1, width = 37, height = 18},
     )
     turbo_ui.menu_title(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Help, Menu_Help_Popup,
         turbo_ui.Rect{column = 51, width = 7, height = 1},
         "Help", cast[u8]('h'),
         turbo_ui.Rect{column = 51, row = 1, width = 28, height = 3},
     )
-    turbo_ui.menu_bar_end(&app^.ui, &app^.menus)
+    turbo_ui.menu_bar_end(&app.ui, &app.menus)
 }
 menu_window_toggle :: proc(
     app: ^App,
@@ -82,26 +82,26 @@ menu_window_toggle :: proc(
     access_key: u8,
 ) {
     if turbo_ui.menu_check(
-        &app^.ui,
-        &app^.menus,
+        &app.ui,
+        &app.menus,
         menu,
         item_id,
         label_text,
-        &app^.windows[index].visible,
+        &app.windows[index].visible,
         shortcut,
         access_key = access_key,
     ) {
-        if app^.windows[index].visible {
+        if app.windows[index].visible {
             turbo_ui.show_window(
-                &app^.ui,
-                app^.windows[:],
-                app^.windows[index].id,
+                &app.ui,
+                app.windows[:],
+                app.windows[index].id,
             )
         } else {
             turbo_ui.hide_window(
-                &app^.ui,
-                app^.windows[:],
-                app^.windows[index].id,
+                &app.ui,
+                app.windows[:],
+                app.windows[index].id,
             )
         }
     }
@@ -117,288 +117,288 @@ paint_app_menus :: proc(app: ^App) -> bool {
     editable := !turbo_editor.is_read_only(buffer)
 
     file_menu := turbo_ui.begin_menu(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_File, Menu_File_Popup,
         turbo_ui.Rect{column = 1, row = 1, width = 35, height = 12},
     )
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &file_menu,
+        &app.ui, &app.menus, &file_menu,
         910, "New File", "Ctrl-N",
         access_key = cast[u8]('n'),
     ) {
         new_file(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &file_menu,
+        &app.ui, &app.menus, &file_menu,
         911, "Open...", "Ctrl-O",
         access_key = cast[u8]('o'),
     ) {
         request_open_file(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &file_menu,
+        &app.ui, &app.menus, &file_menu,
         916, "Files in Active Program...", "F2",
-        app^.host.source_count != nil,
+        app.host.source_count != nil,
         access_key = cast[u8]('p'),
     ) {
         turbo_ui.show_window(
-            &app^.ui,
-            app^.windows[:],
-            app^.windows[Window_Program_Files].id,
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Program_Files].id,
         )
-        app^.ui.focused_id = 530
+        app.ui.focused_id = 530
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &file_menu,
+        &app.ui, &app.menus, &file_menu,
         917, "Open Files...", "Alt-0",
         access_key = cast[u8]('i'),
     ) {
         turbo_ui.show_window(
-            &app^.ui,
-            app^.windows[:],
-            app^.windows[Window_Open_Files].id,
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Open_Files].id,
         )
-        app^.ui.focused_id = 532
+        app.ui.focused_id = 532
     }
-    turbo_ui.menu_separator(&app^.ui, &file_menu)
+    turbo_ui.menu_separator(&app.ui, &file_menu)
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &file_menu,
+        &app.ui, &app.menus, &file_menu,
         912, "Save", "Ctrl-S", editable,
         access_key = cast[u8]('s'),
     ) {
         save_active_buffer(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &file_menu,
+        &app.ui, &app.menus, &file_menu,
         913, "Save As...", "", editable,
         access_key = cast[u8]('a'),
     ) {
         request_save_as(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &file_menu,
+        &app.ui, &app.menus, &file_menu,
         914, "Save All", "", has_dirty_buffers(app),
         access_key = cast[u8]('l'),
     ) {
         save_all_documents(app)
     }
-    turbo_ui.menu_separator(&app^.ui, &file_menu)
+    turbo_ui.menu_separator(&app.ui, &file_menu)
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &file_menu,
+        &app.ui, &app.menus, &file_menu,
         915, "Exit", "Alt-X",
         access_key = cast[u8]('x'),
     ) {
         should_quit = request_quit(app)
     }
-    turbo_ui.end_menu(&app^.ui, &app^.menus, file_menu)
+    turbo_ui.end_menu(&app.ui, &app.menus, file_menu)
 
     edit_menu := turbo_ui.begin_menu(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Edit, Menu_Edit_Popup,
         turbo_ui.Rect{column = 8, row = 1, width = 32, height = 9},
     )
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
+        &app.ui, &app.menus, &edit_menu,
         920, "Undo", "Ctrl-Z", editable,
         access_key = cast[u8]('u'),
     ) {
         undo_active(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
+        &app.ui, &app.menus, &edit_menu,
         921, "Redo", "Ctrl-Y", editable,
         access_key = cast[u8]('r'),
     ) {
         redo_active(app)
     }
-    turbo_ui.menu_separator(&app^.ui, &edit_menu)
+    turbo_ui.menu_separator(&app.ui, &edit_menu)
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
+        &app.ui, &app.menus, &edit_menu,
         922, "Cut", "Ctrl-X", editable && has_selection,
         access_key = cast[u8]('t'),
     ) {
         cut_selection(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
+        &app.ui, &app.menus, &edit_menu,
         923, "Copy", "Ctrl-C", has_selection,
         access_key = cast[u8]('c'),
     ) {
         _ = copy_selection(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
-        924, "Paste", "Ctrl-V", editable && app^.clipboard.length != 0,
+        &app.ui, &app.menus, &edit_menu,
+        924, "Paste", "Ctrl-V", editable && app.clipboard.length != 0,
         access_key = cast[u8]('p'),
     ) {
         paste_clipboard(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
+        &app.ui, &app.menus, &edit_menu,
         925, "Select All", "Ctrl-A",
         access_key = cast[u8]('a'),
     ) {
         select_all(app)
     }
-    turbo_ui.end_menu(&app^.ui, &app^.menus, edit_menu)
+    turbo_ui.end_menu(&app.ui, &app.menus, edit_menu)
 
     search_menu := turbo_ui.begin_menu(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Search, Menu_Search_Popup,
         turbo_ui.Rect{column = 15, row = 1, width = 40, height = 15},
     )
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &search_menu,
+        &app.ui, &app.menus, &search_menu,
         930, "Find...", "Ctrl-F", access_key = cast[u8]('f'),
     ) {
         request_search(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &search_menu,
+        &app.ui, &app.menus, &search_menu,
         931, "Find Next", "F3", access_key = cast[u8]('n'),
     ) {
         _ = perform_find(app, false)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &search_menu,
+        &app.ui, &app.menus, &search_menu,
         932, "Find Previous", "Shift-F3", access_key = cast[u8]('p'),
     ) {
         _ = perform_find(app, true)
     }
-    turbo_ui.menu_separator(&app^.ui, &search_menu)
+    turbo_ui.menu_separator(&app.ui, &search_menu)
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &search_menu,
+        &app.ui, &app.menus, &search_menu,
         933, "Replace...", "Ctrl-H", access_key = cast[u8]('r'),
     ) {
         request_replace(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &search_menu,
+        &app.ui, &app.menus, &search_menu,
         934, "Replace Next", "Ctrl-R", editable,
         access_key = cast[u8]('e'),
     ) {
         _ = replace_current(app, true)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &search_menu,
+        &app.ui, &app.menus, &search_menu,
         935, "Replace All", "", editable,
         access_key = cast[u8]('a'),
     ) {
         _ = replace_every_match(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &search_menu,
+        &app.ui, &app.menus, &search_menu,
         936, "Go to Line...", "Ctrl-G", access_key = cast[u8]('g'),
     ) {
         request_go_to_line(app)
     }
-    turbo_ui.menu_separator(&app^.ui, &search_menu)
+    turbo_ui.menu_separator(&app.ui, &search_menu)
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &search_menu,
+        &app.ui, &app.menus, &search_menu,
         937, "Go to Definition", "F12",
-        app^.host.prepare_navigation != nil,
+        app.host.prepare_navigation != nil,
         access_key = cast[u8]('d'),
     ) {
         _ = go_to_definition(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &search_menu,
+        &app.ui, &app.menus, &search_menu,
         938, "Find Usages", "Shift-F12",
-        app^.host.prepare_navigation != nil,
+        app.host.prepare_navigation != nil,
         access_key = cast[u8]('u'),
     ) {
         _ = find_symbol_usages(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &search_menu,
+        &app.ui, &app.menus, &search_menu,
         939, "Back", "Alt-Left",
-        app^.navigation_history_count != 0 &&
-            app^.navigation_history_index != 0,
+        app.navigation_history_count != 0 &&
+            app.navigation_history_index != 0,
         access_key = cast[u8]('b'),
     ) {
         _ = navigate_history(app, false)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &search_menu,
+        &app.ui, &app.menus, &search_menu,
         940, "Forward", "Alt-Right",
-        app^.navigation_history_count != 0 &&
-            app^.navigation_history_index + 1 < app^.navigation_history_count,
+        app.navigation_history_count != 0 &&
+            app.navigation_history_index + 1 < app.navigation_history_count,
         access_key = cast[u8]('o'),
     ) {
         _ = navigate_history(app, true)
     }
-    turbo_ui.end_menu(&app^.ui, &app^.menus, search_menu)
+    turbo_ui.end_menu(&app.ui, &app.menus, search_menu)
 
     run_menu := turbo_ui.begin_menu(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Run, Menu_Run_Popup,
         turbo_ui.Rect{column = 24, row = 1, width = 31, height = 5},
     )
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &run_menu,
-        950, "Check", "Alt-F9", app^.host.check != nil,
+        &app.ui, &app.menus, &run_menu,
+        950, "Check", "Alt-F9", app.host.check != nil,
         access_key = cast[u8]('c'),
     ) {
         refresh_host(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &run_menu,
-        951, "Build", "F9", app^.host.build != nil,
+        &app.ui, &app.menus, &run_menu,
+        951, "Build", "F9", app.host.build != nil,
         access_key = cast[u8]('b'),
     ) {
         host_action(app, false)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &run_menu,
-        952, "Build and Run", "F5", app^.host.build != nil,
+        &app.ui, &app.menus, &run_menu,
+        952, "Build and Run", "F5", app.host.build != nil,
         access_key = cast[u8]('r'),
     ) {
         host_action(app, true)
     }
-    turbo_ui.end_menu(&app^.ui, &app^.menus, run_menu)
+    turbo_ui.end_menu(&app.ui, &app.menus, run_menu)
 
     workspace_menu := turbo_ui.begin_menu(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Workspace, Menu_Workspace_Popup,
         turbo_ui.Rect{column = 30, row = 1, width = 37, height = 6},
     )
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &workspace_menu,
-        960, "Switch Workspace...", "", app^.host.open_workspace != nil,
+        &app.ui, &app.menus, &workspace_menu,
+        960, "Switch Workspace...", "", app.host.open_workspace != nil,
         access_key = cast[u8]('w'),
     ) {
         request_switch_workspace(app)
     }
-    turbo_ui.menu_separator(&app^.ui, &workspace_menu)
+    turbo_ui.menu_separator(&app.ui, &workspace_menu)
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &workspace_menu,
+        &app.ui, &app.menus, &workspace_menu,
         961, "Program and Run Settings...", "F6",
-        app^.host.select_root != nil,
+        app.host.select_root != nil,
         access_key = cast[u8]('p'),
     ) {
         turbo_ui.show_window(
-            &app^.ui,
-            app^.windows[:],
-            app^.windows[Window_Program_Settings].id,
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Program_Settings].id,
         )
-        app^.ui.focused_id = 760
+        app.ui.focused_id = 760
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &workspace_menu,
-        963, "Packages and Imports", "", app^.host.copy_tooling != nil,
+        &app.ui, &app.menus, &workspace_menu,
+        963, "Packages and Imports", "", app.host.copy_tooling != nil,
         access_key = cast[u8]('k'),
     ) {
         turbo_ui.show_window(
-            &app^.ui,
-            app^.windows[:],
-            app^.windows[Window_Programs].id,
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Programs].id,
         )
-        app^.ui.focused_id = 770
+        app.ui.focused_id = 770
     }
-    turbo_ui.end_menu(&app^.ui, &app^.menus, workspace_menu)
+    turbo_ui.end_menu(&app.ui, &app.menus, workspace_menu)
 
     window_menu := turbo_ui.begin_menu(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Window, Menu_Window_Popup,
         turbo_ui.Rect{column = 42, row = 1, width = 37, height = 18},
     )
@@ -413,7 +413,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
         app, &window_menu, 972, Window_Open_Files,
         "Open Files", "Alt-0", cast[u8]('o'),
     )
-    turbo_ui.menu_separator(&app^.ui, &window_menu)
+    turbo_ui.menu_separator(&app.ui, &window_menu)
     menu_window_toggle(
         app, &window_menu, 973, Window_Program_Settings,
         "Program Settings", "F6", cast[u8]('p'),
@@ -440,44 +440,44 @@ paint_app_menus :: proc(app: ^App) -> bool {
         app, &window_menu, 979, Window_Diagnostics,
         "Diagnostics", "F8", cast[u8]('g'),
     )
-    turbo_ui.menu_separator(&app^.ui, &window_menu)
+    turbo_ui.menu_separator(&app.ui, &window_menu)
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &window_menu,
+        &app.ui, &app.menus, &window_menu,
         980, "Tile", "",
         access_key = cast[u8]('t'),
     ) {
-        turbo_ui.tile_windows(app^.windows[:], app^.ui.desktop)
+        turbo_ui.tile_windows(app.windows[:], app.ui.desktop)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &window_menu,
+        &app.ui, &app.menus, &window_menu,
         981, "Cascade", "",
         access_key = cast[u8]('a'),
     ) {
-        turbo_ui.cascade_windows(app^.windows[:], app^.ui.desktop)
+        turbo_ui.cascade_windows(app.windows[:], app.ui.desktop)
     }
-    turbo_ui.menu_separator(&app^.ui, &window_menu)
+    turbo_ui.menu_separator(&app.ui, &window_menu)
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &window_menu,
+        &app.ui, &app.menus, &window_menu,
         982, "Next Window", "Ctrl-F6",
         access_key = cast[u8]('w'),
     ) {
-        turbo_ui.activate_next_window(&app^.ui, app^.windows[:])
+        turbo_ui.activate_next_window(&app.ui, app.windows[:])
     }
-    turbo_ui.end_menu(&app^.ui, &app^.menus, window_menu)
+    turbo_ui.end_menu(&app.ui, &app.menus, window_menu)
 
     help_menu := turbo_ui.begin_menu(
-        &app^.ui, &app^.menus,
+        &app.ui, &app.menus,
         Menu_Help, Menu_Help_Popup,
         turbo_ui.Rect{column = 51, row = 1, width = 28, height = 3},
     )
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &help_menu,
+        &app.ui, &app.menus, &help_menu,
         990, "Keyboard Shortcuts...", "F1",
         access_key = cast[u8]('k'),
     ) {
         request_shortcut_help(app)
     }
-    turbo_ui.end_menu(&app^.ui, &app^.menus, help_menu)
+    turbo_ui.end_menu(&app.ui, &app.menus, help_menu)
     return should_quit
 }
 
@@ -492,8 +492,8 @@ paint_app :: proc(
     // immediate controls, but any later physical input begins a new command
     // and may replace it with an ordinary immutable status string.
     if supplied_event.kind != .none {
-        app^.status_bytes_active = false
-        app^.status_length = 0
+        app.status_bytes_active = false
+        app.status_length = 0
     }
     (event, quit) := handle_global_key(app, supplied_event)
     if quit {
@@ -502,45 +502,45 @@ paint_app :: proc(
     theme := turbo_ui.turbo_theme()
     editor_theme := turbo_editor.turbo_editor_theme()
     tui.clear(surface, theme.desktop)
-    desktop := turbo_ui.Rect{row = 1, width = surface^.columns}
-    if surface^.rows > 2 {
-        desktop.height = surface^.rows - 2
+    desktop := turbo_ui.Rect{row = 1, width = surface.columns}
+    if surface.rows > 2 {
+        desktop.height = surface.rows - 2
     }
     modal := turbo_ui.No_Widget
-    if app^.windows[Window_Quit].visible {
-        modal = app^.windows[Window_Quit].id
-    } else if app^.windows[Window_Help].visible {
-        modal = app^.windows[Window_Help].id
-    } else if app^.windows[Window_Replace].visible {
-        modal = app^.windows[Window_Replace].id
-    } else if app^.windows[Window_Go_To_Line].visible {
-        modal = app^.windows[Window_Go_To_Line].id
-    } else if app^.windows[Window_Search].visible {
-        modal = app^.windows[Window_Search].id
-    } else if app^.windows[Window_Workspace_Confirm].visible {
-        modal = app^.windows[Window_Workspace_Confirm].id
-    } else if app^.windows[Window_Switch_Workspace].visible {
-        modal = app^.windows[Window_Switch_Workspace].id
-    } else if app^.windows[Window_Open_File].visible {
-        modal = app^.windows[Window_Open_File].id
+    if app.windows[Window_Quit].visible {
+        modal = app.windows[Window_Quit].id
+    } else if app.windows[Window_Help].visible {
+        modal = app.windows[Window_Help].id
+    } else if app.windows[Window_Replace].visible {
+        modal = app.windows[Window_Replace].id
+    } else if app.windows[Window_Go_To_Line].visible {
+        modal = app.windows[Window_Go_To_Line].id
+    } else if app.windows[Window_Search].visible {
+        modal = app.windows[Window_Search].id
+    } else if app.windows[Window_Workspace_Confirm].visible {
+        modal = app.windows[Window_Workspace_Confirm].id
+    } else if app.windows[Window_Switch_Workspace].visible {
+        modal = app.windows[Window_Switch_Workspace].id
+    } else if app.windows[Window_Open_File].visible {
+        modal = app.windows[Window_Open_File].id
     }
     turbo_ui.begin_window_frame(
-        &app^.ui,
+        &app.ui,
         surface,
         event,
         theme,
-        app^.windows[:],
+        app.windows[:],
         desktop,
         modal,
     )
     paint_app_menu_bar(app, surface)
 
     order: [Window_Count]usize
-    count := turbo_ui.window_order(app^.windows[:], order[:])
+    count := turbo_ui.window_order(app.windows[:], order[:])
     should_quit := false
     for order_index: usize = 0; order_index < count; order_index += 1 {
         index := order[order_index]
-        window := &app^.windows[index]
+        window := &app.windows[index]
         title := "Files in Active Program (F2)"
         if index == Window_Editor {
             // The editor title is the actual document label/path, not the
@@ -560,7 +560,7 @@ paint_app :: proc(
         } else if index == Window_Declarations {
             title = "Declarations and Visibility"
         } else if index == Window_References {
-            if app^.semantic_usages_visible {
+            if app.semantic_usages_visible {
                 title = "Symbol Usages (Shift-F12)"
             } else {
                 title = "References and Calls"
@@ -573,7 +573,7 @@ paint_app :: proc(
             title = "Switch Workspace"
         } else if index == Window_Open_File {
             title = "Open File"
-            if app^.file_dialog_action == .save_as {
+            if app.file_dialog_action == .save_as {
                 title = "Save As"
             }
         } else if index == Window_Workspace_Confirm {
@@ -593,14 +593,14 @@ paint_app :: proc(
             index == Window_Open_File ||
             index == Window_Workspace_Confirm || index == Window_Help ||
             index == Window_Replace || index == Window_Go_To_Line {
-            window_context = turbo_ui.dialog_begin(&app^.ui, window, title)
+            window_context = turbo_ui.dialog_begin(&app.ui, window, title)
         } else {
-            window_context = turbo_ui.begin_window(&app^.ui, window, title)
+            window_context = turbo_ui.begin_window(&app.ui, window, title)
         }
         if window_context.visible {
             if index == Window_Editor {
                 _ = turbo_ui.window_title_bytes(
-                    &app^.ui,
+                    &app.ui,
                     window,
                     editor_title_bytes(app),
                 )
@@ -609,10 +609,10 @@ paint_app :: proc(
             case Window_Editor:
                 edit_result := turbo_editor.edit(
                     active_buffer(app),
-                    &app^.ui,
-                    cast[turbo_ui.Widget_Id](600 + app^.active),
+                    &app.ui,
+                    cast[turbo_ui.Widget_Id](600 + app.active),
                     window_context.content,
-                    app^.syntax_spans[:app^.syntax_span_count],
+                    app.syntax_spans[:app.syntax_span_count],
                     editor_theme,
                 )
                 if edit_result.save_requested {
@@ -649,7 +649,7 @@ paint_app :: proc(
             case Window_Declarations:
                 paint_text_view(app, index, window_context.content)
             case Window_References:
-                if app^.semantic_usages_visible {
+                if app.semantic_usages_visible {
                     paint_navigation_usages(app, window_context.content)
                 } else {
                     paint_text_view(app, index, window_context.content)
@@ -675,7 +675,7 @@ paint_app :: proc(
             case:
             }
         }
-        turbo_ui.end_window(&app^.ui, window_context)
+        turbo_ui.end_window(&app.ui, window_context)
         if window_context.close_requested {
             if index == Window_Search {
                 close_search(app)
@@ -684,10 +684,10 @@ paint_app :: proc(
             } else if index == Window_Switch_Workspace ||
                 index == Window_Workspace_Confirm {
                 close_workspace_dialogs(app)
-                app^.status = "Workspace switch cancelled"
+                app.status = "Workspace switch cancelled"
             } else if index == Window_Open_File {
                 close_open_file(app)
-                app^.status = "File operation cancelled"
+                app.status = "File operation cancelled"
             } else if index == Window_Help {
                 close_shortcut_help(app)
             } else if index == Window_Replace {
@@ -695,30 +695,30 @@ paint_app :: proc(
             } else if index == Window_Go_To_Line {
                 close_go_to_line(app)
             } else {
-                turbo_ui.hide_window(&app^.ui, app^.windows[:], window^.id)
+                turbo_ui.hide_window(&app.ui, app.windows[:], window.id)
             }
         }
     }
 
     should_quit = should_quit || paint_app_menus(app)
 
-    if surface^.rows != 0 {
+    if surface.rows != 0 {
         status_bounds := turbo_ui.Rect{
-            row = surface^.rows - 1,
-            width = surface^.columns,
+            row = surface.rows - 1,
+            width = surface.columns,
             height = 1,
         }
-        if app^.status_bytes_active {
+        if app.status_bytes_active {
             turbo_ui.status_bar_bytes(
-                &app^.ui,
+                &app.ui,
                 status_bounds,
-                app^.status_storage[:app^.status_length],
+                app.status_storage[:app.status_length],
             )
         } else {
-            turbo_ui.status_bar(&app^.ui, status_bounds, app^.status)
+            turbo_ui.status_bar(&app.ui, status_bounds, app.status)
         }
     }
-    turbo_ui.end_frame(&app^.ui)
+    turbo_ui.end_frame(&app.ui)
     // A command result belongs to the physical input traversal which produced
     // it. Closing a popup can request one event-free visual reconciliation,
     // but that later traversal cannot reproduce an application exit command.
@@ -728,7 +728,7 @@ paint_app :: proc(
     if should_quit {
         return true
     }
-    if turbo_ui.needs_repaint(&app^.ui) {
+    if turbo_ui.needs_repaint(&app.ui) {
         // Some immediate controls resolve focus or menu selection after the
         // affected row has painted. Repaint once without reapplying the input
         // event so the desired surface and persistent interaction state agree

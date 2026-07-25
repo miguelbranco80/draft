@@ -2575,6 +2575,30 @@ private:
     return std::nullopt;
   }
 
+  // Builds the checked HIR operation shared by authored postfix `^` and the
+  // implicit dereference performed for member selection on `^T`. The caller
+  // must already have established that pointer_id has Pointer or MultiPointer
+  // runtime shape; keeping that decision outside this constructor lets member
+  // selection decline non-`^T` bases without emitting a spurious dereference
+  // diagnostic. The result denotes the pointed-to storage, inherits no owner,
+  // and has the pointee's natural alignment because every typed pointer carries
+  // that alignment promise. Later MIR lowering therefore sees exactly the same
+  // address operation for `pointer.field` and `pointer^.field`.
+  [[nodiscard]] HirExpressionId make_dereference_expression(
+      HirExpressionId pointer_id, SourceRange range, TypeId expected = {}) {
+    const Type pointer = runtime_scalar_type(hir_.expression(pointer_id).type);
+    assert(pointer.kind == TypeKind::Pointer ||
+           pointer.kind == TypeKind::MultiPointer);
+    HirExpression expression;
+    expression.kind = HirExpressionKind::Dereference;
+    expression.range = range;
+    expression.type = apply_expected_type(pointer.element, expected, range);
+    expression.operands.push_back(pointer_id);
+    expression.addressable = true;
+    expression.storage_alignment = natural_alignment(expression.type);
+    return hir_.add_expression(std::move(expression));
+  }
+
   // Resolves `alias.public_name` into the consumer-local proxy scope created by
   // package-interface binding. The returned SymbolId belongs to semantic_ and
   // is therefore safe to store in HIR; ImportedSymbol retains the dependency
@@ -6423,8 +6447,19 @@ private:
         }
         return hir_.add_expression(std::move(expression));
       }
-      const HirExpressionId base_id = check_expression(tree, node.children.front(), scope);
-      const HirExpression base = hir_.expression(base_id);
+      HirExpressionId base_id =
+          check_expression(tree, node.children.front(), scope);
+      HirExpression base = hir_.expression(base_id);
+      const Type base_runtime_type = runtime_scalar_type(base.type);
+      if (base_runtime_type.kind == TypeKind::Pointer) {
+        // Member selection is the one context where Draft automatically
+        // dereferences a pointer. A `^T` has no members of its own and selects
+        // exactly one T, so `pointer.field` has the same unambiguous storage,
+        // nil behavior, and effect path as `pointer^.field`. Multi-pointers do
+        // not participate: source must select an element before its members.
+        base_id = make_dereference_expression(base_id, base.range);
+        base = hir_.expression(base_id);
+      }
       const Token &selector = tree.token(node.token_end - 1);
       if (selector.kind == TokenKind::IntegerLiteral) {
         const Type tuple = runtime_scalar_type(base.type);
@@ -6522,14 +6557,7 @@ private:
         diagnostics_.error(node.range, "dereference requires a typed data pointer");
         return invalid_expression(node.range);
       }
-      HirExpression expression;
-      expression.kind = HirExpressionKind::Dereference;
-      expression.range = node.range;
-      expression.type = apply_expected_type(pointer.element, expected, node.range);
-      expression.operands.push_back(pointer_id);
-      expression.addressable = true;
-      expression.storage_alignment = natural_alignment(expression.type);
-      return hir_.add_expression(std::move(expression));
+      return make_dereference_expression(pointer_id, node.range, expected);
     }
 
     case NodeKind::BracketExpression: {

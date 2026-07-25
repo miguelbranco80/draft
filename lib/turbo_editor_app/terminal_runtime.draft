@@ -122,7 +122,7 @@ begin_run_output :: proc() -> io.Error {
 // any other read/write failure prevents a safe return to the full-screen IDE.
 wait_after_run :: proc(app: ^App) -> io.Error {
     if os.write_text_all(os.standard_output, "\n--- DraftIDE: ") != .none ||
-        os.write_text_all(os.standard_output, app^.status) != .none ||
+        os.write_text_all(os.standard_output, app.status) != .none ||
         os.write_text_all(
             os.standard_output,
             " ---\nPress Enter to return to DraftIDE...",
@@ -197,11 +197,11 @@ run_interactive :: proc(
         if now >= next_disk_poll {
             disk := turbo_editor.poll_disk(active_buffer(app))
             if disk == .conflict {
-                app^.status = "Disk changed while document is dirty: explicit conflict"
+                app.status = "Disk changed while document is dirty: explicit conflict"
                 paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
                 repaint = true
             } else if disk == .reloaded {
-                app^.status = "Reloaded changed file from disk"
+                app.status = "Reloaded changed file from disk"
                 paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
                 repaint = true
             }
@@ -221,7 +221,7 @@ run_interactive :: proc(
         } else {
             escape_deadline = 0
         }
-        if turbo_ui.scrollbar_repeat_active(&app^.ui) {
+        if turbo_ui.scrollbar_repeat_active(&app.ui) {
             if scrollbar_repeat_deadline == 0 {
                 scrollbar_repeat_deadline = now + Scrollbar_Initial_Repeat
             }
@@ -342,7 +342,7 @@ run_interactive :: proc(
             }
         }
 
-        if turbo_ui.scrollbar_repeat_active(&app^.ui) {
+        if turbo_ui.scrollbar_repeat_active(&app.ui) {
             if scrollbar_repeat_deadline == 0 {
                 scrollbar_repeat_deadline = now + Scrollbar_Initial_Repeat
             } else if now >= scrollbar_repeat_deadline {
@@ -359,8 +359,8 @@ run_interactive :: proc(
         } else {
             scrollbar_repeat_deadline = 0
         }
-        if app^.run_requested {
-            app^.run_requested = false
+        if app.run_requested {
+            app.run_requested = false
             // Publish the "Run requested" frame before yielding the terminal,
             // then restore primary screen/input for the child process. Resume
             // in acquisition order and invalidate the renderer because the

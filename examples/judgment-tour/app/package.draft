@@ -40,10 +40,10 @@ Choice :: enum u8 {
 counter_add :: proc(counter: ^Counter, amount: i64) {
     // A procedure judgment sees the enclosing procedure, visible counter and
     // amount bindings, and the typed facts at this exact program point.
-    judge `counter_add changes only counter^.value, adds amount exactly once,
+    judge `counter_add changes only counter.value, adds amount exactly once,
 and does not retain counter.`
 
-    counter^.value += amount
+    counter.value += amount
 }
 
 // choose_with_if demonstrates judgments in distinct runtime control-flow

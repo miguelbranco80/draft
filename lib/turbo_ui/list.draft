@@ -59,10 +59,10 @@ keep_list_cursor_visible :: proc(model: ^List_State, visible: usize) {
     if visible == 0 {
         return
     }
-    if model^.cursor < model^.offset {
-        model^.offset = model^.cursor
-    } else if model^.cursor >= model^.offset + visible {
-        model^.offset = model^.cursor - visible + 1
+    if model.cursor < model.offset {
+        model.offset = model.cursor
+    } else if model.cursor >= model.offset + visible {
+        model.offset = model.cursor - visible + 1
     }
 }
 
@@ -80,12 +80,12 @@ pub list_view :: proc(
     model: ^List_State,
     activation: List_Activation = .enter_only,
 ) -> List_View {
-    assert(state^.frame_open, "turbo_ui list outside a frame")
+    assert(state.frame_open, "turbo_ui list outside a frame")
     assert(body_id != No_Widget && scrollbar_id != No_Widget,
         "turbo_ui list IDs must be nonzero")
     assert(body_id != scrollbar_id, "turbo_ui list IDs must be distinct")
     registered := register_focus(state, body_id)
-    old_cursor := model^.cursor
+    old_cursor := model.cursor
 
     item_bounds := bounds
     scrollbar_bounds: Rect
@@ -99,121 +99,121 @@ pub list_view :: proc(
         }
     }
     if item_count == 0 {
-        model^.cursor = 0
-        model^.offset = 0
-    } else if model^.cursor >= item_count {
-        model^.cursor = item_count - 1
+        model.cursor = 0
+        model.offset = 0
+    } else if model.cursor >= item_count {
+        model.cursor = item_count - 1
     }
     maximum := maximum_scroll(item_count, item_bounds.height)
-    if model^.offset > maximum {
-        model^.offset = maximum
+    if model.offset > maximum {
+        model.offset = maximum
     }
 
     result := List_View{
         item_bounds = item_bounds,
-        cursor = model^.cursor,
+        cursor = model.cursor,
         item_count = item_count,
     }
     reaches_items := mouse_reaches_current_scope(state, item_bounds)
     reaches_list := mouse_reaches_current_scope(state, bounds)
     if reaches_items {
-        state^.hot_id = body_id
+        state.hot_id = body_id
     }
 
     selection_moved := false
-    if !state^.event_handled && reaches_list && state^.event.kind == .mouse &&
-        state^.event.mouse.action == .wheel && maximum != 0 {
-        if state^.event.mouse.wheel_delta < 0 {
-            scroll_backward(&model^.offset, Scroll_Wheel_Rows)
-        } else if state^.event.mouse.wheel_delta > 0 {
-            scroll_forward(&model^.offset, maximum, Scroll_Wheel_Rows)
+    if !state.event_handled && reaches_list && state.event.kind == .mouse &&
+        state.event.mouse.action == .wheel && maximum != 0 {
+        if state.event.mouse.wheel_delta < 0 {
+            scroll_backward(&model.offset, Scroll_Wheel_Rows)
+        } else if state.event.mouse.wheel_delta > 0 {
+            scroll_forward(&model.offset, maximum, Scroll_Wheel_Rows)
         }
-        state^.event_handled = true
-    } else if !state^.event_handled && reaches_items &&
-        state^.event.kind == .mouse &&
-        state^.event.mouse.action == .press &&
-        state^.event.mouse.button == .primary {
-        row := state^.event.mouse.position.row - item_bounds.row
-        index := model^.offset + row
+        state.event_handled = true
+    } else if !state.event_handled && reaches_items &&
+        state.event.kind == .mouse &&
+        state.event.mouse.action == .press &&
+        state.event.mouse.button == .primary {
+        row := state.event.mouse.position.row - item_bounds.row
+        index := model.offset + row
         if index < item_count {
-            model^.cursor = index
-            state^.focused_id = body_id
-            state^.active_id = body_id
-            state^.active_kind = .widget
-            state^.drag_start.row = index
+            model.cursor = index
+            state.focused_id = body_id
+            state.active_id = body_id
+            state.active_kind = .widget
+            state.drag_start.row = index
         }
-        state^.event_handled = true
+        state.event_handled = true
     }
 
-    captured := state^.active_id == body_id &&
-        state^.active_kind == .widget && state^.event.kind == .mouse
-    if captured && state^.event.mouse.action == .move &&
-        state^.event.mouse.primary_down && reaches_items {
-        row := state^.event.mouse.position.row - item_bounds.row
-        index := model^.offset + row
+    captured := state.active_id == body_id &&
+        state.active_kind == .widget && state.event.kind == .mouse
+    if captured && state.event.mouse.action == .move &&
+        state.event.mouse.primary_down && reaches_items {
+        row := state.event.mouse.position.row - item_bounds.row
+        index := model.offset + row
         if index < item_count {
-            model^.cursor = index
+            model.cursor = index
         }
-        state^.event_handled = true
+        state.event_handled = true
     }
-    if captured && state^.event.mouse.action == .release &&
-        state^.event.mouse.button == .primary {
+    if captured && state.event.mouse.action == .release &&
+        state.event.mouse.button == .primary {
         if reaches_items {
-            row := state^.event.mouse.position.row - item_bounds.row
-            index := model^.offset + row
-            if index < item_count && index == model^.cursor &&
+            row := state.event.mouse.position.row - item_bounds.row
+            index := model.offset + row
+            if index < item_count && index == model.cursor &&
                 activation == .click_and_enter {
                 result.activated = true
                 result.activated_index = index
             }
         }
-        state^.active_id = No_Widget
-        state^.active_kind = .none
-        state^.event_handled = true
+        state.active_id = No_Widget
+        state.active_kind = .none
+        state.event_handled = true
     }
 
-    if registered && !state^.event_handled && state^.focused_id == body_id &&
-        state^.event.kind == .key && item_count != 0 {
-        key := state^.event.key
+    if registered && !state.event_handled && state.focused_id == body_id &&
+        state.event.kind == .key && item_count != 0 {
+        key := state.event.key
         switch key.code {
         case .up:
-            if model^.cursor > 0 {
-                model^.cursor -= 1
+            if model.cursor > 0 {
+                model.cursor -= 1
                 selection_moved = true
             }
         case .down:
-            if model^.cursor + 1 < item_count {
-                model^.cursor += 1
+            if model.cursor + 1 < item_count {
+                model.cursor += 1
                 selection_moved = true
             }
         case .home:
-            model^.cursor = 0
+            model.cursor = 0
             selection_moved = true
         case .end:
-            model^.cursor = item_count - 1
+            model.cursor = item_count - 1
             selection_moved = true
         case .page_up:
             amount := item_bounds.height
             if amount == 0 {
                 amount = 1
             }
-            scroll_backward(&model^.cursor, amount)
+            scroll_backward(&model.cursor, amount)
             selection_moved = true
         case .page_down:
             amount := item_bounds.height
             if amount == 0 {
                 amount = 1
             }
-            scroll_forward(&model^.cursor, item_count - 1, amount)
+            scroll_forward(&model.cursor, item_count - 1, amount)
             selection_moved = true
         case .enter:
             result.activated = true
-            result.activated_index = model^.cursor
-            state^.event_handled = true
+            result.activated_index = model.cursor
+            state.event_handled = true
         case:
         }
         if selection_moved {
-            state^.event_handled = true
+            state.event_handled = true
         }
     }
 
@@ -224,10 +224,10 @@ pub list_view :: proc(
         // A press anywhere in the compound list, including its scrollbar,
         // gives keyboard focus to the body while the scrollbar retains its
         // own capture ID for drag correctness.
-        if reaches_list && state^.event.kind == .mouse &&
-            state^.event.mouse.action == .press &&
-            state^.event.mouse.button == .primary {
-            state^.focused_id = body_id
+        if reaches_list && state.event.kind == .mouse &&
+            state.event.mouse.action == .press &&
+            state.event.mouse.button == .primary {
+            state.focused_id = body_id
         }
         scrollbar_vertical(
             state,
@@ -235,22 +235,22 @@ pub list_view :: proc(
             scrollbar_bounds,
             item_count,
             item_bounds.height,
-            &model^.offset,
+            &model.offset,
         )
     }
     maximum = maximum_scroll(item_count, item_bounds.height)
-    if model^.offset > maximum {
-        model^.offset = maximum
+    if model.offset > maximum {
+        model.offset = maximum
     }
 
-    fill_rect(state^.surface, state^.clip, item_bounds, ' ', state^.theme.window)
-    result.first = model^.offset
-    result.end = model^.offset + item_bounds.height
+    fill_rect(state.surface, state.clip, item_bounds, ' ', state.theme.window)
+    result.first = model.offset
+    result.end = model.offset + item_bounds.height
     if result.end > item_count {
         result.end = item_count
     }
-    result.cursor = model^.cursor
-    result.selection_changed = model^.cursor != old_cursor
+    result.cursor = model.cursor
+    result.selection_changed = model.cursor != old_cursor
     return result
 }
 
@@ -274,11 +274,11 @@ pub list_row_begin :: proc(
         width = view.item_bounds.width,
         height = 1,
     }
-    result.style = state^.theme.text
+    result.style = state.theme.text
     if result.selected {
-        result.style = state^.theme.selected
+        result.style = state.theme.selected
     }
-    fill_rect(state^.surface, state^.clip, result.bounds, ' ', result.style)
+    fill_rect(state.surface, state.clip, result.bounds, ' ', result.style)
     return result
 }
 
@@ -295,8 +295,8 @@ pub list_row_text :: proc(
         return true
     }
     return write_clipped(
-        state^.surface,
-        intersect(state^.clip, row.bounds),
+        state.surface,
+        intersect(state.clip, row.bounds),
         Point{column = row.bounds.column, row = row.bounds.row},
         text,
         row.style,
@@ -314,8 +314,8 @@ pub list_row_bytes :: proc(
         return true
     }
     return write_clipped_bytes(
-        state^.surface,
-        intersect(state^.clip, row.bounds),
+        state.surface,
+        intersect(state.clip, row.bounds),
         Point{column = row.bounds.column, row = row.bounds.row},
         text,
         row.style,

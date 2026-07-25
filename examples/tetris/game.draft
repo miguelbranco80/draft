@@ -200,7 +200,7 @@ piece_fits :: proc(game: ^Game, piece: Piece) -> bool {
             if column < 0 || column >= Board_Width || row >= Board_Height {
                 return false
             }
-            if row >= 0 && game^.board[board_index(column, row)] != 0 {
+            if row >= 0 && game.board[board_index(column, row)] != 0 {
                 return false
             }
         }
@@ -220,7 +220,7 @@ piece_value :: proc(kind: Piece_Kind) -> u8 {
 // modulo bias for every non-power-of-two suffix. bag_index is reset only after
 // the complete bag exists.
 fill_bag :: proc(game: ^Game) {
-    game^.bag = [Bag_Size]Piece_Kind{
+    game.bag = [Bag_Size]Piece_Kind{
         .i, .o, .t, .s, .z, .j, .l,
     }
 
@@ -229,25 +229,25 @@ fill_bag :: proc(game: ^Game) {
         upper_bound := index + 1
         selected := cast[usize](
             random.bounded_u64(
-                &game^.generator,
+                &game.generator,
                 cast[u64](upper_bound),
             ),
         )
-        game^.bag[index], game^.bag[selected] =
-            game^.bag[selected], game^.bag[index]
+        game.bag[index], game.bag[selected] =
+            game.bag[selected], game.bag[index]
         index -= 1
     }
-    game^.bag_index = 0
+    game.bag_index = 0
 }
 
 // take_bag_piece returns the next kind in source-independent shuffled order.
 // Exhaustion creates the next seven-piece permutation before reading it.
 take_bag_piece :: proc(game: ^Game) -> Piece_Kind {
-    if game^.bag_index == Bag_Size {
+    if game.bag_index == Bag_Size {
         fill_bag(game)
     }
-    kind := game^.bag[game^.bag_index]
-    game^.bag_index += 1
+    kind := game.bag[game.bag_index]
+    game.bag_index += 1
     return kind
 }
 
@@ -255,15 +255,15 @@ take_bag_piece :: proc(game: ^Game) -> Piece_Kind {
 // checks the spawn position immediately. Failure preserves the attempted piece
 // for rendering/debugging but marks the game terminal.
 spawn_next :: proc(game: ^Game) {
-    game^.current = Piece{
-        kind = game^.next,
+    game.current = Piece{
+        kind = game.next,
         rotation = 0,
         column = Spawn_Column,
         row = Spawn_Row,
     }
-    game^.next = take_bag_piece(game)
-    if !piece_fits(game, game^.current) {
-        game^.game_over = true
+    game.next = take_bag_piece(game)
+    if !piece_fits(game, game.current) {
+        game.game_over = true
     }
 }
 
@@ -273,10 +273,10 @@ spawn_next :: proc(game: ^Game) {
 game_init :: proc(game: ^Game, seed: u64) {
     empty: Game
     game^ = empty
-    random.init(&game^.generator, seed)
-    game^.level = 1
+    random.init(&game.generator, seed)
+    game.level = 1
     fill_bag(game)
-    game^.next = take_bag_piece(game)
+    game.next = take_bag_piece(game)
     spawn_next(game)
 }
 
@@ -284,15 +284,15 @@ game_init :: proc(game: ^Game, seed: u64) {
 // use the named left/right wrappers so no call site must decode a direction
 // integer.
 try_horizontal_move :: proc(game: ^Game, delta: i32) -> bool {
-    if game^.game_over || game^.paused {
+    if game.game_over || game.paused {
         return false
     }
-    candidate := game^.current
+    candidate := game.current
     candidate.column += delta
     if !piece_fits(game, candidate) {
         return false
     }
-    game^.current = candidate
+    game.current = candidate
     return true
 }
 
@@ -310,19 +310,19 @@ game_move_right :: proc(game: ^Game) -> bool {
 // direct first implementation while making rotations near walls and stacks
 // pleasant. The first fitting candidate wins in listed order.
 try_rotation :: proc(game: ^Game, next_rotation: u8) -> bool {
-    if game^.game_over || game^.paused {
+    if game.game_over || game.paused {
         return false
     }
 
     column_kicks := [6]i32{0, -1, 1, -2, 2, 0}
     row_kicks := [6]i32{0, 0, 0, 0, 0, -1}
     for column_kick, index in column_kicks {
-        candidate := game^.current
+        candidate := game.current
         candidate.rotation = next_rotation & 3
         candidate.column += column_kick
         candidate.row += row_kicks[index]
         if piece_fits(game, candidate) {
-            game^.current = candidate
+            game.current = candidate
             return true
         }
     }
@@ -330,18 +330,18 @@ try_rotation :: proc(game: ^Game, next_rotation: u8) -> bool {
 }
 
 game_rotate_clockwise :: proc(game: ^Game) -> bool {
-    return try_rotation(game, game^.current.rotation + 1)
+    return try_rotation(game, game.current.rotation + 1)
 }
 
 game_rotate_counterclockwise :: proc(game: ^Game) -> bool {
-    return try_rotation(game, game^.current.rotation + 3)
+    return try_rotation(game, game.current.rotation + 3)
 }
 
 // row_is_complete is called only for a visible row and reads all ten settled
 // cells. Active pieces never participate because they have not locked yet.
 row_is_complete :: proc(game: ^Game, row: i32) -> bool {
     for column: i32 = 0; column < Board_Width; column += 1 {
-        if game^.board[board_index(column, row)] == 0 {
+        if game.board[board_index(column, row)] == 0 {
             return false
         }
     }
@@ -363,8 +363,8 @@ clear_complete_lines :: proc(game: ^Game) -> u32 {
         } else {
             if write_row != read_row {
                 for column: i32 = 0; column < Board_Width; column += 1 {
-                    game^.board[board_index(column, write_row)] =
-                        game^.board[board_index(column, read_row)]
+                    game.board[board_index(column, write_row)] =
+                        game.board[board_index(column, read_row)]
                 }
             }
             write_row -= 1
@@ -374,7 +374,7 @@ clear_complete_lines :: proc(game: ^Game) -> u32 {
 
     for write_row >= 0 {
         for column: i32 = 0; column < Board_Width; column += 1 {
-            game^.board[board_index(column, write_row)] = 0
+            game.board[board_index(column, write_row)] = 0
         }
         write_row -= 1
     }
@@ -411,35 +411,35 @@ lock_current :: proc(game: ^Game) -> Drop_Result {
             local_column < Piece_Box_Size;
             local_column += 1 {
             if !piece_has_cell(
-                game^.current.kind,
-                game^.current.rotation,
+                game.current.kind,
+                game.current.rotation,
                 local_column,
                 local_row,
             ) {
                 continue
             }
-            column := game^.current.column + local_column
-            row := game^.current.row + local_row
+            column := game.current.column + local_column
+            row := game.current.row + local_row
             if row < 0 {
                 overflowed = true
             } else {
-                game^.board[board_index(column, row)] =
-                    piece_value(game^.current.kind)
+                game.board[board_index(column, row)] =
+                    piece_value(game.current.kind)
             }
         }
     }
 
     if overflowed {
-        game^.game_over = true
+        game.game_over = true
         return .game_over
     }
 
     cleared := clear_complete_lines(game)
-    game^.score += line_clear_score(cleared, game^.level)
-    game^.lines += cast[u64](cleared)
-    game^.level = cast[u32](game^.lines / 10) + 1
+    game.score += line_clear_score(cleared, game.level)
+    game.lines += cast[u64](cleared)
+    game.level = cast[u32](game.lines / 10) + 1
     spawn_next(game)
-    if game^.game_over {
+    if game.game_over {
         return .game_over
     }
     return .locked
@@ -449,18 +449,18 @@ lock_current :: proc(game: ^Game) -> Drop_Result {
 // per manual row. A blocked move locks immediately. Named public-to-package
 // wrappers below make automatic and soft-drop policy explicit at call sites.
 drop_one :: proc(game: ^Game, score_per_row: u64) -> Drop_Result {
-    if game^.game_over {
+    if game.game_over {
         return .game_over
     }
-    if game^.paused {
+    if game.paused {
         return .moved
     }
 
-    candidate := game^.current
+    candidate := game.current
     candidate.row += 1
     if piece_fits(game, candidate) {
-        game^.current = candidate
-        game^.score += score_per_row
+        game.current = candidate
+        game.score += score_per_row
         return .moved
     }
     return lock_current(game)
@@ -477,31 +477,31 @@ game_soft_drop :: proc(game: ^Game) -> Drop_Result {
 // game_hard_drop moves to the lowest valid row, awards two points per row, and
 // locks once. The loop is bounded by Board_Height plus the small spawn prefix.
 game_hard_drop :: proc(game: ^Game) -> Drop_Result {
-    if game^.game_over {
+    if game.game_over {
         return .game_over
     }
-    if game^.paused {
+    if game.paused {
         return .moved
     }
 
     distance: u64
     for {
-        candidate := game^.current
+        candidate := game.current
         candidate.row += 1
         if !piece_fits(game, candidate) {
             break
         }
-        game^.current = candidate
+        game.current = candidate
         distance += 1
     }
-    game^.score += distance * 2
+    game.score += distance * 2
     return lock_current(game)
 }
 
 // ghost_row returns the lowest row at which the active piece still fits. It is
 // a derived rendering query and never mutates simulation state.
 ghost_row :: proc(game: ^Game) -> i32 {
-    candidate := game^.current
+    candidate := game.current
     for {
         next := candidate
         next.row += 1
@@ -517,7 +517,7 @@ ghost_row :: proc(game: ^Game) -> i32 {
 // level one to 150 ms at level eleven and above. Clamping before multiplication
 // keeps even an extremely long game's arithmetic small and deterministic.
 fall_interval_milliseconds :: proc(game: ^Game) -> i64 {
-    speed_step := game^.level - 1
+    speed_step := game.level - 1
     if speed_step > 10 {
         speed_step = 10
     }

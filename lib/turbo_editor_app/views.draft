@@ -18,11 +18,11 @@ paint_search :: proc(
     content: turbo_ui.Rect,
 ) {
     turbo_ui.write_clipped(
-        app^.ui.surface,
+        app.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row},
         "Find literal bytes:",
-        app^.ui.theme.text,
+        app.ui.theme.text,
     )
     find_next_requested := false
     find_previous_requested := false
@@ -34,11 +34,11 @@ paint_search :: proc(
             height = 1,
         }
         result := turbo_ui.text_box(
-            &app^.ui,
+            &app.ui,
             500,
             query_bounds,
-            &app^.search_box,
-            app^.search[:],
+            &app.search_box,
+            app.search[:],
         )
         find_next_requested = result.submitted
     }
@@ -55,7 +55,7 @@ paint_search :: proc(
             1,
         )
         find_next_requested = find_next_requested || turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             501,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Next")),
             "Next",
@@ -64,7 +64,7 @@ paint_search :: proc(
             cast[u8]('n'),
         )
         find_previous_requested = turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             503,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Previous")),
             "Previous",
@@ -73,7 +73,7 @@ paint_search :: proc(
             cast[u8]('p'),
         )
         if turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             502,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
             "Cancel",
@@ -84,7 +84,7 @@ paint_search :: proc(
             close_search(app)
         }
     } else if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         502,
         turbo_ui.Rect{},
         "Cancel",
@@ -100,9 +100,9 @@ paint_search :: proc(
             // Search text remains in App after dismissal. F3 and Shift-F3
             // therefore continue this exact query without reopening a modal.
             turbo_ui.hide_window(
-                &app^.ui,
-                app^.windows[:],
-                app^.windows[Window_Search].id,
+                &app.ui,
+                app.windows[:],
+                app.windows[Window_Search].id,
             )
         }
     }
@@ -114,16 +114,16 @@ paint_search :: proc(
 // operations, never through direct App-owned byte manipulation.
 paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
     turbo_ui.write_clipped(
-        app^.ui.surface,
+        app.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row},
         "Find:",
-        app^.ui.theme.text,
+        app.ui.theme.text,
     )
     replace_requested := false
     if content.width > 11 && content.height > 1 {
         find_result := turbo_ui.text_box(
-            &app^.ui,
+            &app.ui,
             580,
             turbo_ui.Rect{
                 column = content.column + 10,
@@ -131,21 +131,21 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
                 width = content.width - 11,
                 height = 1,
             },
-            &app^.search_box,
-            app^.search[:],
+            &app.search_box,
+            app.search[:],
         )
         replace_requested = find_result.submitted
     }
     if content.width > 11 && content.height > 3 {
         turbo_ui.write_clipped(
-            app^.ui.surface,
+            app.ui.surface,
             content,
             turbo_ui.Point{column = content.column + 1, row = content.row + 2},
             "Replace:",
-            app^.ui.theme.text,
+            app.ui.theme.text,
         )
         replacement_result := turbo_ui.text_box(
-            &app^.ui,
+            &app.ui,
             581,
             turbo_ui.Rect{
                 column = content.column + 10,
@@ -153,8 +153,8 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
                 width = content.width - 11,
                 height = 1,
             },
-            &app^.replacement_box,
-            app^.replacement[:],
+            &app.replacement_box,
+            app.replacement[:],
         )
         replace_requested = replace_requested || replacement_result.submitted
     }
@@ -174,7 +174,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
             1,
         )
         replace_requested = replace_requested || turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             582,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Replace")),
             "Replace",
@@ -183,7 +183,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
             cast[u8]('r'),
         )
         replace_all_requested = turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             583,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Replace All")),
             "Replace All",
@@ -192,7 +192,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
             cast[u8]('a'),
         )
         find_next_requested = turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             584,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Find Next")),
             "Find Next",
@@ -201,7 +201,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
             cast[u8]('f'),
         )
         if turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             585,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
             "Cancel",
@@ -212,7 +212,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
             close_replace(app)
         }
     } else if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         585,
         turbo_ui.Rect{},
         "Cancel",
@@ -224,34 +224,34 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
 
     if replace_requested {
         _ = replace_current(app, true)
-        if app^.windows[Window_Replace].visible {
-            app^.ui.focused_id = 580
+        if app.windows[Window_Replace].visible {
+            app.ui.focused_id = 580
         }
     } else if replace_all_requested {
         _ = replace_every_match(app)
-        if app^.windows[Window_Replace].visible {
-            app^.ui.focused_id = 580
+        if app.windows[Window_Replace].visible {
+            app.ui.focused_id = 580
         }
     } else if find_next_requested {
         _ = perform_find(app, false)
-        if app^.windows[Window_Replace].visible {
-            app^.ui.focused_id = 580
+        if app.windows[Window_Replace].visible {
+            app.ui.focused_id = 580
         }
     }
 }
 
 paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
     turbo_ui.write_clipped(
-        app^.ui.surface,
+        app.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row},
         "Line number:",
-        app^.ui.theme.text,
+        app.ui.theme.text,
     )
     submitted := false
     if content.width > 15 && content.height > 1 {
         result := turbo_ui.text_box(
-            &app^.ui,
+            &app.ui,
             590,
             turbo_ui.Rect{
                 column = content.column + 14,
@@ -259,8 +259,8 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
                 width = content.width - 15,
                 height = 1,
             },
-            &app^.go_line_box,
-            app^.go_line[:],
+            &app.go_line_box,
+            app.go_line[:],
         )
         submitted = result.submitted
     }
@@ -277,7 +277,7 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
             1,
         )
         submitted = submitted || turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             591,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Go To")),
             "Go To",
@@ -286,7 +286,7 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
             cast[u8]('g'),
         )
         if turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             592,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
             "Cancel",
@@ -297,7 +297,7 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
             close_go_to_line(app)
         }
     } else if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         592,
         turbo_ui.Rect{},
         "Cancel",
@@ -313,16 +313,16 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
 
 paint_switch_workspace :: proc(app: ^App, content: turbo_ui.Rect) {
     turbo_ui.write_clipped(
-        app^.ui.surface,
+        app.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row},
         "Workspace directory:",
-        app^.ui.theme.text,
+        app.ui.theme.text,
     )
     submitted := false
     if content.width > 2 && content.height > 2 {
         result := turbo_ui.text_box(
-            &app^.ui,
+            &app.ui,
             570,
             turbo_ui.Rect{
                 column = content.column + 1,
@@ -330,18 +330,18 @@ paint_switch_workspace :: proc(app: ^App, content: turbo_ui.Rect) {
                 width = content.width - 2,
                 height = 2,
             },
-            &app^.workspace_box,
-            app^.workspace_path[:],
+            &app.workspace_box,
+            app.workspace_path[:],
         )
         submitted = result.submitted
     }
-    if app^.workspace_error_length != 0 && content.height > 3 {
+    if app.workspace_error_length != 0 && content.height > 3 {
         turbo_ui.write_clipped_bytes(
-            app^.ui.surface,
+            app.ui.surface,
             content,
             turbo_ui.Point{column = content.column + 1, row = content.row + 3},
-            app^.workspace_error[:app^.workspace_error_length],
-            app^.ui.theme.hot,
+            app.workspace_error[:app.workspace_error_length],
+            app.ui.theme.hot,
         )
     }
     if content.width > 2 && content.height > 6 {
@@ -357,7 +357,7 @@ paint_switch_workspace :: proc(app: ^App, content: turbo_ui.Rect) {
             1,
         )
         submitted = submitted || turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             571,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Switch")),
             "Switch",
@@ -366,7 +366,7 @@ paint_switch_workspace :: proc(app: ^App, content: turbo_ui.Rect) {
             cast[u8]('s'),
         )
         if turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             572,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
             "Cancel",
@@ -375,10 +375,10 @@ paint_switch_workspace :: proc(app: ^App, content: turbo_ui.Rect) {
             cast[u8]('c'),
         ) {
             close_workspace_dialogs(app)
-            app^.status = "Workspace switch cancelled"
+            app.status = "Workspace switch cancelled"
         }
     } else if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         572,
         turbo_ui.Rect{},
         "Cancel",
@@ -386,7 +386,7 @@ paint_switch_workspace :: proc(app: ^App, content: turbo_ui.Rect) {
         .cancel_action,
     ) {
         close_workspace_dialogs(app)
-        app^.status = "Workspace switch cancelled"
+        app.status = "Workspace switch cancelled"
     }
     if submitted {
         submit_switch_workspace(app)
@@ -397,22 +397,22 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
     prompt := "Open path (relative paths start at the Workspace):"
     action_label := "Open"
     action_key := cast[u8]('o')
-    if app^.file_dialog_action == .save_as {
+    if app.file_dialog_action == .save_as {
         prompt = "Save path (relative paths start at the Workspace):"
         action_label = "Save"
         action_key = cast[u8]('s')
     }
     turbo_ui.write_clipped(
-        app^.ui.surface,
+        app.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row},
         prompt,
-        app^.ui.theme.text,
+        app.ui.theme.text,
     )
     submitted := false
     if content.width > 2 && content.height > 2 {
         result := turbo_ui.text_box(
-            &app^.ui,
+            &app.ui,
             830,
             turbo_ui.Rect{
                 column = content.column + 1,
@@ -420,8 +420,8 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
                 width = content.width - 2,
                 height = 2,
             },
-            &app^.file_box,
-            app^.file_path[:],
+            &app.file_box,
+            app.file_path[:],
         )
         submitted = result.submitted
     }
@@ -438,7 +438,7 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
             1,
         )
         submitted = submitted || turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             831,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width(action_label)),
             action_label,
@@ -447,7 +447,7 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
             action_key,
         )
         if turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             832,
             turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
             "Cancel",
@@ -456,10 +456,10 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
             cast[u8]('c'),
         ) {
             close_open_file(app)
-            app^.status = "File operation cancelled"
+            app.status = "File operation cancelled"
         }
     } else if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         832,
         turbo_ui.Rect{},
         "Cancel",
@@ -467,10 +467,10 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
         .cancel_action,
     ) {
         close_open_file(app)
-        app^.status = "File operation cancelled"
+        app.status = "File operation cancelled"
     }
     if submitted {
-        if app^.file_dialog_action == .save_as {
+        if app.file_dialog_action == .save_as {
             submit_save_as(app)
         } else {
             submit_open_file(app)
@@ -480,11 +480,11 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
 
 paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
     turbo_ui.write_clipped(
-        app^.ui.surface,
+        app.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row + 1},
         "Open another workspace with unsaved documents?",
-        app^.ui.theme.text,
+        app.ui.theme.text,
     )
     if content.width <= 2 || content.height < 5 {
         return
@@ -501,7 +501,7 @@ paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
         1,
     )
     if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         573,
         turbo_ui.layout_next(
             &buttons,
@@ -515,11 +515,11 @@ paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
         if save_all_dirty_buffers(app) {
             _ = switch_workspace_now(app)
         } else {
-            app^.status = "Save all failed; disk conflicts are not overwritten"
+            app.status = "Save all failed; disk conflicts are not overwritten"
         }
     }
     if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         574,
         turbo_ui.layout_next(
             &buttons,
@@ -533,7 +533,7 @@ paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
         _ = switch_workspace_now(app)
     }
     if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         575,
         turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
         "Cancel",
@@ -542,7 +542,7 @@ paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
         cast[u8]('c'),
     ) {
         close_workspace_dialogs(app)
-        app^.status = "Workspace switch cancelled"
+        app.status = "Workspace switch cancelled"
     }
 }
 
@@ -558,14 +558,14 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
         save_label = "Save As"
         save_width = turbo_ui.button_width(save_label)
         save_access = cast[u8]('a')
-    } else if buffer^.disk_conflict {
+    } else if buffer.disk_conflict {
         message = "Disk also changed. Choose whether to overwrite it."
         save_label = "Overwrite + exit"
         save_width = turbo_ui.button_width(save_label)
         save_access = cast[u8]('o')
     }
     turbo_ui.write_clipped(
-        app^.ui.surface,
+        app.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row + 1},
         message,
@@ -573,7 +573,7 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
     )
     if content.height < 5 || content.width <= 2 {
         if turbo_ui.button(
-            &app^.ui,
+            &app.ui,
             512,
             turbo_ui.Rect{},
             "Cancel",
@@ -596,7 +596,7 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
         1,
     )
     if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         510,
         turbo_ui.layout_next(&buttons, save_width),
         save_label,
@@ -614,13 +614,13 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
         }
         // The conflict-specific label makes this the one explicit overwrite
         // path. Every ordinary Save refuses to replace a changed disk file.
-        if turbo_editor.save(buffer, buffer^.disk_conflict) {
+        if turbo_editor.save(buffer, buffer.disk_conflict) {
             return continue_quit(app)
         }
-        app^.status = "Save failed; editor remains open"
+        app.status = "Save failed; editor remains open"
     }
     if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         511,
         turbo_ui.layout_next(&buttons, turbo_ui.button_width("Discard")),
         "Discard",
@@ -628,11 +628,11 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
         .normal,
         cast[u8]('d'),
     ) {
-        app^.quit_discard_mask |= cast[u64](1) << cast[u64](app^.active)
+        app.quit_discard_mask |= cast[u64](1) << cast[u64](app.active)
         return continue_quit(app)
     }
     if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         512,
         turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
         "Cancel",
@@ -653,8 +653,8 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
 paint_shortcut_help :: proc(app: ^App, content: turbo_ui.Rect) {
     if content.width != 0 && content.height != 0 {
         turbo_ui.fill_rect(
-            app^.ui.surface,
-            app^.ui.clip,
+            app.ui.surface,
+            app.ui.clip,
             turbo_ui.Rect{
                 column = content.column,
                 row = content.row,
@@ -662,14 +662,14 @@ paint_shortcut_help :: proc(app: ^App, content: turbo_ui.Rect) {
                 height = 1,
             },
             ' ',
-            app^.ui.theme.border,
+            app.ui.theme.border,
         )
         turbo_ui.write_clipped(
-            app^.ui.surface,
-            app^.ui.clip,
+            app.ui.surface,
+            app.ui.clip,
             turbo_ui.Point{column = content.column + 1, row = content.row},
             "Key                  Command",
-            app^.ui.theme.border,
+            app.ui.theme.border,
         )
     }
 
@@ -681,15 +681,15 @@ paint_shortcut_help :: proc(app: ^App, content: turbo_ui.Rect) {
             height = content.height - 4,
         }
         view := turbo_ui.list_view(
-            &app^.ui,
+            &app.ui,
             800,
             801,
             list_bounds,
             Shortcut_Row_Count,
-            &app^.shortcut_list,
+            &app.shortcut_list,
         )
         for index := view.first; index < view.end; index += 1 {
-            row := turbo_ui.list_row_begin(&app^.ui, view, index)
+            row := turbo_ui.list_row_begin(&app.ui, view, index)
             (key, command) := shortcut_row(index)
             key_width: usize = 21
             if key_width > row.bounds.width {
@@ -698,8 +698,8 @@ paint_shortcut_help :: proc(app: ^App, content: turbo_ui.Rect) {
             key_bounds := row.bounds
             key_bounds.width = key_width
             turbo_ui.write_clipped(
-                app^.ui.surface,
-                turbo_ui.intersect(app^.ui.clip, key_bounds),
+                app.ui.surface,
+                turbo_ui.intersect(app.ui.clip, key_bounds),
                 turbo_ui.Point{
                     column = key_bounds.column,
                     row = key_bounds.row,
@@ -715,8 +715,8 @@ paint_shortcut_help :: proc(app: ^App, content: turbo_ui.Rect) {
                     height = 1,
                 }
                 turbo_ui.write_clipped(
-                    app^.ui.surface,
-                    turbo_ui.intersect(app^.ui.clip, command_bounds),
+                    app.ui.surface,
+                    turbo_ui.intersect(app.ui.clip, command_bounds),
                     turbo_ui.Point{
                         column = command_bounds.column,
                         row = command_bounds.row,
@@ -738,7 +738,7 @@ paint_shortcut_help :: proc(app: ^App, content: turbo_ui.Rect) {
         }
     }
     if turbo_ui.button(
-        &app^.ui,
+        &app.ui,
         802,
         close_bounds,
         "Close",
@@ -756,10 +756,10 @@ Path_List_Kind :: enum {
 }
 
 path_list_count :: proc(app: ^App, kind: Path_List_Kind) -> usize {
-    if kind == .program_files && app^.host.source_count != nil {
-        return app^.program_file_count
+    if kind == .program_files && app.host.source_count != nil {
+        return app.program_file_count
     }
-    return app^.buffer_count
+    return app.buffer_count
 }
 
 path_list_text :: proc(
@@ -767,10 +767,10 @@ path_list_text :: proc(
     kind: Path_List_Kind,
     index: usize,
 ) -> []u8 {
-    if kind == .program_files && app^.host.source_count != nil {
-        return memory.owned_string_bytes(&app^.program_file_names[index])
+    if kind == .program_files && app.host.source_count != nil {
+        return memory.owned_string_bytes(&app.program_file_names[index])
     }
-    return turbo_editor.path_bytes(&app^.buffers[index])
+    return turbo_editor.path_bytes(&app.buffers[index])
 }
 
 // editor_title_bytes prefers the Workspace-relative label already published
@@ -781,13 +781,13 @@ path_list_text :: proc(
 // own stored labels because they have no active-Program row.
 editor_title_bytes :: proc(app: ^App) -> []u8 {
     path := turbo_editor.path_bytes(active_buffer(app))
-    for index: usize = 0; index < app^.program_file_count; index += 1 {
+    for index: usize = 0; index < app.program_file_count; index += 1 {
         source_path := memory.owned_string_bytes(
-            &app^.program_file_paths[index],
+            &app.program_file_paths[index],
         )
         if byte_views_equal(path, source_path) {
             return memory.owned_string_bytes(
-                &app^.program_file_names[index],
+                &app.program_file_names[index],
             )
         }
     }
@@ -799,7 +799,7 @@ activate_path_row :: proc(
     kind: Path_List_Kind,
     index: usize,
 ) -> bool {
-    if kind == .program_files && app^.host.source_count != nil {
+    if kind == .program_files && app.host.source_count != nil {
         return open_program_file(app, index)
     }
     return activate_buffer(app, index)
@@ -821,12 +821,12 @@ paint_path_list :: proc(
     if content.width == 0 || content.height == 0 {
         return
     }
-    model := &app^.program_files
+    model := &app.program_files
     if kind == .open_files {
-        model = &app^.buffers_list
+        model = &app.buffers_list
     }
     view := turbo_ui.list_view(
-        &app^.ui,
+        &app.ui,
         id,
         id + 1,
         content,
@@ -836,25 +836,25 @@ paint_path_list :: proc(
     )
     active_path := turbo_editor.path_bytes(active_buffer(app))
     for index := view.first; index < view.end; index += 1 {
-        row := turbo_ui.list_row_begin(&app^.ui, view, index)
+        row := turbo_ui.list_row_begin(&app.ui, view, index)
         marker := "  "
         if kind == .open_files {
-            if app^.buffers[index].dirty {
+            if app.buffers[index].dirty {
                 marker = "* "
-            } else if turbo_editor.is_read_only(&app^.buffers[index]) {
+            } else if turbo_editor.is_read_only(&app.buffers[index]) {
                 marker = "R "
             }
-        } else if kind == .program_files && app^.host.source_count != nil {
+        } else if kind == .program_files && app.host.source_count != nil {
             source_path := memory.owned_string_bytes(
-                &app^.program_file_paths[index],
+                &app.program_file_paths[index],
             )
             if byte_views_equal(source_path, active_path) {
                 marker = "> "
             }
         }
         turbo_ui.write_clipped(
-            app^.ui.surface,
-            turbo_ui.intersect(app^.ui.clip, row.bounds),
+            app.ui.surface,
+            turbo_ui.intersect(app.ui.clip, row.bounds),
             turbo_ui.Point{column = row.bounds.column, row = row.bounds.row},
             marker,
             row.style,
@@ -867,8 +867,8 @@ paint_path_list :: proc(
                 height = 1,
             }
             turbo_ui.write_clipped_bytes(
-                app^.ui.surface,
-                turbo_ui.intersect(app^.ui.clip, label_bounds),
+                app.ui.surface,
+                turbo_ui.intersect(app.ui.clip, label_bounds),
                 turbo_ui.Point{
                     column = label_bounds.column,
                     row = label_bounds.row,
@@ -880,13 +880,13 @@ paint_path_list :: proc(
     }
     if view.activated && view.activated_index < count {
         if activate_path_row(app, kind, view.activated_index) {
-            if kind == .program_files && app^.host.source_count != nil {
-                app^.status = "Program file opened"
+            if kind == .program_files && app.host.source_count != nil {
+                app.status = "Program file opened"
             } else {
-                app^.status = "Open file activated"
+                app.status = "Open file activated"
             }
         } else {
-            app^.status = "Could not open the selected source"
+            app.status = "Could not open the selected source"
         }
     }
 }
@@ -901,23 +901,23 @@ paint_navigation_usages :: proc(app: ^App, content: turbo_ui.Rect) {
         return
     }
     view := turbo_ui.list_view(
-        &app^.ui,
+        &app.ui,
         820,
         821,
         content,
-        app^.navigation_row_count,
-        &app^.navigation_list,
+        app.navigation_row_count,
+        &app.navigation_list,
         .click_and_enter,
     )
     for index := view.first; index < view.end; index += 1 {
-        row := turbo_ui.list_row_begin(&app^.ui, view, index)
-        target := &app^.navigation_rows[index]
+        row := turbo_ui.list_row_begin(&app.ui, view, index)
+        target := &app.navigation_rows[index]
         coordinate: [48]u8
         coordinate_length: usize
         line_storage: [20]u8
         (line, line_ok) := format.unsigned_decimal(
             line_storage[:],
-            cast[u64](target^.line),
+            cast[u64](target.line),
         )
         if line_ok {
             for byte in line {
@@ -930,7 +930,7 @@ paint_navigation_usages :: proc(app: ^App, content: turbo_ui.Rect) {
         column_storage: [20]u8
         (column, column_ok) := format.unsigned_decimal(
             column_storage[:],
-            cast[u64](target^.column),
+            cast[u64](target.column),
         )
         if column_ok {
             for byte in column {
@@ -940,9 +940,9 @@ paint_navigation_usages :: proc(app: ^App, content: turbo_ui.Rect) {
         }
         coordinate[coordinate_length] = cast[u8](' ')
         coordinate_length += 1
-        clip := turbo_ui.intersect(app^.ui.clip, row.bounds)
+        clip := turbo_ui.intersect(app.ui.clip, row.bounds)
         turbo_ui.write_clipped_bytes(
-            app^.ui.surface,
+            app.ui.surface,
             clip,
             turbo_ui.Point{column = row.bounds.column, row = row.bounds.row},
             coordinate[:coordinate_length],
@@ -956,33 +956,33 @@ paint_navigation_usages :: proc(app: ^App, content: turbo_ui.Rect) {
                 height = 1,
             }
             turbo_ui.write_clipped_bytes(
-                app^.ui.surface,
-                turbo_ui.intersect(app^.ui.clip, path_bounds),
+                app.ui.surface,
+                turbo_ui.intersect(app.ui.clip, path_bounds),
                 turbo_ui.Point{
                     column = path_bounds.column,
                     row = path_bounds.row,
                 },
-                memory.owned_string_bytes(&target^.path),
+                memory.owned_string_bytes(&target.path),
                 row.style,
             )
         }
     }
-    if view.activated && view.activated_index < app^.navigation_row_count {
+    if view.activated && view.activated_index < app.navigation_row_count {
         if open_navigation_target(
             app,
-            &app^.navigation_rows[view.activated_index],
+            &app.navigation_rows[view.activated_index],
             true,
         ) {
-            app^.status = "Usage selected"
+            app.status = "Usage selected"
         } else {
-            app^.status = "Could not open the selected usage"
+            app.status = "Could not open the selected usage"
         }
     }
 }
 
 program_root_name :: proc(app: ^App, index: usize) -> []u8 {
-    assert(index < app^.program_root_count, "program root label is invalid")
-    return app^.program_root_names[index][:app^.program_root_length[index]]
+    assert(index < app.program_root_count, "program root label is invalid")
+    return app.program_root_names[index][:app.program_root_length[index]]
 }
 
 // paint_program_root_picker makes the run-root choice visible and directly
@@ -995,27 +995,27 @@ paint_program_root_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
         return
     }
     view := turbo_ui.list_view(
-        &app^.ui,
+        &app.ui,
         760,
         761,
         bounds,
-        app^.program_root_count,
-        &app^.program_roots,
+        app.program_root_count,
+        &app.program_roots,
         .click_and_enter,
     )
-    active := app^.program_root_count
-    if app^.host.selected_root != nil {
-        active = app^.host.selected_root(app^.host.user)
+    active := app.program_root_count
+    if app.host.selected_root != nil {
+        active = app.host.selected_root(app.host.user)
     }
     for index := view.first; index < view.end; index += 1 {
-        row := turbo_ui.list_row_begin(&app^.ui, view, index)
+        row := turbo_ui.list_row_begin(&app.ui, view, index)
         marker := "  "
         if index == active {
             marker = "* "
         }
         turbo_ui.write_clipped(
-            app^.ui.surface,
-            turbo_ui.intersect(app^.ui.clip, row.bounds),
+            app.ui.surface,
+            turbo_ui.intersect(app.ui.clip, row.bounds),
             turbo_ui.Point{column = row.bounds.column, row = row.bounds.row},
             marker,
             row.style,
@@ -1028,8 +1028,8 @@ paint_program_root_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
                 height = 1,
             }
             turbo_ui.write_clipped_bytes(
-                app^.ui.surface,
-                turbo_ui.intersect(app^.ui.clip, label_bounds),
+                app.ui.surface,
+                turbo_ui.intersect(app.ui.clip, label_bounds),
                 turbo_ui.Point{column = label_bounds.column, row = label_bounds.row},
                 program_root_name(app, index),
                 row.style,
@@ -1038,9 +1038,9 @@ paint_program_root_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
     }
     if view.activated {
         if select_program_root(app, view.activated_index) {
-            app^.status = "Active Program changed"
+            app.status = "Active Program changed"
         } else {
-            app^.status = "Could not activate the selected Program"
+            app.status = "Could not activate the selected Program"
         }
     }
 }
@@ -1056,14 +1056,14 @@ paint_text_view :: proc(
     assert(window_index >= Text_Window_First && window_index < Window_Count,
         "tooling window index is invalid")
     text_index := window_index - Text_Window_First
-    bytes := app^.tooling_text[text_index][:app^.tooling_length[text_index]]
+    bytes := app.tooling_text[text_index][:app.tooling_length[text_index]]
     turbo_ui.text_view_bytes(
-        &app^.ui,
+        &app.ui,
         cast[turbo_ui.Widget_Id](700 + text_index),
         cast[turbo_ui.Widget_Id](720 + text_index),
         content,
         bytes,
-        &app^.tooling_views[text_index],
+        &app.tooling_views[text_index],
     )
 }
 
@@ -1074,30 +1074,30 @@ paint_text_view :: proc(
 // parent/child navigation supplied by tree_view.
 paint_package_tree :: proc(app: ^App, content: turbo_ui.Rect) {
     visibility: [Maximum_Package_Rows]usize
-    nodes := app^.package_nodes[:app^.package_row_count]
+    nodes := app.package_nodes[:app.package_row_count]
     view := turbo_ui.tree_view(
-        &app^.ui,
+        &app.ui,
         770,
         771,
         content,
         nodes,
         visibility[:],
-        &app^.package_tree,
+        &app.package_tree,
         .click_and_enter,
     )
     if view.toggled {
-        info := app^.package_rows[view.toggled_node].info
+        info := app.package_rows[view.toggled_node].info
         if info.kind == .package_node &&
             info.package_index < Maximum_Package_Rows {
-            app^.package_expanded[info.package_index] =
-                app^.package_nodes[view.toggled_node].expanded
+            app.package_expanded[info.package_index] =
+                app.package_nodes[view.toggled_node].expanded
         }
     }
     for visible_index := view.list.first;
         visible_index < view.list.end;
         visible_index += 1 {
         row := turbo_ui.tree_row_begin(
-            &app^.ui,
+            &app.ui,
             view,
             visible_index,
             nodes,
@@ -1105,15 +1105,15 @@ paint_package_tree :: proc(app: ^App, content: turbo_ui.Rect) {
         if !row.visible {
             continue
         }
-        package_row := &app^.package_rows[row.model_index]
+        package_row := &app.package_rows[row.model_index]
         marker := "  "
-        if package_row^.info.kind == .package_node &&
-            package_row^.info.root != 0 {
+        if package_row.info.kind == .package_node &&
+            package_row.info.root != 0 {
             marker = "* "
         }
         turbo_ui.write_clipped(
-            app^.ui.surface,
-            turbo_ui.intersect(app^.ui.clip, row.content),
+            app.ui.surface,
+            turbo_ui.intersect(app.ui.clip, row.content),
             turbo_ui.Point{column = row.content.column, row = row.content.row},
             marker,
             row.style,
@@ -1123,13 +1123,13 @@ paint_package_tree :: proc(app: ^App, content: turbo_ui.Rect) {
             label_bounds.column += 2
             label_bounds.width -= 2
             turbo_ui.write_clipped_bytes(
-                app^.ui.surface,
-                turbo_ui.intersect(app^.ui.clip, label_bounds),
+                app.ui.surface,
+                turbo_ui.intersect(app.ui.clip, label_bounds),
                 turbo_ui.Point{
                     column = label_bounds.column,
                     row = label_bounds.row,
                 },
-                package_row^.text[:package_row^.length],
+                package_row.text[:package_row.length],
                 row.style,
             )
         }
@@ -1137,16 +1137,16 @@ paint_package_tree :: proc(app: ^App, content: turbo_ui.Rect) {
 }
 
 paint_program_configuration :: proc(app: ^App, bounds: turbo_ui.Rect) {
-    bytes := app^.program_configuration[
-        :app^.program_configuration_length
+    bytes := app.program_configuration[
+        :app.program_configuration_length
     ]
     turbo_ui.text_view_bytes(
-        &app^.ui,
+        &app.ui,
         780,
         781,
         bounds,
         bytes,
-        &app^.program_configuration_view,
+        &app.program_configuration_view,
     )
 }
 
@@ -1166,18 +1166,18 @@ paint_program_settings :: proc(app: ^App, content: turbo_ui.Rect) {
         height = 1,
     }
     turbo_ui.fill_rect(
-        app^.ui.surface,
-        app^.ui.clip,
+        app.ui.surface,
+        app.ui.clip,
         header,
         ' ',
-        app^.ui.theme.border,
+        app.ui.theme.border,
     )
     turbo_ui.write_clipped(
-        app^.ui.surface,
-        turbo_ui.intersect(app^.ui.clip, header),
+        app.ui.surface,
+        turbo_ui.intersect(app.ui.clip, header),
         turbo_ui.Point{column = header.column, row = header.row},
         "Programs (* active; Enter selects)",
-        app^.ui.theme.border,
+        app.ui.theme.border,
     )
     picker_height: usize = 4
     if content.height < 12 {
@@ -1192,8 +1192,8 @@ paint_program_settings :: proc(app: ^App, content: turbo_ui.Rect) {
     paint_program_root_picker(app, picker)
     separator_row := picker.row + picker.height
     turbo_ui.fill_rect(
-        app^.ui.surface,
-        app^.ui.clip,
+        app.ui.surface,
+        app.ui.clip,
         turbo_ui.Rect{
             column = content.column,
             row = separator_row,
@@ -1201,12 +1201,12 @@ paint_program_settings :: proc(app: ^App, content: turbo_ui.Rect) {
             height = 1,
         },
         ' ',
-        app^.ui.theme.border,
+        app.ui.theme.border,
     )
     turbo_ui.write_clipped(
-        app^.ui.surface,
+        app.ui.surface,
         turbo_ui.intersect(
-            app^.ui.clip,
+            app.ui.clip,
             turbo_ui.Rect{
                 column = content.column,
                 row = separator_row,
@@ -1216,7 +1216,7 @@ paint_program_settings :: proc(app: ^App, content: turbo_ui.Rect) {
         ),
         turbo_ui.Point{column = content.column, row = separator_row},
         "Effective Build / Run Configuration",
-        app^.ui.theme.border,
+        app.ui.theme.border,
     )
     configuration_height := content.height - picker_height - 2
     configuration := turbo_ui.Rect{
@@ -1242,18 +1242,18 @@ paint_packages_view :: proc(app: ^App, content: turbo_ui.Rect) {
         height = 1,
     }
     turbo_ui.fill_rect(
-        app^.ui.surface,
-        app^.ui.clip,
+        app.ui.surface,
+        app.ui.clip,
         header,
         ' ',
-        app^.ui.theme.border,
+        app.ui.theme.border,
     )
     turbo_ui.write_clipped(
-        app^.ui.surface,
-        turbo_ui.intersect(app^.ui.clip, header),
+        app.ui.surface,
+        turbo_ui.intersect(app.ui.clip, header),
         turbo_ui.Point{column = header.column, row = header.row},
         "Packages and authored imports (* active root)",
-        app^.ui.theme.border,
+        app.ui.theme.border,
     )
     graph: turbo_ui.Rect
     if content.height > 1 {
@@ -1264,7 +1264,7 @@ paint_packages_view :: proc(app: ^App, content: turbo_ui.Rect) {
             height = content.height - 1,
         }
     }
-    if graph.height != 0 && app^.package_row_count != 0 {
+    if graph.height != 0 && app.package_row_count != 0 {
         paint_package_tree(app, graph)
     } else if graph.height != 0 {
         paint_text_view(app, Window_Programs, graph)

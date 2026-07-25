@@ -60,27 +60,27 @@ pub renderer_init_with_allocator :: proc(
     columns, rows: usize,
     allocator: runtime.Allocator,
 ) {
-    assert(renderer^.desired.cells.data == nil &&
-        renderer^.previous.cells.data == nil &&
-        renderer^.output.data == nil,
+    assert(renderer.desired.cells.data == nil &&
+        renderer.previous.cells.data == nil &&
+        renderer.output.data == nil,
         "TUI renderer must be empty before initialization")
     assert(allocator.procedure != nil, "TUI renderer allocator is nil")
-    renderer^.allocator = allocator
-    surface_init_with_allocator(&renderer^.desired, columns, rows, allocator)
-    surface_init_with_allocator(&renderer^.previous, columns, rows, allocator)
-    array.init_with_allocator(&renderer^.output, allocator)
-    renderer^.previous_valid = false
+    renderer.allocator = allocator
+    surface_init_with_allocator(&renderer.desired, columns, rows, allocator)
+    surface_init_with_allocator(&renderer.previous, columns, rows, allocator)
+    array.init_with_allocator(&renderer.output, allocator)
+    renderer.previous_valid = false
 }
 
 // renderer_destroy releases all three allocations and clears allocator/state
 // metadata. No borrowed Surface pointer may be used afterward.
 pub renderer_destroy :: proc(renderer: ^Renderer) {
-    surface_destroy(&renderer^.desired)
-    surface_destroy(&renderer^.previous)
-    array.destroy(&renderer^.output)
+    surface_destroy(&renderer.desired)
+    surface_destroy(&renderer.previous)
+    array.destroy(&renderer.output)
     empty: runtime.Allocator
-    renderer^.allocator = empty
-    renderer^.previous_valid = false
+    renderer.allocator = empty
+    renderer.previous_valid = false
 }
 
 // surface returns a mutable pointer to the desired frame. It remains valid until
@@ -88,7 +88,7 @@ pub renderer_destroy :: proc(renderer: ^Renderer) {
 // is an exact no-op. The Renderer must stay at one stable address for the
 // complete borrow.
 pub surface :: proc(renderer: ^Renderer) -> ^Surface {
-    return &renderer^.desired
+    return &renderer.desired
 }
 
 // renderer_resize changes both grids as one operation. Equal dimensions are a
@@ -99,24 +99,24 @@ pub renderer_resize :: proc(
     renderer: ^Renderer,
     columns, rows: usize,
 ) {
-    if columns == renderer^.desired.columns && rows == renderer^.desired.rows {
+    if columns == renderer.desired.columns && rows == renderer.desired.rows {
         return
     }
-    surface_destroy(&renderer^.desired)
-    surface_destroy(&renderer^.previous)
+    surface_destroy(&renderer.desired)
+    surface_destroy(&renderer.previous)
     surface_init_with_allocator(
-        &renderer^.desired,
+        &renderer.desired,
         columns,
         rows,
-        renderer^.allocator,
+        renderer.allocator,
     )
     surface_init_with_allocator(
-        &renderer^.previous,
+        &renderer.previous,
         columns,
         rows,
-        renderer^.allocator,
+        renderer.allocator,
     )
-    renderer^.previous_valid = false
+    renderer.previous_valid = false
 }
 
 // invalidate forgets only the terminal correspondence. Desired cells and
@@ -125,7 +125,7 @@ pub renderer_resize :: proc(
 // screen-resume attempt that may have emitted a complete or partial enter
 // sequence, whether that attempt reported success or failure.
 pub invalidate :: proc(renderer: ^Renderer) {
-    renderer^.previous_valid = false
+    renderer.previous_valid = false
 }
 
 // append_byte is the single mutation boundary for the reusable output buffer.
@@ -203,8 +203,8 @@ cell_equal :: proc(
         return false
     }
     for index: usize = 0; index < left.byte_length; index += 1 {
-        if left_surface^.grapheme_bytes.data[left.byte_start + index] !=
-            right_surface^.grapheme_bytes.data[right.byte_start + index] {
+        if left_surface.grapheme_bytes.data[left.byte_start + index] !=
+            right_surface.grapheme_bytes.data[right.byte_start + index] {
             return false
         }
     }
@@ -232,10 +232,10 @@ append_cell_text :: proc(
         return
     }
     end := cell.byte_start + cell.byte_length
-    assert(end <= surface^.grapheme_bytes.length,
+    assert(end <= surface.grapheme_bytes.length,
         "TUI stored grapheme exceeds its arena")
     for index := cell.byte_start; index < end; index += 1 {
-        append_byte(output, surface^.grapheme_bytes.data[index])
+        append_byte(output, surface.grapheme_bytes.data[index])
     }
 }
 
@@ -274,32 +274,32 @@ append_style :: proc(output: ^Byte_Array, style: Style) {
 // the same changed-run loop with every cell considered changed. A normal diff
 // starts from default style because every successful update ends with reset.
 build_render_bytes :: proc(renderer: ^Renderer) -> []u8 {
-    array.clear(&renderer^.output)
+    array.clear(&renderer.output)
     // Start optimistically, then erase the marker again for an empty diff.
     // This keeps the changed-cell scan single-pass and guarantees that every
     // actual cursor/style run lives inside one balanced synchronized update.
-    append_text(&renderer^.output, terminal.synchronized_update_begin)
-    full := !renderer^.previous_valid
+    append_text(&renderer.output, terminal.synchronized_update_begin)
+    full := !renderer.previous_valid
     if full {
-        append_text(&renderer^.output, terminal.reset_style)
-        append_text(&renderer^.output, terminal.cursor_home)
-        append_text(&renderer^.output, terminal.erase_screen_tail)
+        append_text(&renderer.output, terminal.reset_style)
+        append_text(&renderer.output, terminal.cursor_home)
+        append_text(&renderer.output, terminal.erase_screen_tail)
     }
 
     active_style: Style
     emitted_cells := false
-    desired := &renderer^.desired
-    previous := &renderer^.previous
+    desired := &renderer.desired
+    previous := &renderer.previous
 
-    for row: usize = 0; row < desired^.rows; row += 1 {
+    for row: usize = 0; row < desired.rows; row += 1 {
         column: usize
-        for column < desired^.columns {
+        for column < desired.columns {
             index := cell_index(desired, column, row)
             changed := full || !cell_equal(
                 desired,
-                desired^.cells.data[index],
+                desired.cells.data[index],
                 previous,
-                previous^.cells.data[index],
+                previous.cells.data[index],
             )
             if !changed {
                 column += 1
@@ -309,27 +309,27 @@ build_render_bytes :: proc(renderer: ^Renderer) -> []u8 {
             // One cursor movement begins one maximal contiguous changed run.
             // Unchanged cells terminate the run because rewriting them would no
             // longer be a cell diff and could produce needless terminal bytes.
-            append_cursor(&renderer^.output, column, row)
-            for column < desired^.columns {
+            append_cursor(&renderer.output, column, row)
+            for column < desired.columns {
                 index = cell_index(desired, column, row)
                 if !full && cell_equal(
                     desired,
-                    desired^.cells.data[index],
+                    desired.cells.data[index],
                     previous,
-                    previous^.cells.data[index],
+                    previous.cells.data[index],
                 ) {
                     break
                 }
-                cell := desired^.cells.data[index]
+                cell := desired.cells.data[index]
                 assert(valid_stored_cell(cell),
                     "TUI renderer encountered an invalid stored cell")
                 assert(cell.kind != .continuation,
                     "TUI renderer began a changed run at a continuation")
                 if !style_equal(active_style, cell.style) {
-                    append_style(&renderer^.output, cell.style)
+                    append_style(&renderer.output, cell.style)
                     active_style = cell.style
                 }
-                append_cell_text(&renderer^.output, desired, cell)
+                append_cell_text(&renderer.output, desired, cell)
                 emitted_cells = true
                 column += cast[usize](cell.columns)
             }
@@ -340,41 +340,41 @@ build_render_bytes :: proc(renderer: ^Renderer) -> []u8 {
     // The full empty-surface path already emitted a leading reset and needs no
     // additional bytes.
     if emitted_cells {
-        append_text(&renderer^.output, terminal.reset_style)
+        append_text(&renderer.output, terminal.reset_style)
     }
     if full || emitted_cells {
-        append_text(&renderer^.output, terminal.synchronized_update_end)
+        append_text(&renderer.output, terminal.synchronized_update_end)
     } else {
-        array.clear(&renderer^.output)
+        array.clear(&renderer.output)
     }
-    return array.view(&renderer^.output)
+    return array.view(&renderer.output)
 }
 
 // commit_desired records the exact frame only after terminal.write_screen has
 // completed. It is separate so same-package deterministic tests can model a
 // successful publication without writing ANSI bytes to the test runner.
 commit_desired :: proc(renderer: ^Renderer) {
-    assert(renderer^.desired.cells.length == renderer^.previous.cells.length,
+    assert(renderer.desired.cells.length == renderer.previous.cells.length,
         "TUI renderer surfaces have different cell counts")
-    array.clear(&renderer^.previous.grapheme_bytes)
+    array.clear(&renderer.previous.grapheme_bytes)
     array.reserve(
-        &renderer^.previous.grapheme_bytes,
-        renderer^.desired.grapheme_bytes.length,
+        &renderer.previous.grapheme_bytes,
+        renderer.desired.grapheme_bytes.length,
     )
     for byte_index: usize = 0;
-        byte_index < renderer^.desired.grapheme_bytes.length;
+        byte_index < renderer.desired.grapheme_bytes.length;
         byte_index += 1 {
         array.append(
-            &renderer^.previous.grapheme_bytes,
-            renderer^.desired.grapheme_bytes.data[byte_index],
+            &renderer.previous.grapheme_bytes,
+            renderer.desired.grapheme_bytes.data[byte_index],
         )
     }
-    renderer^.previous.live_grapheme_bytes =
-        renderer^.desired.live_grapheme_bytes
-    for index: usize = 0; index < renderer^.desired.cells.length; index += 1 {
-        renderer^.previous.cells.data[index] = renderer^.desired.cells.data[index]
+    renderer.previous.live_grapheme_bytes =
+        renderer.desired.live_grapheme_bytes
+    for index: usize = 0; index < renderer.desired.cells.length; index += 1 {
+        renderer.previous.cells.data[index] = renderer.desired.cells.data[index]
     }
-    renderer^.previous_valid = true
+    renderer.previous_valid = true
 }
 
 // present publishes one full or differential frame through an active borrowed
@@ -388,8 +388,8 @@ pub present :: proc(
     renderer: ^Renderer,
     screen: ^terminal.Screen,
 ) -> io.Error {
-    if screen^.state != .active {
-        renderer^.previous_valid = false
+    if screen.state != .active {
+        renderer.previous_valid = false
         return .invalid
     }
     bytes := build_render_bytes(renderer)
@@ -398,7 +398,7 @@ pub present :: proc(
     }
     error := terminal.write_screen(screen, bytes)
     if error != .none {
-        renderer^.previous_valid = false
+        renderer.previous_valid = false
         return error
     }
     commit_desired(renderer)

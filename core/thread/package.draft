@@ -14,7 +14,7 @@ Start_State :: struct {
 }
 
 release_start_state :: proc(state: ^Start_State) {
-    memory.free_with_allocator(state, state^.thread_context.allocator)
+    memory.free_with_allocator(state, state.thread_context.allocator)
 }
 
 // An OS thread begins with the target's C callback convention and no hidden
@@ -25,15 +25,15 @@ release_start_state :: proc(state: ^Start_State) {
 // from a start callback while Windows returns a 32-bit status.
 thread_trampoline :: c proc(user: rawptr) -> Native_Thread_Result {
     state := cast[^Start_State](user)
-    runtime.install_thread_context(&state^.thread_context)
+    runtime.install_thread_context(&state.thread_context)
     // Installation replaces the copied temp_allocator with the hosted
     // thread-owned provider. Use the installed snapshot for every ordinary
     // child call rather than the pre-install spawn record.
     thread_context := runtime.default_context()
     runtime.call_with_context(
         &thread_context,
-        state^.entry,
-        state^.user,
+        state.entry,
+        state.user,
     )
     runtime.call_with_context(
         &thread_context,
@@ -50,9 +50,9 @@ thread_trampoline :: c proc(user: rawptr) -> Native_Thread_Result {
 pub spawn :: proc(entry: Entry_Proc, user: rawptr) -> (Thread, bool) {
     assert(entry != nil, "thread entry procedure is nil")
     state := memory.new_with_allocator[Start_State](context.allocator)
-    state^.thread_context = context
-    state^.entry = entry
-    state^.user = user
+    state.thread_context = context
+    state.entry = entry
+    state.user = user
 
     result: Thread
     status := native_thread_create(

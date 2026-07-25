@@ -262,29 +262,29 @@ prepare_environment :: proc(
             cast[[^]u8](overrides[index])[:length],
         )
     }
-    if owners^.length > ~cast[usize](0) / size_of(cstring) {
+    if owners.length > ~cast[usize](0) / size_of(cstring) {
         return .unavailable
     }
-    array.reserve(pointers, owners^.length)
-    for index: usize = 0; index < owners^.length; index += 1 {
+    array.reserve(pointers, owners.length)
+    for index: usize = 0; index < owners.length; index += 1 {
         array.append(
             pointers,
-            memory.owned_string_cstring(&owners^.data[index]),
+            memory.owned_string_cstring(&owners.data[index]),
         )
     }
     when target.os == .windows {
         // CreateProcess requires a case-insensitively sorted Unicode
         // environment block. Pointer sorting changes no owner addresses and
         // leaves the POSIX inherited-order contract untouched.
-        for index: usize = 1; index < pointers^.length; index += 1 {
-            row := pointers^.data[index]
+        for index: usize = 1; index < pointers.length; index += 1 {
+            row := pointers.data[index]
             cursor := index
             for cursor != 0 &&
-                environment_row_less(row, pointers^.data[cursor - 1]) {
-                pointers^.data[cursor] = pointers^.data[cursor - 1]
+                environment_row_less(row, pointers.data[cursor - 1]) {
+                pointers.data[cursor] = pointers.data[cursor - 1]
                 cursor -= 1
             }
-            pointers^.data[cursor] = row
+            pointers.data[cursor] = row
         }
     }
     return .success
@@ -298,8 +298,8 @@ destroy_environment :: proc(
     pointers: ^array.Dynamic[cstring],
 ) {
     array.destroy(pointers)
-    for index: usize = 0; index < owners^.length; index += 1 {
-        memory.owned_string_destroy(&owners^.data[index])
+    for index: usize = 0; index < owners.length; index += 1 {
+        memory.owned_string_destroy(&owners.data[index])
     }
     array.destroy(owners)
 }

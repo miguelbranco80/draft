@@ -637,7 +637,7 @@ add :: proc(a, b: i64) -> i64 {
 }
 
 read_left :: proc(pair: ^Pair) -> u64 {
-    return pair^.left
+    return pair.left
 }
 
 loop_sum :: proc(values: []i64) -> i64 {
@@ -852,7 +852,7 @@ Box[T: type] :: struct {
 }
 
 store[T: type] :: proc(box: ^Box[T], value: T) {
-    box^.value = value
+    box.value = value
 }
 
 last[N: usize] :: proc(values: [N]i64) -> i64 {
@@ -1248,11 +1248,11 @@ Envelope[N: usize] :: struct {
 }
 
 last[N: usize] :: proc(value: ^Buffer[N]) -> i64 {
-    return value^.values[N]
+    return value.values[N]
 }
 
 last_enveloped[N: usize] :: proc(value: ^Envelope[N]) -> i64 {
-    return last[N + 1](&value^.buffer)
+    return last[N + 1](&value.buffer)
 }
 
 last_byte[N: u8] :: proc(value: ^Buffer[cast[usize](N)]) -> i64 {
@@ -1906,10 +1906,10 @@ local_types[T: type, N: usize] :: proc(value: T, values: [N]T) -> T {
     Tuple_Alias :: (Alias, u32)
     Box_Alias :: Local_Box[u32]
     read :: proc(pair: ^Pair, box: ^Local_Box[u32]) -> Alias {
-        if box^.inner > 0 {
-            return pair^.head
+        if box.inner > 0 {
+            return pair.head
         }
-        return box^.outer
+        return box.outer
     }
 
     pair := Pair{head = value, tail = values}
@@ -1990,6 +1990,86 @@ main :: proc() {
                     std::string::npos);
 }
 
+// A pointer to one aggregate participates in member selection as though the
+// pointer had been explicitly dereferenced. The checked HIR must still retain
+// Dereference nodes so effect discovery and MIR observe the real storage path;
+// this is surface compression, not a different pointer or ownership model.
+// Chained pointer fields apply the rule independently at each dot, and distinct
+// pointer types inherit it from their underlying ^T operator vocabulary.
+void test_automatic_pointer_member_dereference(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+Inner :: struct {
+    value: u32,
+}
+
+Outer :: struct {
+    inner: ^Inner,
+    pair: (u32, u32),
+}
+
+Outer_Pointer :: distinct ^Outer
+
+update :: proc(outer: ^Outer, wrapped: Outer_Pointer) -> u32 {
+    outer.inner.value += 1
+    outer.pair.0 += 2
+    wrapped.pair.1 += 3
+    selected := &outer.inner.value
+    return selected^ + outer^.pair.0 + wrapped^.pair.1
+}
+
+read_tuple :: proc(pair: ^(u32, u32)) -> u32 {
+    return pair.0
+}
+)draft");
+
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.semantics.ok);
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  std::size_t dereferences = 0;
+  for (const draft::ProcedureBodyHirResult &product :
+       valid.bodies.procedures) {
+    for (std::size_t index = 0;
+         index < product.program.expression_count(); ++index) {
+      const draft::HirExpression &expression = product.program.expression(
+          draft::HirExpressionId{static_cast<std::uint32_t>(index)});
+      if (expression.kind == draft::HirExpressionKind::Dereference) {
+        ++dereferences;
+        EXPECT(state, expression.addressable);
+      }
+    }
+  }
+  // Seven concise pointer selectors plus the three authored postfix
+  // dereferences above must all retain the same explicit semantic operation in
+  // HIR. This exact count also proves numeric tuple selection takes the same
+  // path as a named field.
+  EXPECT(state, dereferences == 10);
+
+  CheckedSource multi_pointer(R"draft(
+package bodies
+
+Record :: struct {
+    value: u32,
+}
+
+invalid :: proc(records: [^]Record) -> u32 {
+    return records.value
+}
+)draft");
+  EXPECT(state, !multi_pointer.bodies.ok);
+  EXPECT(state, multi_pointer.diagnostics.error_count() == 1);
+  const std::string rendered = draft::render_diagnostics(
+      multi_pointer.sources, multi_pointer.diagnostics);
+  EXPECT(state, rendered.find("package.draft:9:20") != std::string::npos);
+  EXPECT(state, rendered.find("type has no member named 'value'") !=
+                    std::string::npos);
+}
+
 // Packed fields remain ordinary assignable values, but an under-aligned
 // occurrence cannot escape behind ^T because that pointer type promises T's
 // natural alignment to every later dereference and foreign call.
@@ -2003,12 +2083,12 @@ Record :: struct {
 }
 
 read_and_write :: proc(record: ^Record) -> u32 {
-    record^.value += 1
-    return record^.value
+    record.value += 1
+    return record.value
 }
 
 invalid_address :: proc(record: ^Record) -> ^u32 {
-    return &record^.value
+    return &record.value
 }
 )draft");
 
@@ -2034,14 +2114,14 @@ Record :: struct {
 }
 
 read_and_write :: proc(record: ^Record) -> i16 {
-    record^.small += 1
-    record^.signed_value = -3
-    record^.flag = !record^.flag
-    return cast[i16](record^.small) + record^.signed_value
+    record.small += 1
+    record.signed_value = -3
+    record.flag = !record.flag
+    return cast[i16](record.small) + record.signed_value
 }
 
 invalid_address :: proc(record: ^Record) -> ^u8 {
-    return &record^.small
+    return &record.small
 }
 )draft");
 
@@ -3949,6 +4029,7 @@ int main() {
   test_switch_case_semantics(state);
   test_local_type_declarations(state);
   test_string_index_is_immutable(state);
+  test_automatic_pointer_member_dereference(state);
   test_packed_field_address_diagnostic(state);
   test_bit_field_address_diagnostic(state);
   test_parameter_immutability(state);

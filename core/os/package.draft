@@ -185,12 +185,12 @@ pub write_text_all :: proc(handle: File, source: string) -> io.Error {
 }
 
 pub close :: proc(handle: ^File) -> bool {
-    if handle^.descriptor < 0 {
+    if handle.descriptor < 0 {
         return true
     }
-    result := native_close(handle^.descriptor)
+    result := native_close(handle.descriptor)
     if result == 0 {
-        handle^.descriptor = -1
+        handle.descriptor = -1
         return true
     }
     return false

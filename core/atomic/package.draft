@@ -23,7 +23,7 @@ pub Value[T: type] :: struct {
 // init is an ordinary, non-atomic initialization step. It is valid only while
 // the caller has exclusive ownership, before publishing value to other threads.
 pub init[T: type] :: proc(value: ^Value[T], initial: T) {
-    value^.storage = initial
+    value.storage = initial
 }
 
 // The operations below are compiler intrinsics when called directly through
