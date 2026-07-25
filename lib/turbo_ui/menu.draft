@@ -8,8 +8,9 @@ package turbo_ui
 import core/tui
 
 // Menu_State belongs to the application. The first four fields persist between
-// frames. has_highlight distinguishes a real selected row from a pointer which
-// has left every menu item; row zero is therefore not overloaded as a sentinel.
+// frames. has_highlight distinguishes a real selected row from a newly opened
+// click-drag menu which has not reached any enabled command; once a row is
+// selected, leaving the menu or crossing inert space preserves that row.
 // mouse_tracking spans press-title/drag/release and press-item/drag/release
 // gestures, allowing a release over a different enabled row to choose that row
 // exactly like a classic desktop menu. The remaining fields describe only the
@@ -626,15 +627,12 @@ pub end_menu :: proc(
             menu^.has_highlight = true
         }
     }
-    // Pointer movement outside every enabled row deliberately removes the
-    // highlight. A separator is the one inert exception: crossing it preserves
-    // the previous row rather than manufacturing a new selection. A tracked
-    // release without an enabled activation still cancels the complete gesture;
-    // release on the title was consumed in menu_title and never reaches here.
-    if menu_context.pointer_event && !menu_context.hovered_enabled &&
-        !menu_context.hovered_separator && !state^.event_handled {
-        menu^.has_highlight = false
-    }
+    // Pointer movement over blank space, outside the popup, or across a
+    // separator never invents a new row and never discards the last explicit
+    // selection. This matches classic desktop menus: the highlight is stable
+    // until another enabled item is reached. A tracked release without an
+    // enabled activation still cancels the complete gesture; release on the
+    // title was consumed in menu_title and never reaches here.
     if menu_context.tracking_release && !menu_context.mouse_activated &&
         !state^.event_handled {
         menu^.mouse_tracking = false

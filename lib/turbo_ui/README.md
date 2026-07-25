@@ -98,8 +98,14 @@ Controls are ordinary procedure calls over caller-owned values:
 - `dialog_begin`, which applies dialog content styling to a normal window
   transaction.
 
-Buttons may be `.default_action` or `.cancel_action`; an otherwise-unhandled
-Enter or Escape activates that role in the current scope. Text boxes preserve
+Button bounds describe their complete caller-reserved footprint. A footprint
+at least two rows high uses its final row and column for a real shade-glyph
+shadow; only the face is hit-tested, and a held face moves down/right over the
+shadow. `.default_action` and `.cancel_action` roles accept an otherwise-
+unhandled Enter or Escape in the current scope. An optional printable ASCII
+access key underlines the same label character and activates it with Alt. The
+default action has distinct angle-bracket chrome, keyboard focus is visibly
+selected, and labels are centered by terminal columns. Text boxes preserve
 valid UTF-8 while accepting byte-stream terminal input, move/delete by
 grapheme, scroll horizontally, and report `changed`, `submitted`, and `full`.
 Combo boxes keep their item slice borrowed and separate the owner-window field
@@ -179,11 +185,11 @@ by the immediate-mode menu: the application handles that key at global scope
 and invokes the same direct operation as the menu branch. With a mouse, either
 click a title and then click one item, or hold on the title, drag through the
 drop-down, and release on the intended item. Leaving the actionable rows and
-menu content clears the transient highlight; re-entering selects only the row
-actually under the pointer. Moving over an inert separator preserves the
-previous actionable row rather than selecting a different command. Menus and
-combo lists share the single explicit popup layer, so transient input capture
-has one inspectable rule.
+menu content preserves the last explicit highlight; re-entering changes it
+only when the pointer reaches another enabled row. Inert separators likewise
+preserve the previous actionable row rather than selecting a different
+command. Menus and combo lists share the single explicit popup layer, so
+transient input capture has one inspectable rule.
 
 Some immediate-mode decisions, such as keyboard focus traversal and a menu
 highlight that skips a separator, become known only after the affected row was

@@ -111,6 +111,74 @@ test_button_and_focus :: proc(test: ^testing.Test) {
     tui.surface_destroy(&surface)
 }
 
+// test_button_chrome_and_access fixes the visible Turbo button contract rather
+// than testing activation alone. The caller reserves a two-row footprint; the
+// face is centered, the access key is underlined, the default role has distinct
+// brackets, focus is visible, and the shadow is real noninteractive content.
+test_button_chrome_and_access :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 32, 10)
+    defer tui.surface_destroy(&surface)
+    state: State
+    theme := turbo_theme()
+    bounds := Rect{column = 2, row = 2, width = 12, height = 2}
+
+    state.focused_id = 90
+    begin_frame(&state, &surface, no_event(), theme)
+    button(
+        &state,
+        90,
+        bounds,
+        "Open",
+        true,
+        .default_action,
+        cast[u8]('o'),
+    )
+    end_frame(&state)
+    (left, left_valid) := tui.cell_at(&surface, 2, 2)
+    (access, access_valid) := tui.cell_at(&surface, 5, 2)
+    (right, right_valid) := tui.cell_at(&surface, 12, 2)
+    (shadow, shadow_valid) := tui.cell_at(&surface, 3, 3)
+    testing.expect(test, left_valid && left.value == '<')
+    testing.expect(test, right_valid && right.value == '>')
+    testing.expect(
+        test,
+        access_valid && access.value == 'O' && access.style.underline &&
+            access.style.background.index == theme.selected.background.index,
+    )
+    testing.expect(test, shadow_valid && shadow.value == Shadow_Glyph)
+
+    // The mnemonic is scoped like the button's default/cancel policy and does
+    // not require the button to be the currently focused control.
+    state.focused_id = 91
+    begin_frame(&state, &surface, key_event(Key_Event{
+        code = .character,
+        byte_value = cast[u8]('o'),
+        alt = true,
+    }), theme)
+    testing.expect(test, button(
+        &state,
+        90,
+        bounds,
+        "Open",
+        true,
+        .default_action,
+        cast[u8]('o'),
+    ))
+    end_frame(&state)
+
+    // A shadow cell is decoration, never part of the press target.
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 3, row = 3},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    testing.expect(test, !button(&state, 90, bounds, "Open"))
+    end_frame(&state)
+    testing.expect(test, state.active_id == No_Widget)
+}
+
 // test_value_widgets proves explicit caller ownership for checkbox state, list
 // selection/scrolling, scrollbar offset, and splitter geometry.
 test_value_widgets :: proc(test: ^testing.Test) {
@@ -716,8 +784,8 @@ submit_test_menu :: proc(
 // test_menu_popup_navigation proves title access, separator/disabled skipping,
 // checked actions, popup dismissal, and both classic mouse gestures: click a
 // title then click an item, or press the title and drag directly to an item.
-// Leaving and re-entering the popup must follow the pointer rather than revive
-// an unrelated retained row.
+// Leaving and re-entering the popup preserves the last explicit row until the
+// pointer reaches another enabled command.
 test_menu_popup_navigation :: proc(test: ^testing.Test) {
     surface: tui.Surface
     tui.surface_init(&surface, 40, 14)
@@ -791,8 +859,8 @@ test_menu_popup_navigation :: proc(test: ^testing.Test) {
     testing.expect(test, state.popup_id == No_Widget)
 
     // A normal click releases on the title and leaves the menu open. Moving
-    // outside removes its row highlight; moving back selects the exact row
-    // under the pointer rather than row zero or the previous keyboard row.
+    // outside preserves its last row highlight; moving back selects the exact
+    // row under the pointer rather than jumping to row zero.
     begin_frame(&state, &surface, mouse_event(Mouse_Event{
         position = Point{column = 2, row = 0},
         action = .press,
@@ -818,7 +886,7 @@ test_menu_popup_navigation :: proc(test: ^testing.Test) {
     }), theme)
     submit_test_menu(&state, &menu, &checked)
     end_frame(&state)
-    testing.expect(test, !menu.has_highlight)
+    testing.expect(test, menu.has_highlight && menu.highlighted == 0)
     begin_frame(&state, &surface, mouse_event(Mouse_Event{
         position = Point{column = 3, row = 5},
         action = .move,

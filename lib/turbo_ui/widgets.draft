@@ -3,13 +3,22 @@
 // They allocate nothing, retain no label/item storage, and invoke no callback.
 // A true result always means the user changed or activated that control in the
 // current frame, never merely that it was redrawn.
+//
+// Buttons use an explicit caller-supplied footprint. A footprint at least two
+// rows high reserves its final row and column for a classic one-cell shadow;
+// the face remains the only hit target. This makes dialog geometry, overlap,
+// and stale-cell erasure ordinary immediate-mode layout facts rather than
+// invisible drawing outside the bounds the application provided.
 package turbo_ui
 
 import core/tui
+import core/unicode
 
 // Button_Role adds dialog keyboard policy without changing ownership or
 // requiring callbacks. A default button accepts an otherwise-unhandled Enter
 // anywhere in its active scope; a cancel button similarly accepts Escape.
+// Every role may also expose one underlined Alt mnemonic through button's
+// access_key argument.
 pub Button_Role :: enum u8 {
     normal,
     default_action,
@@ -17,8 +26,12 @@ pub Button_Role :: enum u8 {
 }
 
 // control_style selects the visual state shared by button-like widgets.
+// Keyboard focus is visible even when the mouse is elsewhere. held wins over
+// focus because the pressed offset is the immediate state the user is acting
+// on; hover wins over focus for the same reason.
 control_style :: proc(
     state: ^State,
+    id: Widget_Id,
     interaction: Interaction,
     enabled: bool,
 ) -> tui.Style {
@@ -31,7 +44,138 @@ control_style :: proc(
     if interaction.hot {
         return state^.theme.hot
     }
+    if scope_accepts_keyboard(state) && state^.focused_id == id {
+        return state^.theme.selected
+    }
     return state^.theme.button
+}
+
+// text_columns measures one trusted widget label using the same pinned
+// grapheme policy as clipped painting. A malformed/nonprinting label is an
+// application bug; returning false lets button retain a valid frame while the
+// debug assertion identifies the authored control.
+text_columns :: proc(text: string) -> (usize, bool) {
+    columns: usize
+    offset: usize
+    for offset < len(text) {
+        (end, width, error) := unicode.next_grapheme(text, offset)
+        if error != .none || end <= offset {
+            return (0, false)
+        }
+        columns = saturated_add(columns, width)
+        offset = end
+    }
+    return (columns, true)
+}
+
+// button_face returns the painted and interactive face inside one explicit
+// footprint. The ordinary resting face is followed by a bottom/right shadow.
+// A held face moves one cell down/right and covers that shadow, which gives the
+// classic pressed feedback without changing the widget's caller-owned bounds.
+button_face :: proc(bounds: Rect, held: bool) -> (Rect, bool) {
+    shadowed := bounds.width >= 4 && bounds.height >= 2
+    face := bounds
+    face.height = 1 if bounds.height != 0 else 0
+    if shadowed {
+        face.width -= 1
+        if held {
+            face.column += 1
+            face.row += 1
+        }
+    }
+    return (face, shadowed)
+}
+
+// paint_button draws one complete button footprint. Brackets distinguish an
+// ordinary/cancel action from the angle-bracketed default action; the same
+// access_key value both underlines its label character and drives button's
+// Alt-key transition. Labels are centered by terminal columns,
+// not UTF-8 bytes. The shadow is real glyph content so moving or hiding a
+// dialog changes the differential renderer's cell value as well as its style.
+paint_button :: proc(
+    state: ^State,
+    id: Widget_Id,
+    bounds: Rect,
+    label_text: string,
+    access_key: u8,
+    role: Button_Role,
+    interaction: Interaction,
+    enabled: bool,
+) -> bool {
+    (face, shadowed) := button_face(bounds, interaction.held)
+    style_value := control_style(state, id, interaction, enabled)
+    if !fill_rect(state^.surface, state^.clip, face, ' ', style_value) {
+        return false
+    }
+    if shadowed && !interaction.held {
+        shadow := Rect{
+            column = bounds.column + 1,
+            row = bounds.row + 1,
+            width = bounds.width - 1,
+            height = 1,
+        }
+        if !fill_rect(
+            state^.surface,
+            state^.clip,
+            shadow,
+            Shadow_Glyph,
+            state^.theme.shadow,
+        ) {
+            return false
+        }
+    }
+    if face.width == 0 || face.height == 0 {
+        return true
+    }
+
+    left := '['
+    right := ']'
+    if role == .default_action {
+        left = '<'
+        right = '>'
+    }
+    painted := put_clipped(
+        state^.surface,
+        state^.clip,
+        Point{column = face.column, row = face.row},
+        left,
+        style_value,
+    )
+    if face.width > 1 {
+        painted = painted && put_clipped(
+            state^.surface,
+            state^.clip,
+            Point{column = rect_right(face) - 1, row = face.row},
+            right,
+            style_value,
+        )
+    }
+    if !painted {
+        return false
+    }
+    if face.width <= 2 {
+        return true
+    }
+    interior := Rect{
+        column = face.column + 1,
+        row = face.row,
+        width = face.width - 2,
+        height = 1,
+    }
+    (label_columns, valid_label) := text_columns(label_text)
+    assert(valid_label, "turbo_ui button label must be printable UTF-8")
+    origin := Point{column = interior.column, row = interior.row}
+    if valid_label && label_columns < interior.width {
+        origin.column += (interior.width - label_columns) / 2
+    }
+    return write_access_text(
+        state^.surface,
+        intersect(state^.clip, interior),
+        origin,
+        label_text,
+        access_key,
+        style_value,
+    )
 }
 
 // paint_label paints one clipped label with one leading cell of breathing room.
@@ -80,7 +224,8 @@ pub label :: proc(
 }
 
 // button is a focusable press/release or Enter/Space control. disabled buttons
-// still paint but do not register focus or consume the event.
+// still paint but do not register focus or consume the event. bounds is the
+// complete face-plus-shadow footprint; access_key zero omits a mnemonic.
 pub button :: proc(
     state: ^State,
     id: Widget_Id,
@@ -88,22 +233,36 @@ pub button :: proc(
     label: string,
     enabled: bool = true,
     role: Button_Role = .normal,
+    access_key: u8 = 0,
 ) -> bool {
     interaction: Interaction
     if enabled {
-        interaction = interact(state, id, bounds)
+        (face, _) := button_face(bounds, false)
+        interaction = interact(state, id, face)
     }
     activated := enabled && interaction.activated
     if enabled && !activated && scope_accepts_keyboard(state) &&
         !state^.event_handled && state^.event.kind == .key {
         key := state^.event.key
-        if (role == .default_action && key.code == .enter) ||
+        access := access_key != 0 && key.code == .character && key.alt &&
+            !key.control &&
+            ascii_lower(key.byte_value) == ascii_lower(access_key)
+        if access || (role == .default_action && key.code == .enter) ||
             (role == .cancel_action && key.code == .escape) {
             activated = true
             state^.event_handled = true
         }
     }
-    paint_label(state, bounds, label, control_style(state, interaction, enabled))
+    paint_button(
+        state,
+        id,
+        bounds,
+        label,
+        access_key,
+        role,
+        interaction,
+        enabled,
+    )
     return activated
 }
 
@@ -122,7 +281,7 @@ pub checkbox :: proc(
     if enabled {
         interaction = interact(state, id, bounds)
     }
-    style_value := control_style(state, interaction, enabled)
+    style_value := control_style(state, id, interaction, enabled)
     fill_rect(state^.surface, state^.clip, bounds, ' ', style_value)
     marker := "[ ]"
     if value^ {
@@ -173,7 +332,7 @@ pub radio_button :: proc(
     if enabled {
         interaction = interact(state, id, bounds)
     }
-    style_value := control_style(state, interaction, enabled)
+    style_value := control_style(state, id, interaction, enabled)
     fill_rect(state^.surface, state^.clip, bounds, ' ', style_value)
     marker := "( )"
     if value^ == choice {
