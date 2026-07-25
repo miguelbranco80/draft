@@ -25,7 +25,7 @@ execute_process(
   ERROR_VARIABLE ui_error
 )
 if(NOT ui_status EQUAL 0 OR
-   NOT ui_output MATCHES "test passed: 23 selected procedures")
+   NOT ui_output MATCHES "test passed: 24 selected procedures")
   message(FATAL_ERROR
     "Turbo UI tests failed (${ui_status})\n"
     "stdout:\n${ui_output}\nstderr:\n${ui_error}")
@@ -39,7 +39,7 @@ execute_process(
   ERROR_VARIABLE editor_error
 )
 if(NOT editor_status EQUAL 0 OR
-   NOT editor_output MATCHES "test passed: 35 selected procedures")
+   NOT editor_output MATCHES "test passed: 43 selected procedures")
   message(FATAL_ERROR
     "Turbo IDE library tests failed (${editor_status})\n"
     "stdout:\n${editor_output}\nstderr:\n${editor_error}")

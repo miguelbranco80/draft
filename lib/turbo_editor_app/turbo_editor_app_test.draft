@@ -2,6 +2,7 @@ package turbo_editor_app
 
 import core/memory
 import core/testing
+import core/tui
 import lib/draft_compiler_api
 import lib/turbo_editor
 import lib/turbo_ui
@@ -9,6 +10,13 @@ import lib/turbo_ui
 Fake_Root_State :: c struct {
     selected: usize,
     fail_selection: u8,
+}
+
+Fake_Navigation_State :: c struct {
+    first_path: rawptr,
+    first_length: usize,
+    second_path: rawptr,
+    second_length: usize,
 }
 
 fake_selected_root :: c proc(user: rawptr) -> usize {
@@ -22,6 +30,92 @@ fake_select_root :: c proc(user: rawptr, index: usize) -> u8 {
         return 0
     }
     state^.selected = index
+    return 1
+}
+
+fake_prepare_navigation :: c proc(
+    user: rawptr,
+    path_data: rawptr,
+    path_length: usize,
+    byte_offset: usize,
+) -> u8 {
+    _ = user
+    _ = path_data
+    _ = path_length
+    _ = byte_offset
+    return 5
+}
+
+fake_navigation_definition :: c proc(
+    user: rawptr,
+    result: ^draft_compiler_api.Navigation_Location,
+) {
+    _ = user
+    result^ = draft_compiler_api.Navigation_Location{
+        source = 1,
+        start = 4,
+        end = 10,
+        line = 1,
+        column = 5,
+    }
+}
+
+fake_navigation_usage_count :: c proc(user: rawptr) -> usize {
+    _ = user
+    return 2
+}
+
+fake_navigation_usage :: c proc(
+    user: rawptr,
+    index: usize,
+    result: ^draft_compiler_api.Navigation_Location,
+) {
+    _ = user
+    if index == 0 {
+        result^ = draft_compiler_api.Navigation_Location{
+            source = 0,
+            start = 0,
+            end = 3,
+            line = 1,
+            column = 1,
+        }
+    } else {
+        result^ = draft_compiler_api.Navigation_Location{
+            source = 1,
+            start = 4,
+            end = 10,
+            line = 1,
+            column = 5,
+        }
+    }
+}
+
+fake_navigation_path :: c proc(
+    user: rawptr,
+    index: usize,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    state := cast[^Fake_Navigation_State](user)
+    if index == 0 {
+        return fake_copy_bytes(
+            state^.first_path,
+            state^.first_length,
+            destination,
+            capacity,
+        )
+    }
+    return fake_copy_bytes(
+        state^.second_path,
+        state^.second_length,
+        destination,
+        capacity,
+    )
+}
+
+fake_navigation_editable :: c proc(user: rawptr, index: usize) -> u8 {
+    _ = user
+    _ = index
     return 1
 }
 
@@ -260,10 +354,10 @@ test_buffer_activation_restores_compiler_root :: proc(test: ^testing.Test) {
     testing.expect(test, roots.selected == 1)
 }
 
-// Check and Build must see every open project buffer in one call, while syntax
+// Check and Build must see every open workspace buffer in one call, while syntax
 // spans still belong to the active row. This test fixes the Draft-owned pointer
 // table and compact active index independently of the native service test.
-test_collects_all_open_project_overlays :: proc(test: ^testing.Test) {
+test_collects_all_open_workspace_overlays :: proc(test: ^testing.Test) {
     app: App
     init_windows(&app)
     testing.expect(test, init_one_buffer(&app, "turbo-overlay-first.draft"))
@@ -271,17 +365,17 @@ test_collects_all_open_project_overlays :: proc(test: ^testing.Test) {
     defer destroy_app(&app)
 
     app.host.source_count = fake_source_count
-    app.project_source_count = 2
+    app.workspace_source_count = 2
     memory.owned_string_copy_bytes(
-        &app.project_source_paths[0],
+        &app.workspace_source_paths[0],
         turbo_editor.path_bytes(&app.buffers[0]),
     )
     memory.owned_string_copy_bytes(
-        &app.project_source_paths[1],
+        &app.workspace_source_paths[1],
         turbo_editor.path_bytes(&app.buffers[1]),
     )
-    memory.owned_string_copy(&app.project_source_names[0], "first.draft")
-    memory.owned_string_copy(&app.project_source_names[1], "second.draft")
+    memory.owned_string_copy(&app.workspace_source_names[0], "first.draft")
+    memory.owned_string_copy(&app.workspace_source_names[1], "second.draft")
     app.buffers[0].dirty = true
     app.buffers[1].dirty = true
     app.active = 1
@@ -301,7 +395,7 @@ test_collects_all_open_project_overlays :: proc(test: ^testing.Test) {
     )
 }
 
-// Open Workspace never discards dirty document owners directly. Submission
+// Open Folder never discards dirty document owners directly. Submission
 // first enters the explicit Save all / Discard / Cancel modal, preserving the
 // candidate pathname while the user decides.
 test_open_workspace_requires_dirty_buffer_choice :: proc(test: ^testing.Test) {
@@ -311,12 +405,12 @@ test_open_workspace_requires_dirty_buffer_choice :: proc(test: ^testing.Test) {
     defer destroy_app(&app)
     app.buffers[0].dirty = true
 
-    submit_open_workspace(&app)
-    testing.expect(test, app.windows[Window_Workspace_Confirm].visible)
-    testing.expect(test, !app.windows[Window_Open_Workspace].visible)
+    submit_open_folder(&app)
+    testing.expect(test, app.windows[Window_Folder_Confirm].visible)
+    testing.expect(test, !app.windows[Window_Open_Folder].visible)
     testing.expect(
         test,
-        app.ui.active_window == app.windows[Window_Workspace_Confirm].id,
+        app.ui.active_window == app.windows[Window_Folder_Confirm].id,
     )
 }
 
@@ -332,7 +426,7 @@ test_editor_is_a_normal_tileable_window :: proc(test: ^testing.Test) {
     defer destroy_app(&app)
 
     editor := &app.windows[Window_Editor]
-    files := &app.windows[Window_Files]
+    files := &app.windows[Window_Sources]
     files_bounds := files^.bounds
     testing.expect(test, editor^.flags.tileable)
     testing.expect(test, editor^.flags.zoomable)
@@ -355,8 +449,8 @@ test_editor_is_a_normal_tileable_window :: proc(test: ^testing.Test) {
 
 // Menu shortcut commands belong to the application rather than the currently
 // focused control. This regression starts outside the editor, proves that F2
-// opens instead of toggling Files closed, and proves Ctrl-F reaches the Find
-// modal even while the Files list owns keyboard focus.
+// opens instead of toggling Sources closed, and proves Ctrl-F reaches the Find
+// modal even while the Sources list owns keyboard focus.
 test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
     app: App
     init_windows(&app)
@@ -366,15 +460,27 @@ test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
     turbo_ui.hide_window(
         &app.ui,
         app.windows[:],
-        app.windows[Window_Files].id,
+        app.windows[Window_Sources].id,
     )
     (remaining, quit) := handle_global_key(&app, turbo_ui.key_event(
         turbo_ui.Key_Event{code = .f2},
     ))
     testing.expect(test, !quit && remaining.kind == .none)
-    testing.expect(test, app.windows[Window_Files].visible)
-    testing.expect(test, app.ui.active_window == app.windows[Window_Files].id)
+    testing.expect(test, app.windows[Window_Sources].visible)
+    testing.expect(test, app.ui.active_window == app.windows[Window_Sources].id)
     testing.expect(test, app.ui.focused_id == 530)
+
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{
+            code = .character,
+            byte_value = cast[u8]('0'),
+            alt = true,
+        },
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, app.windows[Window_Buffers].visible)
+    testing.expect(test, app.ui.active_window == app.windows[Window_Buffers].id)
+    testing.expect(test, app.ui.focused_id == 532)
 
     (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
         turbo_ui.Key_Event{
@@ -404,4 +510,239 @@ test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
         },
     ))
     testing.expect(test, quit && remaining.kind == .none)
+}
+
+// Editing accelerators are application commands even when a tool window owns
+// focus. This test proves the exact C0 spellings, persistent forward/reverse
+// search, atomic replace, and the Ctrl-H terminal distinction without relying
+// on a real terminal decoder or menu traversal.
+test_editing_shortcuts_apply_the_advertised_commands :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-edit-shortcuts.draft"))
+    defer destroy_app(&app)
+    buffer := active_buffer(&app)
+    turbo_editor.insert_text(buffer, "one two one\nlast")
+    testing.expect(test, buffer^.bytes.length == len("one two one\nlast"))
+
+    (remaining, quit) := handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{
+            code = .character,
+            byte_value = 26,
+            control = true,
+        },
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, buffer^.bytes.length == 0)
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{
+            code = .character,
+            byte_value = 25,
+            control = true,
+        },
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, buffer^.bytes.length == len("one two one\nlast"))
+
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.search_box,
+        app.search[:],
+        "one",
+    ))
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.replacement_box,
+        app.replacement[:],
+        "ONE",
+    ))
+    turbo_editor.move_file_start(buffer)
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{code = .f3},
+    ))
+    (first_start, first_end, first_selected) := turbo_editor.selection(buffer)
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, first_selected && first_start == 0 && first_end == 3)
+
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{code = .f3},
+    ))
+    (second_start, second_end, second_selected) := turbo_editor.selection(buffer)
+    testing.expect(test, second_selected && second_start == 8 && second_end == 11)
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{code = .f3, shift = true},
+    ))
+    (previous_start, previous_end, previous_selected) :=
+        turbo_editor.selection(buffer)
+    testing.expect(
+        test,
+        previous_selected && previous_start == 0 && previous_end == 3,
+    )
+
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{
+            code = .character,
+            byte_value = 18,
+            control = true,
+        },
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, buffer^.bytes.data[0] == cast[u8]('O'))
+    (second_start, second_end, second_selected) = turbo_editor.selection(buffer)
+    testing.expect(test, second_selected && second_start == 8 && second_end == 11)
+
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{
+            code = .backspace,
+            byte_value = 8,
+            control = true,
+        },
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, app.windows[Window_Replace].visible)
+    close_replace(&app)
+
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{
+            code = .character,
+            byte_value = 7,
+            control = true,
+        },
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, app.windows[Window_Go_To_Line].visible)
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.go_line_box,
+        app.go_line[:],
+        "2",
+    ))
+    submit_go_to_line(&app)
+    testing.expect(test, !app.windows[Window_Go_To_Line].visible)
+    testing.expect(test, buffer^.cursor == 12)
+}
+
+// Semantic shortcuts consume structured host locations, preserve exact byte
+// selections, populate the reusable Usages list, and follow browser-style
+// Back/Forward history. No formatted compiler dump participates in the test.
+test_semantic_navigation_shortcuts_and_history :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-nav-first.draft"))
+    testing.expect(test, init_one_buffer(&app, "turbo-nav-second.draft"))
+    defer destroy_app(&app)
+    turbo_editor.insert_text(&app.buffers[0], "use first")
+    turbo_editor.insert_text(&app.buffers[1], "pub answer")
+    app.active = 0
+    app.buffers_list.cursor = 0
+    app.buffers[0].cursor = 2
+
+    first := turbo_editor.path_bytes(&app.buffers[0])
+    second := turbo_editor.path_bytes(&app.buffers[1])
+    navigation := Fake_Navigation_State{
+        first_path = cast[rawptr](&first[0]),
+        first_length = len(first),
+        second_path = cast[rawptr](&second[0]),
+        second_length = len(second),
+    }
+    app.host.user = cast[rawptr](&navigation)
+    app.host.prepare_navigation = fake_prepare_navigation
+    app.host.navigation_definition = fake_navigation_definition
+    app.host.navigation_usage_count = fake_navigation_usage_count
+    app.host.navigation_usage = fake_navigation_usage
+    app.host.copy_navigation_source_path = fake_navigation_path
+    app.host.navigation_source_editable = fake_navigation_editable
+
+    (remaining, quit) := handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{code = .f12},
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, app.active == 1)
+    (start, end, selected) := turbo_editor.selection(active_buffer(&app))
+    testing.expect(test, selected && start == 4 && end == 10)
+    testing.expect(test, app.navigation_history_count == 2)
+    testing.expect(test, app.navigation_history_index == 1)
+
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{code = .left, alt = true},
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, app.active == 0 && app.buffers[0].cursor == 2)
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{code = .right, alt = true},
+    ))
+    testing.expect(test, app.active == 1)
+
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{code = .f12, shift = true},
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, app.semantic_usages_visible)
+    testing.expect(test, app.navigation_row_count == 2)
+    testing.expect(test, app.windows[Window_References].visible)
+    testing.expect(test, app.ui.focused_id == 820)
+}
+
+// Help is both a discoverable menu and the authoritative in-application
+// shortcut reference. This test walks every authored row, opens Help through
+// its underlined menu title, activates Keyboard Shortcuts with Enter, and then
+// proves Escape closes only that modal rather than quitting the application.
+test_help_menu_lists_and_closes_all_shortcuts :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-help-test.draft"))
+    defer destroy_app(&app)
+
+    for index: usize = 0; index < Shortcut_Row_Count; index += 1 {
+        (key, command) := shortcut_row(index)
+        testing.expect(test, len(key) != 0)
+        testing.expect(test, len(command) != 0)
+    }
+    (definition_key, definition_command) := shortcut_row(12)
+    testing.expect(test, text_equal(definition_key, "F12"))
+    testing.expect(test, text_equal(definition_command, "Go to definition"))
+    (cancel_key, cancel_command) := shortcut_row(40)
+    testing.expect(test, text_equal(cancel_key, "Esc"))
+    testing.expect(
+        test,
+        text_equal(
+            cancel_command,
+            "Cancel the current menu, dialog, or operation",
+        ),
+    )
+
+    surface: tui.Surface
+    tui.surface_init(&surface, 100, 35)
+    defer tui.surface_destroy(&surface)
+    (remaining, quit) := handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{code = .f1},
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, app.windows[Window_Help].visible)
+    close_shortcut_help(&app)
+
+    _ = paint_app(
+        &app,
+        &surface,
+        turbo_ui.key_event(turbo_ui.Key_Event{
+            code = .character,
+            byte_value = cast[u8]('h'),
+            alt = true,
+        }),
+    )
+    testing.expect(test, app.menus.open_title == Menu_Help)
+
+    _ = paint_app(
+        &app,
+        &surface,
+        turbo_ui.key_event(turbo_ui.Key_Event{code = .enter}),
+    )
+    testing.expect(test, app.windows[Window_Help].visible)
+    testing.expect(test, app.ui.modal_window == app.windows[Window_Help].id)
+    testing.expect(test, app.ui.focused_id == 800)
+
+    should_quit := paint_app(
+        &app,
+        &surface,
+        turbo_ui.key_event(turbo_ui.Key_Event{code = .escape}),
+    )
+    testing.expect(test, !should_quit)
+    testing.expect(test, !app.windows[Window_Help].visible)
 }
