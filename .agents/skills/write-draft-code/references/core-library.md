@@ -586,7 +586,12 @@ terminal.decoder_pending(&decoder) -> bool
 
 terminal.Mouse_Reporting
 terminal.Mouse_Reporting_State // inactive, active, suspended
-terminal.begin_mouse_reporting(&reporting, &screen) -> io.Error
+terminal.Mouse_Reporting_Mode // buttons_and_drag, all_motion
+terminal.begin_mouse_reporting(
+    &reporting,
+    &screen,
+    mode: terminal.Mouse_Reporting_Mode = .buttons_and_drag,
+) -> io.Error
 terminal.suspend_mouse_reporting(&reporting) -> bool
 terminal.resume_mouse_reporting(&reporting) -> bool
 terminal.restore_mouse_reporting(&reporting) -> bool
@@ -661,8 +666,12 @@ drag state, wheel direction, and modifiers. `decode_key` consumes those reports
 without emitting punctuation when a key-only application enabled no mouse.
 
 `Mouse_Reporting` borrows an active Screen and owns the obligation to disable
-ANSI button, drag, motion, and SGR modes. Disable/suspend it before suspending a
-Screen, resume it after the Screen, and restore it before `restore_screen`.
+ANSI button, drag, motion, and SGR modes. The default `buttons_and_drag` mode
+reports clicks, releases, wheels, and movement while a button is held without
+flooding a remote PTY with hover traffic. Use `all_motion` only when the
+application visibly responds to unpressed pointer movement. The selected mode
+survives suspend/resume. Disable/suspend reporting before suspending a Screen,
+resume it after the Screen, and restore it before `restore_screen`.
 On final cleanup, discard pending input after restoring reporting and before
 restoring the Session so queued SGR reports do not reach the parent shell.
 

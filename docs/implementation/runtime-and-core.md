@@ -286,9 +286,15 @@ parameters preserve explicit modifiers, while combinations the byte protocol
 cannot distinguish are not guessed.
 
 `Mouse_Reporting` is a separate move-by-convention restoration obligation that
-borrows an active `Screen`. It enables button, drag, all-motion, and SGR reports
-with ANSI modes 1000/1002/1003/1006 and disables them in reverse order. Its
-active/suspended states compose with screen job control: suspend reporting
+borrows an active `Screen`. Its selected `Mouse_Reporting_Mode` is explicit
+application policy: `buttons_and_drag` enables button, drag, and SGR reports
+with ANSI modes 1000/1002/1006, while `all_motion` additionally enables mode
+1003 so unpressed pointer movement can drive hover. The former is the default
+because it avoids a continuous input stream over remote PTYs; an application
+which visibly uses hover opts into the latter. Both modes disable the complete
+1000/1002/1003/1006 set in reverse order so cleanup is also correct after a
+partially written begin sequence. The stored mode survives suspend/resume.
+Active/suspended states compose with screen job control: suspend reporting
 before the screen, resume it after the screen, and restore it before final
 screen restoration. Before restoring cooked input, an application that enabled
 reporting discards queued reports through the still-active Session so those

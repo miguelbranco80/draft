@@ -15,6 +15,21 @@ import core/os
 import core/testing
 import core/time
 
+// text_equal is the deliberately tiny test-side string comparison. Draft does
+// not define structural string equality, and importing a larger text package
+// would obscure these terminal package tests with an unrelated dependency.
+text_equal :: proc(left, right: string) -> bool {
+    if len(left) != len(right) {
+        return false
+    }
+    for index: usize = 0; index < len(left); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
+}
+
 // test_timeout_milliseconds fixes the conversion rules that keep poll from
 // expiring early or accidentally interpreting an overflowing duration as an
 // infinite wait. It calls the private helper because this is a same-package
@@ -310,6 +325,20 @@ test_general_input_decoder :: proc(test: ^testing.Test) {
     testing.expect(test, !suspend_mouse_reporting(&reporting))
     testing.expect(test, !resume_mouse_reporting(&reporting))
     testing.expect(test, restore_mouse_reporting(&reporting))
+
+    // Reporting policy is selected before any terminal I/O. Fix the exact
+    // sequences here so the remote-friendly default cannot accidentally start
+    // emitting unpressed motion and suspend/resume cannot choose another mode.
+    testing.expect(test,
+        text_equal(
+            begin_mouse_sequence(.buttons_and_drag),
+            Begin_Drag_Mouse_Sequence,
+        ))
+    testing.expect(test,
+        text_equal(
+            begin_mouse_sequence(.all_motion),
+            Begin_All_Motion_Mouse_Sequence,
+        ))
 }
 
 // test_inactive_screen fixes the zero-state contract without writing control
