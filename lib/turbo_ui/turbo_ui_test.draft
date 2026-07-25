@@ -800,7 +800,7 @@ submit_test_menu :: proc(
     )
     menu_separator(state, &popup)
     menu_action(
-        state, menu, &popup, 53, "Disabled", "", false,
+        state, menu, &popup, 53, "Disabled", "Ctrl-D", false,
         access_key = cast[u8]('d'),
     )
     changed := menu_check(
@@ -924,6 +924,29 @@ test_menu_popup_navigation :: proc(test: ^testing.Test) {
     submit_test_menu(&state, &menu, &checked)
     end_frame(&state)
     testing.expect(test, menu.has_highlight && menu.highlighted == 3)
+
+    // A disabled row is inert in both behavior and presentation. Moving the
+    // pointer over it must preserve the previous enabled selection and must
+    // not paint either its label or shortcut using the selected-row style.
+    // Testing the shortcut separately catches a partial-row defect where the
+    // disabled label remained dim but its right-aligned shortcut reacted.
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 3, row = 4},
+        action = .move,
+    }), theme)
+    submit_test_menu(&state, &menu, &checked)
+    end_frame(&state)
+    testing.expect(test, menu.has_highlight && menu.highlighted == 3)
+    (disabled_label, disabled_label_valid) := tui.cell_at(&surface, 4, 4)
+    (disabled_shortcut, disabled_shortcut_valid) := tui.cell_at(&surface, 17, 4)
+    testing.expect(
+        test,
+        disabled_label_valid && disabled_shortcut_valid &&
+            disabled_label.style.foreground.index ==
+                theme.menu_disabled.foreground.index &&
+            disabled_shortcut.style.foreground.index ==
+                theme.menu_disabled.foreground.index,
+    )
 
     // Separators are inert menu content. Crossing one keeps the last enabled
     // command selected, including through the no-event traversal a real app

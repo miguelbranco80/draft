@@ -1,11 +1,13 @@
 package turbo_editor_app
 
 import core/memory
+import core/terminal
 import core/testing
 import core/tui
 import lib/draft_compiler_api
 import lib/turbo_editor
 import lib/turbo_ui
+import lib/turbo_ui_terminal
 
 Fake_Root_State :: c struct {
     selected: usize,
@@ -888,4 +890,44 @@ test_help_menu_lists_and_closes_all_shortcuts :: proc(test: ^testing.Test) {
     )
     testing.expect(test, !should_quit)
     testing.expect(test, !app.windows[Window_Help].visible)
+}
+
+// test_raw_mouse_quit crosses the boundary that the earlier menu and command
+// tests skipped: exact SGR bytes pass through core/terminal, the shared adapter,
+// window/popup routing, the File menu, and finally application exit policy. A
+// release over Quit must survive the event-free repaint requested when the
+// popup closes. Returning only that repaint's result used to discard the true
+// quit result even though the menu visibly disappeared.
+test_raw_mouse_quit :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-mouse-quit-test.draft"))
+    defer destroy_app(&app)
+
+    surface: tui.Surface
+    tui.surface_init(&surface, 100, 35)
+    defer tui.surface_destroy(&surface)
+    decoder: terminal.Decoder
+    should_quit := false
+
+    // SGR coordinates are one based. Column 4, row 1 is the File title;
+    // column 4, row 9 is the Quit row in the bordered File popup.
+    title_click := "\x1b[<0;4;1M\x1b[<0;4;1m"
+    for index: usize = 0; index < len(title_click); index += 1 {
+        event := turbo_ui_terminal.decode(&decoder, title_click[index])
+        if event.kind != .none {
+            should_quit = should_quit || paint_app(&app, &surface, event)
+        }
+    }
+    testing.expect(test, !should_quit)
+    testing.expect(test, app.menus.open_title == Menu_File)
+
+    quit_click := "\x1b[<0;4;9M\x1b[<0;4;9m"
+    for index: usize = 0; index < len(quit_click); index += 1 {
+        event := turbo_ui_terminal.decode(&decoder, quit_click[index])
+        if event.kind != .none {
+            should_quit = should_quit || paint_app(&app, &surface, event)
+        }
+    }
+    testing.expect(test, should_quit)
 }

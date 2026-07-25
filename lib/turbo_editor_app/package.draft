@@ -4372,6 +4372,15 @@ paint_app :: proc(
         }
     }
     turbo_ui.end_frame(&app^.ui)
+    // A command result belongs to the physical input traversal which produced
+    // it. Closing a popup can request one event-free visual reconciliation,
+    // but that later traversal cannot reproduce an application exit command.
+    // Preserve the completed command before considering repaint; otherwise a
+    // mouse click visibly closes File while its true Quit result is replaced
+    // by the false result of the no-event frame.
+    if should_quit {
+        return true
+    }
     if turbo_ui.needs_repaint(&app^.ui) {
         // Some immediate controls resolve focus or menu selection after the
         // affected row has painted. Repaint once without reapplying the input

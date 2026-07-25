@@ -464,7 +464,9 @@ menu_row :: proc(
             height = 1,
         }
         shortcut_style := state^.theme.menu_shortcut
-        if selected || hovered {
+        if !enabled {
+            shortcut_style = state^.theme.menu_disabled
+        } else if selected || hovered {
             shortcut_style = state^.theme.menu_selected
         }
         write_clipped(
