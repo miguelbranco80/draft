@@ -22,6 +22,9 @@ The package provides:
 - bounded undo/redo with a 128-record/1 MiB history policy; each replacement is
   a joined record pair and therefore remains one atomic user undo/redo step;
 - dirty close protection and polling-based disk conflict detection;
+- host-supplied read-only buffers for compiler/dependency source navigation;
+  the document engine—not merely disabled UI—rejects every mutation, save,
+  undo/redo, and replacement operation on such a buffer;
 - optional byte-offset syntax spans with a classic Turbo C/Pascal palette;
   painting advances one monotonic span cursor across the visible viewport.
 

@@ -249,6 +249,51 @@ test_find_directions_and_atomic_replace :: proc(test: ^testing.Test) {
     testing.expect(test, buffer_equals_text(&replacement_buffer, "aa\naa"))
 }
 
+// Compiler and dependency sources use the same navigation/painting engine but
+// carry no write authority. Every public mutation path must preserve their
+// exact bytes and clean history rather than relying on the application to hide
+// editing commands correctly.
+test_read_only_buffer_rejects_mutation :: proc(test: ^testing.Test) {
+    path := [19]u8{
+        cast[u8]('d'), cast[u8]('r'), cast[u8]('a'), cast[u8]('f'),
+        cast[u8]('t'), cast[u8]('-'), cast[u8]('s'), cast[u8]('o'),
+        cast[u8]('u'), cast[u8]('r'), cast[u8]('c'), cast[u8]('e'),
+        cast[u8](':'), cast[u8]('c'), cast[u8]('o'), cast[u8]('r'),
+        cast[u8]('e'), cast[u8]('/'), cast[u8]('x'),
+    }
+    source := [5]u8{
+        cast[u8]('h'), cast[u8]('e'), cast[u8]('l'), cast[u8]('l'),
+        cast[u8]('o'),
+    }
+    buffer: Buffer
+    buffer_init_read_only_bytes(&buffer, path[:], source[:])
+    defer buffer_destroy(&buffer)
+    testing.expect(test, is_read_only(&buffer))
+    testing.expect(test, buffer_equals_text(&buffer, "hello"))
+
+    buffer.cursor = 5
+    buffer.anchor = 0
+    buffer.selection_active = true
+    insert_text(&buffer, "changed")
+    testing.expect(test, !delete_selection(&buffer))
+    testing.expect(test, !backspace(&buffer))
+    testing.expect(test, !delete_forward(&buffer))
+    testing.expect(test, !undo(&buffer) && !redo(&buffer))
+    query := [5]u8{
+        cast[u8]('h'), cast[u8]('e'), cast[u8]('l'), cast[u8]('l'),
+        cast[u8]('o'),
+    }
+    replacement := [1]u8{cast[u8]('x')}
+    testing.expect(test,
+        replace_selected(&buffer, query[:], replacement[:]) == .read_only)
+    all := replace_all(&buffer, query[:], replacement[:])
+    testing.expect(test, !all.completed && all.count == 0)
+    testing.expect(test, !save(&buffer))
+    testing.expect(test, poll_disk(&buffer) == .unchanged)
+    testing.expect(test, buffer_equals_text(&buffer, "hello"))
+    testing.expect(test, buffer.history.length == 0 && !buffer.dirty)
+}
+
 test_file_round_trip_and_conflict :: proc(test: ^testing.Test) {
     remove_test_path()
     defer remove_test_path()

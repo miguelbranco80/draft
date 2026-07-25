@@ -74,6 +74,10 @@ pub Disk_Result :: enum u8 {
 // by clearing the complete undo/redo history when the next payload would exceed
 // its fixed policy; document content is never discarded. path is zero
 // terminated for core/os and otherwise exposed only as borrowed bytes.
+// read_only identifies compiler-distributed or dependency source whose bytes
+// have no writable filesystem authority. Movement and selection remain fully
+// available, while every mutating public operation refuses before touching
+// content, history, dirty state, or the host filesystem.
 pub Buffer :: struct {
     bytes: Byte_Array,
     disk_bytes: Byte_Array,
@@ -98,6 +102,7 @@ pub Buffer :: struct {
     scroll_column: usize,
     dirty: bool,
     disk_conflict: bool,
+    read_only: bool,
 }
 
 pub buffer_init :: proc(buffer: ^Buffer, path: string) {
@@ -123,6 +128,22 @@ pub buffer_init_bytes :: proc(buffer: ^Buffer, path: []u8) {
     memory.owned_string_copy_bytes(&buffer^.path, path)
 }
 
+// buffer_init_read_only_bytes constructs a complete clean buffer from bytes
+// supplied by a compiler/source service. Both pathname and content are copied
+// before the host call returns. The disk baseline deliberately mirrors content
+// even though no disk operations are permitted, preserving ordinary dirty and
+// comparison invariants for the shared editor view.
+pub buffer_init_read_only_bytes :: proc(
+    buffer: ^Buffer,
+    path, source: []u8,
+) {
+    buffer_init_bytes(buffer, path)
+    copy_bytes(&buffer^.bytes, source)
+    copy_bytes(&buffer^.disk_bytes, source)
+    rebuild_line_starts(buffer)
+    buffer^.read_only = true
+}
+
 pub buffer_destroy :: proc(buffer: ^Buffer) {
     memory.owned_string_destroy(&buffer^.path)
     array.destroy(&buffer^.history_bytes)
@@ -138,6 +159,10 @@ pub path_bytes :: proc(buffer: ^Buffer) -> []u8 {
 
 pub content :: proc(buffer: ^Buffer) -> []u8 {
     return array.view(&buffer^.bytes)
+}
+
+pub is_read_only :: proc(buffer: ^Buffer) -> bool {
+    return buffer^.read_only
 }
 
 clear_history :: proc(buffer: ^Buffer) {
@@ -302,6 +327,9 @@ read_path :: proc(path: cstring, destination: ^Byte_Array) -> Load_Result {
 }
 
 pub load :: proc(buffer: ^Buffer) -> Load_Result {
+    if buffer^.read_only {
+        return .failed
+    }
     result := read_path(
         memory.owned_string_cstring(&buffer^.path),
         &buffer^.bytes,
@@ -335,6 +363,9 @@ pub save :: proc(
     buffer: ^Buffer,
     overwrite_conflict: bool = false,
 ) -> bool {
+    if buffer^.read_only {
+        return false
+    }
     if buffer^.disk_conflict && !overwrite_conflict {
         return false
     }
@@ -360,6 +391,9 @@ pub save :: proc(
 // and marked conflicted for explicit user resolution; no automatic merge or
 // overwrite occurs.
 pub poll_disk :: proc(buffer: ^Buffer) -> Disk_Result {
+    if buffer^.read_only {
+        return .unchanged
+    }
     observed: Byte_Array
     array.init(&observed)
     result := read_path(
@@ -572,6 +606,9 @@ delete_range :: proc(buffer: ^Buffer, start, end: usize) {
 }
 
 pub delete_selection :: proc(buffer: ^Buffer) -> bool {
+    if buffer^.read_only {
+        return false
+    }
     (start, end, selected) := selection(buffer)
     if !selected {
         return false
@@ -581,6 +618,9 @@ pub delete_selection :: proc(buffer: ^Buffer) -> bool {
 }
 
 pub insert :: proc(buffer: ^Buffer, source: []u8) {
+    if buffer^.read_only {
+        return
+    }
     delete_selection(buffer)
     if len(source) == 0 {
         return
@@ -896,6 +936,9 @@ pub move_down :: proc(buffer: ^Buffer, extend: bool = false) {
 }
 
 pub backspace :: proc(buffer: ^Buffer) -> bool {
+    if buffer^.read_only {
+        return false
+    }
     if delete_selection(buffer) {
         return true
     }
@@ -911,6 +954,9 @@ pub backspace :: proc(buffer: ^Buffer) -> bool {
 }
 
 pub delete_forward :: proc(buffer: ^Buffer) -> bool {
+    if buffer^.read_only {
+        return false
+    }
     if delete_selection(buffer) {
         return true
     }
@@ -941,6 +987,9 @@ undo_primitive :: proc(buffer: ^Buffer, edit: Edit) {
 }
 
 pub undo :: proc(buffer: ^Buffer) -> bool {
+    if buffer^.read_only {
+        return false
+    }
     if buffer^.history_index == 0 {
         return false
     }
@@ -989,6 +1038,9 @@ redo_primitive :: proc(buffer: ^Buffer, edit: Edit) {
 }
 
 pub redo :: proc(buffer: ^Buffer) -> bool {
+    if buffer^.read_only {
+        return false
+    }
     if buffer^.history_index == buffer^.history.length {
         return false
     }
@@ -1031,6 +1083,7 @@ pub Replace_Result :: enum u8 {
     replaced,
     selection_mismatch,
     history_limit,
+    read_only,
 }
 
 // Replace_All_Result reports both the number of nonoverlapping source matches
@@ -1168,6 +1221,9 @@ pub replace_selected :: proc(
     buffer: ^Buffer,
     needle, replacement: []u8,
 ) -> Replace_Result {
+    if buffer^.read_only {
+        return .read_only
+    }
     (start, end, selected) := selection(buffer)
     if !selected || end - start != len(needle) ||
         !bytes_match_at(buffer, needle, start) {
@@ -1221,6 +1277,10 @@ pub replace_all :: proc(
     needle, replacement: []u8,
 ) -> Replace_All_Result {
     result := Replace_All_Result{completed = true}
+    if buffer^.read_only {
+        result.completed = false
+        return result
+    }
     if len(needle) == 0 || len(needle) > buffer^.bytes.length {
         return result
     }
