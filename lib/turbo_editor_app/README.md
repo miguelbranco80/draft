@@ -12,6 +12,16 @@ only when requested. Dialogs remain fixed and modal. `lib/turbo_editor` stays a
 smaller reusable document engine and editor view with no terminal, compiler,
 window, or event-loop ownership.
 
+The package is split by owned transition rather than widget type:
+
+- `package.draft` owns the long-lived `App` model and document/tooling tables;
+- `commands.draft` owns document, Workspace, search, and shortcut actions;
+- `views.draft` paints dialogs and compiler/document inspectors;
+- `desktop.draft` composes menus, windows, modal routing, and the status bar;
+- `host_integration.draft` copies compiler-service products and performs
+  Check/Build/Run and semantic navigation; and
+- `terminal_runtime.draft` alone owns the terminal session and event loop.
+
 An optional `draft_compiler_api.Host_Api` is a borrowed synchronous procedure
 table rather than a compiler dependency. A zero table produces the standalone
 editor; DraftIDE supplies the compiler service; tests supply direct fakes.

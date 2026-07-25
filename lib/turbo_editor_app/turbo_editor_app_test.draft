@@ -615,6 +615,25 @@ test_open_workspace_requires_dirty_buffer_choice :: proc(test: ^testing.Test) {
     )
 }
 
+// Workspace replacement destroys paths and semantic navigation but not the
+// IDE-local clipboard, whose lifetime belongs to the process. This exercises
+// the narrower owner boundary used after a replacement compiler session has
+// already been validated.
+test_workspace_replacement_preserves_clipboard :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-workspace-owner.draft"))
+    defer destroy_app(&app)
+    turbo_editor.insert_text(active_buffer(&app), "draft")
+    turbo_editor.select_all(active_buffer(&app))
+    testing.expect(test, copy_selection(&app))
+    testing.expect(test, app.clipboard.length == len("draft"))
+
+    destroy_workspace_documents(&app)
+    testing.expect(test, app.buffer_count == 0)
+    testing.expect(test, app.clipboard.length == len("draft"))
+}
+
 // The editor is a normal desktop window, while source and buffer browsers are
 // auxiliary tools. This fixes the application policy independently of the
 // reusable editor view: Tile owns the document and semantic windows, does not

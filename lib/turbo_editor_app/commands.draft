@@ -1,0 +1,887 @@
+// Application commands are the direct state transitions shared by menus,
+// global shortcuts, dialogs, and tests. They own document save/open policy,
+// workspace replacement, find/replace/navigation requests, explicit exit
+// decisions, and the single application-wide shortcut dispatcher.
+//
+// Commands may show or hide UI scopes but do not paint them. Every advertised
+// key and menu row calls one of these same operations, so terminal input cannot
+// drift into a second behavioral implementation.
+package turbo_editor_app
+
+import core/format
+import lib/turbo_editor
+import lib/turbo_ui
+
+has_dirty_buffers :: proc(app: ^App) -> bool {
+    for index: usize = 0; index < app^.buffer_count; index += 1 {
+        if app^.buffers[index].dirty {
+            return true
+        }
+    }
+    return false
+}
+
+save_all_dirty_buffers :: proc(app: ^App) -> bool {
+    for index: usize = 0; index < app^.buffer_count; index += 1 {
+        if app^.buffers[index].dirty &&
+            !turbo_editor.save(&app^.buffers[index]) {
+            return false
+        }
+    }
+    return true
+}
+
+// save_all_documents stops at the first unnamed document and opens Save As so
+// no generated placeholder label becomes a filesystem path. Repeating Save All
+// after choosing that path continues with the remaining documents.
+save_all_documents :: proc(app: ^App) {
+    for index: usize = 0; index < app^.buffer_count; index += 1 {
+        if app^.buffers[index].dirty &&
+            turbo_editor.is_unnamed(&app^.buffers[index]) {
+            _ = activate_buffer(app, index)
+            request_save_as(app)
+            app^.status = "Choose a path for this new document, then Save All again"
+            return
+        }
+    }
+    if save_all_dirty_buffers(app) {
+        app^.status = "Saved all modified documents"
+    } else {
+        app^.status = "Save All stopped at a disk conflict or write failure"
+    }
+}
+
+close_folder_dialogs :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Open_Folder].id,
+    )
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Folder_Confirm].id,
+    )
+}
+
+close_open_file :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Open_File].id,
+    )
+}
+
+// path_is_absolute recognizes the native hosted path roots needed by the Open
+// File dialog. DraftIDE does not normalize or reinterpret an absolute spelling:
+// the editor passes it to core/os exactly as entered. Windows drive roots and
+// UNC/current-drive separators are selected only for the Windows build.
+path_is_absolute :: proc(path: []u8) -> bool {
+    if len(path) == 0 {
+        return false
+    }
+    when target.os == .windows {
+        return path[0] == cast[u8]('/') || path[0] == cast[u8]('\\') ||
+            (len(path) >= 2 && path[1] == cast[u8](':'))
+    } else {
+        return path[0] == cast[u8]('/')
+    }
+}
+
+// resolve_open_file_path gives relative dialog input one stable and useful
+// meaning: it is relative to the current Workspace when a compiler host is
+// attached, and otherwise relative to the standalone editor process. The
+// result borrows destination only until the caller returns. No truncation is
+// permitted because a truncated pathname could open a different file.
+resolve_open_file_path :: proc(
+    app: ^App,
+    input: []u8,
+    destination: []u8,
+) -> ([]u8, bool) {
+    if len(input) == 0 || len(input) > len(destination) {
+        return (destination[:0], false)
+    }
+    if path_is_absolute(input) || app^.host.copy_workspace_path == nil {
+        for index: usize = 0; index < len(input); index += 1 {
+            destination[index] = input[index]
+        }
+        return (destination[:len(input)], true)
+    }
+
+    workspace_length := app^.host.copy_workspace_path(
+        app^.host.user,
+        cast[[^]u8](&destination[0]),
+        len(destination),
+    )
+    if workspace_length == 0 || workspace_length >= len(destination) {
+        return (destination[:0], false)
+    }
+    needs_separator := destination[workspace_length - 1] != cast[u8]('/') &&
+        destination[workspace_length - 1] != cast[u8]('\\')
+    required := workspace_length + len(input)
+    if needs_separator {
+        required += 1
+    }
+    if required > len(destination) {
+        return (destination[:0], false)
+    }
+    write_at := workspace_length
+    if needs_separator {
+        when target.os == .windows {
+            destination[write_at] = cast[u8]('\\')
+        } else {
+            destination[write_at] = cast[u8]('/')
+        }
+        write_at += 1
+    }
+    for index: usize = 0; index < len(input); index += 1 {
+        destination[write_at + index] = input[index]
+    }
+    return (destination[:required], true)
+}
+
+// submit_open_file opens or creates one ordinary editor buffer. Paths already
+// published by Program Files retain the active Program association;
+// arbitrary files remain editing-only and are never submitted as compiler
+// overlays. Reopening an exact path reuses the existing owner and its unsaved
+// bytes instead of reading disk over it.
+submit_open_file :: proc(app: ^App) {
+    input := turbo_ui.text_box_bytes(&app^.file_box, app^.file_path[:])
+    storage: [Host_Path_Capacity]u8
+    (path, valid) := resolve_open_file_path(app, input, storage[:])
+    if !valid {
+        app^.status = "Enter a valid file path within the IDE path limit"
+        return
+    }
+    index := buffer_index_for_path(app, path)
+    if index == app^.buffer_count {
+        if !init_one_buffer_bytes(app, path) {
+            app^.status = "Could not open the file"
+            return
+        }
+        index = app^.buffer_count - 1
+        source_index := program_file_index(app, path)
+        if source_index < app^.program_file_count &&
+            app^.host.selected_root != nil {
+            app^.buffer_root[index] = app^.host.selected_root(app^.host.user)
+            app^.buffer_has_root[index] = true
+            app^.program_files.cursor = source_index
+        }
+    }
+    close_open_file(app)
+    if !activate_buffer(app, index) {
+        app^.status = "Could not activate the opened file"
+        return
+    }
+    if program_file_index(app, path) < app^.program_file_count {
+        app^.status = "Program file opened"
+    } else {
+        app^.status = "File opened for editing; it is outside the selected Program"
+    }
+}
+
+// submit_save_as resolves the same clearly documented path grammar as Open
+// File, refuses to create two Buffer owners for one path, and lets the editor
+// adopt the pathname only after its write and close operations succeed.
+submit_save_as :: proc(app: ^App) {
+    input := turbo_ui.text_box_bytes(&app^.file_box, app^.file_path[:])
+    storage: [Host_Path_Capacity]u8
+    (path, valid) := resolve_open_file_path(app, input, storage[:])
+    if !valid {
+        app^.status = "Enter a valid save path within the IDE path limit"
+        return
+    }
+    existing := buffer_index_for_path(app, path)
+    if existing < app^.buffer_count && existing != app^.active {
+        app^.status = "Another open document already owns that path"
+        return
+    }
+    if !turbo_editor.save_as(active_buffer(app), path) {
+        app^.status = "Save As failed"
+        return
+    }
+    app^.buffer_has_root[app^.active] = false
+    source_index := program_file_index(app, path)
+    if source_index < app^.program_file_count &&
+        app^.host.selected_root != nil {
+        app^.buffer_root[app^.active] =
+            app^.host.selected_root(app^.host.user)
+        app^.buffer_has_root[app^.active] = true
+    }
+    close_open_file(app)
+    app^.status = "Saved with a new path"
+}
+
+request_open_file :: proc(app: ^App) {
+    app^.file_dialog_action = .open
+    _ = turbo_ui.text_box_set_text(&app^.file_box, app^.file_path[:], "")
+    turbo_ui.show_modal_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Open_File].id,
+    )
+    app^.ui.focused_id = 830
+    app^.status = "Open by path; relative paths start at the Workspace"
+}
+
+request_save_as :: proc(app: ^App) {
+    if turbo_editor.is_read_only(active_buffer(app)) {
+        app^.status = "Compiler and dependency sources are read-only"
+        return
+    }
+    app^.file_dialog_action = .save_as
+    if turbo_editor.is_unnamed(active_buffer(app)) {
+        _ = turbo_ui.text_box_set_text(&app^.file_box, app^.file_path[:], "")
+    } else {
+        _ = turbo_ui.text_box_set(
+            &app^.file_box,
+            app^.file_path[:],
+            turbo_editor.path_bytes(active_buffer(app)),
+        )
+    }
+    turbo_ui.show_modal_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Open_File].id,
+    )
+    app^.ui.focused_id = 830
+    app^.status = "Save As; relative paths start at the Workspace"
+}
+
+// open_folder_now crosses the one mutable workspace boundary. The host first
+// constructs and validates a complete replacement compiler session behind its
+// stable user pointer. Only then are old Draft buffers destroyed and the new
+// selected source opened. A filesystem race after host validation falls back
+// to an ordinary empty buffer so the UI never retains zero documents.
+open_folder_now :: proc(app: ^App) -> bool {
+    if app^.host.open_workspace == nil {
+        return false
+    }
+    path := turbo_ui.text_box_bytes(&app^.workspace_box, app^.workspace_path[:])
+    path_data: rawptr = nil
+    if len(path) != 0 {
+        path_data = cast[rawptr](&path[0])
+    }
+    app^.workspace_error_length = 0
+    opened := app^.host.open_workspace(
+        app^.host.user,
+        path_data,
+        len(path),
+        cast[[^]u8](&app^.workspace_error[0]),
+        len(app^.workspace_error),
+    )
+    if opened == 0 {
+        for app^.workspace_error_length < len(app^.workspace_error) &&
+            app^.workspace_error[app^.workspace_error_length] != 0 {
+            app^.workspace_error_length += 1
+        }
+        if app^.windows[Window_Folder_Confirm].visible {
+            turbo_ui.hide_window(
+                &app^.ui,
+                app^.windows[:],
+                app^.windows[Window_Folder_Confirm].id,
+            )
+            turbo_ui.show_modal_window(
+                &app^.ui,
+                app^.windows[:],
+                app^.windows[Window_Open_Folder].id,
+            )
+            app^.ui.focused_id = 570
+        }
+        app^.status = "Could not open workspace"
+        return false
+    }
+
+    close_folder_dialogs(app)
+    destroy_workspace_documents(app)
+    app^.active = 0
+    app^.program_files = turbo_ui.List_State{}
+    app^.buffers_list = turbo_ui.List_State{}
+    app^.package_tree = turbo_ui.List_State{}
+    app^.package_row_count = 0
+    for index: usize = 0; index < Maximum_Package_Rows; index += 1 {
+        app^.package_seen[index] = false
+        app^.package_expanded[index] = false
+    }
+    refresh_program_roots(app)
+    refresh_program_files(app)
+    if !open_selected_host_source(app) {
+        if !init_one_unnamed_buffer(app) {
+            return false
+        }
+        app^.status = "Workspace opened, but its selected file disappeared"
+        return true
+    }
+    _ = refresh_host(app)
+    app^.status = "Workspace opened"
+    return true
+}
+
+submit_open_folder :: proc(app: ^App) {
+    if has_dirty_buffers(app) {
+        turbo_ui.hide_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Open_Folder].id,
+        )
+        turbo_ui.show_modal_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Folder_Confirm].id,
+        )
+        app^.status = "Choose how to handle unsaved documents"
+        return
+    }
+    _ = open_folder_now(app)
+}
+
+request_open_folder :: proc(app: ^App) {
+    if app^.host.open_workspace == nil || app^.host.copy_workspace_path == nil {
+        app^.status = "No workspace-opening host is attached"
+        return
+    }
+    app^.workspace_error_length = 0
+    length := app^.host.copy_workspace_path(
+        app^.host.user,
+        cast[[^]u8](&app^.workspace_path[0]),
+        len(app^.workspace_path),
+    )
+    if length >= len(app^.workspace_path) {
+        length = 0
+    }
+    if !turbo_ui.text_box_set(
+        &app^.workspace_box,
+        app^.workspace_path[:],
+        app^.workspace_path[:length],
+    ) {
+        app^.status = "Current workspace path cannot be edited"
+        return
+    }
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Folder_Confirm].id,
+    )
+    turbo_ui.show_modal_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Open_Folder].id,
+    )
+    app^.ui.focused_id = 570
+    app^.status = "Enter a workspace directory"
+}
+
+request_search :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Quit].id,
+    )
+    turbo_ui.show_modal_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Search].id,
+    )
+    app^.ui.focused_id = 500
+    app^.status = "Find: type text, Enter searches, Esc cancels"
+}
+
+// focus_editor makes the active document and its stable per-buffer focus ID the
+// destination after navigation. It does not reload, recheck, or alter window
+// geometry; those belong to the operation which produced the destination.
+focus_editor :: proc(app: ^App) {
+    turbo_ui.show_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Editor].id,
+    )
+    app^.ui.focused_id = cast[turbo_ui.Widget_Id](600 + app^.active)
+}
+
+// perform_find applies the persistent query without reopening a dialog. F3 and
+// Shift-F3 share this operation with dialog buttons, including exact wrap and
+// no-match feedback.
+perform_find :: proc(app: ^App, reverse: bool) -> bool {
+    query := turbo_ui.text_box_bytes(&app^.search_box, app^.search[:])
+    if len(query) == 0 {
+        app^.status = "Find text is empty; use Ctrl-F"
+        return false
+    }
+    result: turbo_editor.Find_Result
+    if reverse {
+        result = turbo_editor.find_previous(active_buffer(app), query)
+    } else {
+        result = turbo_editor.find_next(active_buffer(app), query)
+    }
+    if !result.found {
+        app^.status = "No match"
+        return false
+    }
+    focus_editor(app)
+    if result.wrapped && reverse {
+        app^.status = "Previous match selected (wrapped to end)"
+    } else if result.wrapped {
+        app^.status = "Next match selected (wrapped to start)"
+    } else if reverse {
+        app^.status = "Previous match selected"
+    } else {
+        app^.status = "Next match selected"
+    }
+    return true
+}
+
+request_replace :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Search].id,
+    )
+    turbo_ui.show_modal_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Replace].id,
+    )
+    app^.ui.focused_id = 580
+    app^.status = "Replace: Tab moves fields/buttons; Esc cancels"
+}
+
+request_go_to_line :: proc(app: ^App) {
+    turbo_ui.show_modal_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Go_To_Line].id,
+    )
+    app^.ui.focused_id = 590
+    app^.status = "Go to one-based line number"
+}
+
+// request_shortcut_help opens an informational modal rather than an ordinary
+// desktop tool. That preserves the classic F1 contract: the reference captures
+// navigation until Close/Escape returns the user to the exact window beneath
+// it. The list retains its scroll position between openings.
+request_shortcut_help :: proc(app: ^App) {
+    turbo_ui.show_modal_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Help].id,
+    )
+    app^.ui.focused_id = 800
+    app^.status = "Keyboard shortcuts: arrows/page keys scroll; Esc closes"
+}
+
+close_replace :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Replace].id,
+    )
+    app^.status = "Replace cancelled"
+}
+
+close_go_to_line :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Go_To_Line].id,
+    )
+    app^.status = "Go to Line cancelled"
+}
+
+close_shortcut_help :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Help].id,
+    )
+    app^.status = "Keyboard shortcut help closed"
+}
+
+// set_replace_count_status formats one allocation-free status message. Static
+// status assignments remain immutable strings; this bounded byte owner is used
+// only when the exact Replace All count is part of user-visible feedback.
+set_replace_count_status :: proc(app: ^App, count: usize) {
+    app^.status_length = 0
+    prefix := "Replaced "
+    for index: usize = 0; index < len(prefix); index += 1 {
+        app^.status_storage[app^.status_length] = prefix[index]
+        app^.status_length += 1
+    }
+    digits_storage: [20]u8
+    (digits, formatted) := format.unsigned_decimal(
+        digits_storage[:],
+        cast[u64](count),
+    )
+    if !formatted {
+        app^.status = "Replace All completed"
+        app^.status_bytes_active = false
+        return
+    }
+    for byte in digits {
+        app^.status_storage[app^.status_length] = byte
+        app^.status_length += 1
+    }
+    suffix := " matches"
+    if count == 1 {
+        suffix = " match"
+    }
+    for index: usize = 0; index < len(suffix); index += 1 {
+        app^.status_storage[app^.status_length] = suffix[index]
+        app^.status_length += 1
+    }
+    app^.status_bytes_active = true
+}
+
+// replace_current applies only an already selected exact query. When advance
+// is true, the next search begins after the replacement, so replacement bytes
+// are never reprocessed by this command. With no current match it selects the
+// next one and asks for a second explicit Replace command.
+replace_current :: proc(app: ^App, advance: bool) -> bool {
+    query := turbo_ui.text_box_bytes(&app^.search_box, app^.search[:])
+    replacement := turbo_ui.text_box_bytes(
+        &app^.replacement_box,
+        app^.replacement[:],
+    )
+    if len(query) == 0 {
+        app^.status = "Replace text is empty"
+        return false
+    }
+    result := turbo_editor.replace_selected(
+        active_buffer(app),
+        query,
+        replacement,
+    )
+    if result == .selection_mismatch {
+        if perform_find(app, false) {
+            app^.status = "Match selected; Replace again to change it"
+        }
+        return false
+    }
+    if result == .history_limit {
+        app^.status = "Replacement exceeds the bounded atomic undo history"
+        return false
+    }
+    if result == .read_only {
+        app^.status = "Compiler and dependency sources are read-only"
+        return false
+    }
+    source_changed(app)
+    if advance {
+        if !perform_find(app, false) {
+            app^.status = "Replaced current match; no further match"
+        }
+    } else {
+        focus_editor(app)
+        app^.status = "Replaced current match"
+    }
+    return true
+}
+
+replace_every_match :: proc(app: ^App) -> bool {
+    query := turbo_ui.text_box_bytes(&app^.search_box, app^.search[:])
+    replacement := turbo_ui.text_box_bytes(
+        &app^.replacement_box,
+        app^.replacement[:],
+    )
+    if len(query) == 0 {
+        app^.status = "Replace text is empty"
+        return false
+    }
+    if turbo_editor.is_read_only(active_buffer(app)) {
+        app^.status = "Compiler and dependency sources are read-only"
+        return false
+    }
+    result := turbo_editor.replace_all(active_buffer(app), query, replacement)
+    if !result.completed {
+        app^.status = "Replace All exceeds the bounded atomic undo history"
+        return false
+    }
+    if result.count != 0 {
+        source_changed(app)
+        focus_editor(app)
+    }
+    set_replace_count_status(app, result.count)
+    return true
+}
+
+parse_line_number :: proc(bytes: []u8) -> (usize, bool) {
+    if len(bytes) == 0 {
+        return (0, false)
+    }
+    value: usize
+    for byte in bytes {
+        if byte < cast[u8]('0') || byte > cast[u8]('9') {
+            return (0, false)
+        }
+        digit := cast[usize](byte - cast[u8]('0'))
+        if value > (~cast[usize](0) - digit) / 10 {
+            return (0, false)
+        }
+        value = value * 10 + digit
+    }
+    return (value, value != 0)
+}
+
+submit_go_to_line :: proc(app: ^App) {
+    bytes := turbo_ui.text_box_bytes(&app^.go_line_box, app^.go_line[:])
+    (line, valid) := parse_line_number(bytes)
+    if !valid || !turbo_editor.go_to_line(active_buffer(app), line) {
+        app^.status = "Line number is outside this document"
+        return
+    }
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Go_To_Line].id,
+    )
+    focus_editor(app)
+    app^.status = "Moved to line"
+}
+
+toggle_window :: proc(app: ^App, index: usize) {
+    assert(index < Window_Count, "Turbo Draft window index is invalid")
+    id := app^.windows[index].id
+    if app^.windows[index].visible {
+        turbo_ui.hide_window(&app^.ui, app^.windows[:], id)
+    } else {
+        turbo_ui.show_window(&app^.ui, app^.windows[:], id)
+    }
+}
+
+close_search :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Search].id,
+    )
+    app^.status = "Search cancelled"
+}
+
+cancel_quit :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Quit].id,
+    )
+    app^.quit_discard_mask = 0
+    app^.status = "Exit cancelled"
+}
+
+// continue_quit selects the next dirty buffer which has neither been saved nor
+// explicitly discarded during this quit attempt. The bit mask is transient UI
+// state: Cancel clears every provisional discard decision without changing any
+// Buffer, while completing the sequence exits before those decisions need to
+// become durable document state.
+continue_quit :: proc(app: ^App) -> bool {
+    static_assert(Maximum_Buffers <= 64,
+        "quit discard mask must cover every editor buffer")
+    for index: usize = 0; index < app^.buffer_count; index += 1 {
+        bit := cast[u64](1) << cast[u64](index)
+        if app^.buffers[index].dirty && (app^.quit_discard_mask & bit) == 0 {
+            if !activate_buffer(app, index) {
+                app^.status = "Could not restore the dirty document's Program"
+                return false
+            }
+            turbo_ui.hide_window(
+                &app^.ui,
+                app^.windows[:],
+                app^.windows[Window_Search].id,
+            )
+            turbo_ui.show_modal_window(
+                &app^.ui,
+                app^.windows[:],
+                app^.windows[Window_Quit].id,
+            )
+            app^.ui.focused_id = 510
+            app^.status = "Unsaved document requires an explicit choice"
+            return false
+        }
+    }
+    return true
+}
+
+request_quit :: proc(app: ^App) -> bool {
+    app^.quit_discard_mask = 0
+    return continue_quit(app)
+}
+
+// handle_global_key consumes only editor-wide commands. Other keys reach the
+// focused widget/editor during the immediate traversal.
+handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, bool) {
+    if event.kind != .key {
+        return (event, false)
+    }
+    key := event.key
+    // Popups, modal dialogs, and keyboard window manipulation get first
+    // refusal. This is essential for Escape dismissal/cancellation, menu
+    // arrows, dialog defaults, and text-box Enter; the desktop shortcut layer
+    // must not reinterpret those keys as editor commands.
+    if app^.ui.popup_id != turbo_ui.No_Widget ||
+        app^.ui.keyboard_window != turbo_ui.No_Widget ||
+        app^.windows[Window_Search].visible ||
+        app^.windows[Window_Quit].visible ||
+        app^.windows[Window_Open_Folder].visible ||
+        app^.windows[Window_Open_File].visible ||
+        app^.windows[Window_Folder_Confirm].visible ||
+        app^.windows[Window_Replace].visible ||
+        app^.windows[Window_Go_To_Line].visible ||
+        app^.windows[Window_Help].visible {
+        return (event, false)
+    }
+    // Raw terminal Control+letter input uses the conventional C0 byte values:
+    // Ctrl-F is 6 and Ctrl-S is 19. These commands are application-wide, so a
+    // Program Files or semantic window must not disable shortcuts advertised
+    // in the File/Edit menus merely because the document editor lacks focus.
+    // A conventional terminal cannot distinguish Ctrl-Shift-S from Ctrl-S (or
+    // Ctrl-Shift-R from Ctrl-R), so Save As and Replace All deliberately use
+    // their visible menu access paths instead of advertising impossible keys.
+    if key.code == .character && key.control && !key.alt {
+        if key.byte_value == 1 {
+            select_all(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 3 {
+            _ = copy_selection(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 6 {
+            request_search(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 7 {
+            request_go_to_line(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 18 {
+            _ = replace_current(app, true)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 19 {
+            save_active_buffer(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 17 {
+            return (turbo_ui.no_event(), request_quit(app))
+        }
+        if key.byte_value == 14 {
+            new_file(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 15 {
+            request_open_file(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 22 {
+            paste_clipboard(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 24 {
+            cut_selection(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 25 {
+            redo_active(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 26 {
+            undo_active(app)
+            return (turbo_ui.no_event(), false)
+        }
+    }
+    // Ctrl-H shares the ASCII byte 8 with historical terminal Backspace. The
+    // terminal decoder preserves the physical byte and control flag, allowing
+    // DraftIDE to reserve Ctrl-H for Replace without changing ordinary
+    // Backspace or treating every DEL report as the same shortcut.
+    if key.code == .backspace && key.control && !key.alt &&
+        key.byte_value == 8 {
+        request_replace(app)
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .character && key.alt && !key.control &&
+        key.byte_value == cast[u8]('0') {
+        turbo_ui.show_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Open_Files].id,
+        )
+        app^.ui.focused_id = 532
+        app^.status = "Choose an open file and press Enter"
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .left && key.alt && !key.control {
+        _ = navigate_history(app, false)
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .right && key.alt && !key.control {
+        _ = navigate_history(app, true)
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .character && key.alt && !key.control &&
+        (key.byte_value == cast[u8]('x') ||
+            key.byte_value == cast[u8]('X')) {
+        return (turbo_ui.no_event(), request_quit(app))
+    }
+    if key.code == .escape {
+        // Escape is strictly a local cancel key. At the bare desktop there is
+        // no operation to cancel, so consuming it is safer than surprising the
+        // user with an application-wide quit dialog. Alt-X is the explicit
+        // quit command advertised by the File menu and status line.
+        app^.status = "Nothing to cancel"
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .f2 && !key.alt && !key.control {
+        turbo_ui.show_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Program_Files].id,
+        )
+        app^.ui.focused_id = 530
+        app^.status = "Files reachable from the active Program; Enter opens"
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .f1 && !key.alt && !key.control {
+        request_shortcut_help(app)
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .f3 && !key.alt && !key.control {
+        _ = perform_find(app, key.shift)
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .f5 && !key.alt && !key.control {
+        host_action(app, true)
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .f6 && key.control && !key.alt {
+        turbo_ui.activate_next_window(&app^.ui, app^.windows[:], key.shift)
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .f6 && !key.alt && !key.control {
+        turbo_ui.show_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Program_Settings].id,
+        )
+        app^.ui.focused_id = 760
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .f8 && !key.alt && !key.control {
+        toggle_window(app, Window_Diagnostics)
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .f9 && !key.control {
+        if key.alt {
+            _ = refresh_host(app)
+        } else {
+            host_action(app, false)
+        }
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .f12 && !key.alt && !key.control {
+        if key.shift {
+            _ = find_symbol_usages(app)
+        } else {
+            _ = go_to_definition(app)
+        }
+        return (turbo_ui.no_event(), false)
+    }
+    return (event, false)
+}
