@@ -108,6 +108,8 @@ default action has distinct angle-bracket chrome, keyboard focus is visibly
 selected, and labels are centered by terminal columns. Text boxes preserve
 valid UTF-8 while accepting byte-stream terminal input, move/delete by
 grapheme, scroll horizontally, and report `changed`, `submitted`, and `full`.
+`status_bar_bytes` complements the immutable-string form for caller-formatted
+counts without allocation; its slice is borrowed only for the current frame.
 Combo boxes keep their item slice borrowed and separate the owner-window field
 pass from the popup pass so choices remain above every window.
 

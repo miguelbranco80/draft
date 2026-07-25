@@ -445,6 +445,20 @@ pub status_bar :: proc(state: ^State, bounds: Rect, text: string) {
     paint_label(state, bounds, text, state^.theme.status)
 }
 
+// status_bar_bytes is the mutable-byte counterpart for application-formatted
+// counts and paths. It borrows bytes only for this frame, fills the complete
+// bar exactly like status_bar, and applies the same UTF-8 clipping policy.
+pub status_bar_bytes :: proc(state: ^State, bounds: Rect, text: []u8) {
+    fill_rect(state^.surface, state^.clip, bounds, ' ', state^.theme.status)
+    write_clipped_bytes(
+        state^.surface,
+        intersect(state^.clip, bounds),
+        Point{column = bounds.column, row = bounds.row},
+        text,
+        state^.theme.status,
+    )
+}
+
 // dialog_begin uses the ordinary window mechanism and then repaints its content
 // with the dialog style. Modality remains application policy: the caller passes
 // only the dialog window to begin_window_frame when it should capture input.
