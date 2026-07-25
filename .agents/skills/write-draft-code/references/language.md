@@ -235,12 +235,13 @@ copies only the view. `len(array_expression)` is a compile-time query of the
 fixed-array type and does not evaluate `array_expression`; slice and string
 lengths are runtime values.
 
-`string` is immutable bytes, not an owning Unicode string. Indexing returns one
-byte. Use `core/utf8` to validate, decode, count, or encode Unicode scalars when
-scalar boundaries matter; its offsets and widths remain byte counts. Use
-`core/unicode` for extended-grapheme boundaries and deterministic terminal
-column widths, and `tui.write_utf8` to paint complete graphemes. A combining
-mark cannot be painted as a standalone terminal cell.
+`string` is immutable bytes, not an owning Unicode string. Indexing and
+iteration return `u8`; a string loop's optional `usize` index is the zero-based
+byte offset. Use `core/utf8` to validate, decode, count, or encode Unicode
+scalars when scalar boundaries matter; its offsets and widths remain byte
+counts. Use `core/unicode` for extended-grapheme boundaries and deterministic
+terminal column widths, and `tui.write_utf8` to paint complete graphemes. A
+combining mark cannot be painted as a standalone terminal cell.
 
 `raw_data(text)` returns a `[^]u8` pointing at a string's existing first byte.
 It performs no copy or termination and inherits the backing storage's lifetime.
@@ -416,10 +417,21 @@ for index: usize = 0; index < len(output); index += 1 {
 for value, index in input {
     output[index] = transform(value)
 }
+
+for byte, offset in text {
+    consume_byte(byte, offset)
+}
+
+for (key, _), index in entries {
+    consume_key(key, index)
+}
 ```
 
-Iteration values are copies. Mutate an element through an index or pointer.
-The iterable expression is evaluated once.
+Array/slice iteration copies each element; string iteration copies exact bytes
+and does not decode UTF-8. An array or slice of tuples may use one flat,
+exact-arity tuple pattern in the value position, with `_` for discarded
+members. The optional index follows the closing `)`. Mutate underlying storage
+through an index or pointer. The iterable expression is evaluated once.
 
 `switch` evaluates its subject once, never falls through, and supports
 comma-separated labels plus an empty default `case:`. Enum and variant switches
@@ -554,8 +566,9 @@ prefix positionally because no positional value may follow a named argument.
 Each tail
 keeps its own concrete type; untyped integers/floats default independently to
 `int`/`f64`. `len(values)` is a compile-time `usize`, and static iteration
-expands in source order with a compile-time `usize` index. The pack is not a
-slice, tuple, runtime value, type list, or C varargs ABI. Do not take the
+expands in source order with a compile-time `usize` index. Static packs accept
+only a simple value binding and optional index, not a tuple pattern. The pack is
+not a slice, tuple, runtime value, type list, or C varargs ABI. Do not take the
 procedure as a value, use the pack outside `len`/iteration, put `..type` in a
 standalone/C/foreign/exported signature, or invent `[Types: ..type]` syntax.
 The static expansion is not a runtime loop target, so its own body does not

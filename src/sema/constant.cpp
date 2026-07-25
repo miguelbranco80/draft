@@ -4736,21 +4736,33 @@ private:
         return failed_execution(fail(
             header.range, "malformed compile-time iteration header", required));
       }
+      // Evaluate and retain the iterable exactly once, matching runtime loop
+      // capture. Subsequent assignments read only this constant snapshot.
       const NodeId iterable_id = header.children.back();
       const EvalResult iterable = evaluate_expression(
           tree, iterable_id, scope, required);
       if (iterable.status != EvalStatus::Ready) {
         return failed_execution(iterable);
       }
-      if (iterable.value.kind != ConstantKind::Aggregate ||
-          !iterable.type.is_valid() ||
-          semantic_.types.type(iterable.type).kind != TypeKind::Array) {
+      const Type iterable_type = iterable.type.is_valid()
+          ? runtime_type(iterable.type)
+          : Type{};
+      const bool iterates_array =
+          iterable.value.kind == ConstantKind::Aggregate &&
+          iterable_type.kind == TypeKind::Array;
+      const bool iterates_string =
+          iterable.value.kind == ConstantKind::String &&
+          iterable_type.kind == TypeKind::String;
+      if (!iterates_array && !iterates_string) {
         return failed_execution(fail(
             header.range,
-            "compile-time iteration currently requires an array constant",
+            "compile-time iteration requires an array or string constant",
             required));
       }
-      auto pattern_names = [&] (NodeId pattern_id) {
+      // Decode the explicit syntax children into source-order binding names.
+      // Commas no longer need to be rediscovered from the header token span,
+      // and `_` remains present here so tuple member positions stay stable.
+      auto pattern_names = [&](NodeId pattern_id) {
         std::vector<std::string> names;
         const SyntaxNode &pattern = tree.node(pattern_id);
         for (NodeId child_id : pattern.children) {
@@ -4770,48 +4782,129 @@ private:
       const SyntaxNode &value_pattern = tree.node(header.children.front());
       const std::vector<std::string> value_names = pattern_names(
           header.children.front());
-      const std::vector<std::string> index_names = header.children.size() == 3
+      const SyntaxNode *index_pattern = header.children.size() == 3
+          ? &tree.node(header.children[1])
+          : nullptr;
+      const std::vector<std::string> index_names = index_pattern != nullptr
           ? pattern_names(header.children[1])
           : std::vector<std::string>{};
-      if (value_pattern.kind != NodeKind::BindingPattern ||
-          value_names.size() != 1 || index_names.size() > 1) {
+      const bool binds_complete_element =
+          value_pattern.kind == NodeKind::BindingPattern;
+      const bool destructures_tuple =
+          value_pattern.kind == NodeKind::TuplePattern;
+      if ((!binds_complete_element && !destructures_tuple) ||
+          (binds_complete_element && value_names.size() != 1)) {
         return failed_execution(fail(
-            header.range,
-            "compile-time array iteration requires one value and optional index binding",
+            value_pattern.range,
+            "compile-time iteration requires one value binding or tuple pattern",
             required));
       }
-      std::vector<std::string> bindings = value_names;
-      if (!index_names.empty()) bindings.push_back(index_names.front());
-
-      const Type array_type = semantic_.types.type(iterable.type);
-      local_frames_.back().scopes.emplace_back();
-      if (bindings.front() != "_") {
-        declare_local(
-            bindings.front(),
-            iterable.value.elements.empty()
-                ? zero_value(array_type.element).value_or(ConstantValue{})
-                : iterable.value.elements.front(),
-            array_type.element);
+      if (index_pattern != nullptr &&
+          (index_pattern->kind != NodeKind::BindingPattern ||
+           index_names.size() != 1)) {
+        return failed_execution(fail(
+            index_pattern->range,
+            "compile-time iteration index requires one binding",
+            required));
       }
-      if (bindings.size() == 2 && bindings[1] != "_") {
+
+      const TypeId element_type = iterates_string
+          ? semantic_.types.builtins().u8_type
+          : iterable_type.element;
+      const std::size_t iteration_count = iterates_string
+          ? iterable.value.text.size()
+          : iterable.value.elements.size();
+      const auto iteration_element = [&](std::size_t index) {
+        if (iterates_string) {
+          const auto byte = static_cast<unsigned char>(
+              iterable.value.text[index]);
+          return ConstantValue::make_integer(BigInteger::from_u64(byte));
+        }
+        return iterable.value.elements[index];
+      };
+
+      // Validate the complete tuple domain before adding any locals. Constant
+      // execution can run before ordinary body checking for a required package
+      // constant, so it must enforce the same type and arity contract itself.
+      Type tuple_type;
+      if (destructures_tuple) {
+        if (iterates_string ||
+            semantic_.types.type(element_type).kind != TypeKind::Tuple) {
+          return failed_execution(fail(
+              value_pattern.range,
+              "compile-time iteration tuple pattern requires a tuple element type",
+              required));
+        }
+        tuple_type = semantic_.types.type(element_type);
+        if (tuple_type.members.size() != value_names.size()) {
+          return failed_execution(fail(
+              value_pattern.range,
+              "compile-time iteration tuple pattern has the wrong arity",
+              required));
+        }
+        for (const ConstantValue &element : iterable.value.elements) {
+          if (element.kind != ConstantKind::Aggregate ||
+              element.elements.size() != tuple_type.members.size()) {
+            return failed_execution(fail(
+                header.range,
+                "compile-time tuple iteration encountered a malformed tuple value",
+                required));
+          }
+        }
+      }
+
+      // One lexical scope owns the retained value/member and index bindings
+      // for every iteration. Initial values establish their concrete types;
+      // each loop step then performs source-order assignment before the body.
+      local_frames_.back().scopes.emplace_back();
+      const ConstantValue initial_element = iteration_count == 0
+          ? zero_value(element_type).value_or(ConstantValue{})
+          : iteration_element(0);
+      if (binds_complete_element && value_names.front() != "_") {
         declare_local(
-            bindings[1],
+            value_names.front(),
+            initial_element,
+            element_type);
+      }
+      if (destructures_tuple) {
+        for (std::size_t member_index = 0;
+             member_index < value_names.size();
+             ++member_index) {
+          if (value_names[member_index] == "_") continue;
+          declare_local(
+              value_names[member_index],
+              initial_element.elements[member_index],
+              tuple_type.members[member_index]);
+        }
+      }
+      if (index_pattern != nullptr && index_names.front() != "_") {
+        declare_local(
+            index_names.front(),
             ConstantValue::make_integer(0),
             semantic_.types.builtins().usize_type);
       }
-      for (std::size_t index = 0;
-           index < iterable.value.elements.size();
-           ++index) {
+      for (std::size_t index = 0; index < iteration_count; ++index) {
         if (!consume_execution_step(statement.range, required)) {
           local_frames_.back().scopes.pop_back();
           return failed_execution(EvalStatus::Error);
         }
-        if (bindings.front() != "_") {
-          (void)assign_local(bindings.front(), iterable.value.elements[index]);
+        const ConstantValue element = iteration_element(index);
+        if (binds_complete_element && value_names.front() != "_") {
+          (void)assign_local(value_names.front(), element);
         }
-        if (bindings.size() == 2 && bindings[1] != "_") {
+        if (destructures_tuple) {
+          for (std::size_t member_index = 0;
+               member_index < value_names.size();
+               ++member_index) {
+            if (value_names[member_index] == "_") continue;
+            (void)assign_local(
+                value_names[member_index],
+                element.elements[member_index]);
+          }
+        }
+        if (index_pattern != nullptr && index_names.front() != "_") {
           (void)assign_local(
-              bindings[1],
+              index_names.front(),
               ConstantValue::make_integer(BigInteger::from_u64(index)));
         }
         const ExecutionResult iteration =

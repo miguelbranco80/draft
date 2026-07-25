@@ -510,7 +510,7 @@ discovery rule. A nested conditional requests outer context exactly when both
 of its own value branches require context.
 
 `for` is the loop construct. It supports infinite, conditional, clause, and
-array-or-slice iteration forms:
+array, slice, or string iteration forms:
 
 ```draft
 // Infinite.
@@ -532,13 +532,33 @@ for i: usize = 0; i < len(output); i += 1 {
 for value, index in input {
     output[index] = transform(value)
 }
+
+// Strings expose bytes and byte offsets, not decoded Unicode scalars.
+for byte, offset in text {
+    consume_byte(byte, offset)
+}
+
+// A flat tuple pattern destructures each array or slice element.
+for (key, value), index in entries {
+    consume_entry(key, value, index)
+}
 ```
 
 One iteration binding receives the value. A second binding explicitly requests
 the index. The iterable expression is evaluated once before the loop. For an
 array or slice of `T`, the first binding has type `T`; the second has type
-`usize` and takes successive values starting at zero and less than `len`. `_`
-discards either result:
+`usize` and takes successive values starting at zero and less than `len`. For a
+`string`, the first binding has type `u8` and the index is the corresponding
+zero-based byte offset. String iteration observes the exact immutable bytes,
+including embedded zero and every byte of a multi-byte UTF-8 encoding; it does
+not validate or decode Unicode.
+
+For an array or slice whose element type is a tuple, the value position may be
+one parenthesized, flat tuple pattern. Its arity must equal the element tuple's
+arity. Each retained name receives a copy of the corresponding tuple member,
+and the optional index remains the separate binding after the closing `)`.
+Nested patterns are not part of this form. `_` may discard the complete value,
+any tuple member, or the index:
 
 ```draft
 for value in input {
@@ -547,6 +567,10 @@ for value in input {
 
 for _, index in input {
     consume_index(index)
+}
+
+for (key, _), index in entries {
+    consume_key(key, index)
 }
 ```
 

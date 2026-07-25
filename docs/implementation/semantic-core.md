@@ -362,6 +362,29 @@ this row rather than inheriting the symbolic public template summary; two
 substitutions may select different calls and therefore legitimately expose
 different denials.
 
+## Sequence iteration
+
+Status: arrays, slices, immutable string bytes, and flat tuple-element patterns
+implemented in body checking, constant execution, MIR, and native lowering.
+
+An `IterationHeader` retains the value binding pattern, optional index binding,
+and iterable expression as separate syntax children. Semantic consumers never
+infer these roles from comma offsets. Body checking evaluates the iterable once
+and records one `HirIterationBindingSource` beside every retained local: the
+complete element, one source-order tuple member, or the hidden zero-based
+`usize` index. Discarded `_` positions create no local but do not shift the
+source recorded for later bindings.
+
+Array and slice elements keep their declared type. String elements use the same
+unit as indexing and `len`: copied `u8` values at byte offsets. A tuple pattern
+is accepted only for an array or slice element whose tuple arity matches the
+flat pattern. MIR captures the sequence value, loads each selected element at
+most once per iteration, extracts all retained tuple members from that copy,
+and increments the hidden index. The constant executor performs the same
+source-order assignments over aggregate values or exact string bytes, including
+embedded zero bytes. Static heterogeneous packs remain the distinct expansion
+described below and accept only a simple value plus optional index binding.
+
 ## Static heterogeneous argument packs
 
 Status: implemented for local, nested, and cross-package direct calls, symbolic

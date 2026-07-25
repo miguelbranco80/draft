@@ -660,6 +660,14 @@ loop_sum :: proc(values: []i64) -> i64 {
     return total
 }
 
+tuple_sum :: proc(pairs: [](u64, bool)) -> usize {
+    result: usize
+    for (value, _), index in pairs {
+        result += cast[usize](value) + index
+    }
+    return result
+}
+
 choose :: proc(mode: Mode) -> i64 {
     switch mode {
     case .Off:
@@ -690,6 +698,11 @@ views :: proc() -> usize {
     text := "draft"
     middle := text[1:4]
     assert(text[0] == cast[u8]('d'))
+    byte_total: usize
+    for byte, offset in "Aé" {
+        byte_total += cast[usize](byte) + offset
+    }
+    assert(byte_total == 432)
     multi_pointer := cast[[^]u64](&local[0])
     pointer_view := multi_pointer[:3]
     assert(pointer_view[2] == 3)
@@ -732,8 +745,8 @@ main :: proc() {
   EXPECT(state, source.semantics.ok);
   EXPECT(state, source.bodies.ok);
   EXPECT(state, !source.diagnostics.has_errors());
-  EXPECT(state, source.bodies.checked_procedures == 9);
-  EXPECT(state, hir_procedure_count(source.bodies) == 9);
+  EXPECT(state, source.bodies.checked_procedures == 10);
+  EXPECT(state, hir_procedure_count(source.bodies) == 10);
   EXPECT(state, hir_expression_count(source.bodies) >= 55);
   EXPECT(state, hir_statement_count(source.bodies) >= 28);
   EXPECT(state, hir_block_count(source.bodies) >= 12);
@@ -753,6 +766,8 @@ main :: proc() {
   bool saw_tuple_destructuring = false;
   bool saw_variant_payload_binding = false;
   bool saw_index_only_iteration = false;
+  bool saw_string_iteration = false;
+  bool saw_tuple_iteration = false;
   for (const draft::ProcedureBodyHirResult &product :
        source.bodies.procedures) {
     for (std::size_t index = 0;
@@ -785,6 +800,46 @@ main :: proc() {
            statement.iteration_binding_sources.size() == 1 &&
            statement.iteration_binding_sources.front().kind ==
                draft::HirIterationBindingKind::Index);
+      if (statement.kind == draft::HirStatementKind::For &&
+          statement.for_kind == draft::HirForKind::Iteration &&
+          !statement.expressions.empty() &&
+          product.program.expression(statement.expressions.front()).type ==
+              source.bodies.package.types.builtins().string_type &&
+          statement.bindings.size() == 2 &&
+          statement.iteration_binding_sources.size() == 2) {
+        const draft::Symbol &byte = source.bodies.package.symbols.symbol(
+            statement.bindings[0]);
+        const draft::Symbol &offset = source.bodies.package.symbols.symbol(
+            statement.bindings[1]);
+        saw_string_iteration =
+            byte.type == source.bodies.package.types.builtins().u8_type &&
+            offset.type == source.bodies.package.types.builtins().usize_type &&
+            statement.iteration_binding_sources[0].kind ==
+                draft::HirIterationBindingKind::Element &&
+            statement.iteration_binding_sources[1].kind ==
+                draft::HirIterationBindingKind::Index;
+      }
+      if (statement.kind == draft::HirStatementKind::For &&
+          statement.for_kind == draft::HirForKind::Iteration &&
+          statement.bindings.size() == 2 &&
+          statement.iteration_binding_sources.size() == 2 &&
+          statement.iteration_binding_sources[0].kind ==
+              draft::HirIterationBindingKind::TupleMember &&
+          statement.iteration_binding_sources[0].tuple_member_index == 0 &&
+          statement.iteration_binding_sources[1].kind ==
+              draft::HirIterationBindingKind::Index) {
+        const draft::Symbol &value = source.bodies.package.symbols.symbol(
+            statement.bindings[0]);
+        const draft::Symbol &tuple_index = source.bodies.package.symbols.symbol(
+            statement.bindings[1]);
+        const draft::TypeId u64_type =
+            source.bodies.package.types.find_builtin("u64").value_or(
+                source.bodies.package.types.builtins().invalid);
+        saw_tuple_iteration =
+            value.type == u64_type &&
+            tuple_index.type ==
+                source.bodies.package.types.builtins().usize_type;
+      }
       if (statement.kind == draft::HirStatementKind::Switch) {
         saw_switch_shape = saw_switch_shape ||
             (statement.switch_cases.size() == 2 &&
@@ -808,6 +863,8 @@ main :: proc() {
   EXPECT(state, saw_tuple_destructuring);
   EXPECT(state, saw_variant_payload_binding);
   EXPECT(state, saw_index_only_iteration);
+  EXPECT(state, saw_string_iteration);
+  EXPECT(state, saw_tuple_iteration);
 }
 
 void test_body_diagnostics(TestState &state) {
@@ -1245,6 +1302,60 @@ main :: proc() {
                     std::string::npos);
   EXPECT(state, rendered.find("continue is outside a loop") !=
                     std::string::npos);
+}
+
+void test_iteration_pattern_diagnostics(TestState &state) {
+  CheckedSource source(R"draft(
+package bodies
+
+non_tuple :: proc(values: [2]u32) {
+    for (left, right) in values {}
+}
+
+wrong_arity :: proc(values: [1](u32, bool)) {
+    for (only,) in values {}
+}
+
+string_tuple :: proc() {
+    for (byte, offset) in "x" {}
+}
+
+static_pack :: proc(values: ..type) {
+    for (value, extra) in values {}
+}
+)draft");
+
+  EXPECT(state, !source.bodies.ok);
+  bool saw_non_tuple = false;
+  bool saw_wrong_arity = false;
+  bool saw_string_tuple = false;
+  bool saw_static_pack = false;
+  for (const draft::Diagnostic &diagnostic :
+       source.diagnostics.diagnostics()) {
+    if (diagnostic.severity != draft::DiagnosticSeverity::Error) continue;
+    EXPECT(state, diagnostic.range.is_valid());
+    const std::string_view selected = source.sources.text(diagnostic.range);
+    saw_non_tuple = saw_non_tuple ||
+        (diagnostic.message ==
+             "iteration tuple pattern requires a tuple element type" &&
+         selected == "(left, right)");
+    saw_wrong_arity = saw_wrong_arity ||
+        (diagnostic.message ==
+             "iteration tuple pattern has the wrong arity" &&
+         selected == "(only,)");
+    saw_string_tuple = saw_string_tuple ||
+        (diagnostic.message ==
+             "iteration tuple pattern requires a tuple element type" &&
+         selected == "(byte, offset)");
+    saw_static_pack = saw_static_pack ||
+        (diagnostic.message ==
+             "static pack iteration requires a single value and optional index binding" &&
+         selected == "(value, extra)");
+  }
+  EXPECT(state, saw_non_tuple);
+  EXPECT(state, saw_wrong_arity);
+  EXPECT(state, saw_string_tuple);
+  EXPECT(state, saw_static_pack);
 }
 
 void test_value_parametric_nominal_composition(TestState &state) {
@@ -4031,6 +4142,7 @@ int main() {
   test_static_argument_pack_instances(state);
   test_named_and_default_arguments(state);
   test_static_argument_pack_use_diagnostics(state);
+  test_iteration_pattern_diagnostics(state);
   test_value_parametric_nominal_composition(state);
   test_procedural_structural_alias_composition(state);
   test_dependent_value_inference(state);

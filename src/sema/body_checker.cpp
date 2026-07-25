@@ -7854,14 +7854,25 @@ private:
     const SyntaxNode &value_pattern = tree.node(header.children.front());
     const std::vector<SourceName> value_names = names_in_binding_pattern(
         tree, header.children.front());
-    const std::vector<SourceName> index_names = header.children.size() == 3
+    const SyntaxNode *index_pattern = header.children.size() == 3
+        ? &tree.node(header.children[1])
+        : nullptr;
+    const std::vector<SourceName> index_names = index_pattern != nullptr
         ? names_in_binding_pattern(tree, header.children[1])
         : std::vector<SourceName>{};
     if (value_pattern.kind != NodeKind::BindingPattern ||
-        value_names.size() != 1 || index_names.size() > 1) {
+        value_names.size() != 1) {
       diagnostics_.error(
-          header.range,
+          value_pattern.range,
           "static pack iteration requires a single value and optional index binding");
+      return hir_.add_statement(std::move(statement));
+    }
+    if (index_pattern != nullptr &&
+        (index_pattern->kind != NodeKind::BindingPattern ||
+         index_names.size() != 1)) {
+      diagnostics_.error(
+          index_pattern->range,
+          "static pack iteration index requires one binding");
       return hir_.add_statement(std::move(statement));
     }
     std::vector<SourceName> names = value_names;
@@ -8096,25 +8107,51 @@ private:
         const HirExpressionId iterable =
             check_expression(tree, iterable_id, scope);
         statement.expressions.push_back(iterable);
+        // Normalize the iterable to the element contract visible inside the
+        // body. Strings deliberately join arrays and slices here rather than
+        // acquiring a separate lowering path: all three are finite sequences
+        // with copied elements and a hidden usize induction value.
         const Type iterable_type = runtime_scalar_type(
             hir_.expression(iterable).type);
         TypeId element_type = semantic_.types.builtins().invalid;
-        if (iterable_type.kind == TypeKind::Array || iterable_type.kind == TypeKind::Slice) {
+        if (iterable_type.kind == TypeKind::Array ||
+            iterable_type.kind == TypeKind::Slice) {
           element_type = iterable_type.element;
+        } else if (iterable_type.kind == TypeKind::String) {
+          // A Draft string is an immutable byte view. Iteration follows the
+          // same unit as indexing and len: copied u8 values at zero-based byte
+          // offsets. It deliberately does not decode Unicode scalar values.
+          element_type = semantic_.types.builtins().u8_type;
         } else {
-          diagnostics_.error(header.range, "iteration requires an array or slice");
+          diagnostics_.error(
+              header.range,
+              "iteration requires an array, slice, or string");
         }
         const SyntaxNode &value_pattern = tree.node(header.children.front());
         const std::vector<SourceName> value_names = names_in_binding_pattern(
             tree, header.children.front());
-        const std::vector<SourceName> index_names = header.children.size() == 3
+        const SyntaxNode *index_pattern = header.children.size() == 3
+            ? &tree.node(header.children[1])
+            : nullptr;
+        const std::vector<SourceName> index_names = index_pattern != nullptr
             ? names_in_binding_pattern(tree, header.children[1])
             : std::vector<SourceName>{};
-        if (value_pattern.kind != NodeKind::BindingPattern ||
-            value_names.size() != 1 || index_names.size() > 1) {
+        const bool binds_complete_element =
+            value_pattern.kind == NodeKind::BindingPattern;
+        const bool destructures_tuple =
+            value_pattern.kind == NodeKind::TuplePattern;
+        if ((!binds_complete_element && !destructures_tuple) ||
+            (binds_complete_element && value_names.size() != 1)) {
           diagnostics_.error(
               value_pattern.range,
-              "iteration requires a single value and optional index binding");
+              "iteration requires one value binding or tuple pattern");
+        }
+        if (index_pattern != nullptr &&
+            (index_pattern->kind != NodeKind::BindingPattern ||
+             index_names.size() != 1)) {
+          diagnostics_.error(
+              index_pattern->range,
+              "iteration index requires one binding");
         }
 
         auto declare_iteration_binding = [&](
@@ -8136,14 +8173,51 @@ private:
             statement.iteration_binding_sources.push_back(source);
           }
         };
-        if (value_pattern.kind == NodeKind::BindingPattern &&
-            value_names.size() == 1) {
+        // Preserve authored source positions while declaring only retained
+        // locals. Each HIR source names its initializer independently, so a
+        // discard cannot shift a later tuple member or the optional index.
+        if (binds_complete_element && value_names.size() == 1) {
           declare_iteration_binding(
               value_names.front(),
               element_type,
               {HirIterationBindingKind::Element, 0});
         }
-        if (index_names.size() == 1) {
+        if (destructures_tuple) {
+          std::vector<TypeId> member_types(
+              value_names.size(), semantic_.types.builtins().invalid);
+          if (!is_invalid_type(element_type)) {
+            const Type element = semantic_.types.type(element_type);
+            if (element.kind != TypeKind::Tuple) {
+              diagnostics_.error(
+                  value_pattern.range,
+                  "iteration tuple pattern requires a tuple element type");
+            } else {
+              if (element.members.size() != value_names.size()) {
+                diagnostics_.error(
+                    value_pattern.range,
+                    "iteration tuple pattern has the wrong arity");
+              }
+              const std::size_t member_count = std::min(
+                  element.members.size(), member_types.size());
+              for (std::size_t member_index = 0;
+                   member_index < member_count;
+                   ++member_index) {
+                member_types[member_index] = element.members[member_index];
+              }
+            }
+          }
+          for (std::size_t member_index = 0;
+               member_index < value_names.size();
+               ++member_index) {
+            declare_iteration_binding(
+                value_names[member_index],
+                member_types[member_index],
+                {HirIterationBindingKind::TupleMember, member_index});
+          }
+        }
+        if (index_pattern != nullptr &&
+            index_pattern->kind == NodeKind::BindingPattern &&
+            index_names.size() == 1) {
           declare_iteration_binding(
               index_names.front(),
               semantic_.types.builtins().usize_type,

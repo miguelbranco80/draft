@@ -1916,6 +1916,9 @@ private:
       MirValueId index,
       SourceRange range) {
     const Type type = runtime_scalar_type(iterable_type);
+    const TypeId element_type = type.kind == TypeKind::String
+        ? semantic_.types.builtins().u8_type
+        : type.element;
     MirValueId base;
     if (type.kind == TypeKind::Array) {
       base = local_address(iterable_local, range);
@@ -1926,15 +1929,15 @@ private:
     address.kind = MirInstructionKind::IndexAddress;
     address.range = range;
     address.type = semantic_.types.builtins().rawptr_type;
-    address.addressed_type = type.element;
+    address.addressed_type = element_type;
     address.operands = {base, index};
-    address.offset = semantic_.types.type(type.element).layout.size;
+    address.offset = semantic_.types.type(element_type).layout.size;
     // Iteration captures either an inline array in a naturally aligned local
-    // or an already typed slice view. Both contracts preserve element
-    // alignment; unlike general member/index lowering, no packed enclosing
-    // occurrence survives this value capture.
-    address.alignment = natural_alignment(type.element);
-    return load(emit_value(std::move(address)), type.element, range);
+    // or an already typed slice/string view. All three contracts preserve the
+    // selected element's alignment; unlike general member/index lowering, no
+    // packed enclosing occurrence survives this value capture.
+    address.alignment = natural_alignment(element_type);
+    return load(emit_value(std::move(address)), element_type, range);
   }
 
   void lower_iteration_loop(const HirStatement &statement) {
@@ -1972,7 +1975,8 @@ private:
         semantic_.types.builtins().usize_type,
         statement.range);
     MirValueId iterable_for_length = iterable_value;
-    if (iterable_type.kind == TypeKind::Slice) {
+    if (iterable_type.kind == TypeKind::Slice ||
+        iterable_type.kind == TypeKind::String) {
       iterable_for_length = load(
           local_address(iterable_local, statement.range),
           iterable_expression.type,
@@ -2017,9 +2021,43 @@ private:
         store(local_address(local, statement.range), element, statement.range);
         break;
       case HirIterationBindingKind::TupleMember:
-        diagnostics_.error(
-            statement.range,
-            "tuple iteration binding reached MIR before tuple lowering was implemented");
+        if (iterable_type.kind != TypeKind::Array &&
+            iterable_type.kind != TypeKind::Slice) {
+          diagnostics_.error(
+              statement.range,
+              "tuple iteration HIR requires an array or slice element");
+          break;
+        }
+        if (!element.is_valid()) {
+          // One aggregate load serves every retained tuple member. This keeps
+          // iteration's copy semantics explicit and avoids rereading storage
+          // if an earlier body statement could observe an aliased mutation.
+          element = iteration_element(
+              iterable_local,
+              iterable_expression.type,
+              index,
+              statement.range);
+        }
+        {
+          const Type tuple = semantic_.types.type(iterable_type.element);
+          const std::size_t member_index =
+              statement.iteration_binding_sources[binding_index]
+                  .tuple_member_index;
+          if (tuple.kind != TypeKind::Tuple ||
+              member_index >= tuple.members.size() ||
+              member_index >= tuple.member_offsets.size()) {
+            diagnostics_.error(
+                statement.range,
+                "tuple iteration binding index is inconsistent");
+            break;
+          }
+          const MirValueId member = extract_member(
+              element,
+              tuple.members[member_index],
+              tuple.member_offsets[member_index],
+              statement.range);
+          store(local_address(local, statement.range), member, statement.range);
+        }
         break;
       case HirIterationBindingKind::Index:
         store(local_address(local, statement.range), index, statement.range);

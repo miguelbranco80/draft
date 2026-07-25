@@ -185,6 +185,22 @@ main :: proc() {
         index_total += index
     }
     assert(index_total == 6)
+    expected_bytes := [3]u8{65, 195, 169}
+    byte_count: usize
+    for byte, offset in "Aé" {
+        assert(offset < len(expected_bytes))
+        assert(byte == expected_bytes[offset])
+        byte_count += 1
+    }
+    assert(byte_count == len(expected_bytes))
+    pairs := [3](u64, bool){(10, true), (20, false), (30, true)}
+    selected_total: u64
+    for (value, selected), index in pairs {
+        if selected {
+            selected_total += value + cast[u64](index)
+        }
+    }
+    assert(selected_total == 42)
     outcome := summarize(readings[:])
     switch outcome {
     case .ok(summary):

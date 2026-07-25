@@ -84,8 +84,8 @@ expression would evaluate the same way again. A conditional fact records its
 polarity. A switch-case fact records the matching authored labels, while a
 default fact records the complete explicit label set that failed to match.
 Loop facts are conservative: mutation or address escape invalidates affected
-bindings, and array/slice iteration relates the index to the captured length.
-Clause-loop ranges are supplied only for the canonical
+bindings, and array, slice, or string iteration relates the index to the
+captured length. Clause-loop ranges are supplied only for the canonical
 `index = 0; index < upper; index += 1` form when `upper` is independent of
 `index` and the body neither mutates nor exposes the index address. Nested
 procedures do not inherit outer runtime facts, and active denials redact facts

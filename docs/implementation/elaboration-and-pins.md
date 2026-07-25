@@ -322,11 +322,13 @@ whole switch, including labels written after the default, because reaching that
 body proves that none matched.
 
 Conditional and three-clause loop bodies carry the typed condition decision
-that admitted the current iteration. Array/slice iteration bodies carry the
-typed iterable expression. All rows describe historical structured-control
-decisions: if code mutates an operand afterward, the row does not assert that
-re-evaluating the displayed source at the agent site would produce the entry
-value. The provider spellings make this explicit with `*-entered-*` kinds.
+that admitted the current iteration. Array, slice, and string iteration bodies
+carry the typed iterable expression; tuple destructuring does not change that
+range fact because the hidden index is still bounded by the captured
+iterable's length. All rows describe historical structured-control decisions:
+if code mutates an operand afterward, the row does not assert that re-evaluating
+the displayed source at the agent site would produce the entry value. The
+provider spellings make this explicit with `*-entered-*` kinds.
 
 The semantic rows retain only process-local syntax references and TypeIds.
 Obligation construction converts them to comment-free canonical Draft source,
@@ -345,9 +347,10 @@ Consequently a site before a direct index store may retain the fact while a site
 afterward does not; a mutation in one branch or nested loop removes the fact at
 the join/fixed point.
 
-Array/slice iteration proves `0 <= index < captured_len(iterable)`: MIR captures
-the iterable once and resets the source index from its hidden induction slot on
-every body entry. A three-clause loop proves
+Array, slice, or string iteration proves
+`0 <= index < captured_len(iterable)`: MIR captures the iterable once and
+resets the source index from its hidden induction slot on every body entry. A
+three-clause loop proves
 `0 <= index < header_value(upper)` only for the canonical
 `index = 0; index < upper; index += 1` shape, only when `upper` does not depend
 on `index`, and only when the body neither mutates nor exposes `index`. The two

@@ -1607,7 +1607,37 @@ select_middle :: proc() -> string {
     return "abcdef"[1:4]
 }
 
+sum_bytes :: proc(value: string) -> usize {
+    result: usize
+    for byte, offset in value {
+        result += cast[usize](byte) + offset
+    }
+    return result
+}
+
+sum_pairs :: proc() -> usize {
+    pairs := [2](usize, bool){(10, true), (20, false)}
+    result: usize
+    for (value, _), index in pairs {
+        result += value + index
+    }
+    return result
+}
+
+sum_empty_pairs :: proc() -> usize {
+    pairs := [0](usize, bool){}
+    result: usize
+    for (value, _), index in pairs {
+        result += value + index
+    }
+    return result
+}
+
 From_Procedure :: select_middle()
+Byte_Sum :: sum_bytes("A\0\u{e9}")
+Empty_Byte_Sum :: sum_bytes("")
+Tuple_Iteration_Sum :: sum_pairs()
+Empty_Tuple_Iteration_Sum :: sum_empty_pairs()
 )draft");
   if (valid.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
@@ -1648,6 +1678,27 @@ From_Procedure :: select_middle()
     EXPECT(state, byte_value->kind == draft::ConstantKind::Integer);
     EXPECT(state, byte_value->integer.to_decimal() == "97");
   }
+
+  const auto expect_integer = [&](std::string_view name,
+                                  std::string_view expected) {
+    const std::optional<draft::SymbolId> symbol =
+        find_symbol(valid.analysis.package, name);
+    EXPECT(state, symbol.has_value());
+    const draft::ConstantValue *value = symbol.has_value()
+        ? valid.analysis.constants.find(*symbol)
+        : nullptr;
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::Integer);
+      EXPECT(state, value->integer.to_decimal() == expected);
+    }
+  };
+  // The four bytes are 65, 0, 195, and 169. Their sum is 429 and the
+  // zero-based byte offsets add another 6.
+  expect_integer("Byte_Sum", "435");
+  expect_integer("Empty_Byte_Sum", "0");
+  expect_integer("Tuple_Iteration_Sum", "31");
+  expect_integer("Empty_Tuple_Iteration_Sum", "0");
 
   const std::optional<draft::SymbolId> wrapped_tail =
       find_symbol(valid.analysis.package, "Wrapped_Tail");

@@ -236,6 +236,75 @@ main :: proc() -> i64 {
   EXPECT(state, rendered.find("unresolved synthesis expression") != std::string::npos);
 }
 
+void test_sequence_iteration_lowering(TestState &state) {
+  LoweredSource source(R"draft(
+package mir
+
+sum_bytes :: proc(text: string) -> usize {
+    result: usize
+    for byte, offset in text {
+        result += cast[usize](byte) + offset
+    }
+    return result
+}
+
+sum_pairs :: proc(pairs: [](usize, bool)) -> usize {
+    result: usize
+    for (value, _), index in pairs {
+        result += value + index
+    }
+    return result
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(
+        source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.semantics.ok);
+  EXPECT(state, source.bodies.ok);
+  EXPECT(state, source.mir.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  std::size_t string_lengths = 0;
+  std::size_t byte_addresses = 0;
+  std::size_t tuple_addresses = 0;
+  std::size_t tuple_extractions = 0;
+  const draft::TypeId u8_type =
+      source.bodies.package.types.builtins().u8_type;
+  for (const draft::MirProcedure &procedure : source.mir.procedures) {
+    const draft::Symbol &owner =
+        source.bodies.package.symbols.symbol(procedure.symbol);
+    for (const draft::MirInstruction &instruction : procedure.instructions) {
+      if (owner.name == "sum_bytes" &&
+          instruction.kind == draft::MirInstructionKind::Length) {
+        ++string_lengths;
+      }
+      if (owner.name == "sum_bytes" &&
+          instruction.kind == draft::MirInstructionKind::IndexAddress &&
+          instruction.addressed_type == u8_type) {
+        ++byte_addresses;
+        EXPECT(state, instruction.offset == 1);
+        EXPECT(state, instruction.alignment == 1);
+      }
+      if (owner.name == "sum_pairs" &&
+          instruction.kind == draft::MirInstructionKind::IndexAddress &&
+          source.bodies.package.types.type(instruction.addressed_type).kind ==
+              draft::TypeKind::Tuple) {
+        ++tuple_addresses;
+      }
+      if (owner.name == "sum_pairs" &&
+          instruction.kind == draft::MirInstructionKind::ExtractMember) {
+        ++tuple_extractions;
+      }
+    }
+  }
+  EXPECT(state, string_lengths == 1);
+  EXPECT(state, byte_addresses == 1);
+  EXPECT(state, tuple_addresses == 1);
+  EXPECT(state, tuple_extractions == 1);
+}
+
 void test_required_integer_traps_are_explicit(TestState &state) {
   LoweredSource source(R"draft(
 package mir
@@ -669,6 +738,7 @@ int main() {
   TestState state;
   test_structured_lowering(state);
   test_unresolved_synthesis_stops_lowering(state);
+  test_sequence_iteration_lowering(state);
   test_required_integer_traps_are_explicit(state);
   test_disabled_assertions_do_not_evaluate_operands(state);
   test_static_argument_packs_erase_before_mir(state);

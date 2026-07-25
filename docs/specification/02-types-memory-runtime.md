@@ -549,12 +549,14 @@ value, or variadic ABI. Its only value-like operations are `len(values)`, which
 is a compile-time `usize`, and `for value, index in values`. Static iteration
 expands once per supplied tail value in source order. `value` denotes that
 ordinary argument with its exact concrete static type; the optional `index` is
-a compile-time `usize` beginning at zero. `_` may discard either binding. The
-same dependent-`when` refinement rules described below apply to `value`, and
-an index-dependent `when` is selected independently in each expansion. Static
-iteration is not itself a runtime control target: a `break` inside its source
-body applies only to an enclosing runtime loop or switch, and a `continue`
-applies only to an enclosing runtime loop.
+a compile-time `usize` beginning at zero. `_` may discard either binding. A
+static heterogeneous pack uses only this simple value and optional index
+pattern; runtime tuple-pattern iteration does not destructure pack elements.
+The same dependent-`when` refinement rules described below apply to `value`,
+and an index-dependent `when` is selected independently in each expansion.
+Static iteration is not itself a runtime control target: a `break` inside its
+source body applies only to an enclosing runtime loop or switch, and a
+`continue` applies only to an enclosing runtime loop.
 
 Before executable HIR or MIR, every ordered tuple of explicit generic arguments
 and pack element types produces an ordinary fixed-signature procedure. Equal

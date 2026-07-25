@@ -447,10 +447,11 @@ struct SemanticBranchRefinement {
 //   IterationIndex:     0 <= binding < captured_len(upper)
 //   CanonicalInduction: 0 <= binding < header_value(upper)
 //
-// `captured_len` is the length retained when an array/slice iteration begins.
-// `header_value` is the value observed by the clause condition for the current
-// admitted iteration. Neither form claims that re-evaluating mutable `upper`
-// source at the agent site would produce the same value.
+// `captured_len` is the length retained when an array, slice, or string
+// iteration begins. `header_value` is the value observed by the clause
+// condition for the current admitted iteration. Neither form claims that
+// re-evaluating mutable `upper` source at the agent site would produce the same
+// value.
 enum class SemanticLoopRangeKind {
   IterationIndex,
   CanonicalInduction,
