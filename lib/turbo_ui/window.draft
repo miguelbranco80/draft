@@ -73,6 +73,42 @@ zoom_control_rect :: proc(bounds: Rect) -> Rect {
     }
 }
 
+// window_title_rect returns the title-text slot between the left-side close
+// control and the right-side zoom control. Both begin_window and the byte-title
+// operation must use this exact geometry: computing the slot twice previously
+// made a future chrome change capable of clipping the static and owned title
+// forms differently. An empty rectangle means that the current narrow window
+// has room for structural chrome but no title text.
+window_title_rect :: proc(window: ^Window_State) -> Rect {
+    title_column := window^.bounds.column + 2
+    if window^.flags.closable {
+        title_column += 2
+    }
+
+    title_end := rect_right(window^.bounds) - 1
+    zoom_rect := zoom_control_rect(window^.bounds)
+    close_point := Point{
+        column = window^.bounds.column + 1,
+        row = window^.bounds.row,
+    }
+    zoom_visible := window^.flags.zoomable && !rect_empty(zoom_rect) &&
+        (!window^.flags.closable || !point_in_rect(close_point, zoom_rect))
+    if zoom_visible {
+        // Preserve one border cell between title text and the zoom glyph. The
+        // glyph rectangle itself already excludes the upper-right corner.
+        title_end = zoom_rect.column - 1
+    }
+    if title_end <= title_column {
+        return Rect{}
+    }
+    return Rect{
+        column = title_column,
+        row = window^.bounds.row,
+        width = title_end - title_column,
+        height = 1,
+    }
+}
+
 pub window_init :: proc(id: Widget_Id, bounds: Rect, z: u32) -> Window_State {
     assert(id != No_Widget, "turbo_ui window ID zero is reserved")
     return Window_State{
@@ -1002,29 +1038,18 @@ pub begin_window :: proc(
     if active {
         title_style = state^.theme.active_title
     }
-    title_column := window^.bounds.column + 2
     if close_visible {
         put_clipped(state^.surface, state^.desktop, close_point, '■', title_style)
-        title_column += 2
     }
-    title_end := right - 1
     if zoom_visible {
         zoom_glyph := '↕'
         if window^.zoomed {
             zoom_glyph = '↔'
         }
         put_clipped(state^.surface, state^.desktop, zoom_point, zoom_glyph, title_style)
-        // Keep the separator cell visible between title text and the arrow;
-        // zoom_rect already excludes the structural upper-right corner.
-        title_end = zoom_rect.column - 1
     }
-    if title_end > title_column {
-        title_clip := Rect{
-            column = title_column,
-            row = window^.bounds.row,
-            width = title_end - title_column,
-            height = 1,
-        }
+    title_clip := window_title_rect(window)
+    if !rect_empty(title_clip) {
         result.painted = result.painted && write_clipped(
             state^.surface,
             title_clip,
@@ -1043,6 +1068,44 @@ pub begin_window :: proc(
         )
     }
     return result
+}
+
+// window_title_bytes paints an application-owned byte label into the title
+// slot established by the immediately preceding begin_window call. It exists
+// because Draft 1 intentionally cannot reinterpret a mutable byte slice as an
+// immutable string: file paths and generated document labels are ordinarily
+// stored in owned byte buffers. begin_window must receive an empty static title
+// when this operation is used, so the freshly painted border remains the clean
+// background behind clipped bytes. The bytes are interpreted as UTF-8 by the
+// same cell painter as other UI text and are borrowed only for this call.
+pub window_title_bytes :: proc(
+    state: ^State,
+    window: ^Window_State,
+    title: []u8,
+) -> bool {
+    assert(state^.frame_open, "turbo_ui window title outside a frame")
+    assert(state^.current_window == window^.id,
+        "turbo_ui byte title must follow its window begin")
+    if !window^.visible || rect_empty(window^.bounds) ||
+        window^.bounds.width < 3 || window^.bounds.height < 2 {
+        return true
+    }
+
+    title_clip := window_title_rect(window)
+    if rect_empty(title_clip) {
+        return true
+    }
+    title_style := state^.theme.title
+    if state^.active_window == window^.id {
+        title_style = state^.theme.active_title
+    }
+    return write_clipped_bytes(
+        state^.surface,
+        title_clip,
+        Point{column = title_clip.column, row = title_clip.row},
+        title,
+        title_style,
+    )
 }
 
 // end_window restores desktop clipping. The caller may inspect the context's

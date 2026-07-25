@@ -148,6 +148,28 @@ test_button_chrome_and_access :: proc(test: ^testing.Test) {
     )
     testing.expect(test, shadow_valid && shadow.value == Shadow_Glyph)
 
+    // The public layout width is an exact footprint, not a byte-count guess.
+    // At its minimum width the complete label still precedes the closing face
+    // bracket, including when one Unicode glyph occupies two terminal cells.
+    testing.expect(test, button_width("Discard") == 10)
+    testing.expect(test, button_width("界") == 5)
+    minimum := Rect{
+        column = 16,
+        row = 5,
+        width = button_width("Discard"),
+        height = 2,
+    }
+    begin_frame(&state, &surface, no_event(), theme)
+    button(&state, 92, minimum, "Discard")
+    end_frame(&state)
+    (last_label, last_label_valid) := tui.cell_at(&surface, 23, 5)
+    (minimum_right, minimum_right_valid) := tui.cell_at(&surface, 24, 5)
+    testing.expect(
+        test,
+        last_label_valid && last_label.value == 'd' &&
+            minimum_right_valid && minimum_right.value == ']',
+    )
+
     // The mnemonic is scoped like the button's default/cancel policy and does
     // not require the button to be the currently focused control.
     state.focused_id = 91
@@ -616,7 +638,16 @@ test_window_chrome_and_modality :: proc(test: ^testing.Test) {
         position = close_point, action = .press, button = .primary,
         primary_down = true,
     }), theme, windows[:])
-    frame := begin_window(&state, &windows[0], "Main")
+    frame := begin_window(&state, &windows[0], "")
+    dynamic_title: [9]u8
+    title_text := "main.draf"
+    for index: usize = 0; index < len(title_text); index += 1 {
+        dynamic_title[index] = title_text[index]
+    }
+    testing.expect(test,
+        window_title_bytes(&state, &windows[0], dynamic_title[:]))
+    (title_last, title_last_valid) := tui.cell_at(&surface, 14, 2)
+    testing.expect(test, title_last_valid && title_last.value == 'f')
     chrome_right := rect_right(windows[0].bounds)
     (zoom, zoom_valid) := tui.cell_at(
         &surface,

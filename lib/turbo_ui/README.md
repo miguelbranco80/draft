@@ -37,6 +37,10 @@ call `hide_window`. The frame includes a close box, reversible zoom box, and
 visible lower-right resize handle. Alt-F3 requests close; Ctrl-F5 enters
 keyboard move/size mode, arrows move, Shift-arrows resize, Enter accepts, and
 Escape restores the entry rectangle.
+When a title lives in mutable/owned byte storage, pass an empty static title to
+`begin_window` and immediately call `window_title_bytes` before painting the
+content. This keeps Draft 1's string immutability boundary explicit while still
+supporting file paths and generated document labels without allocation.
 
 Chrome geometry follows `core/unicode`'s pinned terminal-width policy. The
 text-default zoom arrow occupies one cell immediately before the upper-right
@@ -101,7 +105,9 @@ Controls are ordinary procedure calls over caller-owned values:
 Button bounds describe their complete caller-reserved footprint. A footprint
 at least two rows high uses its final row and column for a real shade-glyph
 shadow; only the face is hit-tested, and a held face moves down/right over the
-shadow. `.default_action` and `.cancel_action` roles accept an otherwise-
+shadow. Use `button_width(label)` when a horizontal layout should reserve the
+smallest complete brackets-plus-label-plus-shadow footprint; byte length is not
+terminal width. `.default_action` and `.cancel_action` roles accept an otherwise-
 unhandled Enter or Escape in the current scope. An optional printable ASCII
 access key underlines the same label character and activates it with Alt. The
 default action has distinct angle-bracket chrome, keyboard focus is visibly

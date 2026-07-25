@@ -68,6 +68,20 @@ text_columns :: proc(text: string) -> (usize, bool) {
     return (columns, true)
 }
 
+// button_width returns the smallest two-row footprint which can display the
+// complete label, both face brackets, and the one-cell right shadow. Dialog
+// layout should use this operation instead of repeating byte-count arithmetic:
+// UTF-8 byte length is not terminal width, and forgetting the shadow column
+// visibly truncates the final label cell.
+pub button_width :: proc(label: string) -> usize {
+    (columns, valid) := text_columns(label)
+    assert(valid, "turbo_ui button label must be printable UTF-8")
+    if !valid {
+        return 3
+    }
+    return saturated_add(columns, 3)
+}
+
 // button_face returns the painted and interactive face inside one explicit
 // footprint. The ordinary resting face is followed by a bottom/right shadow.
 // A held face moves one cell down/right and covers that shadow, which gives the
