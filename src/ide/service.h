@@ -83,6 +83,18 @@ typedef struct DraftCompilerServicePackageRow {
   uint8_t has_children;
 } DraftCompilerServicePackageRow;
 
+// NavigationLocation is one exact half-open source range in the latest
+// successful checked graph. source is an opaque session-local file index used
+// only with the navigation source-copy calls below. line and column are
+// one-based display coordinates. The record contains no borrowed pointer.
+typedef struct DraftCompilerServiceNavigationLocation {
+  size_t source;
+  size_t start;
+  size_t end;
+  size_t line;
+  size_t column;
+} DraftCompilerServiceNavigationLocation;
+
 // create validates and canonicalizes the borrowed configuration ranges, owns a
 // new compiler session on success, and returns NULL on failure. root may be
 // empty to select the first deterministically discovered executable root;
@@ -107,7 +119,7 @@ DRAFT_COMPILER_SERVICE_API uint8_t draft_compiler_session_open_workspace(
 DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_workspace_path(
     void *session, uint8_t *destination, size_t capacity);
 
-// check/build borrow a complete set of open project buffers synchronously.
+// check/build borrow a complete set of open workspace buffers synchronously.
 // active_overlay selects the row whose syntax spans are published. A nil row,
 // invalid range, duplicate path, unknown path, or out-of-range active index
 // writes a failed result. Build always checks the exact set first and publishes
@@ -153,6 +165,46 @@ draft_compiler_session_package_row(void *session, size_t index,
 
 DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_package_row_text(
     void *session, size_t index, uint8_t *destination, size_t capacity);
+
+// prepare_navigation resolves the semantic symbol beneath byte_offset in path
+// and replaces the session's definition/usage rows. It returns the stable
+// NavigationStatus ordinal: unavailable=0, current-check-failed=1,
+// source-not-found=2, no-symbol=3, no-definition=4, ready=5. Navigation never
+// consults a retained last-good graph after the latest source check failed.
+//
+// definition writes a zero record when no definition is available. Usage rows
+// are deterministic by source and byte offset; out-of-range access also writes
+// a zero record. Source path/text calls use the ordinary complete-size copy
+// contract. editable returns one only for an ordinary workspace-owned file;
+// compiler-distributed core and dependency sources are intentionally read-only.
+DRAFT_COMPILER_SERVICE_API uint8_t
+draft_compiler_session_prepare_navigation(void *session,
+                                          const void *path_data,
+                                          size_t path_length,
+                                          size_t byte_offset);
+
+DRAFT_COMPILER_SERVICE_API void
+draft_compiler_session_navigation_definition(
+    void *session, DraftCompilerServiceNavigationLocation *result);
+
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_navigation_usage_count(void *session);
+
+DRAFT_COMPILER_SERVICE_API void draft_compiler_session_navigation_usage(
+    void *session, size_t index,
+    DraftCompilerServiceNavigationLocation *result);
+
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_copy_navigation_source_path(
+    void *session, size_t source, uint8_t *destination, size_t capacity);
+
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_copy_navigation_source_text(
+    void *session, size_t source, uint8_t *destination, size_t capacity);
+
+DRAFT_COMPILER_SERVICE_API uint8_t
+draft_compiler_session_navigation_source_editable(void *session,
+                                                  size_t source);
 
 // source_path identifies the active ordinary file. artifact_path is empty until
 // one successful build and is cleared by any later failed build or selection

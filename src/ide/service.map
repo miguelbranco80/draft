@@ -12,6 +12,13 @@ DRAFT_COMPILER_SERVICE_0 {
     draft_compiler_session_package_row_count;
     draft_compiler_session_package_row;
     draft_compiler_session_copy_package_row_text;
+    draft_compiler_session_prepare_navigation;
+    draft_compiler_session_navigation_definition;
+    draft_compiler_session_navigation_usage_count;
+    draft_compiler_session_navigation_usage;
+    draft_compiler_session_copy_navigation_source_path;
+    draft_compiler_session_copy_navigation_source_text;
+    draft_compiler_session_navigation_source_editable;
     draft_compiler_session_copy_source_path;
     draft_compiler_session_source_count;
     draft_compiler_session_copy_source_name;

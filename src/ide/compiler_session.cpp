@@ -89,6 +89,114 @@ void append_location(std::string &output, const SourceManager &sources,
   return SourceRange::invalid();
 }
 
+// SemanticSymbol is a command-local identity. SymbolId values are package
+// local, so every navigation comparison carries the owning compiled-package
+// index. It is never serialized or exposed through the C facade.
+struct SemanticSymbol {
+  std::size_t package = 0;
+  SymbolId symbol;
+
+  bool operator==(const SemanticSymbol &) const = default;
+};
+
+// reference_name_range narrows a resolved HIR expression to its final authored
+// identifier token. A member expression's HIR range includes its base
+// (`value.field`), while navigation must select only `field`. Ordinary body HIR
+// does not retain SyntaxReference on every expression, but its source range and
+// the parsed file's ordered token vector are exact. Binary search plus the few
+// tokens inside that expression is therefore O(log tokens), avoiding both text
+// reparsing in the IDE and an expression-by-syntax-node quadratic scan.
+[[nodiscard]] SourceRange
+reference_name_range(const LoadedPackage &loaded,
+                     const HirExpression &expression) {
+  if (!expression.range.is_valid())
+    return SourceRange::invalid();
+  for (const LoadedPackageFile &file : loaded.files) {
+    if (file.source != expression.range.begin.file || !file.syntax.has_value())
+      continue;
+    const std::vector<Token> &tokens = file.syntax->tokens();
+    auto token = std::lower_bound(
+        tokens.begin(), tokens.end(), expression.range.begin.offset,
+        [](const Token &candidate, std::uint32_t offset) {
+          return candidate.range.end.offset <= offset;
+        });
+    SourceRange final_identifier = SourceRange::invalid();
+    for (; token != tokens.end() && token->range.begin.offset <
+                                      expression.range.end.offset;
+         ++token) {
+      if (token->kind == TokenKind::Identifier &&
+          token->range.begin.offset >= expression.range.begin.offset &&
+          token->range.end.offset <= expression.range.end.offset) {
+        final_identifier = token->range;
+      }
+    }
+    if (final_identifier.is_valid())
+      return final_identifier;
+  }
+  return expression.range;
+}
+
+[[nodiscard]] std::optional<std::size_t>
+compiled_package_index(const CompileWorkspaceResult &compiled,
+                       const PackageIdentity &identity) {
+  for (std::size_t index = 0; index < compiled.graph.packages.size(); ++index) {
+    if (compiled.graph.packages[index].identity == identity)
+      return index;
+  }
+  return std::nullopt;
+}
+
+// canonical_symbol follows a consumer-local ImportedSymbol proxy to the
+// defining package's public declaration. Local variables, fields, parameters,
+// and package declarations remain in their current package. Public concrete
+// instances may use linkage_name rather than their source name, so both stable
+// declaration spellings participate in the provider lookup.
+[[nodiscard]] std::optional<SemanticSymbol>
+canonical_symbol(const CompileWorkspaceResult &compiled,
+                 std::size_t package_index, SymbolId symbol) {
+  if (package_index >= compiled.packages.size() ||
+      !compiled.packages[package_index].has_value()) {
+    return std::nullopt;
+  }
+  const SemanticPackage &semantic =
+      compiled.packages[package_index]->bodies.package;
+  if (!symbol.is_valid() || symbol.value >= semantic.symbols.symbol_count())
+    return std::nullopt;
+
+  for (const ImportedSymbol &imported :
+       semantic.imported_symbols_for_read()) {
+    if (imported.proxy != symbol)
+      continue;
+    const PackageIdentity owner{
+        imported.root_identity,
+        imported.root_relative_path,
+    };
+    const std::optional<std::size_t> owner_index =
+        compiled_package_index(compiled, owner);
+    if (!owner_index.has_value() || *owner_index >= compiled.packages.size() ||
+        !compiled.packages[*owner_index].has_value()) {
+      return std::nullopt;
+    }
+    const SymbolTable &owner_symbols =
+        compiled.packages[*owner_index]->bodies.package.symbols;
+    for (std::size_t candidate = 0;
+         candidate < owner_symbols.symbol_count(); ++candidate) {
+      const Symbol &definition = owner_symbols.symbol(
+          SymbolId{static_cast<std::uint32_t>(candidate)});
+      if (definition.name == imported.public_name ||
+          (!definition.linkage_name.empty() &&
+           definition.linkage_name == imported.public_name)) {
+        return SemanticSymbol{
+            *owner_index,
+            SymbolId{static_cast<std::uint32_t>(candidate)},
+        };
+      }
+    }
+    return std::nullopt;
+  }
+  return SemanticSymbol{package_index, symbol};
+}
+
 [[nodiscard]] bool same_foreign_effect(const ForeignAuditEffect &left,
                                        const ForeignAuditEffect &right) {
   return left.kind == right.kind &&
@@ -289,9 +397,9 @@ bool CompilerSession::refresh_root_options(const WorkspaceManifest &manifest,
   workspace_options.core_content_identity = embedded_core_content_identity();
   workspace_options.package_options.file_tag =
       configuration_.target.facts.file_tag;
-  // Root discovery and source inventory are part of this long-lived project
+  // Root discovery and source inventory are part of this long-lived workspace
   // session. Reuse the same workers later used by checks and native builds;
-  // otherwise opening a project would create short-lived pools before the
+  // otherwise opening a workspace would create short-lived pools before the
   // compiler session proper had begun.
   workspace_options.package_options.work_executor = work_executor_.get();
   std::vector<std::filesystem::path> excluded;
@@ -593,6 +701,9 @@ bool CompilerSession::create_build_directory(DiagnosticSink &diagnostics) {
 void CompilerSession::reset_checked_program() {
   last_good_sources_ = SourceManager{};
   last_good_.reset();
+  latest_check_succeeded_ = false;
+  navigation_definition_.reset();
+  navigation_usages_.clear();
   syntax_spans_.clear();
   for (std::string &text : tooling_text_)
     text.clear();
@@ -647,7 +758,7 @@ void CompilerSession::rebuild_source_options() {
   std::vector<SourceOption> sources;
   for (const WorkspacePackage &package : last_good_->graph.packages) {
     // Core and pinned dependency files are inspectable compiler inputs but are
-    // not editable members of this workspace. The Files window exposes only
+    // not editable members of this workspace. Workspace Sources exposes only
     // source paths whose semantic root is the user's open workspace.
     if (package.identity.root_identity != "workspace")
       continue;
@@ -1078,6 +1189,12 @@ bool CompilerSession::fresh_check(
 
 CheckResult CompilerSession::check(std::span<const SourceOverlay> overlays,
                                    std::size_t active_overlay) {
+  // Navigation describes the exact latest accepted bytes. Clear it before any
+  // validation so every early return and failed candidate makes retained
+  // last-good semantics inaccessible to F12 by construction.
+  latest_check_succeeded_ = false;
+  navigation_definition_.reset();
+  navigation_usages_.clear();
   if (overlays.empty() || active_overlay >= overlays.size()) {
     syntax_spans_.clear();
     SourceManager sources;
@@ -1135,6 +1252,7 @@ CheckResult CompilerSession::check(std::span<const SourceOverlay> overlays,
       rebuild_source_options();
       rebuild_tooling_index();
       publish_diagnostics(last_good_sources_, diagnostics);
+      latest_check_succeeded_ = true;
       return {true, diagnostic_count_};
     }
   }
@@ -1151,6 +1269,7 @@ CheckResult CompilerSession::check(std::span<const SourceOverlay> overlays,
     rebuild_source_options();
     rebuild_tooling_index();
     publish_diagnostics(last_good_sources_, fresh_diagnostics);
+    latest_check_succeeded_ = true;
     return {true, diagnostic_count_};
   }
   publish_diagnostics(fresh_sources, fresh_diagnostics);
@@ -1255,6 +1374,269 @@ std::span<const std::string> CompilerSession::run_environment() const {
 const std::optional<std::filesystem::path> &
 CompilerSession::run_working_directory() const {
   return active_program().working_directory;
+}
+
+std::string
+CompilerSession::navigation_source_path(std::size_t source) const {
+  if (!last_good_.has_value() ||
+      source > std::numeric_limits<std::uint32_t>::max()) {
+    return {};
+  }
+  const FileId file{static_cast<std::uint32_t>(source)};
+  for (const WorkspacePackage &package : last_good_->graph.packages) {
+    for (const LoadedPackageFile &loaded : package.loaded.files) {
+      if (loaded.source != file)
+        continue;
+      if (package.identity.root_identity == "workspace") {
+        const std::filesystem::path physical =
+            std::filesystem::path(package.loaded.physical_directory) /
+            loaded.relative_name;
+        std::error_code error;
+        const std::filesystem::path canonical =
+            std::filesystem::weakly_canonical(physical, error);
+        return (error ? physical.lexically_normal() : canonical).string();
+      }
+      // Compiler-distributed and pinned dependency source may have no usable
+      // host path. A semantic identity prefixed outside the filesystem
+      // namespace lets DraftIDE retain one read-only buffer without pretending
+      // it can save that source back to disk.
+      std::string virtual_path = "draft-source:";
+      virtual_path += display_package_identity(package.identity);
+      virtual_path += '/';
+      virtual_path += loaded.relative_name;
+      return virtual_path;
+    }
+  }
+  return {};
+}
+
+std::string_view
+CompilerSession::navigation_source_text(std::size_t source) const {
+  if (!last_good_.has_value() || source >= last_good_sources_.file_count() ||
+      source > std::numeric_limits<std::uint32_t>::max()) {
+    return {};
+  }
+  return last_good_sources_.text(
+      FileId{static_cast<std::uint32_t>(source)});
+}
+
+bool CompilerSession::navigation_source_editable(std::size_t source) const {
+  if (!last_good_.has_value() ||
+      source > std::numeric_limits<std::uint32_t>::max()) {
+    return false;
+  }
+  const FileId file{static_cast<std::uint32_t>(source)};
+  for (const WorkspacePackage &package : last_good_->graph.packages) {
+    for (const LoadedPackageFile &loaded : package.loaded.files) {
+      if (loaded.source == file)
+        return package.identity.root_identity == "workspace";
+    }
+  }
+  return false;
+}
+
+const std::optional<NavigationLocation> &
+CompilerSession::navigation_definition() const {
+  return navigation_definition_;
+}
+
+std::span<const NavigationLocation>
+CompilerSession::navigation_usages() const {
+  return navigation_usages_;
+}
+
+NavigationStatus CompilerSession::prepare_navigation(
+    std::string_view path, std::size_t byte_offset) {
+  navigation_definition_.reset();
+  navigation_usages_.clear();
+  if (!last_good_.has_value())
+    return NavigationStatus::Unavailable;
+  if (!latest_check_succeeded_)
+    return NavigationStatus::CurrentCheckFailed;
+  if (path.empty() || byte_offset > std::numeric_limits<std::uint32_t>::max())
+    return NavigationStatus::SourceNotFound;
+
+  const CompileWorkspaceResult &compiled = *last_good_;
+  std::optional<std::size_t> source_package;
+  FileId source_file;
+  std::error_code requested_error;
+  const std::filesystem::path requested_canonical =
+      std::filesystem::weakly_canonical(std::filesystem::path(path),
+                                        requested_error);
+  for (std::size_t package_index = 0;
+       package_index < compiled.graph.packages.size() &&
+       !source_package.has_value(); ++package_index) {
+    const WorkspacePackage &package = compiled.graph.packages[package_index];
+    for (const LoadedPackageFile &file : package.loaded.files) {
+      if (file.kind != PackageFileKind::DraftSource)
+        continue;
+      const std::string candidate = navigation_source_path(file.source.value);
+      bool matches = candidate == path;
+      if (!matches && !requested_error &&
+          package.identity.root_identity == "workspace") {
+        std::error_code candidate_error;
+        const std::filesystem::path candidate_canonical =
+            std::filesystem::weakly_canonical(candidate, candidate_error);
+        matches = !candidate_error &&
+                  candidate_canonical == requested_canonical;
+      }
+      if (matches) {
+        source_package = package_index;
+        source_file = file.source;
+        break;
+      }
+    }
+  }
+  if (!source_package.has_value() || !source_file.is_valid() ||
+      source_file.value >= last_good_sources_.file_count() ||
+      byte_offset > last_good_sources_.text(source_file).size()) {
+    return NavigationStatus::SourceNotFound;
+  }
+  if (*source_package >= compiled.packages.size() ||
+      !compiled.packages[*source_package].has_value()) {
+    return NavigationStatus::SourceNotFound;
+  }
+
+  const CompiledPackage &source_compiled =
+      *compiled.packages[*source_package];
+  const SemanticPackage &source_semantic = source_compiled.bodies.package;
+  struct CursorCandidate {
+    bool found = false;
+    bool interior = false;
+    std::size_t width = 0;
+    SymbolId symbol;
+  } candidate;
+  const auto consider = [&](SourceRange range, SymbolId symbol) {
+    if (!range.is_valid() || range.begin.file != source_file ||
+        !symbol.is_valid() || range.end.offset < range.begin.offset) {
+      return;
+    }
+    const bool interior = byte_offset >= range.begin.offset &&
+                          byte_offset < range.end.offset;
+    const bool trailing_boundary = byte_offset == range.end.offset &&
+                                   range.end.offset != range.begin.offset;
+    if (!interior && !trailing_boundary)
+      return;
+    const std::size_t width = range.end.offset - range.begin.offset;
+    if (!candidate.found || (interior && !candidate.interior) ||
+        (interior == candidate.interior && width < candidate.width)) {
+      candidate = {true, interior, width, symbol};
+    }
+  };
+
+  // Symbol name ranges cover declarations, parameters, locals, fields, and
+  // imported proxy names already published into the canonical package table.
+  for (std::size_t index = 0;
+       index < source_semantic.symbols.symbol_count(); ++index) {
+    const SymbolId symbol{static_cast<std::uint32_t>(index)};
+    consider(source_semantic.symbols.symbol(symbol).name_range, symbol);
+  }
+  // Only selected body products belong to the current program graph. The body
+  // table may retain an unselected specialization from an earlier command-local
+  // demand, and scanning it would violate the same no-stale-navigation rule as
+  // consulting last-good after a failed check.
+  for (std::size_t work_index : source_compiled.selected_procedure_work) {
+    if (work_index >= source_compiled.bodies.procedures.size())
+      continue;
+    const ProcedureBodyHirResult &body =
+        source_compiled.bodies.procedures[work_index];
+    for (std::size_t expression_index = 0;
+         expression_index < body.program.expression_count();
+         ++expression_index) {
+      const HirExpression &expression = body.program.expression(
+          HirExpressionId{static_cast<std::uint32_t>(expression_index)});
+      if (!expression.symbol.is_valid())
+        continue;
+      consider(reference_name_range(
+                   compiled.graph.packages[*source_package].loaded,
+                   expression),
+               expression.symbol);
+    }
+  }
+  if (!candidate.found)
+    return NavigationStatus::NoSymbol;
+
+  const std::optional<SemanticSymbol> selected = canonical_symbol(
+      compiled, *source_package, candidate.symbol);
+  if (!selected.has_value() || selected->package >= compiled.packages.size() ||
+      !compiled.packages[selected->package].has_value()) {
+    return NavigationStatus::NoDefinition;
+  }
+  const SemanticPackage &definition_semantic =
+      compiled.packages[selected->package]->bodies.package;
+  if (!selected->symbol.is_valid() ||
+      selected->symbol.value >= definition_semantic.symbols.symbol_count()) {
+    return NavigationStatus::NoDefinition;
+  }
+  const SourceRange definition_range =
+      definition_semantic.symbols.symbol(selected->symbol).name_range;
+  if (!definition_range.is_valid() ||
+      definition_range.begin.file.value >= last_good_sources_.file_count()) {
+    return NavigationStatus::NoDefinition;
+  }
+  const auto location = [this](SourceRange range) {
+    const LineColumn coordinate =
+        last_good_sources_.line_column(range.begin);
+    return NavigationLocation{
+        range.begin.file.value,
+        range.begin.offset,
+        range.end.offset,
+        coordinate.line,
+        coordinate.column,
+    };
+  };
+  navigation_definition_ = location(definition_range);
+
+  // Usages are emitted in deterministic SourceManager order, then byte order.
+  // Duplicate HIR expressions can represent one surface token (for example a
+  // direct call plus its callee); exact range deduplication keeps one visible
+  // row without introducing a second semantic identity system.
+  for (std::size_t package_index = 0;
+       package_index < compiled.packages.size(); ++package_index) {
+    if (!compiled.packages[package_index].has_value())
+      continue;
+    const CompiledPackage &package = *compiled.packages[package_index];
+    for (std::size_t work_index : package.selected_procedure_work) {
+      if (work_index >= package.bodies.procedures.size())
+        continue;
+      const ProcedureBodyHirResult &body = package.bodies.procedures[work_index];
+      for (std::size_t expression_index = 0;
+           expression_index < body.program.expression_count();
+           ++expression_index) {
+        const HirExpression &expression = body.program.expression(
+            HirExpressionId{static_cast<std::uint32_t>(expression_index)});
+        if (!expression.symbol.is_valid())
+          continue;
+        const std::optional<SemanticSymbol> reference =
+            canonical_symbol(compiled, package_index, expression.symbol);
+        if (!reference.has_value() || *reference != *selected)
+          continue;
+        const SourceRange range = reference_name_range(
+            compiled.graph.packages[package_index].loaded, expression);
+        if (range.is_valid())
+          navigation_usages_.push_back(location(range));
+      }
+    }
+  }
+  std::sort(
+      navigation_usages_.begin(), navigation_usages_.end(),
+      [](const NavigationLocation &left, const NavigationLocation &right) {
+        if (left.source != right.source)
+          return left.source < right.source;
+        if (left.start != right.start)
+          return left.start < right.start;
+        return left.end < right.end;
+      });
+  navigation_usages_.erase(
+      std::unique(
+          navigation_usages_.begin(), navigation_usages_.end(),
+          [](const NavigationLocation &left,
+             const NavigationLocation &right) {
+            return left.source == right.source && left.start == right.start &&
+                   left.end == right.end;
+          }),
+      navigation_usages_.end());
+  return NavigationStatus::Ready;
 }
 
 } // namespace draft::ide

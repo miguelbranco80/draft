@@ -109,6 +109,35 @@ struct PackageTreeRow {
   bool has_children = false;
 };
 
+// NavigationStatus distinguishes an unavailable host/current graph from a
+// valid graph where the cursor simply does not name a navigable symbol. The C
+// service exposes these fixed ordinals directly; keep them synchronized with
+// draft_compiler_api.Navigation_Status. A failed latest check is deliberately
+// distinct from NoSymbol because tools must not navigate through retained
+// last-good semantics while showing different edited bytes.
+enum class NavigationStatus : std::uint8_t {
+  Unavailable = 0,
+  CurrentCheckFailed = 1,
+  SourceNotFound = 2,
+  NoSymbol = 3,
+  NoDefinition = 4,
+  Ready = 5,
+};
+
+// NavigationLocation is one exact source token range in the current successful
+// compiler graph. source is a SourceManager FileId widened to size_t for the C
+// ABI; start/end are half-open byte offsets; line/column are one-based display
+// coordinates computed by SourceManager. The source index remains valid only
+// until the next mutating session operation. Callers copy its path/content
+// synchronously and never retain this process-local identity.
+struct NavigationLocation {
+  std::size_t source = 0;
+  std::size_t start = 0;
+  std::size_t end = 0;
+  std::size_t line = 0;
+  std::size_t column = 0;
+};
+
 // CompilerConfiguration contains only durable selection facts. Physical paths
 // are canonicalized by the C service before construction. source_relative_name
 // names a selected Draft file inside root_package_directory and is also the
@@ -144,7 +173,7 @@ struct EffectiveProgramConfiguration {
 // SourceOption is one editable, target-selected workspace Draft file reachable
 // from the current checked root. physical_path is exposed only for file I/O;
 // identity and relative_name are the semantic override key. display_name is a
-// stable workspace-relative label sorted for the Files window.
+// stable workspace-relative label sorted for Workspace Sources.
 struct SourceOption {
   std::string display_name;
   std::filesystem::path physical_path;
@@ -192,7 +221,7 @@ public:
                                   std::size_t active_overlay);
 
   // Discovers target-selected executable roots and establishes the stable root
-  // list used by the Draft project UI. Selection replaces compiler products;
+  // list used by the Draft workspace UI. Selection replaces compiler products;
   // it never attempts to reinterpret a checked graph under another root/target.
   [[nodiscard]] bool initialize(DiagnosticSink &diagnostics);
   [[nodiscard]] std::size_t root_count() const;
@@ -229,6 +258,22 @@ public:
   [[nodiscard]] std::span<const std::string> run_environment() const;
   [[nodiscard]] const std::optional<std::filesystem::path> &
   run_working_directory() const;
+
+  // Resolves the semantic symbol at one exact current editor byte offset and
+  // publishes its definition plus deterministic reference rows. Navigation is
+  // permitted only after the latest check succeeded; retained last-good data
+  // is intentionally invisible following a rejected edit. path may name an
+  // editable workspace file or a read-only compiler/dependency source returned
+  // by navigation_source_path.
+  [[nodiscard]] NavigationStatus
+  prepare_navigation(std::string_view path, std::size_t byte_offset);
+  [[nodiscard]] const std::optional<NavigationLocation> &
+  navigation_definition() const;
+  [[nodiscard]] std::span<const NavigationLocation> navigation_usages() const;
+  [[nodiscard]] std::string navigation_source_path(std::size_t source) const;
+  [[nodiscard]] std::string_view
+  navigation_source_text(std::size_t source) const;
+  [[nodiscard]] bool navigation_source_editable(std::size_t source) const;
 
 private:
   [[nodiscard]] CompileWorkspaceOptions compile_options() const;
@@ -287,6 +332,12 @@ private:
   std::array<std::string, static_cast<std::size_t>(ToolingSection::Count)>
       tooling_text_;
   std::vector<PackageTreeRow> package_tree_rows_;
+  // These rows are derived only from last_good_ after the latest successful
+  // check and are cleared before every subsequent check/selection. They never
+  // become semantic input or survive a graph generation.
+  bool latest_check_succeeded_ = false;
+  std::optional<NavigationLocation> navigation_definition_;
+  std::vector<NavigationLocation> navigation_usages_;
   std::string diagnostics_text_;
   std::uint32_t diagnostic_count_ = 0;
 };

@@ -2,10 +2,11 @@
 //
 // These fixtures exercise the public C ABI rather than reaching into the UI:
 // create-time path validation, production-lexer spans, successful and failed
-// source overlays, last-good retention through a failed attempt, topology
-// fallback after adding an import, and continuation into the native linker. The
-// source checkout is never mutated; every workspace and native artifact belongs
-// to one process-unique temporary directory or the session's private scratch.
+// source overlays, current-graph semantic navigation, last-good retention
+// through a failed attempt, topology fallback after adding an import, and
+// continuation into the native linker. The source checkout is never mutated;
+// every workspace and native artifact belongs to one process-unique temporary
+// directory or the session's private scratch.
 
 #include "ide/service.h"
 
@@ -165,6 +166,7 @@ void test_service_transactions_and_native_build(TestState &state) {
       session, path_bytes.data(), path_bytes.size());
   const std::filesystem::path canonical_source =
       std::filesystem::canonical(app / source_name);
+  const std::string canonical_source_text = canonical_source.string();
   EXPECT(state, path_size == canonical_source.string().size());
   EXPECT(state,
          std::string_view(reinterpret_cast<const char *>(path_bytes.data()),
@@ -204,6 +206,52 @@ void test_service_transactions_and_native_build(TestState &state) {
   EXPECT(state, observed_styles[3]); // string
   EXPECT(state, observed_styles[4]); // number
   EXPECT(state, observed_styles[5]); // declaration
+
+  // Navigation consumes the same successful graph and exact overlay bytes as
+  // checking. The definition range selects only the authored declaration name,
+  // while the usage table contains the resolved reference in main. Source text
+  // is copied from SourceManager rather than reread from the deliberately stale
+  // file on disk.
+  const std::size_t answer_use = valid.find("Answer +");
+  EXPECT(state, answer_use != std::string::npos);
+  EXPECT(state, draft_compiler_session_prepare_navigation(
+                    session, canonical_source_text.data(),
+                    canonical_source_text.size(), answer_use + 1) == 5);
+  DraftCompilerServiceNavigationLocation answer_definition{};
+  draft_compiler_session_navigation_definition(session, &answer_definition);
+  const std::size_t answer_declaration = valid.find("Answer ::");
+  EXPECT(state, answer_definition.start == answer_declaration);
+  EXPECT(state, answer_definition.end == answer_declaration + 6);
+  EXPECT(state, answer_definition.line == 4);
+  EXPECT(state, answer_definition.column == 1);
+  EXPECT(state,
+         draft_compiler_session_navigation_usage_count(session) == 1);
+  DraftCompilerServiceNavigationLocation answer_usage{};
+  draft_compiler_session_navigation_usage(session, 0, &answer_usage);
+  EXPECT(state, answer_usage.start == answer_use);
+  EXPECT(state, answer_usage.end == answer_use + 6);
+  EXPECT(state, answer_usage.line == 6);
+  EXPECT(state, answer_usage.column == 12);
+  std::array<std::uint8_t, 4096> navigation_bytes{};
+  const std::size_t navigation_path_size =
+      draft_compiler_session_copy_navigation_source_path(
+          session, answer_definition.source, navigation_bytes.data(),
+          navigation_bytes.size());
+  EXPECT(state, navigation_path_size == canonical_source_text.size());
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(navigation_bytes.data()),
+                    navigation_path_size) == canonical_source_text);
+  navigation_bytes.fill(0);
+  const std::size_t navigation_text_size =
+      draft_compiler_session_copy_navigation_source_text(
+          session, answer_definition.source, navigation_bytes.data(),
+          navigation_bytes.size());
+  EXPECT(state, navigation_text_size == valid.size());
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(navigation_bytes.data()),
+                    navigation_text_size) == valid);
+  EXPECT(state, draft_compiler_session_navigation_source_editable(
+                    session, answer_definition.source) == 1);
 
   const std::array<std::string_view, 5> tooling_needles{
       "workspace:app", "Answer", "main -> Answer", "main", "none",
@@ -268,6 +316,15 @@ void test_service_transactions_and_native_build(TestState &state) {
              std::min(retained_size, retained_declarations.size() - 1))
                  .find("Answer") != std::string_view::npos);
   EXPECT(state, draft_compiler_session_package_row_count(session) == 1);
+
+  // Textual tooling remains available from last-good for diagnostics, but
+  // source navigation must reject it because the visible editor bytes failed
+  // their latest check. The rejected request also clears the previous rows.
+  EXPECT(state, draft_compiler_session_prepare_navigation(
+                    session, canonical_source_text.data(),
+                    canonical_source_text.size(), answer_use) == 1);
+  EXPECT(state,
+         draft_compiler_session_navigation_usage_count(session) == 0);
 
   // Adding an import cannot preserve PackageIds through the overlay path. A
   // successful result therefore proves that the service used its explicit
@@ -337,7 +394,6 @@ void test_service_transactions_and_native_build(TestState &state) {
                               "}\n";
   const std::filesystem::path canonical_library =
       std::filesystem::canonical(library / source_name);
-  const std::string canonical_source_text = canonical_source.string();
   const std::string canonical_library_text = canonical_library.string();
   const std::array<DraftCompilerServiceOverlay, 2> multi_overlays{
       overlay(canonical_source_text, multi_app),
@@ -347,6 +403,32 @@ void test_service_transactions_and_native_build(TestState &state) {
   draft_compiler_session_check(session, multi_overlays.data(),
                                multi_overlays.size(), 1, &multi_checked);
   EXPECT(state, multi_checked.success == 1);
+
+  // Imported member navigation follows the app-local proxy to the library's
+  // canonical public declaration. The returned path and range are sufficient
+  // for DraftIDE to open the library buffer and select the exact name without
+  // parsing a textual compiler dump.
+  const std::size_t imported_use = multi_app.find("answer_two");
+  EXPECT(state, imported_use != std::string::npos);
+  EXPECT(state, draft_compiler_session_prepare_navigation(
+                    session, canonical_source_text.data(),
+                    canonical_source_text.size(), imported_use + 2) == 5);
+  DraftCompilerServiceNavigationLocation imported_definition{};
+  draft_compiler_session_navigation_definition(session,
+                                               &imported_definition);
+  navigation_bytes.fill(0);
+  const std::size_t imported_path_size =
+      draft_compiler_session_copy_navigation_source_path(
+          session, imported_definition.source, navigation_bytes.data(),
+          navigation_bytes.size());
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(navigation_bytes.data()),
+                    imported_path_size) == canonical_library_text);
+  EXPECT(state,
+         imported_definition.start == multi_library.find("answer_two ::"));
+  EXPECT(state, imported_definition.end == imported_definition.start + 10);
+  EXPECT(state,
+         draft_compiler_session_navigation_usage_count(session) == 1);
 
   DraftCompilerServiceResult built{};
   draft_compiler_session_build(session, multi_overlays.data(),

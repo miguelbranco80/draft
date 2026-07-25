@@ -64,7 +64,7 @@ pub Copy_Tooling_Proc :: c proc(
     capacity: usize,
 ) -> usize
 
-// Package_Row is the fixed structural half of one compiler-owned project-tree
+// Package_Row is the fixed structural half of one compiler-owned package-tree
 // row. kind and depth distinguish a package from its direct authored imports;
 // package_index identifies the package itself or the importing parent. The
 // accompanying label is copied separately into application-owned storage.
@@ -87,6 +87,48 @@ pub Package_Row_Proc :: c proc(
     result: ^Package_Row,
 )
 
+// Navigation_Status reports why one semantic lookup did or did not publish a
+// definition and usage table. current_check_failed is intentionally distinct:
+// the service may retain a last-good program for tooling summaries, but exact
+// source navigation must never use it against rejected visible editor bytes.
+pub Navigation_Status :: enum u8 {
+    unavailable,
+    current_check_failed,
+    source_not_found,
+    no_symbol,
+    no_definition,
+    ready,
+}
+
+// Navigation_Location is one exact half-open token range in a compiler-owned
+// source. source is opaque and remains valid only until the next mutating host
+// operation. line and column are one-based display coordinates.
+pub Navigation_Location :: c struct {
+    source: usize,
+    start: usize,
+    end: usize,
+    line: usize,
+    column: usize,
+}
+
+pub Prepare_Navigation_Proc :: c proc(
+    user: rawptr,
+    path_data: rawptr,
+    path_length: usize,
+    byte_offset: usize,
+) -> u8
+
+pub Navigation_Location_Proc :: c proc(
+    user: rawptr,
+    result: ^Navigation_Location,
+)
+
+pub Navigation_Usage_Proc :: c proc(
+    user: rawptr,
+    index: usize,
+    result: ^Navigation_Location,
+)
+
 pub Count_Proc :: c proc(user: rawptr) -> usize
 pub Index_Proc :: c proc(user: rawptr) -> usize
 pub Copy_Indexed_Text_Proc :: c proc(
@@ -98,6 +140,7 @@ pub Copy_Indexed_Text_Proc :: c proc(
 pub Select_Index_Proc :: c proc(user: rawptr, index: usize) -> u8
 pub Value_Proc :: c proc(user: rawptr) -> u8
 pub Select_Value_Proc :: c proc(user: rawptr, value: u8) -> u8
+pub Indexed_Value_Proc :: c proc(user: rawptr, index: usize) -> u8
 pub Open_Workspace_Proc :: c proc(
     user: rawptr,
     path_data: rawptr,
@@ -131,6 +174,13 @@ pub Host_Api :: c struct {
     package_row_count: Count_Proc,
     package_row: Package_Row_Proc,
     copy_package_row_text: Copy_Indexed_Text_Proc,
+    prepare_navigation: Prepare_Navigation_Proc,
+    navigation_definition: Navigation_Location_Proc,
+    navigation_usage_count: Count_Proc,
+    navigation_usage: Navigation_Usage_Proc,
+    copy_navigation_source_path: Copy_Indexed_Text_Proc,
+    copy_navigation_source_text: Copy_Indexed_Text_Proc,
+    navigation_source_editable: Indexed_Value_Proc,
     copy_source_path: Copy_Text_Proc,
     open_workspace: Open_Workspace_Proc,
     copy_workspace_path: Copy_Text_Proc,

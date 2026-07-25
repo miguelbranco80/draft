@@ -43,9 +43,12 @@ static_assert(sizeof(DraftCompilerServiceOverlay) == 32);
 static_assert(alignof(DraftCompilerServiceOverlay) == alignof(void *));
 static_assert(sizeof(DraftCompilerServicePackageRow) == 16);
 static_assert(alignof(DraftCompilerServicePackageRow) == alignof(std::size_t));
+static_assert(sizeof(DraftCompilerServiceNavigationLocation) == 40);
+static_assert(alignof(DraftCompilerServiceNavigationLocation) ==
+              alignof(std::size_t));
 
 // ServiceSession is the stable opaque C handle. Keeping the compiler behind
-// one extra owner lets Open Workspace replace a complete workspace session
+// one extra owner lets Open Folder replace a complete workspace session
 // transactionally without invalidating the Draft Host_Api.user value.
 struct ServiceSession {
   std::unique_ptr<draft::ide::CompilerSession> compiler;
@@ -293,6 +296,21 @@ checked_overlays(const DraftCompilerServiceOverlay *overlays, std::size_t count,
   return result;
 }
 
+// navigation_location copies the compiler-owned value into its C ABI twin.
+// The all-zero record is the single out-of-range/unavailable sentinel; valid
+// FileId zero remains distinguishable because every valid range has one-based
+// line and column coordinates.
+[[nodiscard]] DraftCompilerServiceNavigationLocation navigation_location(
+    const draft::ide::NavigationLocation &location) {
+  return {
+      location.source,
+      location.start,
+      location.end,
+      location.line,
+      location.column,
+  };
+}
+
 } // namespace
 
 void *draft_compiler_session_create(
@@ -490,6 +508,84 @@ std::size_t draft_compiler_session_copy_package_row_text(
   }
   return copy_text(session->package_tree_rows()[index].label, destination,
                    capacity);
+}
+
+std::uint8_t draft_compiler_session_prepare_navigation(
+    void *opaque_session, const void *path_data, std::size_t path_length,
+    std::size_t byte_offset) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr)
+    return static_cast<std::uint8_t>(
+        draft::ide::NavigationStatus::Unavailable);
+  if ((path_data == nullptr && path_length != 0) || path_length == 0) {
+    return static_cast<std::uint8_t>(
+        draft::ide::NavigationStatus::SourceNotFound);
+  }
+  const std::string_view path = borrowed_text(path_data, path_length);
+  if (path.find('\0') != std::string_view::npos) {
+    return static_cast<std::uint8_t>(
+        draft::ide::NavigationStatus::SourceNotFound);
+  }
+  return static_cast<std::uint8_t>(
+      session->prepare_navigation(path, byte_offset));
+}
+
+void draft_compiler_session_navigation_definition(
+    void *opaque_session,
+    DraftCompilerServiceNavigationLocation *result) {
+  if (result == nullptr)
+    return;
+  *result = {};
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr || !session->navigation_definition().has_value())
+    return;
+  *result = navigation_location(*session->navigation_definition());
+}
+
+std::size_t
+draft_compiler_session_navigation_usage_count(void *opaque_session) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  return session == nullptr ? 0 : session->navigation_usages().size();
+}
+
+void draft_compiler_session_navigation_usage(
+    void *opaque_session, std::size_t index,
+    DraftCompilerServiceNavigationLocation *result) {
+  if (result == nullptr)
+    return;
+  *result = {};
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr || index >= session->navigation_usages().size())
+    return;
+  *result = navigation_location(session->navigation_usages()[index]);
+}
+
+std::size_t draft_compiler_session_copy_navigation_source_path(
+    void *opaque_session, std::size_t source, std::uint8_t *destination,
+    std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr)
+    return 0;
+  const std::string path = session->navigation_source_path(source);
+  return copy_text(path, destination, capacity);
+}
+
+std::size_t draft_compiler_session_copy_navigation_source_text(
+    void *opaque_session, std::size_t source, std::uint8_t *destination,
+    std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr)
+    return 0;
+  return copy_text(session->navigation_source_text(source), destination,
+                   capacity);
+}
+
+std::uint8_t draft_compiler_session_navigation_source_editable(
+    void *opaque_session, std::size_t source) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  return session != nullptr && session->navigation_source_editable(source)
+             ? 1
+             : 0;
 }
 
 std::size_t draft_compiler_session_copy_source_path(void *opaque_session,
