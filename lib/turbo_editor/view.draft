@@ -81,25 +81,14 @@ pub Edit_Result :: struct {
 }
 
 line_number :: proc(buffer: ^Buffer, offset: usize) -> usize {
-    number: usize
-    for index: usize = 0; index < offset; index += 1 {
-        if buffer^.bytes.data[index] == cast[u8]('\n') {
-            number += 1
-        }
-    }
-    return number
+    return line_for_offset(buffer, offset)
 }
 
 line_at_number :: proc(buffer: ^Buffer, number: usize) -> usize {
-    current: usize
-    offset: usize
-    for offset < buffer^.bytes.length && current < number {
-        if buffer^.bytes.data[offset] == cast[u8]('\n') {
-            current += 1
-        }
-        offset += 1
+    if number >= buffer^.line_starts.length {
+        return buffer^.bytes.length
     }
-    return offset
+    return buffer^.line_starts.data[number]
 }
 
 ensure_cursor_visible :: proc(buffer: ^Buffer, text_bounds: turbo_ui.Rect) {
@@ -138,7 +127,14 @@ mouse_offset :: proc(
     return offset_at_column(buffer, start, end, column)
 }
 
-apply_key :: proc(buffer: ^Buffer, key: turbo_ui.Key_Event) -> Edit_Result {
+// apply_key maps semantic editor keys onto Buffer operations. viewport_rows is
+// the actual visible text height, so Page Up/Down follow the current window
+// rather than a hard-coded terminal assumption.
+apply_key :: proc(
+    buffer: ^Buffer,
+    key: turbo_ui.Key_Event,
+    viewport_rows: usize,
+) -> Edit_Result {
     result: Edit_Result
     if key.code == .character && key.control {
         switch key.byte_value {
@@ -155,11 +151,14 @@ apply_key :: proc(buffer: ^Buffer, key: turbo_ui.Key_Event) -> Edit_Result {
         return result
     }
 
-    old_dirty := buffer^.dirty
+    old_length := buffer^.bytes.length
+    old_history := buffer^.history_index
     switch key.code {
     case .character:
-        byte := [1]u8{key.byte_value}
-        insert(buffer, byte[:])
+        if !key.alt && !key.control {
+            byte := [1]u8{key.byte_value}
+            insert(buffer, byte[:])
+        }
     case .enter:
         byte := [1]u8{cast[u8]('\n')}
         insert(buffer, byte[:])
@@ -171,48 +170,60 @@ apply_key :: proc(buffer: ^Buffer, key: turbo_ui.Key_Event) -> Edit_Result {
     case .delete:
         delete_forward(buffer)
     case .left:
-        move_left(buffer, key.shift)
+        if key.control {
+            move_word_left(buffer, key.shift)
+        } else {
+            move_left(buffer, key.shift)
+        }
     case .right:
-        move_right(buffer, key.shift)
+        if key.control {
+            move_word_right(buffer, key.shift)
+        } else {
+            move_right(buffer, key.shift)
+        }
     case .up:
         move_up(buffer, key.shift)
     case .down:
         move_down(buffer, key.shift)
     case .home:
-        move_home(buffer, key.shift)
+        if key.control {
+            move_file_start(buffer, key.shift)
+        } else {
+            move_home(buffer, key.shift)
+        }
     case .end:
-        move_end(buffer, key.shift)
+        if key.control {
+            move_file_end(buffer, key.shift)
+        } else {
+            move_end(buffer, key.shift)
+        }
     case .page_up:
-        for count: usize = 0; count < 10; count += 1 {
+        page := viewport_rows
+        if page == 0 {
+            page = 1
+        }
+        for count: usize = 0; count < page; count += 1 {
             move_up(buffer, key.shift)
         }
     case .page_down:
-        for count: usize = 0; count < 10; count += 1 {
+        page := viewport_rows
+        if page == 0 {
+            page = 1
+        }
+        for count: usize = 0; count < page; count += 1 {
             move_down(buffer, key.shift)
         }
     case:
     }
-    result.changed = old_dirty != buffer^.dirty ||
-        key.code == .character || key.code == .enter || key.code == .tab ||
-        key.code == .backspace || key.code == .delete
+    result.changed = buffer^.bytes.length != old_length ||
+        buffer^.history_index != old_history
     return result
 }
 
-style_for_offset :: proc(
-    spans: []Syntax_Span,
-    offset: usize,
+style_for_kind :: proc(
+    kind: Syntax_Kind,
     theme: Editor_Theme,
 ) -> tui.Style {
-    kind: Syntax_Kind = .plain
-    for span in spans {
-        if offset < span.start {
-            break
-        }
-        if offset >= span.start && offset < span.end {
-            kind = span.kind
-            break
-        }
-    }
     switch kind {
     case .plain:
         return theme.text
@@ -229,6 +240,27 @@ style_for_offset :: proc(
     case .invalid:
         return theme.invalid
     }
+}
+
+// style_for_offset advances one monotonic syntax cursor. Visible document rows
+// are painted in byte order, so every span is inspected at most once per frame
+// instead of rescanning the complete span table for every grapheme.
+style_for_offset :: proc(
+    spans: []Syntax_Span,
+    span_index: ^usize,
+    offset: usize,
+    theme: Editor_Theme,
+) -> tui.Style {
+    for span_index^ < len(spans) && spans[span_index^].end <= offset {
+        span_index^ += 1
+    }
+    if span_index^ < len(spans) {
+        span := spans[span_index^]
+        if span.start <= offset && offset < span.end {
+            return style_for_kind(span.kind, theme)
+        }
+    }
+    return theme.text
 }
 
 paint_gutter :: proc(
@@ -267,6 +299,7 @@ paint_text_row :: proc(
     bounds: turbo_ui.Rect,
     start, end: usize,
     spans: []Syntax_Span,
+    span_index: ^usize,
     theme: Editor_Theme,
 ) {
     (selection_start, selection_end, has_selection) := selection(buffer)
@@ -292,7 +325,7 @@ paint_text_row :: proc(
         if visible_start {
             screen_column += logical_column - buffer^.scroll_column
         }
-        style_value := style_for_offset(spans, offset, theme)
+        style_value := style_for_offset(spans, span_index, offset, theme)
         if has_selection && offset < selection_end && next > selection_start {
             style_value = theme.selection
         }
@@ -400,6 +433,7 @@ pub edit :: proc(
             old := buffer^.cursor
             buffer^.cursor = mouse_offset(buffer, text_bounds, mouse.position)
             prepare_movement(buffer, old, mouse.shift || mouse.action == .move)
+            buffer^.preferred_column_valid = false
         } else if focus.hot && mouse.action == .wheel {
             if mouse.wheel_delta < 0 {
                 if buffer^.scroll_line > 2 {
@@ -408,14 +442,23 @@ pub edit :: proc(
                     buffer^.scroll_line = 0
                 }
             } else if mouse.wheel_delta > 0 {
-                buffer^.scroll_line += 3
+                if buffer^.scroll_line <= ~cast[usize](0) - 3 {
+                    buffer^.scroll_line += 3
+                }
+            }
+            maximum_scroll: usize
+            if buffer^.line_starts.length > text_bounds.height {
+                maximum_scroll = buffer^.line_starts.length - text_bounds.height
+            }
+            if buffer^.scroll_line > maximum_scroll {
+                buffer^.scroll_line = maximum_scroll
             }
             state^.event_handled = true
         }
     }
     if turbo_ui.has_focus(state, id) && !state^.event_handled {
         if state^.event.kind == .key {
-            result = apply_key(buffer, state^.event.key)
+            result = apply_key(buffer, state^.event.key, text_bounds.height)
             state^.event_handled = true
         } else if state^.event.kind == .text {
             insert_text(buffer, state^.event.text)
@@ -424,11 +467,18 @@ pub edit :: proc(
         }
     }
 
-    ensure_cursor_visible(buffer, text_bounds)
+    if buffer^.reveal_cursor {
+        ensure_cursor_visible(buffer, text_bounds)
+        buffer^.reveal_cursor = false
+    }
     turbo_ui.fill_rect(state^.surface, bounds, bounds, ' ', theme.text)
     current_line := line_number(buffer, buffer^.cursor)
     start := line_at_number(buffer, buffer^.scroll_line)
     line := buffer^.scroll_line
+    span_index: usize
+    for span_index < len(spans) && spans[span_index].end <= start {
+        span_index += 1
+    }
     for row: usize = 0; row < bounds.height; row += 1 {
         if gutter_width != 0 {
             paint_gutter(
@@ -457,6 +507,7 @@ pub edit :: proc(
             start,
             end,
             spans,
+            &span_index,
             theme,
         )
         if end == buffer^.bytes.length {

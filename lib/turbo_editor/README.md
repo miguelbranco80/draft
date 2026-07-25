@@ -9,11 +9,17 @@ it in an ordinary movable, resizable, zoomable window.
 The package provides:
 
 - owned path/current/saved-baseline storage and explicit load/save;
-- Unicode grapheme-aware cursor movement with one-byte invalid-data recovery;
-- selection, mouse positioning, literal search, and horizontal/vertical scroll;
+- an incrementally maintained sorted line-start table, so viewport and cursor
+  lookup do not rescan the complete document on every frame;
+- Unicode grapheme-aware cursor movement with one-byte invalid-data recovery,
+  Draft-identifier word movement, file Home/End, viewport-sized paging, and a
+  preferred visual column retained across short lines;
+- selection, mouse positioning, literal search, and independent
+  horizontal/vertical scroll (wheel movement never snaps back to the cursor);
 - bounded undo/redo with a 128-operation/1 MiB history policy;
 - dirty close protection and polling-based disk conflict detection;
-- optional byte-offset syntax spans with a classic Turbo C/Pascal palette.
+- optional byte-offset syntax spans with a classic Turbo C/Pascal palette;
+  painting advances one monotonic span cursor across the visible viewport.
 
 `poll_disk` reloads a changed clean buffer. If memory is dirty, it preserves the
 buffer, marks `disk_conflict`, and returns `.conflict`; it never merges or

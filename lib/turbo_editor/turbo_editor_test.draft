@@ -57,6 +57,119 @@ test_edit_history_and_unicode_movement :: proc(test: ^testing.Test) {
     testing.expect(test, found_selection)
 }
 
+// test_line_index_and_navigation fixes the editor's document-scale lookup and
+// movement policy. The line table changes in the same raw operation as bytes,
+// including undo/redo; vertical movement retains its desired display column
+// through a short line; and Draft word/file commands remain byte-deterministic.
+test_line_index_and_navigation :: proc(test: ^testing.Test) {
+    buffer: Buffer
+    buffer_init(&buffer, Test_Path)
+    defer buffer_destroy(&buffer)
+    insert_text(&buffer, "abcdef\nx\nabcdef\n")
+    testing.expect(test, buffer.line_starts.length == 4)
+    testing.expect(test, buffer.line_starts.data[0] == 0)
+    testing.expect(test, buffer.line_starts.data[1] == 7)
+    testing.expect(test, buffer.line_starts.data[2] == 9)
+    testing.expect(test, buffer.line_starts.data[3] == 16)
+
+    buffer.cursor = 5
+    buffer.preferred_column_valid = false
+    move_down(&buffer)
+    testing.expect(test, buffer.cursor == 8)
+    move_down(&buffer)
+    testing.expect(test, buffer.cursor == 14)
+    move_up(&buffer)
+    move_up(&buffer)
+    testing.expect(test, buffer.cursor == 5)
+
+    move_file_start(&buffer)
+    move_word_right(&buffer)
+    testing.expect(test, buffer.cursor == 7)
+    move_word_right(&buffer)
+    testing.expect(test, buffer.cursor == 9)
+    move_word_left(&buffer)
+    testing.expect(test, buffer.cursor == 7)
+
+    // Shift composes with every extended movement through the same anchor
+    // transition as ordinary arrows. The selection therefore spans exact
+    // source bytes rather than a separately computed display range.
+    move_word_right(&buffer, true)
+    testing.expect(test, buffer.cursor == 9)
+    (word_start, word_end, has_word_selection) := selection(&buffer)
+    testing.expect(test, has_word_selection)
+    testing.expect(test, word_start == 7)
+    testing.expect(test, word_end == 9)
+    move_file_start(&buffer, true)
+    (file_start, file_end, has_file_selection) := selection(&buffer)
+    testing.expect(test, has_file_selection)
+    testing.expect(test, file_start == 0)
+    testing.expect(test, file_end == 7)
+    move_file_end(&buffer)
+    testing.expect(test, buffer.cursor == buffer.bytes.length)
+
+    // Removing two complete rows collapses their starts; undo and redo must
+    // restore the exact same table rather than lazily rebuilding on paint.
+    buffer.anchor = 7
+    buffer.cursor = 16
+    buffer.selection_active = true
+    testing.expect(test, delete_selection(&buffer))
+    testing.expect(test, buffer.line_starts.length == 2)
+    testing.expect(test, buffer.line_starts.data[1] == 7)
+    testing.expect(test, undo(&buffer))
+    testing.expect(test, buffer.line_starts.length == 4)
+    testing.expect(test, buffer.line_starts.data[3] == 16)
+    testing.expect(test, redo(&buffer))
+    testing.expect(test, buffer.line_starts.length == 2)
+}
+
+// test_viewport_page_and_wheel separates cursor revelation from deliberate
+// viewport movement. Page Down uses the actual three-row view, while a wheel
+// scroll is preserved even though the cursor remains far below that viewport.
+test_viewport_page_and_wheel :: proc(test: ^testing.Test) {
+    buffer: Buffer
+    buffer_init(&buffer, Test_Path)
+    defer buffer_destroy(&buffer)
+    insert_text(&buffer, "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n")
+    buffer.cursor = 0
+    buffer.preferred_column_valid = false
+    page_result := apply_key(
+        &buffer,
+        turbo_ui.Key_Event{code = .page_down},
+        3,
+    )
+    testing.expect(test, !page_result.changed)
+    testing.expect(test, line_number(&buffer, buffer.cursor) == 3)
+
+    buffer.cursor = buffer.bytes.length
+    buffer.scroll_line = 0
+    buffer.reveal_cursor = false
+    surface: tui.Surface
+    tui.surface_init(&surface, 30, 3)
+    defer tui.surface_destroy(&surface)
+    ui: turbo_ui.State
+    turbo_ui.begin_frame(
+        &ui,
+        &surface,
+        turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+            position = turbo_ui.Point{column = 8, row = 1},
+            action = .wheel,
+            wheel_delta = 1,
+        }),
+        turbo_ui.turbo_theme(),
+    )
+    empty_spans: [1]Syntax_Span
+    edit(
+        &buffer,
+        &ui,
+        80,
+        turbo_ui.Rect{width = 30, height = 3},
+        empty_spans[:0],
+        turbo_editor_theme(),
+    )
+    turbo_ui.end_frame(&ui)
+    testing.expect(test, buffer.scroll_line == 3)
+}
+
 test_file_round_trip_and_conflict :: proc(test: ^testing.Test) {
     remove_test_path()
     defer remove_test_path()

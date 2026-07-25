@@ -20,6 +20,7 @@ import core/unicode
 import lib/turbo_ui
 
 Byte_Array :: array.Dynamic[u8]
+Line_Array :: array.Dynamic[usize]
 
 History_Limit :: 128
 History_Byte_Limit :: 1024 * 1024
@@ -60,14 +61,18 @@ pub Disk_Result :: enum u8 {
 
 // Buffer is a move-by-convention owner. bytes contains current exact file
 // content; disk_bytes contains the last loaded/saved baseline used by polling.
-// history_index partitions applied records [0,index) from redo records. The
-// history byte pool is bounded by clearing the complete undo/redo history when
-// the next payload would exceed its fixed policy; document content is never
-// discarded. path is zero terminated for core/os and otherwise exposed only as
-// borrowed bytes.
+// line_starts is a sorted, nonempty table in the bytes offset domain: row zero
+// starts at byte zero and each later row starts immediately after one LF. Every
+// storage mutation updates it in the same operation, so viewport painting and
+// cursor lookup never rescan the complete document. history_index partitions
+// applied records [0,index) from redo records. The history byte pool is bounded
+// by clearing the complete undo/redo history when the next payload would exceed
+// its fixed policy; document content is never discarded. path is zero
+// terminated for core/os and otherwise exposed only as borrowed bytes.
 pub Buffer :: struct {
     bytes: Byte_Array,
     disk_bytes: Byte_Array,
+    line_starts: Line_Array,
     history: Edit_Array,
     history_bytes: Byte_Array,
     history_index: usize,
@@ -76,6 +81,14 @@ pub Buffer :: struct {
     cursor: usize,
     anchor: usize,
     selection_active: bool,
+    // preferred_column preserves the visual column across a vertical run, even
+    // when an intermediate short line clamps the cursor. Any horizontal/edit
+    // operation clears preferred_column_valid. reveal_cursor asks the next
+    // editor view to scroll to a programmatically moved cursor; deliberate
+    // wheel scrolling leaves it false so the viewport does not snap back.
+    preferred_column: usize,
+    preferred_column_valid: bool,
+    reveal_cursor: bool,
     scroll_line: usize,
     scroll_column: usize,
     dirty: bool,
@@ -85,6 +98,8 @@ pub Buffer :: struct {
 pub buffer_init :: proc(buffer: ^Buffer, path: string) {
     array.init(&buffer^.bytes)
     array.init(&buffer^.disk_bytes)
+    array.init(&buffer^.line_starts)
+    array.append(&buffer^.line_starts, 0)
     array.init(&buffer^.history)
     array.init(&buffer^.history_bytes)
     memory.owned_string_copy(&buffer^.path, path)
@@ -96,6 +111,8 @@ pub buffer_init :: proc(buffer: ^Buffer, path: string) {
 pub buffer_init_bytes :: proc(buffer: ^Buffer, path: []u8) {
     array.init(&buffer^.bytes)
     array.init(&buffer^.disk_bytes)
+    array.init(&buffer^.line_starts)
+    array.append(&buffer^.line_starts, 0)
     array.init(&buffer^.history)
     array.init(&buffer^.history_bytes)
     memory.owned_string_copy_bytes(&buffer^.path, path)
@@ -105,6 +122,7 @@ pub buffer_destroy :: proc(buffer: ^Buffer) {
     memory.owned_string_destroy(&buffer^.path)
     array.destroy(&buffer^.history_bytes)
     array.destroy(&buffer^.history)
+    array.destroy(&buffer^.line_starts)
     array.destroy(&buffer^.disk_bytes)
     array.destroy(&buffer^.bytes)
 }
@@ -128,6 +146,105 @@ copy_bytes :: proc(destination: ^Byte_Array, source: []u8) {
     array.reserve(destination, len(source))
     for byte in source {
         array.append(destination, byte)
+    }
+}
+
+// rebuild_line_starts establishes the exact offset table after a complete file
+// replacement. Incremental edits use the narrower update operations below;
+// full rebuild belongs only to load/reload where every source byte changed at
+// once and is already being copied.
+rebuild_line_starts :: proc(buffer: ^Buffer) {
+    array.clear(&buffer^.line_starts)
+    array.append(&buffer^.line_starts, 0)
+    for index: usize = 0; index < buffer^.bytes.length; index += 1 {
+        if buffer^.bytes.data[index] == cast[u8]('\n') {
+            array.append(&buffer^.line_starts, index + 1)
+        }
+    }
+}
+
+// line_for_offset returns the greatest line-start index not exceeding offset.
+// Buffer mutations maintain a nonempty sorted table and every public caller
+// supplies an offset at or before bytes.length, making binary search exact.
+line_for_offset :: proc(buffer: ^Buffer, offset: usize) -> usize {
+    assert(buffer^.line_starts.length != 0,
+        "editor line index must contain row zero")
+    assert(offset <= buffer^.bytes.length,
+        "editor line lookup offset is invalid")
+    lower: usize
+    upper := buffer^.line_starts.length
+    for lower < upper {
+        middle := lower + (upper - lower) / 2
+        if buffer^.line_starts.data[middle] <= offset {
+            lower = middle + 1
+        } else {
+            upper = middle
+        }
+    }
+    return lower - 1
+}
+
+// insert_line_starts updates only the line table suffix affected by one byte
+// insertion. Existing starts after at shift by source length; one new start is
+// inserted for each LF in source. Equal-at starts remain before the inserted
+// rows, which is correct when bytes are inserted at the beginning of a line.
+insert_line_starts :: proc(buffer: ^Buffer, at: usize, source: []u8) {
+    newline_count: usize
+    for byte in source {
+        if byte == cast[u8]('\n') {
+            newline_count += 1
+        }
+    }
+    first_shifted := line_for_offset(buffer, at) + 1
+    old_length := buffer^.line_starts.length
+    array.reserve(&buffer^.line_starts, old_length + newline_count)
+    buffer^.line_starts.length = old_length + newline_count
+
+    cursor := old_length
+    for cursor > first_shifted {
+        cursor -= 1
+        buffer^.line_starts.data[cursor + newline_count] =
+            buffer^.line_starts.data[cursor] + len(source)
+    }
+    inserted: usize
+    for index: usize = 0; index < len(source); index += 1 {
+        if source[index] == cast[u8]('\n') {
+            buffer^.line_starts.data[first_shifted + inserted] = at + index + 1
+            inserted += 1
+        }
+    }
+    assert(inserted == newline_count,
+        "editor inserted line count must match its source scan")
+}
+
+// delete_line_starts removes row starts created by LF bytes in [at,end) and
+// shifts every surviving later row backward. A row start equal to at belongs
+// to an earlier newline and survives; one equal to end belongs to the final
+// removed newline and is deleted.
+delete_line_starts :: proc(buffer: ^Buffer, at, count: usize) {
+    if count == 0 {
+        return
+    }
+    end := at + count
+    first_removed := line_for_offset(buffer, at) + 1
+    after_removed := first_removed
+    for after_removed < buffer^.line_starts.length &&
+        buffer^.line_starts.data[after_removed] <= end {
+        after_removed += 1
+    }
+    removed := after_removed - first_removed
+    destination := first_removed
+    for source := after_removed;
+        source < buffer^.line_starts.length;
+        source += 1 {
+        buffer^.line_starts.data[destination] =
+            buffer^.line_starts.data[source] - count
+        destination += 1
+    }
+    old_length := buffer^.line_starts.length
+    buffer^.line_starts.length -= removed
+    for index := buffer^.line_starts.length; index < old_length; index += 1 {
+        buffer^.line_starts.data[index] = 0
     }
 }
 
@@ -190,11 +307,14 @@ pub load :: proc(buffer: ^Buffer) -> Load_Result {
     if result == .new_file {
         array.clear(&buffer^.bytes)
     }
+    rebuild_line_starts(buffer)
     copy_bytes(&buffer^.disk_bytes, array.view(&buffer^.bytes))
     clear_history(buffer)
     buffer^.cursor = 0
     buffer^.anchor = 0
     buffer^.selection_active = false
+    buffer^.preferred_column_valid = false
+    buffer^.reveal_cursor = true
     buffer^.scroll_line = 0
     buffer^.scroll_column = 0
     buffer^.dirty = false
@@ -260,12 +380,15 @@ pub poll_disk :: proc(buffer: ^Buffer) -> Disk_Result {
     }
     copy_bytes(&buffer^.bytes, array.view(&observed))
     copy_bytes(&buffer^.disk_bytes, array.view(&observed))
+    rebuild_line_starts(buffer)
     array.destroy(&observed)
     clear_history(buffer)
     if buffer^.cursor > buffer^.bytes.length {
         buffer^.cursor = buffer^.bytes.length
     }
     buffer^.selection_active = false
+    buffer^.preferred_column_valid = false
+    buffer^.reveal_cursor = true
     buffer^.disk_conflict = false
     return .reloaded
 }
@@ -277,6 +400,7 @@ insert_raw :: proc(buffer: ^Buffer, at: usize, source: []u8) {
     assert(at <= buffer^.bytes.length, "editor insertion offset is invalid")
     assert(len(source) <= ~cast[usize](0) - buffer^.bytes.length,
         "editor byte length overflows")
+    insert_line_starts(buffer, at, source)
     old_length := buffer^.bytes.length
     array.reserve(&buffer^.bytes, old_length + len(source))
     buffer^.bytes.length = old_length + len(source)
@@ -294,6 +418,7 @@ delete_raw :: proc(buffer: ^Buffer, at, count: usize) {
     assert(at <= buffer^.bytes.length &&
         count <= buffer^.bytes.length - at,
         "editor deletion range is invalid")
+    delete_line_starts(buffer, at, count)
     old_length := buffer^.bytes.length
     for index := at; index + count < old_length; index += 1 {
         buffer^.bytes.data[index] = buffer^.bytes.data[index + count]
@@ -376,6 +501,8 @@ delete_range :: proc(buffer: ^Buffer, start, end: usize) {
     delete_raw(buffer, start, end - start)
     buffer^.cursor = start
     clear_selection(buffer)
+    buffer^.preferred_column_valid = false
+    buffer^.reveal_cursor = true
     buffer^.dirty = true
 }
 
@@ -405,6 +532,8 @@ pub insert :: proc(buffer: ^Buffer, source: []u8) {
     insert_raw(buffer, buffer^.cursor, source)
     buffer^.cursor += len(source)
     clear_selection(buffer)
+    buffer^.preferred_column_valid = false
+    buffer^.reveal_cursor = true
     buffer^.dirty = true
 }
 
@@ -423,23 +552,15 @@ pub insert_text :: proc(buffer: ^Buffer, text: string) {
 }
 
 line_start :: proc(buffer: ^Buffer, offset: usize) -> usize {
-    cursor := offset
-    for cursor > 0 {
-        if buffer^.bytes.data[cursor - 1] == cast[u8]('\n') {
-            break
-        }
-        cursor -= 1
-    }
-    return cursor
+    return buffer^.line_starts.data[line_for_offset(buffer, offset)]
 }
 
 line_end :: proc(buffer: ^Buffer, offset: usize) -> usize {
-    cursor := offset
-    for cursor < buffer^.bytes.length &&
-        buffer^.bytes.data[cursor] != cast[u8]('\n') {
-        cursor += 1
+    line := line_for_offset(buffer, offset)
+    if line + 1 < buffer^.line_starts.length {
+        return buffer^.line_starts.data[line + 1] - 1
     }
-    return cursor
+    return buffer^.bytes.length
 }
 
 previous_grapheme :: proc(buffer: ^Buffer, offset: usize) -> usize {
@@ -456,6 +577,20 @@ previous_grapheme :: proc(buffer: ^Buffer, offset: usize) -> usize {
         cursor = end
     }
     return previous
+}
+
+// previous_text_unit is the reverse counterpart to next_grapheme over the
+// complete document. previous_grapheme intentionally scans only one line;
+// this wrapper exposes the intervening LF as its own one-byte unit so word and
+// ordinary cursor navigation can cross row boundaries without rescanning.
+previous_text_unit :: proc(buffer: ^Buffer, offset: usize) -> usize {
+    if offset == 0 {
+        return 0
+    }
+    if buffer^.bytes.data[offset - 1] == cast[u8]('\n') {
+        return offset - 1
+    }
+    return previous_grapheme(buffer, offset)
 }
 
 next_grapheme :: proc(buffer: ^Buffer, offset: usize) -> usize {
@@ -484,6 +619,7 @@ prepare_movement :: proc(buffer: ^Buffer, old_cursor: usize, extend: bool) {
     } else {
         clear_selection(buffer)
     }
+    buffer^.reveal_cursor = true
 }
 
 pub move_left :: proc(buffer: ^Buffer, extend: bool = false) {
@@ -496,24 +632,97 @@ pub move_left :: proc(buffer: ^Buffer, extend: bool = false) {
         }
     }
     prepare_movement(buffer, old, extend)
+    buffer^.preferred_column_valid = false
 }
 
 pub move_right :: proc(buffer: ^Buffer, extend: bool = false) {
     old := buffer^.cursor
     buffer^.cursor = next_grapheme(buffer, buffer^.cursor)
     prepare_movement(buffer, old, extend)
+    buffer^.preferred_column_valid = false
 }
 
 pub move_home :: proc(buffer: ^Buffer, extend: bool = false) {
     old := buffer^.cursor
     buffer^.cursor = line_start(buffer, buffer^.cursor)
     prepare_movement(buffer, old, extend)
+    buffer^.preferred_column_valid = false
 }
 
 pub move_end :: proc(buffer: ^Buffer, extend: bool = false) {
     old := buffer^.cursor
     buffer^.cursor = line_end(buffer, buffer^.cursor)
     prepare_movement(buffer, old, extend)
+    buffer^.preferred_column_valid = false
+}
+
+// word_byte follows Draft's source identifier vocabulary: ASCII letters,
+// digits, and underscore are one word class. Every other grapheme is a
+// separator for navigation. Draft identifiers are deliberately ASCII, so this
+// policy is predictable even when comments and strings contain UTF-8 text.
+word_byte :: proc(byte: u8) -> bool {
+    return (byte >= cast[u8]('a') && byte <= cast[u8]('z')) ||
+        (byte >= cast[u8]('A') && byte <= cast[u8]('Z')) ||
+        (byte >= cast[u8]('0') && byte <= cast[u8]('9')) ||
+        byte == cast[u8]('_')
+}
+
+// move_word_left skips separators, then the preceding ASCII source word. The
+// grapheme helpers ensure malformed/non-ASCII input is crossed only at safe
+// recovery boundaries and always makes progress.
+pub move_word_left :: proc(buffer: ^Buffer, extend: bool = false) {
+    old := buffer^.cursor
+    cursor := buffer^.cursor
+    for cursor > 0 {
+        previous := previous_text_unit(buffer, cursor)
+        if word_byte(buffer^.bytes.data[previous]) {
+            break
+        }
+        cursor = previous
+    }
+    for cursor > 0 {
+        previous := previous_text_unit(buffer, cursor)
+        if !word_byte(buffer^.bytes.data[previous]) {
+            break
+        }
+        cursor = previous
+    }
+    buffer^.cursor = cursor
+    prepare_movement(buffer, old, extend)
+    buffer^.preferred_column_valid = false
+}
+
+// move_word_right crosses the current word when inside one, then separators up
+// to the next word start. This is the conventional Ctrl-Right destination and
+// composes with Shift selection through the common movement transition.
+pub move_word_right :: proc(buffer: ^Buffer, extend: bool = false) {
+    old := buffer^.cursor
+    cursor := buffer^.cursor
+    for cursor < buffer^.bytes.length &&
+        word_byte(buffer^.bytes.data[cursor]) {
+        cursor = next_grapheme(buffer, cursor)
+    }
+    for cursor < buffer^.bytes.length &&
+        !word_byte(buffer^.bytes.data[cursor]) {
+        cursor = next_grapheme(buffer, cursor)
+    }
+    buffer^.cursor = cursor
+    prepare_movement(buffer, old, extend)
+    buffer^.preferred_column_valid = false
+}
+
+pub move_file_start :: proc(buffer: ^Buffer, extend: bool = false) {
+    old := buffer^.cursor
+    buffer^.cursor = 0
+    prepare_movement(buffer, old, extend)
+    buffer^.preferred_column_valid = false
+}
+
+pub move_file_end :: proc(buffer: ^Buffer, extend: bool = false) {
+    old := buffer^.cursor
+    buffer^.cursor = buffer^.bytes.length
+    prepare_movement(buffer, old, extend)
+    buffer^.preferred_column_valid = false
 }
 
 display_column :: proc(buffer: ^Buffer, start, end: usize) -> usize {
@@ -563,7 +772,14 @@ offset_at_column :: proc(
 move_vertical :: proc(buffer: ^Buffer, upward, extend: bool) {
     old := buffer^.cursor
     current_start := line_start(buffer, buffer^.cursor)
-    column := display_column(buffer, current_start, buffer^.cursor)
+    if !buffer^.preferred_column_valid {
+        buffer^.preferred_column = display_column(
+            buffer,
+            current_start,
+            buffer^.cursor,
+        )
+        buffer^.preferred_column_valid = true
+    }
     target_start: usize
     target_end: usize
     if upward {
@@ -582,7 +798,12 @@ move_vertical :: proc(buffer: ^Buffer, upward, extend: bool) {
         target_start = current_end + 1
         target_end = line_end(buffer, target_start)
     }
-    buffer^.cursor = offset_at_column(buffer, target_start, target_end, column)
+    buffer^.cursor = offset_at_column(
+        buffer,
+        target_start,
+        target_end,
+        buffer^.preferred_column,
+    )
     prepare_movement(buffer, old, extend)
 }
 
@@ -637,6 +858,8 @@ pub undo :: proc(buffer: ^Buffer) -> bool {
     buffer^.history_index -= 1
     buffer^.cursor = edit.before_cursor
     clear_selection(buffer)
+    buffer^.preferred_column_valid = false
+    buffer^.reveal_cursor = true
     buffer^.dirty = !bytes_equal(
         array.view(&buffer^.bytes),
         array.view(&buffer^.disk_bytes),
@@ -661,6 +884,8 @@ pub redo :: proc(buffer: ^Buffer) -> bool {
     buffer^.history_index += 1
     buffer^.cursor = edit.after_cursor
     clear_selection(buffer)
+    buffer^.preferred_column_valid = false
+    buffer^.reveal_cursor = true
     buffer^.dirty = !bytes_equal(
         array.view(&buffer^.bytes),
         array.view(&buffer^.disk_bytes),
@@ -692,6 +917,8 @@ pub find :: proc(buffer: ^Buffer, needle: []u8) -> bool {
                 buffer^.anchor = cursor
                 buffer^.cursor = cursor + len(needle)
                 buffer^.selection_active = true
+                buffer^.preferred_column_valid = false
+                buffer^.reveal_cursor = true
                 return true
             }
             cursor += 1
