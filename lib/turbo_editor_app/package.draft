@@ -2864,13 +2864,13 @@ paint_open_folder :: proc(app: ^App, content: turbo_ui.Rect) {
             app^.ui.theme.hot,
         )
     }
-    if content.width > 2 && content.height > 5 {
+    if content.width > 2 && content.height > 6 {
         buttons := turbo_ui.layout_begin(
             turbo_ui.Rect{
                 column = content.column + 1,
                 row = content.row + 5,
                 width = content.width - 2,
-                height = 1,
+                height = 2,
             },
             .horizontal,
             0,
@@ -2897,6 +2897,16 @@ paint_open_folder :: proc(app: ^App, content: turbo_ui.Rect) {
             close_folder_dialogs(app)
             app^.status = "Open Folder cancelled"
         }
+    } else if turbo_ui.button(
+        &app^.ui,
+        572,
+        turbo_ui.Rect{},
+        "Cancel",
+        true,
+        .cancel_action,
+    ) {
+        close_folder_dialogs(app)
+        app^.status = "Open Folder cancelled"
     }
     if submitted {
         submit_open_folder(app)
@@ -2927,13 +2937,13 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
         )
         submitted = result.submitted
     }
-    if content.width > 2 && content.height > 5 {
+    if content.width > 2 && content.height > 6 {
         buttons := turbo_ui.layout_begin(
             turbo_ui.Rect{
                 column = content.column + 1,
                 row = content.row + 5,
                 width = content.width - 2,
-                height = 1,
+                height = 2,
             },
             .horizontal,
             0,
@@ -2960,6 +2970,16 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
             close_open_file(app)
             app^.status = "Open File cancelled"
         }
+    } else if turbo_ui.button(
+        &app^.ui,
+        832,
+        turbo_ui.Rect{},
+        "Cancel",
+        true,
+        .cancel_action,
+    ) {
+        close_open_file(app)
+        app^.status = "Open File cancelled"
     }
     if submitted {
         submit_open_file(app)

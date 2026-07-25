@@ -424,6 +424,20 @@ test_open_file_dialog_resolves_and_reuses_workspace_path :: proc(
     request_open_file(&app)
     testing.expect(test, app.windows[Window_Open_File].visible)
     testing.expect(test, app.ui.focused_id == 830)
+    surface: tui.Surface
+    tui.surface_init(&surface, 100, 30)
+    defer tui.surface_destroy(&surface)
+    _ = paint_app(&app, &surface, turbo_ui.no_event())
+    dialog := app.windows[Window_Open_File].bounds
+    // The Open button begins one cell inside dialog content at content row 5.
+    // Its two-row footprint paints the shadow one cell down and right from the
+    // face; this locks the application geometry to the reusable button chrome.
+    (shadow, shadow_valid) := tui.cell_at(
+        &surface,
+        dialog.column + 3,
+        dialog.row + 7,
+    )
+    testing.expect(test, shadow_valid && shadow.value == '░')
     testing.expect(test, turbo_ui.text_box_set_text(
         &app.file_box,
         app.file_path[:],
