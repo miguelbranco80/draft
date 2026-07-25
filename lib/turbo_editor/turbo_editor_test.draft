@@ -69,6 +69,41 @@ test_edit_history_and_unicode_movement :: proc(test: ^testing.Test) {
     testing.expect(test, found_selection)
 }
 
+// New documents carry a display label but no accidental save pathname. A
+// successful Save As installs the first real path, preserves exact bytes, and
+// turns the ordinary Save operation into the expected subsequent behavior.
+test_unnamed_document_save_as :: proc(test: ^testing.Test) {
+    remove_test_path()
+    defer remove_test_path()
+    label := [10]u8{
+        cast[u8]('U'), cast[u8]('n'), cast[u8]('t'), cast[u8]('i'),
+        cast[u8]('t'), cast[u8]('l'), cast[u8]('e'), cast[u8]('d'),
+        cast[u8](' '), cast[u8]('1'),
+    }
+    path := [21]u8{
+        cast[u8]('t'), cast[u8]('u'), cast[u8]('r'), cast[u8]('b'),
+        cast[u8]('o'), cast[u8]('-'), cast[u8]('e'), cast[u8]('d'),
+        cast[u8]('i'), cast[u8]('t'), cast[u8]('o'), cast[u8]('r'),
+        cast[u8]('-'), cast[u8]('t'), cast[u8]('e'), cast[u8]('s'),
+        cast[u8]('t'), cast[u8]('.'), cast[u8]('t'), cast[u8]('x'),
+        cast[u8]('t'),
+    }
+    buffer: Buffer
+    buffer_init_unnamed(&buffer, label[:])
+    defer buffer_destroy(&buffer)
+    testing.expect(test, is_unnamed(&buffer))
+    testing.expect(test, buffer.dirty)
+    testing.expect(test, !save(&buffer))
+    insert_text(&buffer, "draft")
+    select_all(&buffer)
+    (_, _, selected) := selection(&buffer)
+    testing.expect(test, selected)
+    testing.expect(test, save_as(&buffer, path[:]))
+    testing.expect(test, !is_unnamed(&buffer))
+    testing.expect(test, !buffer.dirty)
+    testing.expect(test, save(&buffer))
+}
+
 // test_line_index_and_navigation fixes the editor's document-scale lookup and
 // movement policy. The line table changes in the same raw operation as bytes,
 // including undo/redo; vertical movement retains its desired display column

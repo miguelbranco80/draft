@@ -103,6 +103,10 @@ pub Buffer :: struct {
     dirty: bool,
     disk_conflict: bool,
     read_only: bool,
+    // unnamed distinguishes a new in-memory document's display label from a
+    // filesystem pathname. Ordinary Save must not accidentally create a file
+    // named after that label; Save As installs the first real path.
+    unnamed: bool,
 }
 
 pub buffer_init :: proc(buffer: ^Buffer, path: string) {
@@ -126,6 +130,15 @@ pub buffer_init_bytes :: proc(buffer: ^Buffer, path: []u8) {
     array.init(&buffer^.history)
     array.init(&buffer^.history_bytes)
     memory.owned_string_copy_bytes(&buffer^.path, path)
+}
+
+// buffer_init_unnamed creates an empty writable document whose borrowed label
+// is used only for window and open-document navigation. The document begins
+// dirty so Exit cannot discard it silently even before the first typed byte.
+pub buffer_init_unnamed :: proc(buffer: ^Buffer, label: []u8) {
+    buffer_init_bytes(buffer, label)
+    buffer^.unnamed = true
+    buffer^.dirty = true
 }
 
 // buffer_init_read_only_bytes constructs a complete clean buffer from bytes
@@ -163,6 +176,10 @@ pub content :: proc(buffer: ^Buffer) -> []u8 {
 
 pub is_read_only :: proc(buffer: ^Buffer) -> bool {
     return buffer^.read_only
+}
+
+pub is_unnamed :: proc(buffer: ^Buffer) -> bool {
+    return buffer^.unnamed
 }
 
 clear_history :: proc(buffer: ^Buffer) {
@@ -363,7 +380,7 @@ pub save :: proc(
     buffer: ^Buffer,
     overwrite_conflict: bool = false,
 ) -> bool {
-    if buffer^.read_only {
+    if buffer^.read_only || buffer^.unnamed {
         return false
     }
     if buffer^.disk_conflict && !overwrite_conflict {
@@ -383,6 +400,41 @@ pub save :: proc(
     copy_bytes(&buffer^.disk_bytes, array.view(&buffer^.bytes))
     buffer^.dirty = false
     buffer^.disk_conflict = false
+    return true
+}
+
+// save_as writes the complete document to a caller-selected path and only then
+// replaces the Buffer's owned pathname. A failed open/write/close leaves the
+// editor's old path, dirty bytes, history, and disk baseline untouched; the OS
+// may still have created or partly written the requested destination because
+// core/os does not yet expose a same-directory temporary-file replacement.
+// Entering a path in the explicit Save As dialog is the overwrite authority;
+// this layer does not add a second confirmation policy.
+pub save_as :: proc(buffer: ^Buffer, path: []u8) -> bool {
+    if buffer^.read_only || len(path) == 0 {
+        return false
+    }
+    replacement: memory.Owned_String
+    memory.owned_string_copy_bytes(&replacement, path)
+    (handle, error) := os.create_for_writing(
+        memory.owned_string_cstring(&replacement),
+    )
+    if error != .none {
+        memory.owned_string_destroy(&replacement)
+        return false
+    }
+    written := os.write_all(handle, array.view(&buffer^.bytes)) == .none
+    closed := os.close(&handle)
+    if !written || !closed {
+        memory.owned_string_destroy(&replacement)
+        return false
+    }
+    memory.owned_string_destroy(&buffer^.path)
+    buffer^.path = replacement
+    copy_bytes(&buffer^.disk_bytes, array.view(&buffer^.bytes))
+    buffer^.dirty = false
+    buffer^.disk_conflict = false
+    buffer^.unnamed = false
     return true
 }
 
@@ -581,6 +633,17 @@ pub selection :: proc(buffer: ^Buffer) -> (usize, usize, bool) {
 pub clear_selection :: proc(buffer: ^Buffer) {
     buffer^.anchor = buffer^.cursor
     buffer^.selection_active = false
+}
+
+// select_all uses the same anchor/cursor representation as Shift movement.
+// Empty documents intentionally have no active selection while still placing
+// both endpoints at byte zero.
+pub select_all :: proc(buffer: ^Buffer) {
+    buffer^.anchor = 0
+    buffer^.cursor = buffer^.bytes.length
+    buffer^.selection_active = buffer^.bytes.length != 0
+    buffer^.preferred_column_valid = false
+    buffer^.reveal_cursor = true
 }
 
 delete_range :: proc(buffer: ^Buffer, start, end: usize) {

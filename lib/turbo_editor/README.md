@@ -8,7 +8,8 @@ it in an ordinary movable, resizable, zoomable window.
 
 The package provides:
 
-- owned path/current/saved-baseline storage and explicit load/save;
+- owned path/current/saved-baseline storage, unnamed in-memory documents, and
+  explicit load, save, and save-as operations;
 - an incrementally maintained sorted line-start table, so viewport and cursor
   lookup do not rescan the complete document on every frame;
 - Unicode grapheme-aware cursor movement with one-byte invalid-data recovery,
@@ -33,6 +34,12 @@ buffer, marks `disk_conflict`, and returns `.conflict`; it never merges or
 overwrites automatically. Normal `save` refuses that conflict. Its explicit
 `overwrite_conflict` argument is reserved for a user-confirmed choice such as
 Turbo editor's “Overwrite + quit” dialog.
+
+An unnamed document carries a display label but no filesystem pathname, so
+ordinary `save` refuses it until `save_as` succeeds. `save_as` changes the
+buffer's owned path and clean baseline only after open, write, and close all
+succeed. The current `core/os` surface does not yet provide temporary-file
+replacement, so a failed write may still leave a partial destination file.
 
 The standalone [`turbo-editor`](../../examples/turbo-editor/) application is
 the complete interactive example. Run focused native tests with:
