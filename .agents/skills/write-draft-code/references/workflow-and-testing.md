@@ -117,12 +117,17 @@ F5 launches executables directly without a shell. Arguments remain literal and
 ordered. Environment rows are `NAME=value` overrides on the inherited
 environment with the last occurrence winning. Relative working directories are
 workspace-relative; an absent one inherits DraftIDE's working directory.
-Files is populated from the compiler's target-selected reachable workspace
+Workspace Sources is populated from the compiler's target-selected reachable workspace
 graph, while Buffers lists open documents. Check and F5 submit the active buffer
 plus every other dirty buffer belonging to that graph as one transactional
 source-override set; the active buffer also chooses the syntax-span result.
 F6 presents the checked package/import graph as an expandable structured tree;
-F7-F11 remain read-only semantic reports without source-jump navigation.
+F7-F11 present read-only semantic reports. F12 uses the current successful
+compiler graph to select an exact definition, Shift-F12 opens ordered usages,
+and Alt-Left/Alt-Right traverse app-owned navigation history. A failed latest
+check disables semantic jumps even though last-good summary reports remain
+available. Compiler-distributed and dependency sources open in read-only
+buffers whose document layer rejects mutation and save.
 
 ## Choose the owning layer
 

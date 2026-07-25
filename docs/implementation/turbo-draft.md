@@ -15,7 +15,7 @@ library bridges the bootstrapping boundary:
 
 ```text
 tools/draftide                 hosted Draft executable and main
-  -> lib/turbo_editor_app      editor, project UI, Build/Run policy
+  -> lib/turbo_editor_app      editor, workspace UI, Build/Run policy
        -> Host_Api             provider-free Draft procedure table
             -> lib/draft_compiler
                  -> C ABI      opaque handle and fixed-layout records
@@ -27,8 +27,8 @@ and destroys the opaque compiler-session handle and supplies caller-owned byte
 buffers for every operation. The service borrows those buffers only during a
 synchronous call. C++ retains `SourceManager`, `CompileWorkspaceResult`,
 diagnostic text, syntax spans, tooling projections, structured package rows,
-and temporary native build artifacts. No STL, filesystem, compiler, or LLVM
-type crosses the boundary.
+exact navigation rows, and temporary native build artifacts. No STL,
+filesystem, compiler, or LLVM type crosses the boundary.
 This seam can therefore be replaced by the self-hosted compiler without
 rewriting the Draft application.
 
@@ -58,10 +58,9 @@ complete effective build/run layer for every root. `--source` may select one
 direct file inside the active package. Without it, the compiler opens the first
 target-selected source in bytewise filename order; `package.draft` has no
 privileged IDE meaning. No root selector is required because the opened path or
-named default supplies the initial package. A named program's
-target participates in target-qualified root inspection. An explicit
-`--target` or Shift-F12 selection replaces manifest targets without changing
-the file.
+named default supplies the initial package. A named program's target
+participates in target-qualified root inspection. An explicit `--target`
+selection replaces manifest targets without changing the file.
 
 These selections already contain the information needed for Build and Run. The
 workspace is the filesystem and import-identity boundary. The active root is
@@ -83,7 +82,8 @@ open `..` with root `examples/turbo-editor`; opening `.` with root
 
 Source remains normal `.draft` files. After checking, the service publishes the
 target-selected workspace files in the reachable package graph as deterministic
-workspace-relative names plus canonical I/O paths. Files browses that table;
+workspace-relative names plus canonical I/O paths. Workspace Sources browses
+that table;
 Buffers separately lists the ordinary documents currently open in memory.
 `turbo_editor.Buffer` owns each open file and its unsaved bytes. Switching roots
 reuses an already-open buffer by path or opens another ordinary buffer; every
@@ -94,13 +94,12 @@ writes the normal file, and polling reports an explicit conflict when disk and
 dirty memory diverge. There is no IDE source database, candidate workspace,
 revision history, or IDE state under `.draft/`.
 
-File > Open Workspace accepts another directory without restarting. The native
+File > Open Folder accepts another directory without restarting. The native
 service constructs and validates a complete replacement compiler session before
 swapping it behind the stable host handle. Draft then replaces its source table
 and buffers. Dirty buffers require an explicit Save all, Discard, or Cancel
-choice; save never silently overwrites a disk conflict. Open File initially
-means selecting a compiler-known row in Files rather than introducing a second
-filesystem browser.
+choice; save never silently overwrites a disk conflict. The first version uses
+a typed folder path rather than introducing a second filesystem browser.
 
 The manifest is operator configuration, not a language or dependency manifest.
 The compiler service resolves workspace defaults followed by the matching
@@ -150,22 +149,28 @@ from existing compiler products:
 - declarations and visibility from package symbol tables;
 - references and direct calls from HIR and effect-call summaries;
 - closed procedure effects from effect summaries;
-- denial regions from semantic denial records; and
-- diagnostics from the latest check attempt.
+- denial regions from semantic denial records;
+- diagnostics from the latest check attempt; and
+- exact definition and ordered usage ranges resolved from symbol tables, HIR,
+  imported-symbol identities, and retained syntax nodes.
 
-Package/import data crosses the C ABI as fixed records—kind, depth, parent
-package index, root and child flags—plus separately copied labels. The other
-sections remain formatted text. These are views, not another parser, indexer,
-or semantic engine. The Draft UI
+Package/import and navigation data cross the C ABI as fixed records, with
+labels, paths, and source text copied separately into Draft ownership. The
+other sections remain formatted text. Navigation is accepted only when the
+latest check succeeded against the visible bytes; a rejected edit may retain a
+last-good graph for summary windows, but F12 never consults it. Imported proxy
+symbols are canonicalized to their provider declaration, and member ranges are
+narrowed through retained syntax nodes rather than parsing formatted dumps.
+These are views, not another parser, indexer, or semantic engine. The Draft UI
 copies them into its own bounded storage and presents independent movable,
 resizable windows. The document editor uses that same ordinary window model:
 its content is the reusable `turbo_editor` view, while the application owns its
-close, zoom, z-order, and arrangement policy. Files and Buffers are auxiliary
+close, zoom, z-order, and arrangement policy. Sources and Buffers are auxiliary
 non-tileable tool panes, so Tile/Cascade arrange the document together with
 visible semantic windows without moving those browsers. Opening a buffer
 reopens and focuses the document window if it was closed.
 
-Files, Buffers, executable roots, the package tree, and read-only semantic
+Workspace Sources, Buffers, executable roots, the package tree, and read-only semantic
 sections share `lib/turbo_ui`'s collection viewport policy. Applications retain
 cursor and offset only; the reusable layer owns keyboard movement, distinct
 activation, wheel scrolling, proportional scrollbar geometry, and visible-row
@@ -201,17 +206,22 @@ capture and consume explicit application-timed repeat pulses. Escape is solely
 a popup/dialog/window-operation cancel key; Alt-X starts the explicit quit
 policy.
 
-F6 opens Project: its top list selects a runnable root by mouse or Enter and
+F1 opens a modal, scrollable reference generated from the application's single
+authored shortcut table. F6 opens Programs & Packages: its top list selects a
+runnable root by mouse or Enter and
 its lower section displays an expandable checked package/dependency tree.
 Click or Enter toggles a package; Left/Right close, open, or enter branches.
 F7 through F11 toggle declaration, reference/call, effect, denial, and
-diagnostic views. F12 remains a quick root cycle and Shift-F12 cycles targets.
-The Window menu tiles or cascades ordinary tileable windows without disturbing
-auxiliary tools or fixed dialogs.
-The F7-F11 semantic sections are currently read-only text projections without
-source-jump navigation.
+diagnostic views. F12 resolves the symbol at the exact editor byte offset and
+selects its definition; Shift-F12 replaces the References window with a
+structured, ordered Usages list. Alt-Left/Alt-Right traverse application-owned
+path/range history after later compiler checks invalidate service-local file
+IDs. Compiler-distributed core and dependency text is copied while its FileId
+is current and opened as a visibly read-only `turbo_editor.Buffer`; mutation is
+rejected by the document engine itself. The Window menu tiles or cascades
+ordinary tileable windows without disturbing auxiliary tools or fixed dialogs.
 
-Build first checks the exact active-plus-dirty project buffer set. Only a
+Build first checks the exact active-plus-dirty workspace buffer set. Only a
 successful check continues that retained graph through MIR, per-package LLVM
 modules, object/assembly emission, and publication of the configured artifact.
 Optimization, assertion mode, artifact kind/output, debug information,
@@ -242,25 +252,27 @@ lifetime. IDE build speed now follows the manifest optimization choice; a
 program configured as O2 deliberately pays the ordinary O2/ThinLTO cost.
 
 Identifier completion, background checking, broad Codex worktree editing,
-declaration/reference source-jump navigation, named configuration variants,
-and body-only invalidation remain later measurements or features. Open
-Workspace currently uses a typed path rather than a directory browser.
+named configuration variants, and body-only invalidation remain later
+measurements or features. Open Folder currently uses a typed path rather than
+a directory browser.
 Ordinary Codex can continue editing the normal files, and Draft `...` retains
 its existing compiler-synthesis meaning.
 
 ## Verification boundary
 
 `draft_workspace_selection_tests` cover marker discovery, manifest grammar,
-and path constraints. `draft_compiler_service_tests` cover C ABI creation, canonical
-paths, multi-file source transactions, source enumeration, production syntax
-spans, structured package rows, semantic views, invalid-overlay diagnostics,
+and path constraints. `draft_compiler_service_tests` cover C ABI creation,
+canonical paths, multi-file source transactions, source enumeration, production
+syntax spans, structured package rows, definition/usage navigation, stale-check
+navigation rejection, semantic views, invalid-overlay diagnostics,
 retained last-good state, topology changes, automatic root discovery,
 transactional workspace replacement,
 root/target switching, traversal rejection, effective program configuration,
 live manifest/summary refresh, target-specialized named-root discovery,
 run-setting copying, configured output kinds, and native Build. Draft package
 tests cover the application-side Host table, overlay assembly, configured
-Draft-owned Run, and the buffer/root invariant. `draft_draftide_smoke` launches
+Draft-owned Run, read-only buffer enforcement, shortcut/help behavior,
+semantic history, and the buffer/root invariant. `draft_draftide_smoke` launches
 the real Draft-built executable, reads the repository workspace marker,
 builds its selected program through the real shared compiler service, retrieves
 syntax/semantic products, and paints a frame without entering an interactive

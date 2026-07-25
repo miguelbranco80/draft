@@ -12,7 +12,7 @@ examples/turbo-ui-gallery/    visual and interactive proof
 ```
 
 The IDE remains one terminal process with an embedded compiler and ordinary
-`.draft` files. The executable and all editor/project/UI policy are written in
+`.draft` files. The executable and all editor/workspace/UI policy are written in
 Draft. A small shared C++ library retains the bootstrap compiler behind an
 opaque C ABI; it can disappear when the compiler is self-hosted without
 rewriting the IDE. Unsaved buffers are in-memory overlays only. There is no
@@ -64,7 +64,7 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
 ## 4. Embed the compiler directly
 
 - [x] Build `draftide` as a hosted Draft executable. Keep only an opaque,
-  fixed-layout C service over the C++ bootstrap compiler; Draft owns project
+  fixed-layout C service over the C++ bootstrap compiler; Draft owns workspace
   selection, buffers, terminal/UI state, Build/Run policy, and the service
   handle lifetime. The service owns compiler products and never calls Draft.
 - [x] Open an ordinary workspace directory. Discover executable roots without
@@ -73,7 +73,7 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
   Draft and the last successful `SourceManager`/`CompileWorkspaceResult` pair
   in the compiler service.
 - [x] Check synchronously at first. Submit the active buffer plus every other
-  dirty project buffer as one complete-file override transaction, and replace
+  dirty workspace buffer as one complete-file override transaction, and replace
   the stored graph only after success. A failed attempt publishes diagnostics
   but is not a user-visible candidate system.
 - [x] Expose the production lexer token ranges to the editor and add classic
@@ -102,14 +102,22 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
 - [x] Keep “open directory” as the workspace model. `draft.workspace` records
   named Build/Run configurations but does not enumerate source files or become
   a dependency manager.
-- [x] Make Files the compiler-discovered source browser and Buffers the open
-  document list. Add Open File through Files and transactional Open Workspace
-  with Save all / Discard / Cancel dirty-buffer policy.
+- [x] Make Workspace Sources the compiler-discovered source browser and Buffers
+  the open document list. Add transactional Open Folder with Save all / Discard
+  / Cancel dirty-buffer policy.
 - [x] Add reusable compound lists, proportional scrollbars, read-only text
   viewports and preorder trees; present the F6 package/dependency graph as an
   expandable compiler-backed tree without parsing its text report.
 - [x] Honor every relevant `draft.workspace` Build/Run field in the IDE through
   the compiler driver's shared manifest contract rather than an IDE schema.
+- [x] Add the classic editing command set: Undo/Redo, persistent forward/reverse
+  Find, Replace/Replace All, Go to Line, complete cursor/selection movement, and
+  one-step atomic replacement history.
+- [x] Add a Help menu and F1 modal generated from one complete application
+  shortcut table.
+- [x] Add structured compiler-backed F12 definition and Shift-F12 usages,
+  application-owned Back/Forward history, and read-only compiler/dependency
+  source buffers. Never parse a formatted semantic report for navigation.
 
 ## Explicitly later
 
@@ -122,5 +130,5 @@ These are future additions, not incomplete first-version work:
 - Broad Codex editing through an ordinary Git worktree and explicit conflict
   handling. Ordinary Codex remains outside the keystroke loop, while Draft
   `...` retains its existing precise compiler-synthesis meaning.
-- Replace the remaining declaration/reference/effect/denial text projections
-  with selectable compiler-backed navigation when source-jump queries exist.
+- Replace more declaration/reference/effect/denial text projections with
+  structured selectable rows when those views need direct interaction.

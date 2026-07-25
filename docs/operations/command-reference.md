@@ -175,14 +175,13 @@ default program as `draftc`. Without a marker it discovers executable roots in
 the standalone directory. `--source` may select the initial direct package
 file; otherwise the compiler opens the first target-selected source in bytewise
 filename order, and `package.draft` remains only a convention. The target
-defaults to the native host. Unless `--target` or Shift-F12
-supplies an explicit override, selecting a named program applies its effective
-workspace/program target. IDE-local root/window selections are not stored in
-the workspace manifest.
+defaults to the native host. Unless `--target` supplies an explicit override,
+selecting a named program applies its effective workspace/program target.
+IDE-local root/window selections are not stored in the workspace manifest.
 
 Turbo Draft opens ordinary files; the active buffer and every other dirty
-project buffer form one in-memory compiler transaction, and saving updates the
-same files. File > Open Workspace swaps to another validated directory after
+workspace buffer form one in-memory compiler transaction, and saving updates
+the same files. File > Open Folder swaps to another validated directory after
 explicit dirty-buffer handling. Build and F5 use the complete effective
 `[build]` plus matching `[program]` configuration: target, optimization,
 artifact kind/output, debug symbols, assertions, providers and summaries, and
@@ -192,8 +191,12 @@ built but deliberately not launched.
 Saving `draft.workspace` affects the next Check, Build, or F5 without reopening
 the IDE. Provider-summary files are likewise reread at that foreground
 boundary; unchanged structural configuration keeps the retained checked graph.
-F6 opens the root list and package/dependency view; F7-F11 toggle other
-compiler-derived semantic windows. F12 cycles roots, and Shift-F12 targets.
+F1 opens the complete shortcut reference. F6 opens the program-root list and
+package/dependency view; F7-F11 toggle other compiler-derived semantic windows.
+F12 goes to the exact semantic definition beneath the cursor, Shift-F12 opens
+ordered usage locations, and Alt-Left/Alt-Right move through navigation
+history. Definitions in compiler-distributed core or dependency sources open
+as read-only buffers.
 
 The executable and `draft_compiler_service` shared library must remain
 discoverable as siblings. The build records a loader-relative lookup on macOS
