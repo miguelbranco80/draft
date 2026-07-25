@@ -367,7 +367,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
         960, "Switch Workspace...", "", app^.host.open_workspace != nil,
         access_key = cast[u8]('w'),
     ) {
-        request_open_folder(app)
+        request_switch_workspace(app)
     }
     turbo_ui.menu_separator(&app^.ui, &workspace_menu)
     if turbo_ui.menu_action(
@@ -517,10 +517,10 @@ paint_app :: proc(
         modal = app^.windows[Window_Go_To_Line].id
     } else if app^.windows[Window_Search].visible {
         modal = app^.windows[Window_Search].id
-    } else if app^.windows[Window_Folder_Confirm].visible {
-        modal = app^.windows[Window_Folder_Confirm].id
-    } else if app^.windows[Window_Open_Folder].visible {
-        modal = app^.windows[Window_Open_Folder].id
+    } else if app^.windows[Window_Workspace_Confirm].visible {
+        modal = app^.windows[Window_Workspace_Confirm].id
+    } else if app^.windows[Window_Switch_Workspace].visible {
+        modal = app^.windows[Window_Switch_Workspace].id
     } else if app^.windows[Window_Open_File].visible {
         modal = app^.windows[Window_Open_File].id
     }
@@ -569,14 +569,14 @@ paint_app :: proc(
             title = "Effects"
         } else if index == Window_Denials {
             title = "Denials"
-        } else if index == Window_Open_Folder {
+        } else if index == Window_Switch_Workspace {
             title = "Switch Workspace"
         } else if index == Window_Open_File {
             title = "Open File"
             if app^.file_dialog_action == .save_as {
                 title = "Save As"
             }
-        } else if index == Window_Folder_Confirm {
+        } else if index == Window_Workspace_Confirm {
             title = "Unsaved documents"
         } else if index == Window_Help {
             title = "Keyboard Shortcuts (F1)"
@@ -589,9 +589,9 @@ paint_app :: proc(
         }
         window_context: turbo_ui.Window_Context
         if index == Window_Search || index == Window_Quit ||
-            index == Window_Open_Folder ||
+            index == Window_Switch_Workspace ||
             index == Window_Open_File ||
-            index == Window_Folder_Confirm || index == Window_Help ||
+            index == Window_Workspace_Confirm || index == Window_Help ||
             index == Window_Replace || index == Window_Go_To_Line {
             window_context = turbo_ui.dialog_begin(&app^.ui, window, title)
         } else {
@@ -658,12 +658,12 @@ paint_app :: proc(
                 paint_text_view(app, index, window_context.content)
             case Window_Denials:
                 paint_text_view(app, index, window_context.content)
-            case Window_Open_Folder:
-                paint_open_folder(app, window_context.content)
+            case Window_Switch_Workspace:
+                paint_switch_workspace(app, window_context.content)
             case Window_Open_File:
                 paint_open_file(app, window_context.content)
-            case Window_Folder_Confirm:
-                paint_folder_confirm(app, window_context.content)
+            case Window_Workspace_Confirm:
+                paint_workspace_confirm(app, window_context.content)
             case Window_Help:
                 paint_shortcut_help(app, window_context.content)
             case Window_Replace:
@@ -681,9 +681,9 @@ paint_app :: proc(
                 close_search(app)
             } else if index == Window_Quit {
                 cancel_quit(app)
-            } else if index == Window_Open_Folder ||
-                index == Window_Folder_Confirm {
-                close_folder_dialogs(app)
+            } else if index == Window_Switch_Workspace ||
+                index == Window_Workspace_Confirm {
+                close_workspace_dialogs(app)
                 app^.status = "Workspace switch cancelled"
             } else if index == Window_Open_File {
                 close_open_file(app)

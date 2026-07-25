@@ -311,7 +311,7 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
     }
 }
 
-paint_open_folder :: proc(app: ^App, content: turbo_ui.Rect) {
+paint_switch_workspace :: proc(app: ^App, content: turbo_ui.Rect) {
     turbo_ui.write_clipped(
         app^.ui.surface,
         content,
@@ -374,7 +374,7 @@ paint_open_folder :: proc(app: ^App, content: turbo_ui.Rect) {
             .cancel_action,
             cast[u8]('c'),
         ) {
-            close_folder_dialogs(app)
+            close_workspace_dialogs(app)
             app^.status = "Workspace switch cancelled"
         }
     } else if turbo_ui.button(
@@ -385,11 +385,11 @@ paint_open_folder :: proc(app: ^App, content: turbo_ui.Rect) {
         true,
         .cancel_action,
     ) {
-        close_folder_dialogs(app)
+        close_workspace_dialogs(app)
         app^.status = "Workspace switch cancelled"
     }
     if submitted {
-        submit_open_folder(app)
+        submit_switch_workspace(app)
     }
 }
 
@@ -478,7 +478,7 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
     }
 }
 
-paint_folder_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
+paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
     turbo_ui.write_clipped(
         app^.ui.surface,
         content,
@@ -513,7 +513,7 @@ paint_folder_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
         cast[u8]('s'),
     ) {
         if save_all_dirty_buffers(app) {
-            _ = open_folder_now(app)
+            _ = switch_workspace_now(app)
         } else {
             app^.status = "Save all failed; disk conflicts are not overwritten"
         }
@@ -530,7 +530,7 @@ paint_folder_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
         .normal,
         cast[u8]('d'),
     ) {
-        _ = open_folder_now(app)
+        _ = switch_workspace_now(app)
     }
     if turbo_ui.button(
         &app^.ui,
@@ -541,7 +541,7 @@ paint_folder_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
         .cancel_action,
         cast[u8]('c'),
     ) {
-        close_folder_dialogs(app)
+        close_workspace_dialogs(app)
         app^.status = "Workspace switch cancelled"
     }
 }

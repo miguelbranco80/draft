@@ -47,8 +47,8 @@ Window_Declarations :: 7
 Window_References :: 8
 Window_Effects :: 9
 Window_Denials :: 10
-Window_Open_Folder :: 11
-Window_Folder_Confirm :: 12
+Window_Switch_Workspace :: 11
+Window_Workspace_Confirm :: 12
 Window_Replace :: 13
 Window_Go_To_Line :: 14
 Window_Help :: 15
@@ -278,12 +278,12 @@ init_windows :: proc(app: ^App) {
         turbo_ui.Rect{column = 14, row = 7, width = 64, height = 15},
         4,
     )
-    app^.windows[Window_Open_Folder] = turbo_ui.dialog_window_init(
+    app^.windows[Window_Switch_Workspace] = turbo_ui.dialog_window_init(
         410,
         turbo_ui.Rect{column = 12, row = 6, width = 66, height = 9},
         12,
     )
-    app^.windows[Window_Folder_Confirm] = turbo_ui.dialog_window_init(
+    app^.windows[Window_Workspace_Confirm] = turbo_ui.dialog_window_init(
         411,
         turbo_ui.Rect{column = 14, row = 7, width = 62, height = 8},
         13,

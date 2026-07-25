@@ -606,12 +606,12 @@ test_open_workspace_requires_dirty_buffer_choice :: proc(test: ^testing.Test) {
     defer destroy_app(&app)
     app.buffers[0].dirty = true
 
-    submit_open_folder(&app)
-    testing.expect(test, app.windows[Window_Folder_Confirm].visible)
-    testing.expect(test, !app.windows[Window_Open_Folder].visible)
+    submit_switch_workspace(&app)
+    testing.expect(test, app.windows[Window_Workspace_Confirm].visible)
+    testing.expect(test, !app.windows[Window_Switch_Workspace].visible)
     testing.expect(
         test,
-        app.ui.active_window == app.windows[Window_Folder_Confirm].id,
+        app.ui.active_window == app.windows[Window_Workspace_Confirm].id,
     )
 }
 

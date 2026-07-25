@@ -51,16 +51,16 @@ save_all_documents :: proc(app: ^App) {
     }
 }
 
-close_folder_dialogs :: proc(app: ^App) {
+close_workspace_dialogs :: proc(app: ^App) {
     turbo_ui.hide_window(
         &app^.ui,
         app^.windows[:],
-        app^.windows[Window_Open_Folder].id,
+        app^.windows[Window_Switch_Workspace].id,
     )
     turbo_ui.hide_window(
         &app^.ui,
         app^.windows[:],
-        app^.windows[Window_Folder_Confirm].id,
+        app^.windows[Window_Workspace_Confirm].id,
     )
 }
 
@@ -248,12 +248,12 @@ request_save_as :: proc(app: ^App) {
     app^.status = "Save As; relative paths start at the Workspace"
 }
 
-// open_folder_now crosses the one mutable workspace boundary. The host first
+// switch_workspace_now crosses the one mutable workspace boundary. The host first
 // constructs and validates a complete replacement compiler session behind its
 // stable user pointer. Only then are old Draft buffers destroyed and the new
 // selected source opened. A filesystem race after host validation falls back
 // to an ordinary empty buffer so the UI never retains zero documents.
-open_folder_now :: proc(app: ^App) -> bool {
+switch_workspace_now :: proc(app: ^App) -> bool {
     if app^.host.open_workspace == nil {
         return false
     }
@@ -275,16 +275,16 @@ open_folder_now :: proc(app: ^App) -> bool {
             app^.workspace_error[app^.workspace_error_length] != 0 {
             app^.workspace_error_length += 1
         }
-        if app^.windows[Window_Folder_Confirm].visible {
+        if app^.windows[Window_Workspace_Confirm].visible {
             turbo_ui.hide_window(
                 &app^.ui,
                 app^.windows[:],
-                app^.windows[Window_Folder_Confirm].id,
+                app^.windows[Window_Workspace_Confirm].id,
             )
             turbo_ui.show_modal_window(
                 &app^.ui,
                 app^.windows[:],
-                app^.windows[Window_Open_Folder].id,
+                app^.windows[Window_Switch_Workspace].id,
             )
             app^.ui.focused_id = 570
         }
@@ -292,7 +292,7 @@ open_folder_now :: proc(app: ^App) -> bool {
         return false
     }
 
-    close_folder_dialogs(app)
+    close_workspace_dialogs(app)
     destroy_workspace_documents(app)
     app^.active = 0
     app^.program_files = turbo_ui.List_State{}
@@ -317,25 +317,25 @@ open_folder_now :: proc(app: ^App) -> bool {
     return true
 }
 
-submit_open_folder :: proc(app: ^App) {
+submit_switch_workspace :: proc(app: ^App) {
     if has_dirty_buffers(app) {
         turbo_ui.hide_window(
             &app^.ui,
             app^.windows[:],
-            app^.windows[Window_Open_Folder].id,
+            app^.windows[Window_Switch_Workspace].id,
         )
         turbo_ui.show_modal_window(
             &app^.ui,
             app^.windows[:],
-            app^.windows[Window_Folder_Confirm].id,
+            app^.windows[Window_Workspace_Confirm].id,
         )
         app^.status = "Choose how to handle unsaved documents"
         return
     }
-    _ = open_folder_now(app)
+    _ = switch_workspace_now(app)
 }
 
-request_open_folder :: proc(app: ^App) {
+request_switch_workspace :: proc(app: ^App) {
     if app^.host.open_workspace == nil || app^.host.copy_workspace_path == nil {
         app^.status = "No workspace-opening host is attached"
         return
@@ -360,12 +360,12 @@ request_open_folder :: proc(app: ^App) {
     turbo_ui.hide_window(
         &app^.ui,
         app^.windows[:],
-        app^.windows[Window_Folder_Confirm].id,
+        app^.windows[Window_Workspace_Confirm].id,
     )
     turbo_ui.show_modal_window(
         &app^.ui,
         app^.windows[:],
-        app^.windows[Window_Open_Folder].id,
+        app^.windows[Window_Switch_Workspace].id,
     )
     app^.ui.focused_id = 570
     app^.status = "Enter a workspace directory"
@@ -719,9 +719,9 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
         app^.ui.keyboard_window != turbo_ui.No_Widget ||
         app^.windows[Window_Search].visible ||
         app^.windows[Window_Quit].visible ||
-        app^.windows[Window_Open_Folder].visible ||
+        app^.windows[Window_Switch_Workspace].visible ||
         app^.windows[Window_Open_File].visible ||
-        app^.windows[Window_Folder_Confirm].visible ||
+        app^.windows[Window_Workspace_Confirm].visible ||
         app^.windows[Window_Replace].visible ||
         app^.windows[Window_Go_To_Line].visible ||
         app^.windows[Window_Help].visible {
