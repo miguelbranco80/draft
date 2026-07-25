@@ -51,7 +51,7 @@ static_assert(alignof(DraftCompilerServiceNavigationLocation) ==
               alignof(std::size_t));
 
 // ServiceSession is the stable opaque C handle. Keeping the compiler behind
-// one extra owner lets Open Folder replace a complete workspace session
+// one extra owner lets Switch Workspace replace a complete compiler session
 // transactionally without invalidating the Draft Host_Api.user value.
 struct ServiceSession {
   std::unique_ptr<draft::ide::CompilerSession> compiler;

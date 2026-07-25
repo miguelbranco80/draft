@@ -399,6 +399,35 @@ test_all_dirty_buffers_require_quit_decisions :: proc(test: ^testing.Test) {
     testing.expect(test, app.active == 0)
 }
 
+// Exiting an unnamed document cannot invoke ordinary Save because its visible
+// label is deliberately not a filesystem path. The default dialog action must
+// lead to Save As and keep the process alive; Discard remains the only direct
+// exit path for such a document.
+test_unnamed_quit_routes_to_save_as :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_unnamed_buffer(&app))
+    defer destroy_app(&app)
+    testing.expect(test, !request_quit(&app))
+
+    surface: tui.Surface
+    tui.surface_init(&surface, 80, 24)
+    defer tui.surface_destroy(&surface)
+    should_quit := paint_app(
+        &app,
+        &surface,
+        turbo_ui.key_event(turbo_ui.Key_Event{
+            code = .character,
+            byte_value = cast[u8]('a'),
+            alt = true,
+        }),
+    )
+    testing.expect(test, !should_quit)
+    testing.expect(test, !app.windows[Window_Quit].visible)
+    testing.expect(test, app.windows[Window_Open_File].visible)
+    testing.expect(test, app.file_dialog_action == .save_as)
+}
+
 // Every compiler-backed buffer is tied to the root which published its source
 // path. This regression proves that choosing an older buffer restores that root
 // before the editor can later send its bytes to Check or F5.
@@ -428,7 +457,7 @@ test_buffer_activation_restores_compiler_root :: proc(test: ^testing.Test) {
     testing.expect(test, roots.selected == 1)
 }
 
-// Programs & Packages displays effective configuration copied from the host;
+// Program and Run Settings displays effective configuration copied from the host;
 // it does not reinterpret draft.workspace fields in Draft. This regression
 // fixes that ownership boundary and the complete-copy length contract.
 test_refreshes_effective_program_configuration :: proc(test: ^testing.Test) {
@@ -511,17 +540,17 @@ test_collects_all_open_workspace_overlays :: proc(test: ^testing.Test) {
     defer destroy_app(&app)
 
     app.host.source_count = fake_source_count
-    app.workspace_source_count = 2
+    app.program_file_count = 2
     memory.owned_string_copy_bytes(
-        &app.workspace_source_paths[0],
+        &app.program_file_paths[0],
         turbo_editor.path_bytes(&app.buffers[0]),
     )
     memory.owned_string_copy_bytes(
-        &app.workspace_source_paths[1],
+        &app.program_file_paths[1],
         turbo_editor.path_bytes(&app.buffers[1]),
     )
-    memory.owned_string_copy(&app.workspace_source_names[0], "first.draft")
-    memory.owned_string_copy(&app.workspace_source_names[1], "second.draft")
+    memory.owned_string_copy(&app.program_file_names[0], "first.draft")
+    memory.owned_string_copy(&app.program_file_names[1], "second.draft")
     app.buffers[0].dirty = true
     app.buffers[1].dirty = true
     app.active = 1
@@ -567,7 +596,7 @@ test_typing_only_runs_foreground_lexing :: proc(test: ^testing.Test) {
     testing.expect(test, !app.semantic_dirty)
 }
 
-// Open Folder never discards dirty document owners directly. Submission
+// Switch Workspace never discards dirty document owners directly. Submission
 // first enters the explicit Save all / Discard / Cancel modal, preserving the
 // candidate pathname while the user decides.
 test_open_workspace_requires_dirty_buffer_choice :: proc(test: ^testing.Test) {
@@ -598,7 +627,7 @@ test_editor_is_a_normal_tileable_window :: proc(test: ^testing.Test) {
     defer destroy_app(&app)
 
     editor := &app.windows[Window_Editor]
-    files := &app.windows[Window_Sources]
+    files := &app.windows[Window_Program_Files]
     files_bounds := files^.bounds
     testing.expect(test, editor^.flags.tileable)
     testing.expect(test, editor^.flags.zoomable)
@@ -617,12 +646,29 @@ test_editor_is_a_normal_tileable_window :: proc(test: ^testing.Test) {
     testing.expect(test, editor^.visible)
     testing.expect(test, app.ui.active_window == editor^.id)
     testing.expect(test, app.ui.focused_id == 600)
+
+    // Startup shows one understandable document surface, not a pile of
+    // compiler inspectors. Its title is the actual document path so the user
+    // never has to infer which open file the generic word "Editor" represents.
+    visible: usize
+    for window in app.windows {
+        if window.visible {
+            visible += 1
+        }
+    }
+    testing.expect(test, visible == 1)
+    surface: tui.Surface
+    tui.surface_init(&surface, 80, 24)
+    defer tui.surface_destroy(&surface)
+    _ = paint_app(&app, &surface, turbo_ui.no_event())
+    (title, title_valid) := tui.cell_at(&surface, 4, 1)
+    testing.expect(test, title_valid && title.value == 't')
 }
 
 // Menu shortcut commands belong to the application rather than the currently
 // focused control. This regression starts outside the editor, proves that F2
-// opens instead of toggling Sources closed, and proves Ctrl-F reaches the Find
-// modal even while the Sources list owns keyboard focus.
+// opens instead of toggling Program Files closed, and proves Ctrl-F reaches
+// Find even while that file list owns keyboard focus.
 test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
     app: App
     init_windows(&app)
@@ -632,14 +678,17 @@ test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
     turbo_ui.hide_window(
         &app.ui,
         app.windows[:],
-        app.windows[Window_Sources].id,
+        app.windows[Window_Program_Files].id,
     )
     (remaining, quit) := handle_global_key(&app, turbo_ui.key_event(
         turbo_ui.Key_Event{code = .f2},
     ))
     testing.expect(test, !quit && remaining.kind == .none)
-    testing.expect(test, app.windows[Window_Sources].visible)
-    testing.expect(test, app.ui.active_window == app.windows[Window_Sources].id)
+    testing.expect(test, app.windows[Window_Program_Files].visible)
+    testing.expect(
+        test,
+        app.ui.active_window == app.windows[Window_Program_Files].id,
+    )
     testing.expect(test, app.ui.focused_id == 530)
 
     (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
@@ -650,8 +699,11 @@ test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
         },
     ))
     testing.expect(test, !quit && remaining.kind == .none)
-    testing.expect(test, app.windows[Window_Buffers].visible)
-    testing.expect(test, app.ui.active_window == app.windows[Window_Buffers].id)
+    testing.expect(test, app.windows[Window_Open_Files].visible)
+    testing.expect(
+        test,
+        app.ui.active_window == app.windows[Window_Open_Files].id,
+    )
     testing.expect(test, app.ui.focused_id == 532)
 
     (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
@@ -666,9 +718,10 @@ test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
     testing.expect(test, app.ui.active_window == app.windows[Window_Search].id)
     testing.expect(test, app.ui.focused_id == 500)
 
-    // Escape cancels local UI only; it never acts as the application quit
+    // Escape cancels local UI only; it never acts as the application exit
     // command. Once the modal is closed, a bare Escape is consumed harmlessly,
-    // while the advertised Alt-X completes a clean workspace quit.
+    // while the advertised Ctrl-Q completes a clean workspace exit using one
+    // exact C0 byte which the raw terminal can report on every host.
     close_search(&app)
     (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
         turbo_ui.Key_Event{code = .escape},
@@ -677,8 +730,8 @@ test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
     (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
         turbo_ui.Key_Event{
             code = .character,
-            byte_value = cast[u8]('x'),
-            alt = true,
+            byte_value = 17,
+            control = true,
         },
     ))
     testing.expect(test, quit && remaining.kind == .none)
@@ -789,6 +842,55 @@ test_editing_shortcuts_apply_the_advertised_commands :: proc(test: ^testing.Test
     submit_go_to_line(&app)
     testing.expect(test, !app.windows[Window_Go_To_Line].visible)
     testing.expect(test, buffer^.cursor == 12)
+}
+
+// New/Cut/Copy/Paste are ordinary document operations, not placeholder menu
+// rows. This regression drives the same C0 shortcuts produced by a raw local or
+// SSH terminal and proves the IDE-owned clipboard survives between documents.
+test_document_and_clipboard_shortcuts_are_real :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-clipboard.draft"))
+    defer destroy_app(&app)
+    buffer := active_buffer(&app)
+    turbo_editor.insert_text(buffer, "draft")
+
+    keys := [4]u8{1, 3, 24, 22}
+    for index: usize = 0; index < len(keys); index += 1 {
+        (remaining, quit) := handle_global_key(
+            &app,
+            turbo_ui.key_event(turbo_ui.Key_Event{
+                code = .character,
+                byte_value = keys[index],
+                control = true,
+            }),
+        )
+        testing.expect(test, !quit && remaining.kind == .none)
+        if index == 1 {
+            testing.expect(test, app.clipboard.length == len("draft"))
+        } else if index == 2 {
+            testing.expect(test, buffer^.bytes.length == 0)
+        } else if index == 3 {
+            testing.expect(test, buffer^.bytes.length == len("draft"))
+        }
+    }
+
+    (remaining, quit) := handle_global_key(
+        &app,
+        turbo_ui.key_event(turbo_ui.Key_Event{
+            code = .character,
+            byte_value = 14,
+            control = true,
+        }),
+    )
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, app.buffer_count == 2 && app.active == 1)
+    testing.expect(test, turbo_editor.is_unnamed(active_buffer(&app)))
+    testing.expect(test, active_buffer(&app)^.dirty)
+
+    paste_clipboard(&app)
+    testing.expect(test,
+        active_buffer(&app)^.bytes.length == len("draft"))
 }
 
 // Semantic shortcuts consume structured host locations, preserve exact byte
@@ -904,7 +1006,7 @@ test_help_menu_lists_and_closes_all_shortcuts :: proc(test: ^testing.Test) {
     (definition_key, definition_command) := shortcut_row(12)
     testing.expect(test, text_equal(definition_key, "F12"))
     testing.expect(test, text_equal(definition_command, "Go to definition"))
-    (cancel_key, cancel_command) := shortcut_row(40)
+    (cancel_key, cancel_command) := shortcut_row(48)
     testing.expect(test, text_equal(cancel_key, "Esc"))
     testing.expect(
         test,
@@ -972,7 +1074,7 @@ test_raw_mouse_quit :: proc(test: ^testing.Test) {
     should_quit := false
 
     // SGR coordinates are one based. Column 4, row 1 is the File title;
-    // column 4, row 9 is the Quit row in the bordered File popup.
+    // column 4, row 12 is the Exit row in the bordered File popup.
     title_click := "\x1b[<0;4;1M\x1b[<0;4;1m"
     for index: usize = 0; index < len(title_click); index += 1 {
         event := turbo_ui_terminal.decode(&decoder, title_click[index])
@@ -983,7 +1085,7 @@ test_raw_mouse_quit :: proc(test: ^testing.Test) {
     testing.expect(test, !should_quit)
     testing.expect(test, app.menus.open_title == Menu_File)
 
-    quit_click := "\x1b[<0;4;9M\x1b[<0;4;9m"
+    quit_click := "\x1b[<0;4;12M\x1b[<0;4;12m"
     for index: usize = 0; index < len(quit_click); index += 1 {
         event := turbo_ui_terminal.decode(&decoder, quit_click[index])
         if event.kind != .none {

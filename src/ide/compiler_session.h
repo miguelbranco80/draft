@@ -173,7 +173,7 @@ struct EffectiveProgramConfiguration {
 // SourceOption is one editable, target-selected workspace Draft file reachable
 // from the current checked root. physical_path is exposed only for file I/O;
 // identity and relative_name are the semantic override key. display_name is a
-// stable workspace-relative label sorted for Workspace Sources.
+// stable workspace-relative label sorted for Files in Active Program.
 struct SourceOption {
   std::string display_name;
   std::filesystem::path physical_path;

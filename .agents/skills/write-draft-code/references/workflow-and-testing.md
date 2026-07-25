@@ -122,20 +122,26 @@ environment with the last occurrence winning. Relative working directories are
 workspace-relative; an absent one inherits DraftIDE's working directory. The
 child inherits the restored primary terminal, and DraftIDE waits for Enter
 after completion so program output remains readable before the TUI resumes.
-Workspace Sources is populated from the compiler's target-selected reachable workspace
-graph, while Buffers lists open documents. Typing runs only the production lexer
-over the active complete buffer; it does not check packages or refresh semantic
-views. Check and F5 submit the active buffer plus every other dirty buffer
+Files in Active Program is populated from the compiler's target-selected
+reachable graph, while Open Files lists editor-owned documents. Typing runs only
+the production lexer over the active complete file; it does not check packages
+or refresh semantic views. Check and F5 submit the active file plus every other
+dirty file
 belonging to that graph as one transactional source-override set. F12 and
 Shift-F12 first check pending edits before requesting exact semantic ranges.
-F6 presents the selected Program, its effective Build/Run configuration, and
-the checked package/import graph as an expandable structured tree;
-F7-F11 present read-only semantic reports. F12 uses the current successful
+F6 presents the selected Program and its effective Build/Run configuration;
+Packages and Imports is a separate expandable structured tree, and Window owns
+the other read-only semantic reports. F12 uses the current successful
 compiler graph to select an exact definition, Shift-F12 opens ordered usages,
 and Alt-Left/Alt-Right traverse app-owned navigation history. A failed latest
 check disables semantic jumps even though last-good summary reports remain
 available. Compiler-distributed and dependency sources open in read-only
 buffers whose document layer rejects mutation and save.
+
+For `lib/turbo_ui`, reserve button footprints with `button_width(label)` so the
+brackets, terminal-width label, and shadow column all fit. A mutable byte-owned
+window title is painted by calling `begin_window(..., "")` followed immediately
+by `window_title_bytes`; do not invent a mutable-slice-to-string conversion.
 
 ## Choose the owning layer
 

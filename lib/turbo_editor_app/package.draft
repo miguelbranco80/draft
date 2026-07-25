@@ -43,8 +43,8 @@ Scrollbar_Initial_Repeat :: 350 * time.millisecond
 Scrollbar_Repeat_Interval :: 50 * time.millisecond
 
 Window_Editor :: 0
-Window_Sources :: 1
-Window_Buffers :: 2
+Window_Program_Files :: 1
+Window_Open_Files :: 2
 Window_Search :: 3
 Window_Quit :: 4
 Window_Diagnostics :: 5
@@ -59,25 +59,35 @@ Window_Replace :: 13
 Window_Go_To_Line :: 14
 Window_Help :: 15
 Window_Open_File :: 16
-Window_Count :: 17
+Window_Program_Settings :: 17
+Window_Count :: 18
+
+File_Dialog_Action :: enum u8 {
+    open,
+    save_as,
+}
 
 Menu_File :: 520
 Menu_File_Popup :: 521
 Menu_Edit :: 522
 Menu_Edit_Popup :: 523
-Menu_Build :: 524
-Menu_Build_Popup :: 525
+Menu_Run :: 524
+Menu_Run_Popup :: 525
 Menu_Window :: 526
 Menu_Window_Popup :: 527
 Menu_Help :: 528
 Menu_Help_Popup :: 529
+Menu_Search :: 900
+Menu_Search_Popup :: 901
+Menu_Workspace :: 902
+Menu_Workspace_Popup :: 903
 
 // Shortcut_Row_Count is the complete authored keyboard reference shown by the
 // Help window. The rows deliberately include editor movement and desktop
 // manipulation in addition to menu accelerators: these commands are otherwise
 // discoverable only by experimenting with a terminal keyboard. shortcut_row
 // below is the single text source for the visible table and its coverage test.
-Shortcut_Row_Count :: 41
+Shortcut_Row_Count :: 49
 
 Text_Window_First :: Window_Diagnostics
 Text_Window_Count :: 6
@@ -87,10 +97,10 @@ Host_Path_Capacity :: 4096
 
 Maximum_Syntax_Spans :: 4096
 Maximum_Program_Roots :: 64
-Maximum_Workspace_Sources :: 512
+Maximum_Program_Files :: 512
 Program_Root_Name_Capacity :: 512
 Program_Root_Overflow_Label :: "<Program path exceeds IDE display limit>"
-Workspace_Source_Copy_Capacity :: 4096
+Program_File_Copy_Capacity :: 4096
 Maximum_Package_Rows :: 512
 Package_Row_Text_Capacity :: 512
 Package_Row_Overflow_Label :: "<package row exceeds IDE display limit>"
@@ -135,7 +145,7 @@ App :: struct {
     buffer_has_root: [Maximum_Buffers]bool,
 
     windows: [Window_Count]turbo_ui.Window_State,
-    sources: turbo_ui.List_State,
+    program_files: turbo_ui.List_State,
     buffers_list: turbo_ui.List_State,
     shortcut_list: turbo_ui.List_State,
     navigation_list: turbo_ui.List_State,
@@ -152,6 +162,8 @@ App :: struct {
     workspace_box: turbo_ui.Text_Box_State,
     workspace_error: [512]u8,
     workspace_error_length: usize,
+    file_dialog_action: File_Dialog_Action,
+    unnamed_count: usize,
     status: string,
     status_storage: [Status_Capacity]u8,
     status_length: usize,
@@ -161,7 +173,7 @@ App :: struct {
     syntax_spans: [Maximum_Syntax_Spans]turbo_editor.Syntax_Span,
     syntax_span_count: usize,
     diagnostic_count: u32,
-    // semantic_dirty means at least one open workspace buffer has changed
+    // semantic_dirty means at least one open active-Program file has changed
     // since the latest complete compiler transaction. Lexical coloring remains
     // current while this bit is set, but diagnostics and semantic tooling are
     // deliberately retained as the last explicit Check/Build/Run result.
@@ -191,18 +203,23 @@ App :: struct {
     // suffix, exactly like a browser, then appends current and destination.
     navigation_history_index: usize,
     semantic_usages_visible: bool,
-    // Workspace source rows are compiler-discovered ordinary files reachable
-    // from the selected root package.
+    // Program file rows are compiler-discovered ordinary files reachable from
+    // the active root package.
     // Each label/path owner is independent because C ABI copy operations
     // return variable-length bytes that cannot borrow compiler storage.
-    workspace_source_names: [Maximum_Workspace_Sources]memory.Owned_String,
-    workspace_source_paths: [Maximum_Workspace_Sources]memory.Owned_String,
-    workspace_source_count: usize,
+    program_file_names: [Maximum_Program_Files]memory.Owned_String,
+    program_file_paths: [Maximum_Program_Files]memory.Owned_String,
+    program_file_count: usize,
     run_requested: bool,
     quit_discard_mask: u64,
+    // clipboard is an IDE-local byte clipboard. Bracketed terminal paste still
+    // enters as text events; this owner gives Cut/Copy/Paste deterministic
+    // behavior without depending on a desktop clipboard or SSH forwarding.
+    clipboard: array.Dynamic[u8],
 }
 
 init_windows :: proc(app: ^App) {
+    array.init(&app^.clipboard)
     // The document is an ordinary desktop window rather than a privileged
     // background layer. Its content remains the reusable turbo_editor view;
     // only this application decides that the view is closable, zoomable, and
@@ -217,12 +234,12 @@ init_windows :: proc(app: ^App) {
     // first Tile/Cascade operation leaves zoom and arranges it normally.
     app^.windows[Window_Editor].zoomed = true
     app^.windows[Window_Editor].focus_id = 600
-    app^.windows[Window_Sources] = turbo_ui.tool_window_init(
+    app^.windows[Window_Program_Files] = turbo_ui.tool_window_init(
         400,
         turbo_ui.Rect{column = 2, row = 3, width = 28, height = 15},
         2,
     )
-    app^.windows[Window_Buffers] = turbo_ui.tool_window_init(
+    app^.windows[Window_Open_Files] = turbo_ui.tool_window_init(
         401,
         turbo_ui.Rect{column = 18, row = 5, width = 34, height = 13},
         3,
@@ -297,7 +314,13 @@ init_windows :: proc(app: ^App) {
         turbo_ui.Rect{column = 13, row = 6, width = 64, height = 9},
         17,
     )
-    app^.windows[Window_Buffers].visible = false
+    app^.windows[Window_Program_Settings] = turbo_ui.window_init(
+        416,
+        turbo_ui.Rect{column = 7, row = 3, width = 72, height = 22},
+        4,
+    )
+    app^.windows[Window_Program_Files].visible = false
+    app^.windows[Window_Open_Files].visible = false
     app^.windows[Window_Search].visible = false
     app^.windows[Window_Quit].visible = false
     for index: usize = Window_Diagnostics; index < Window_Count; index += 1 {
@@ -315,84 +338,100 @@ shortcut_row :: proc(index: usize) -> (string, string) {
     case 0:
         return ("F1", "Open this keyboard shortcut reference")
     case 1:
-        return ("F2", "Show Workspace Sources")
+        return ("Ctrl-N", "Create a new in-memory document")
     case 2:
-        return ("Alt-0", "Show open Buffers")
+        return ("Ctrl-O", "Open a file by path")
     case 3:
-        return ("Ctrl-S", "Save the active buffer")
+        return ("Ctrl-S", "Save the active document")
     case 4:
-        return ("Ctrl-Z", "Undo one editing operation")
+        return ("Alt-F, A", "Save the active document with a new path")
     case 5:
-        return ("Ctrl-Y", "Redo one editing operation")
+        return ("Ctrl-Z", "Undo one editing operation")
     case 6:
-        return ("Ctrl-F", "Open Find")
+        return ("Ctrl-Y", "Redo one editing operation")
     case 7:
-        return ("F3", "Find next")
+        return ("Ctrl-X", "Cut to the IDE-local clipboard")
     case 8:
-        return ("Shift-F3", "Find previous")
+        return ("Ctrl-C", "Copy to the IDE-local clipboard")
     case 9:
-        return ("Ctrl-H", "Open Replace")
+        return ("Ctrl-V", "Paste from the IDE-local clipboard")
     case 10:
-        return ("Ctrl-R", "Replace current match and find next")
+        return ("Ctrl-A", "Select the complete document")
     case 11:
-        return ("Ctrl-G", "Go to a one-based line number")
+        return ("Ctrl-F", "Open Find")
     case 12:
         return ("F12", "Go to definition")
     case 13:
         return ("Shift-F12", "Find usages")
     case 14:
-        return ("Alt-Left", "Go back in semantic navigation history")
+        return ("F3", "Find next")
     case 15:
-        return ("Alt-Right", "Go forward in semantic navigation history")
+        return ("Shift-F3", "Find previous")
     case 16:
-        return ("F5", "Build and run the selected program")
+        return ("Ctrl-H", "Open Replace")
     case 17:
-        return ("F6", "Show Programs & Packages")
+        return ("Ctrl-R", "Replace current match and find next")
     case 18:
-        return ("F7", "Show Declarations")
+        return ("Alt-S, A", "Replace all matches")
     case 19:
-        return ("F8", "Show References and calls")
+        return ("Ctrl-G", "Go to a one-based line number")
     case 20:
-        return ("F9", "Show Effects")
+        return ("Alt-Left", "Go back in semantic navigation history")
     case 21:
-        return ("F10", "Show Denials")
+        return ("Alt-Right", "Go forward in semantic navigation history")
     case 22:
-        return ("F11", "Show Diagnostics")
+        return ("Alt-F9", "Check the active Program")
     case 23:
-        return ("Ctrl-F6", "Activate the next desktop window")
+        return ("F9", "Build the active Program")
     case 24:
-        return ("Ctrl-Shift-F6", "Activate the previous desktop window")
+        return ("F5", "Build and run the active Program")
     case 25:
-        return ("Ctrl-F5", "Enter keyboard move/size mode")
+        return ("F2", "Show files reachable from the active Program")
     case 26:
-        return ("Alt-F3", "Close the active window")
+        return ("Alt-0", "Show open documents")
     case 27:
-        return ("Alt-F", "Open the File menu")
+        return ("F6", "Show Program and build/run settings")
     case 28:
-        return ("Alt-E", "Open the Edit menu")
+        return ("F8", "Show current diagnostics")
     case 29:
-        return ("Alt-B", "Open the Build menu")
+        return ("Ctrl-F6", "Activate the next desktop window")
     case 30:
-        return ("Alt-W", "Open the Window menu")
+        return ("Ctrl-Shift-F6", "Activate the previous desktop window")
     case 31:
-        return ("Alt-H", "Open the Help menu")
+        return ("Ctrl-F5", "Enter keyboard move/size mode")
     case 32:
-        return ("Alt-X", "Quit DraftIDE")
+        return ("Alt-F3", "Close the active window")
     case 33:
-        return ("Home / End", "Move to the start / end of the line")
+        return ("Alt-F", "Open the File menu")
     case 34:
-        return ("Ctrl-Home / End", "Move to the start / end of the file")
+        return ("Alt-E", "Open the Edit menu")
     case 35:
-        return ("Ctrl-Left / Right", "Move by word")
+        return ("Alt-S", "Open the Search menu")
     case 36:
-        return ("Shift + movement", "Extend the editor selection")
+        return ("Alt-R", "Open the Run menu")
     case 37:
-        return ("Page Up / Down", "Move by the visible editor page")
+        return ("Alt-K", "Open the Workspace menu")
     case 38:
-        return ("Tab", "Insert a tab; move focus inside a dialog")
+        return ("Alt-W", "Open the Window menu")
     case 39:
-        return ("Backspace / Delete", "Delete before / after the cursor")
+        return ("Alt-H", "Open the Help menu")
     case 40:
+        return ("Alt-X / Ctrl-Q", "Exit DraftIDE")
+    case 41:
+        return ("Home / End", "Move to the start / end of the line")
+    case 42:
+        return ("Ctrl-Home / Ctrl-End", "Move to the start / end of the file")
+    case 43:
+        return ("Ctrl-Left / Ctrl-Right", "Move by word")
+    case 44:
+        return ("Shift + movement", "Extend the editor selection")
+    case 45:
+        return ("Page Up / Down", "Move by the visible editor page")
+    case 46:
+        return ("Tab", "Insert a tab; move focus inside a dialog")
+    case 47:
+        return ("Backspace / Delete", "Delete before / after the cursor")
+    case 48:
         return ("Esc", "Cancel the current menu, dialog, or operation")
     case:
         assert(false, "shortcut help row index is outside the authored table")
@@ -430,6 +469,41 @@ init_one_buffer_bytes :: proc(app: ^App, path: []u8) -> bool {
     return true
 }
 
+// init_one_unnamed_buffer appends an in-memory document with a stable display
+// label but no filesystem authority. Save routes it through Save As; Exit
+// treats its initial dirty bit exactly like authored content.
+init_one_unnamed_buffer :: proc(app: ^App) -> bool {
+    if app^.buffer_count == Maximum_Buffers {
+        return false
+    }
+    app^.unnamed_count += 1
+    storage: [64]u8
+    prefix := "Untitled "
+    length: usize
+    for index: usize = 0; index < len(prefix); index += 1 {
+        storage[length] = prefix[index]
+        length += 1
+    }
+    digits_storage: [20]u8
+    (digits, valid) := format.unsigned_decimal(
+        digits_storage[:],
+        cast[u64](app^.unnamed_count),
+    )
+    if !valid || length + len(digits) > len(storage) {
+        return false
+    }
+    for byte in digits {
+        storage[length] = byte
+        length += 1
+    }
+    turbo_editor.buffer_init_unnamed(
+        &app^.buffers[app^.buffer_count],
+        storage[:length],
+    )
+    app^.buffer_count += 1
+    return true
+}
+
 // init_one_read_only_buffer copies one compiler-distributed source into the
 // ordinary document table without claiming a filesystem owner. The source can
 // therefore participate in the same editor, selection, and navigation code,
@@ -456,7 +530,7 @@ init_app :: proc(app: ^App) -> bool {
     init_windows(app)
     arguments := os.args()
     if len(arguments) <= 1 {
-        if !init_one_buffer(app, "untitled.draft") {
+        if !init_one_unnamed_buffer(app) {
             return false
         }
     } else {
@@ -467,20 +541,21 @@ init_app :: proc(app: ^App) -> bool {
             }
         }
     }
-    app^.status = "F1 Help  F2 Sources  Ctrl-S Save  Ctrl-F Find  Alt-X Quit"
+    app^.status = "F1 Help  F2 Program Files  Ctrl-S Save  F5 Run  Ctrl-Q Exit"
     return app^.buffer_count != 0
 }
 
 destroy_app :: proc(app: ^App) {
+    array.destroy(&app^.clipboard)
     for index: usize = 0; index < app^.buffer_count; index += 1 {
         turbo_editor.buffer_destroy(&app^.buffers[index])
     }
     app^.buffer_count = 0
-    for index: usize = 0; index < app^.workspace_source_count; index += 1 {
-        memory.owned_string_destroy(&app^.workspace_source_names[index])
-        memory.owned_string_destroy(&app^.workspace_source_paths[index])
+    for index: usize = 0; index < app^.program_file_count; index += 1 {
+        memory.owned_string_destroy(&app^.program_file_names[index])
+        memory.owned_string_destroy(&app^.program_file_paths[index])
     }
-    app^.workspace_source_count = 0
+    app^.program_file_count = 0
     for index: usize = 0; index < app^.navigation_row_count; index += 1 {
         memory.owned_string_destroy(&app^.navigation_rows[index].path)
     }
@@ -499,7 +574,7 @@ active_buffer :: proc(app: ^App) -> ^turbo_editor.Buffer {
 }
 
 // activate_buffer preserves the compiler-source invariant before exposing an
-// older editor buffer. Buffers opened by root switching remember the service
+// older editor buffer. Files opened by root switching remember the service
 // root which selected their pathname. Re-selecting that buffer first restores
 // the same compiler root; otherwise a later check or F5 could submit one root's
 // bytes as another root's active source file.
@@ -507,6 +582,7 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
     if index >= app^.buffer_count {
         return false
     }
+    root_changed := false
     if app^.host.select_root != nil && app^.host.selected_root != nil &&
         app^.buffer_has_root[index] {
         current := app^.host.selected_root(app^.host.user)
@@ -516,7 +592,8 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
                 return false
             }
             refresh_program_roots(app)
-            refresh_workspace_sources(app)
+            refresh_program_files(app)
+            root_changed = true
         }
     }
     app^.active = index
@@ -537,29 +614,37 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
     } else if app^.host.colorize != nil {
         refresh_syntax(app)
     }
+    if root_changed {
+        // Root selection invalidates the retained checked graph, but opening a
+        // document should still remain a lexical-only foreground operation.
+        // Refresh copied configuration now and defer semantics until an
+        // explicit Check/Build/Run/navigation command.
+        app^.semantic_dirty = true
+        refresh_tooling_text(app)
+    }
     return true
 }
 
-// refresh_workspace_sources copies the compiler's deterministic editable-source
-// table into Draft ownership. The fixed copy buffer is an explicit UI/path
-// bound; an overflowing row stops publication rather than retaining a
-// truncated path that could name a different file.
-refresh_workspace_sources :: proc(app: ^App) {
-    for index: usize = 0; index < app^.workspace_source_count; index += 1 {
-        memory.owned_string_destroy(&app^.workspace_source_names[index])
-        memory.owned_string_destroy(&app^.workspace_source_paths[index])
+// refresh_program_files copies the compiler's deterministic editable-file
+// table for the active Program into Draft ownership. The fixed copy buffer is
+// an explicit UI/path bound; an overflowing row stops publication rather than
+// retaining a truncated path that could name a different file.
+refresh_program_files :: proc(app: ^App) {
+    for index: usize = 0; index < app^.program_file_count; index += 1 {
+        memory.owned_string_destroy(&app^.program_file_names[index])
+        memory.owned_string_destroy(&app^.program_file_paths[index])
     }
-    app^.workspace_source_count = 0
+    app^.program_file_count = 0
     if app^.host.source_count == nil || app^.host.copy_source_name == nil ||
         app^.host.copy_source_path_at == nil {
         return
     }
     count := app^.host.source_count(app^.host.user)
-    if count > Maximum_Workspace_Sources {
-        count = Maximum_Workspace_Sources
+    if count > Maximum_Program_Files {
+        count = Maximum_Program_Files
     }
-    name_storage: [Workspace_Source_Copy_Capacity]u8
-    path_storage: [Workspace_Source_Copy_Capacity]u8
+    name_storage: [Program_File_Copy_Capacity]u8
+    path_storage: [Program_File_Copy_Capacity]u8
     for index: usize = 0; index < count; index += 1 {
         name_length := app^.host.copy_source_name(
             app^.host.user,
@@ -578,32 +663,32 @@ refresh_workspace_sources :: proc(app: ^App) {
             break
         }
         memory.owned_string_copy_bytes(
-            &app^.workspace_source_names[index],
+            &app^.program_file_names[index],
             name_storage[:name_length],
         )
         memory.owned_string_copy_bytes(
-            &app^.workspace_source_paths[index],
+            &app^.program_file_paths[index],
             path_storage[:path_length],
         )
-        app^.workspace_source_count += 1
+        app^.program_file_count += 1
     }
-    if app^.sources.cursor >= app^.workspace_source_count {
-        app^.sources.cursor = 0
-        app^.sources.offset = 0
+    if app^.program_files.cursor >= app^.program_file_count {
+        app^.program_files.cursor = 0
+        app^.program_files.offset = 0
     }
 }
 
-buffer_in_workspace :: proc(app: ^App, index: usize) -> bool {
+buffer_in_program :: proc(app: ^App, index: usize) -> bool {
     if index >= app^.buffer_count {
         return false
     }
     path := turbo_editor.path_bytes(&app^.buffers[index])
     for source_index: usize = 0;
-        source_index < app^.workspace_source_count;
+        source_index < app^.program_file_count;
         source_index += 1 {
         if byte_views_equal(
             path,
-            memory.owned_string_bytes(&app^.workspace_source_paths[source_index]),
+            memory.owned_string_bytes(&app^.program_file_paths[source_index]),
         ) {
             return true
         }
@@ -614,7 +699,7 @@ buffer_in_workspace :: proc(app: ^App, index: usize) -> bool {
 // collect_host_overlays snapshots the active buffer plus every other dirty
 // buffer belonging to the active checked graph. Clean inactive files remain on
 // disk inputs; resubmitting them would make the compiler conservatively
-// invalidate packages whose bytes did not change. Buffers and path owners
+// invalidate packages whose bytes did not change. Documents and path owners
 // outlive the synchronous call. active_overlay is an index in this compact
 // output table, not the application's buffer table.
 collect_host_overlays :: proc(
@@ -624,12 +709,12 @@ collect_host_overlays :: proc(
     count: usize
     active_overlay: usize
     found_active := false
-    filter_workspace := app^.host.source_count != nil
+    filter_program := app^.host.source_count != nil
     for index: usize = 0; index < app^.buffer_count; index += 1 {
         if index != app^.active && !app^.buffers[index].dirty {
             continue
         }
-        if filter_workspace && !buffer_in_workspace(app, index) {
+        if filter_program && !buffer_in_program(app, index) {
             continue
         }
         if count == len(overlays) {
@@ -948,7 +1033,7 @@ refresh_host :: proc(app: ^App) -> bool {
     )
     if !valid_overlays {
         app^.syntax_span_count = 0
-        app^.status = "Active buffer is not in the checked workspace source graph"
+        app^.status = "Active file is not part of the active Program"
         return false
     }
     result: draft_compiler_api.Result
@@ -963,10 +1048,10 @@ refresh_host :: proc(app: ^App) -> bool {
     app^.diagnostic_count = result.diagnostic_count
     copy_syntax_spans(app, result.span_count)
     if result.success != 0 {
-        app^.status = "Checked  F6 Programs & Packages  F7-F11 semantic views"
+        app^.status = "Check succeeded; F8 shows diagnostics"
         if app^.host.source_count != nil &&
-            app^.host.source_count(app^.host.user) != app^.workspace_source_count {
-            refresh_workspace_sources(app)
+            app^.host.source_count(app^.host.user) != app^.program_file_count {
+            refresh_program_files(app)
         }
     } else {
         app^.status = "Check failed: diagnostics retain the last good program"
@@ -1328,7 +1413,7 @@ navigation_status_message :: proc(
     case .current_check_failed:
         app^.status = "Fix current check errors before semantic navigation"
     case .source_not_found:
-        app^.status = "Active buffer is outside the checked source graph"
+        app^.status = "Active document is outside the checked source graph"
     case .no_symbol:
         app^.status = "No symbol at the cursor"
     case .no_definition:
@@ -1550,7 +1635,7 @@ execute_host_action :: proc(app: ^App, run: bool) {
         overlays[:],
     )
     if !valid_overlays {
-        app^.status = "Active buffer is not in the checked workspace source graph"
+        app^.status = "Active file is not part of the active Program"
         return
     }
     result: draft_compiler_api.Result
@@ -1662,29 +1747,29 @@ byte_views_equal :: proc(left, right: []u8) -> bool {
     return true
 }
 
-workspace_source_index :: proc(app: ^App, path: []u8) -> usize {
-    for index: usize = 0; index < app^.workspace_source_count; index += 1 {
+program_file_index :: proc(app: ^App, path: []u8) -> usize {
+    for index: usize = 0; index < app^.program_file_count; index += 1 {
         if byte_views_equal(
             path,
-            memory.owned_string_bytes(&app^.workspace_source_paths[index]),
+            memory.owned_string_bytes(&app^.program_file_paths[index]),
         ) {
             return index
         }
     }
-    return app^.workspace_source_count
+    return app^.program_file_count
 }
 
-// open_workspace_source turns one compiler-discovered Sources row into an ordinary
-// editor buffer. Reopening a path reuses its unsaved owner; a first open reads
-// the normal file and binds that buffer to the currently selected run root.
-open_workspace_source :: proc(app: ^App, source_index: usize) -> bool {
-    if source_index >= app^.workspace_source_count {
+// open_program_file turns one compiler-discovered Program Files row into an
+// ordinary editor buffer. Reopening a path reuses its unsaved owner; a first
+// open reads the normal file and binds that buffer to the active run root.
+open_program_file :: proc(app: ^App, source_index: usize) -> bool {
+    if source_index >= app^.program_file_count {
         return false
     }
-    path := memory.owned_string_bytes(&app^.workspace_source_paths[source_index])
+    path := memory.owned_string_bytes(&app^.program_file_paths[source_index])
     for index: usize = 0; index < app^.buffer_count; index += 1 {
         if byte_views_equal(turbo_editor.path_bytes(&app^.buffers[index]), path) {
-            app^.sources.cursor = source_index
+            app^.program_files.cursor = source_index
             return activate_buffer(app, index)
         }
     }
@@ -1693,7 +1778,7 @@ open_workspace_source :: proc(app: ^App, source_index: usize) -> bool {
     }
     app^.active = app^.buffer_count - 1
     app^.buffers_list.cursor = app^.active
-    app^.sources.cursor = source_index
+    app^.program_files.cursor = source_index
     bind_active_buffer_to_host_root(app)
     return activate_buffer(app, app^.active)
 }
@@ -1719,9 +1804,9 @@ open_selected_host_source :: proc(app: ^App) -> bool {
     selected_root := app^.host.selected_root(app^.host.user)
     for index: usize = 0; index < app^.buffer_count; index += 1 {
         if byte_views_equal(turbo_editor.path_bytes(&app^.buffers[index]), path) {
-            source_index := workspace_source_index(app, path)
-            if source_index < app^.workspace_source_count {
-                app^.sources.cursor = source_index
+            source_index := program_file_index(app, path)
+            if source_index < app^.program_file_count {
+                app^.program_files.cursor = source_index
             }
             app^.buffer_root[index] = selected_root
             app^.buffer_has_root[index] = true
@@ -1733,19 +1818,19 @@ open_selected_host_source :: proc(app: ^App) -> bool {
     }
     app^.active = app^.buffer_count - 1
     app^.buffers_list.cursor = app^.active
-    source_index := workspace_source_index(app, path)
-    if source_index < app^.workspace_source_count {
-        app^.sources.cursor = source_index
+    source_index := program_file_index(app, path)
+    if source_index < app^.program_file_count {
+        app^.program_files.cursor = source_index
     }
     app^.buffer_root[app^.active] = selected_root
     app^.buffer_has_root[app^.active] = true
     return activate_buffer(app, app^.active)
 }
 
-// select_program_root is the single UI transition for the Build menu and the
-// Programs & Packages window. The compiler service changes first; the editor then opens or
-// reselects the exact source path published for that root. Failure restores the
-// previous service root before any editor buffer can be compiled under it.
+// select_program_root is the single UI transition for Program and Run Settings.
+// The compiler service changes first; the editor then opens or reselects the
+// exact source path published for that root. Failure restores the previous
+// service root before any editor buffer can be compiled under it.
 select_program_root :: proc(app: ^App, selected: usize) -> bool {
     if app^.host.root_count == nil || app^.host.selected_root == nil ||
         app^.host.select_root == nil || selected >= app^.host.root_count(app^.host.user) {
@@ -1756,8 +1841,10 @@ select_program_root :: proc(app: ^App, selected: usize) -> bool {
         return false
     }
     refresh_program_roots(app)
-    refresh_workspace_sources(app)
+    refresh_program_files(app)
     if open_selected_host_source(app) {
+        app^.semantic_dirty = true
+        refresh_tooling_text(app)
         if selected < app^.program_root_count {
             app^.program_roots.cursor = selected
         }
@@ -1767,7 +1854,7 @@ select_program_root :: proc(app: ^App, selected: usize) -> bool {
         app^.host.select_root(app^.host.user, previous)
     }
     refresh_program_roots(app)
-    refresh_workspace_sources(app)
+    refresh_program_files(app)
     return false
 }
 
@@ -1806,15 +1893,17 @@ cycle_build_target :: proc(app: ^App) {
         return
     }
     refresh_program_roots(app)
-    refresh_workspace_sources(app)
+    refresh_program_files(app)
     if !open_selected_host_source(app) {
         app^.host.select_target(app^.host.user, previous)
         refresh_program_roots(app)
-        refresh_workspace_sources(app)
+        refresh_program_files(app)
         app^.status = "Selected target could not be opened; selection restored"
         return
     }
-    app^.status = "Draft target changed; current graph was rebuilt"
+    app^.semantic_dirty = true
+    refresh_tooling_text(app)
+    app^.status = "Target changed; Check, Build, or Run refreshes semantics"
 }
 
 has_dirty_buffers :: proc(app: ^App) -> bool {
@@ -1834,6 +1923,26 @@ save_all_dirty_buffers :: proc(app: ^App) -> bool {
         }
     }
     return true
+}
+
+// save_all_documents stops at the first unnamed document and opens Save As so
+// no generated placeholder label becomes a filesystem path. Repeating Save All
+// after choosing that path continues with the remaining documents.
+save_all_documents :: proc(app: ^App) {
+    for index: usize = 0; index < app^.buffer_count; index += 1 {
+        if app^.buffers[index].dirty &&
+            turbo_editor.is_unnamed(&app^.buffers[index]) {
+            _ = activate_buffer(app, index)
+            request_save_as(app)
+            app^.status = "Choose a path for this new document, then Save All again"
+            return
+        }
+    }
+    if save_all_dirty_buffers(app) {
+        app^.status = "Saved all modified documents"
+    } else {
+        app^.status = "Save All stopped at a disk conflict or write failure"
+    }
 }
 
 close_folder_dialogs :: proc(app: ^App) {
@@ -1926,7 +2035,7 @@ resolve_open_file_path :: proc(
 }
 
 // submit_open_file opens or creates one ordinary editor buffer. Paths already
-// published by Workspace Sources retain the selected Program association;
+// published by Program Files retain the active Program association;
 // arbitrary files remain editing-only and are never submitted as compiler
 // overlays. Reopening an exact path reuses the existing owner and its unsaved
 // bytes instead of reading disk over it.
@@ -1945,12 +2054,12 @@ submit_open_file :: proc(app: ^App) {
             return
         }
         index = app^.buffer_count - 1
-        source_index := workspace_source_index(app, path)
-        if source_index < app^.workspace_source_count &&
+        source_index := program_file_index(app, path)
+        if source_index < app^.program_file_count &&
             app^.host.selected_root != nil {
             app^.buffer_root[index] = app^.host.selected_root(app^.host.user)
             app^.buffer_has_root[index] = true
-            app^.sources.cursor = source_index
+            app^.program_files.cursor = source_index
         }
     }
     close_open_file(app)
@@ -1958,21 +2067,79 @@ submit_open_file :: proc(app: ^App) {
         app^.status = "Could not activate the opened file"
         return
     }
-    if workspace_source_index(app, path) < app^.workspace_source_count {
-        app^.status = "Workspace source opened"
+    if program_file_index(app, path) < app^.program_file_count {
+        app^.status = "Program file opened"
     } else {
         app^.status = "File opened for editing; it is outside the selected Program"
     }
 }
 
+// submit_save_as resolves the same clearly documented path grammar as Open
+// File, refuses to create two Buffer owners for one path, and lets the editor
+// adopt the pathname only after its write and close operations succeed.
+submit_save_as :: proc(app: ^App) {
+    input := turbo_ui.text_box_bytes(&app^.file_box, app^.file_path[:])
+    storage: [Host_Path_Capacity]u8
+    (path, valid) := resolve_open_file_path(app, input, storage[:])
+    if !valid {
+        app^.status = "Enter a valid save path within the IDE path limit"
+        return
+    }
+    existing := buffer_index_for_path(app, path)
+    if existing < app^.buffer_count && existing != app^.active {
+        app^.status = "Another open document already owns that path"
+        return
+    }
+    if !turbo_editor.save_as(active_buffer(app), path) {
+        app^.status = "Save As failed"
+        return
+    }
+    app^.buffer_has_root[app^.active] = false
+    source_index := program_file_index(app, path)
+    if source_index < app^.program_file_count &&
+        app^.host.selected_root != nil {
+        app^.buffer_root[app^.active] =
+            app^.host.selected_root(app^.host.user)
+        app^.buffer_has_root[app^.active] = true
+    }
+    close_open_file(app)
+    app^.status = "Saved with a new path"
+}
+
 request_open_file :: proc(app: ^App) {
+    app^.file_dialog_action = .open
+    _ = turbo_ui.text_box_set_text(&app^.file_box, app^.file_path[:], "")
     turbo_ui.show_modal_window(
         &app^.ui,
         app^.windows[:],
         app^.windows[Window_Open_File].id,
     )
     app^.ui.focused_id = 830
-    app^.status = "Enter a file path; relative paths start at the Workspace"
+    app^.status = "Open by path; relative paths start at the Workspace"
+}
+
+request_save_as :: proc(app: ^App) {
+    if turbo_editor.is_read_only(active_buffer(app)) {
+        app^.status = "Compiler and dependency sources are read-only"
+        return
+    }
+    app^.file_dialog_action = .save_as
+    if turbo_editor.is_unnamed(active_buffer(app)) {
+        _ = turbo_ui.text_box_set_text(&app^.file_box, app^.file_path[:], "")
+    } else {
+        _ = turbo_ui.text_box_set(
+            &app^.file_box,
+            app^.file_path[:],
+            turbo_editor.path_bytes(active_buffer(app)),
+        )
+    }
+    turbo_ui.show_modal_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Open_File].id,
+    )
+    app^.ui.focused_id = 830
+    app^.status = "Save As; relative paths start at the Workspace"
 }
 
 // open_folder_now crosses the one mutable workspace boundary. The host first
@@ -2021,8 +2188,9 @@ open_folder_now :: proc(app: ^App) -> bool {
 
     close_folder_dialogs(app)
     destroy_app(app)
+    array.init(&app^.clipboard)
     app^.active = 0
-    app^.sources = turbo_ui.List_State{}
+    app^.program_files = turbo_ui.List_State{}
     app^.buffers_list = turbo_ui.List_State{}
     app^.package_tree = turbo_ui.List_State{}
     app^.package_row_count = 0
@@ -2031,21 +2199,15 @@ open_folder_now :: proc(app: ^App) -> bool {
         app^.package_expanded[index] = false
     }
     refresh_program_roots(app)
-    refresh_workspace_sources(app)
+    refresh_program_files(app)
     if !open_selected_host_source(app) {
-        if !init_one_buffer(app, "untitled.draft") {
+        if !init_one_unnamed_buffer(app) {
             return false
         }
-        app^.status = "Workspace opened, but its selected source disappeared"
+        app^.status = "Workspace opened, but its selected file disappeared"
         return true
     }
-    if app^.program_root_count > 1 {
-        turbo_ui.show_window(
-            &app^.ui,
-            app^.windows[:],
-            app^.windows[Window_Programs].id,
-        )
-    }
+    _ = refresh_host(app)
     app^.status = "Workspace opened"
     return true
 }
@@ -2062,7 +2224,7 @@ submit_open_folder :: proc(app: ^App) {
             app^.windows[:],
             app^.windows[Window_Folder_Confirm].id,
         )
-        app^.status = "Choose how to handle dirty buffers"
+        app^.status = "Choose how to handle unsaved documents"
         return
     }
     _ = open_folder_now(app)
@@ -2396,7 +2558,7 @@ cancel_quit :: proc(app: ^App) {
         app^.windows[Window_Quit].id,
     )
     app^.quit_discard_mask = 0
-    app^.status = "Quit cancelled"
+    app^.status = "Exit cancelled"
 }
 
 // continue_quit selects the next dirty buffer which has neither been saved nor
@@ -2411,7 +2573,7 @@ continue_quit :: proc(app: ^App) -> bool {
         bit := cast[u64](1) << cast[u64](index)
         if app^.buffers[index].dirty && (app^.quit_discard_mask & bit) == 0 {
             if !activate_buffer(app, index) {
-                app^.status = "Could not restore the dirty buffer's Program"
+                app^.status = "Could not restore the dirty document's Program"
                 return false
             }
             turbo_ui.hide_window(
@@ -2425,7 +2587,7 @@ continue_quit :: proc(app: ^App) -> bool {
                 app^.windows[Window_Quit].id,
             )
             app^.ui.focused_id = 510
-            app^.status = "Unsaved buffer requires an explicit choice"
+            app^.status = "Unsaved document requires an explicit choice"
             return false
         }
     }
@@ -2462,9 +2624,20 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
     }
     // Raw terminal Control+letter input uses the conventional C0 byte values:
     // Ctrl-F is 6 and Ctrl-S is 19. These commands are application-wide, so a
-    // Sources or a semantic window must not disable shortcuts advertised in
-    // the File/Edit menus merely because the document editor lacks focus.
+    // Program Files or semantic window must not disable shortcuts advertised
+    // in the File/Edit menus merely because the document editor lacks focus.
+    // A conventional terminal cannot distinguish Ctrl-Shift-S from Ctrl-S (or
+    // Ctrl-Shift-R from Ctrl-R), so Save As and Replace All deliberately use
+    // their visible menu access paths instead of advertising impossible keys.
     if key.code == .character && key.control && !key.alt {
+        if key.byte_value == 1 {
+            select_all(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 3 {
+            _ = copy_selection(app)
+            return (turbo_ui.no_event(), false)
+        }
         if key.byte_value == 6 {
             request_search(app)
             return (turbo_ui.no_event(), false)
@@ -2479,6 +2652,25 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
         }
         if key.byte_value == 19 {
             save_active_buffer(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 17 {
+            return (turbo_ui.no_event(), request_quit(app))
+        }
+        if key.byte_value == 14 {
+            new_file(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 15 {
+            request_open_file(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 22 {
+            paste_clipboard(app)
+            return (turbo_ui.no_event(), false)
+        }
+        if key.byte_value == 24 {
+            cut_selection(app)
             return (turbo_ui.no_event(), false)
         }
         if key.byte_value == 25 {
@@ -2504,10 +2696,10 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
         turbo_ui.show_window(
             &app^.ui,
             app^.windows[:],
-            app^.windows[Window_Buffers].id,
+            app^.windows[Window_Open_Files].id,
         )
         app^.ui.focused_id = 532
-        app^.status = "Choose an open buffer and press Enter"
+        app^.status = "Choose an open file and press Enter"
         return (turbo_ui.no_event(), false)
     }
     if key.code == .left && key.alt && !key.control {
@@ -2535,10 +2727,10 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
         turbo_ui.show_window(
             &app^.ui,
             app^.windows[:],
-            app^.windows[Window_Sources].id,
+            app^.windows[Window_Program_Files].id,
         )
         app^.ui.focused_id = 530
-        app^.status = "Choose a workspace source and press Enter"
+        app^.status = "Files reachable from the active Program; Enter opens"
         return (turbo_ui.no_event(), false)
     }
     if key.code == .f1 && !key.alt && !key.control {
@@ -2561,30 +2753,21 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
         turbo_ui.show_window(
             &app^.ui,
             app^.windows[:],
-            app^.windows[Window_Programs].id,
+            app^.windows[Window_Program_Settings].id,
         )
         app^.ui.focused_id = 760
         return (turbo_ui.no_event(), false)
     }
-    if key.code == .f7 && !key.alt && !key.control {
-        toggle_window(app, Window_Declarations)
-        return (turbo_ui.no_event(), false)
-    }
     if key.code == .f8 && !key.alt && !key.control {
-        app^.semantic_usages_visible = false
-        toggle_window(app, Window_References)
-        return (turbo_ui.no_event(), false)
-    }
-    if key.code == .f9 && !key.alt && !key.control {
-        toggle_window(app, Window_Effects)
-        return (turbo_ui.no_event(), false)
-    }
-    if key.code == .f10 && !key.alt && !key.control {
-        toggle_window(app, Window_Denials)
-        return (turbo_ui.no_event(), false)
-    }
-    if key.code == .f11 && !key.alt && !key.control {
         toggle_window(app, Window_Diagnostics)
+        return (turbo_ui.no_event(), false)
+    }
+    if key.code == .f9 && !key.control {
+        if key.alt {
+            _ = refresh_host(app)
+        } else {
+            host_action(app, false)
+        }
         return (turbo_ui.no_event(), false)
     }
     if key.code == .f12 && !key.alt && !key.control {
@@ -2642,7 +2825,7 @@ paint_search :: proc(
         find_next_requested = find_next_requested || turbo_ui.button(
             &app^.ui,
             501,
-            turbo_ui.layout_next(&buttons, 10),
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Next")),
             "Next",
             true,
             .default_action,
@@ -2651,7 +2834,7 @@ paint_search :: proc(
         find_previous_requested = turbo_ui.button(
             &app^.ui,
             503,
-            turbo_ui.layout_next(&buttons, 12),
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Previous")),
             "Previous",
             true,
             .normal,
@@ -2660,7 +2843,7 @@ paint_search :: proc(
         if turbo_ui.button(
             &app^.ui,
             502,
-            turbo_ui.layout_next(&buttons, 10),
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
             "Cancel",
             true,
             .cancel_action,
@@ -2761,7 +2944,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
         replace_requested = replace_requested || turbo_ui.button(
             &app^.ui,
             582,
-            turbo_ui.layout_next(&buttons, 11),
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Replace")),
             "Replace",
             true,
             .default_action,
@@ -2770,7 +2953,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
         replace_all_requested = turbo_ui.button(
             &app^.ui,
             583,
-            turbo_ui.layout_next(&buttons, 14),
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Replace All")),
             "Replace All",
             true,
             .normal,
@@ -2779,7 +2962,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
         find_next_requested = turbo_ui.button(
             &app^.ui,
             584,
-            turbo_ui.layout_next(&buttons, 11),
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Find Next")),
             "Find Next",
             true,
             .normal,
@@ -2788,7 +2971,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
         if turbo_ui.button(
             &app^.ui,
             585,
-            turbo_ui.layout_next(&buttons, 10),
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
             "Cancel",
             true,
             .cancel_action,
@@ -2864,7 +3047,7 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
         submitted = submitted || turbo_ui.button(
             &app^.ui,
             591,
-            turbo_ui.layout_next(&buttons, 10),
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Go To")),
             "Go To",
             true,
             .default_action,
@@ -2873,7 +3056,7 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
         if turbo_ui.button(
             &app^.ui,
             592,
-            turbo_ui.layout_next(&buttons, 10),
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
             "Cancel",
             true,
             .cancel_action,
@@ -2944,23 +3127,23 @@ paint_open_folder :: proc(app: ^App, content: turbo_ui.Rect) {
         submitted = submitted || turbo_ui.button(
             &app^.ui,
             571,
-            turbo_ui.layout_next(&buttons, 8),
-            "Open",
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Switch")),
+            "Switch",
             true,
             .default_action,
-            cast[u8]('o'),
+            cast[u8]('s'),
         )
         if turbo_ui.button(
             &app^.ui,
             572,
-            turbo_ui.layout_next(&buttons, 10),
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
             "Cancel",
             true,
             .cancel_action,
             cast[u8]('c'),
         ) {
             close_folder_dialogs(app)
-            app^.status = "Open Folder cancelled"
+            app^.status = "Workspace switch cancelled"
         }
     } else if turbo_ui.button(
         &app^.ui,
@@ -2971,7 +3154,7 @@ paint_open_folder :: proc(app: ^App, content: turbo_ui.Rect) {
         .cancel_action,
     ) {
         close_folder_dialogs(app)
-        app^.status = "Open Folder cancelled"
+        app^.status = "Workspace switch cancelled"
     }
     if submitted {
         submit_open_folder(app)
@@ -2979,11 +3162,19 @@ paint_open_folder :: proc(app: ^App, content: turbo_ui.Rect) {
 }
 
 paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
+    prompt := "Open path (relative paths start at the Workspace):"
+    action_label := "Open"
+    action_key := cast[u8]('o')
+    if app^.file_dialog_action == .save_as {
+        prompt = "Save path (relative paths start at the Workspace):"
+        action_label = "Save"
+        action_key = cast[u8]('s')
+    }
     turbo_ui.write_clipped(
         app^.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row},
-        "File path (relative paths start at the Workspace):",
+        prompt,
         app^.ui.theme.text,
     )
     submitted := false
@@ -3017,23 +3208,23 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
         submitted = submitted || turbo_ui.button(
             &app^.ui,
             831,
-            turbo_ui.layout_next(&buttons, 8),
-            "Open",
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width(action_label)),
+            action_label,
             true,
             .default_action,
-            cast[u8]('o'),
+            action_key,
         )
         if turbo_ui.button(
             &app^.ui,
             832,
-            turbo_ui.layout_next(&buttons, 10),
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
             "Cancel",
             true,
             .cancel_action,
             cast[u8]('c'),
         ) {
             close_open_file(app)
-            app^.status = "Open File cancelled"
+            app^.status = "File operation cancelled"
         }
     } else if turbo_ui.button(
         &app^.ui,
@@ -3044,10 +3235,14 @@ paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
         .cancel_action,
     ) {
         close_open_file(app)
-        app^.status = "Open File cancelled"
+        app^.status = "File operation cancelled"
     }
     if submitted {
-        submit_open_file(app)
+        if app^.file_dialog_action == .save_as {
+            submit_save_as(app)
+        } else {
+            submit_open_file(app)
+        }
     }
 }
 
@@ -3056,7 +3251,7 @@ paint_folder_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
         app^.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row + 1},
-        "Open another workspace with unsaved buffers?",
+        "Open another workspace with unsaved documents?",
         app^.ui.theme.text,
     )
     if content.width <= 2 || content.height < 5 {
@@ -3076,8 +3271,11 @@ paint_folder_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
     if turbo_ui.button(
         &app^.ui,
         573,
-        turbo_ui.layout_next(&buttons, 17),
-        "Save all + open",
+        turbo_ui.layout_next(
+            &buttons,
+            turbo_ui.button_width("Save all + switch"),
+        ),
+        "Save all + switch",
         true,
         .default_action,
         cast[u8]('s'),
@@ -3091,8 +3289,11 @@ paint_folder_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
     if turbo_ui.button(
         &app^.ui,
         574,
-        turbo_ui.layout_next(&buttons, 18),
-        "Discard + open",
+        turbo_ui.layout_next(
+            &buttons,
+            turbo_ui.button_width("Discard + switch"),
+        ),
+        "Discard + switch",
         true,
         .normal,
         cast[u8]('d'),
@@ -3102,27 +3303,33 @@ paint_folder_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
     if turbo_ui.button(
         &app^.ui,
         575,
-        turbo_ui.layout_next(&buttons, 9),
+        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
         "Cancel",
         true,
         .cancel_action,
         cast[u8]('c'),
     ) {
         close_folder_dialogs(app)
-        app^.status = "Open Folder cancelled"
+        app^.status = "Workspace switch cancelled"
     }
 }
 
 paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
     buffer := active_buffer(app)
-    message := "The active buffer has unsaved changes."
-    save_label := "Save + quit"
-    save_width: usize = 12
+    message := "The active document has unsaved changes."
+    save_label := "Save + exit"
+    save_width := turbo_ui.button_width(save_label)
     save_access := cast[u8]('s')
-    if buffer^.disk_conflict {
+    unnamed := turbo_editor.is_unnamed(buffer)
+    if unnamed {
+        message = "Choose a path before saving this document."
+        save_label = "Save As"
+        save_width = turbo_ui.button_width(save_label)
+        save_access = cast[u8]('a')
+    } else if buffer^.disk_conflict {
         message = "Disk also changed. Choose whether to overwrite it."
-        save_label = "Overwrite + quit"
-        save_width = 17
+        save_label = "Overwrite + exit"
+        save_width = turbo_ui.button_width(save_label)
         save_access = cast[u8]('o')
     }
     turbo_ui.write_clipped(
@@ -3165,6 +3372,14 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
         .default_action,
         save_access,
     ) {
+        if unnamed {
+            // Save As owns the path decision. Leave Exit pending only in the
+            // user's intent, not hidden modal state: after a successful save,
+            // a second Exit is explicit and cannot race another dirty file.
+            cancel_quit(app)
+            request_save_as(app)
+            return false
+        }
         // The conflict-specific label makes this the one explicit overwrite
         // path. Every ordinary Save refuses to replace a changed disk file.
         if turbo_editor.save(buffer, buffer^.disk_conflict) {
@@ -3175,7 +3390,7 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
     if turbo_ui.button(
         &app^.ui,
         511,
-        turbo_ui.layout_next(&buttons, 9),
+        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Discard")),
         "Discard",
         true,
         .normal,
@@ -3187,7 +3402,7 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
     if turbo_ui.button(
         &app^.ui,
         512,
-        turbo_ui.layout_next(&buttons, 8),
+        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
         "Cancel",
         true,
         .cancel_action,
@@ -3304,13 +3519,13 @@ paint_shortcut_help :: proc(app: ^App, content: turbo_ui.Rect) {
 }
 
 Path_List_Kind :: enum {
-    workspace_sources,
-    open_buffers,
+    program_files,
+    open_files,
 }
 
 path_list_count :: proc(app: ^App, kind: Path_List_Kind) -> usize {
-    if kind == .workspace_sources && app^.host.source_count != nil {
-        return app^.workspace_source_count
+    if kind == .program_files && app^.host.source_count != nil {
+        return app^.program_file_count
     }
     return app^.buffer_count
 }
@@ -3320,10 +3535,31 @@ path_list_text :: proc(
     kind: Path_List_Kind,
     index: usize,
 ) -> []u8 {
-    if kind == .workspace_sources && app^.host.source_count != nil {
-        return memory.owned_string_bytes(&app^.workspace_source_names[index])
+    if kind == .program_files && app^.host.source_count != nil {
+        return memory.owned_string_bytes(&app^.program_file_names[index])
     }
     return turbo_editor.path_bytes(&app^.buffers[index])
+}
+
+// editor_title_bytes prefers the Workspace-relative label already published
+// for a file in the active Program. The Buffer retains its canonical path for
+// I/O and conflict detection, but exposing that entire host path in the title
+// wastes the scarce terminal columns which distinguish nearby source files.
+// Editing-only, read-only dependency, and unnamed documents fall back to their
+// own stored labels because they have no active-Program row.
+editor_title_bytes :: proc(app: ^App) -> []u8 {
+    path := turbo_editor.path_bytes(active_buffer(app))
+    for index: usize = 0; index < app^.program_file_count; index += 1 {
+        source_path := memory.owned_string_bytes(
+            &app^.program_file_paths[index],
+        )
+        if byte_views_equal(path, source_path) {
+            return memory.owned_string_bytes(
+                &app^.program_file_names[index],
+            )
+        }
+    }
+    return path
 }
 
 activate_path_row :: proc(
@@ -3331,18 +3567,18 @@ activate_path_row :: proc(
     kind: Path_List_Kind,
     index: usize,
 ) -> bool {
-    if kind == .workspace_sources && app^.host.source_count != nil {
-        return open_workspace_source(app, index)
+    if kind == .program_files && app^.host.source_count != nil {
+        return open_program_file(app, index)
     }
     return activate_buffer(app, index)
 }
 
-// paint_path_list is the application-specific byte-label list used by Sources
-// and Buffers. Arrow navigation moves only the list cursor; Enter or one
-// primary click opens the selected row. This separation prevents browsing the
-// package tree from continuously replacing the editor document. Sources uses
-// compiler-owned workspace-relative labels, while Buffers shows the ordinary
-// pathname stored by each document owner.
+// paint_path_list is the application-specific byte-label list shared by
+// Program Files and Open Files. Arrow navigation moves only the list cursor;
+// Enter or one primary click opens the selected row. This separation prevents
+// browsing from continuously replacing the editor document. Program Files
+// uses compiler-owned Workspace-relative labels, while Open Files shows the
+// ordinary pathname stored by each document owner.
 paint_path_list :: proc(
     app: ^App,
     content: turbo_ui.Rect,
@@ -3353,8 +3589,8 @@ paint_path_list :: proc(
     if content.width == 0 || content.height == 0 {
         return
     }
-    model := &app^.sources
-    if kind == .open_buffers {
+    model := &app^.program_files
+    if kind == .open_files {
         model = &app^.buffers_list
     }
     view := turbo_ui.list_view(
@@ -3370,15 +3606,15 @@ paint_path_list :: proc(
     for index := view.first; index < view.end; index += 1 {
         row := turbo_ui.list_row_begin(&app^.ui, view, index)
         marker := "  "
-        if kind == .open_buffers {
+        if kind == .open_files {
             if app^.buffers[index].dirty {
                 marker = "* "
             } else if turbo_editor.is_read_only(&app^.buffers[index]) {
                 marker = "R "
             }
-        } else if kind == .workspace_sources && app^.host.source_count != nil {
+        } else if kind == .program_files && app^.host.source_count != nil {
             source_path := memory.owned_string_bytes(
-                &app^.workspace_source_paths[index],
+                &app^.program_file_paths[index],
             )
             if byte_views_equal(source_path, active_path) {
                 marker = "> "
@@ -3412,10 +3648,10 @@ paint_path_list :: proc(
     }
     if view.activated && view.activated_index < count {
         if activate_path_row(app, kind, view.activated_index) {
-            if kind == .workspace_sources && app^.host.source_count != nil {
-                app^.status = "Workspace source opened"
+            if kind == .program_files && app^.host.source_count != nil {
+                app^.status = "Program file opened"
             } else {
-                app^.status = "Open buffer activated"
+                app^.status = "Open file activated"
             }
         } else {
             app^.status = "Could not open the selected source"
@@ -3682,15 +3918,13 @@ paint_program_configuration :: proc(app: ^App, bounds: turbo_ui.Rect) {
     )
 }
 
-// paint_programs_view combines three explicit views of one selected Program:
-// the root selector, its complete effective Build/Run configuration, and the
-// structured reachable package graph. The service supplies configuration text
-// after applying workspace/program precedence, so DraftIDE displays policy but
-// never recreates manifest semantics. A provider without structured package
-// rows still falls back to its retained package text.
-paint_programs_view :: proc(app: ^App, content: turbo_ui.Rect) {
-    if content.height < 8 {
-        paint_text_view(app, Window_Programs, content)
+// paint_program_settings presents the two things a Run command needs: which
+// executable root is active and the complete resolved build/run policy for
+// that root. Package topology is a separate inspector window; combining it
+// here made a routine Program choice look like an internal compiler graph.
+paint_program_settings :: proc(app: ^App, content: turbo_ui.Rect) {
+    if content.height < 5 {
+        paint_program_configuration(app, content)
         return
     }
     header := turbo_ui.Rect{
@@ -3752,11 +3986,7 @@ paint_programs_view :: proc(app: ^App, content: turbo_ui.Rect) {
         "Effective Build / Run Configuration",
         app^.ui.theme.border,
     )
-    remaining := content.height - picker_height - 2
-    configuration_height := remaining / 2
-    if configuration_height == 0 {
-        configuration_height = 1
-    }
+    configuration_height := content.height - picker_height - 2
     configuration := turbo_ui.Rect{
         column = content.column,
         row = separator_row + 1,
@@ -3764,35 +3994,42 @@ paint_programs_view :: proc(app: ^App, content: turbo_ui.Rect) {
         height = configuration_height,
     }
     paint_program_configuration(app, configuration)
+}
 
-    graph_header_row := configuration.row + configuration.height
-    graph_header := turbo_ui.Rect{
+// paint_packages_view exposes the checked semantic package/import graph only
+// when the user asks for that compiler view. A host without structured rows
+// falls back to its deterministic textual package report.
+paint_packages_view :: proc(app: ^App, content: turbo_ui.Rect) {
+    if content.height == 0 {
+        return
+    }
+    header := turbo_ui.Rect{
         column = content.column,
-        row = graph_header_row,
+        row = content.row,
         width = content.width,
         height = 1,
     }
     turbo_ui.fill_rect(
         app^.ui.surface,
         app^.ui.clip,
-        graph_header,
+        header,
         ' ',
         app^.ui.theme.border,
     )
     turbo_ui.write_clipped(
         app^.ui.surface,
-        turbo_ui.intersect(app^.ui.clip, graph_header),
-        turbo_ui.Point{column = graph_header.column, row = graph_header.row},
-        "Packages / Dependencies",
+        turbo_ui.intersect(app^.ui.clip, header),
+        turbo_ui.Point{column = header.column, row = header.row},
+        "Packages and authored imports (* active root)",
         app^.ui.theme.border,
     )
     graph: turbo_ui.Rect
-    if graph_header_row + 1 < content.row + content.height {
+    if content.height > 1 {
         graph = turbo_ui.Rect{
             column = content.column,
-            row = graph_header_row + 1,
+            row = content.row + 1,
             width = content.width,
-            height = content.row + content.height - graph_header_row - 1,
+            height = content.height - 1,
         }
     }
     if graph.height != 0 && app^.package_row_count != 0 {
@@ -3805,6 +4042,8 @@ paint_programs_view :: proc(app: ^App, content: turbo_ui.Rect) {
 save_active_buffer :: proc(app: ^App) {
     if turbo_editor.is_read_only(active_buffer(app)) {
         app^.status = "Compiler and dependency sources are read-only"
+    } else if turbo_editor.is_unnamed(active_buffer(app)) {
+        request_save_as(app)
     } else if turbo_editor.save(active_buffer(app)) {
         app^.status = "Saved"
     } else if active_buffer(app)^.disk_conflict {
@@ -3814,9 +4053,73 @@ save_active_buffer :: proc(app: ^App) {
     }
 }
 
+new_file :: proc(app: ^App) {
+    if !init_one_unnamed_buffer(app) {
+        app^.status = "Could not create another in-memory document"
+        return
+    }
+    app^.active = app^.buffer_count - 1
+    app^.buffers_list.cursor = app^.active
+    app^.buffer_has_root[app^.active] = false
+    if !activate_buffer(app, app^.active) {
+        app^.status = "Could not activate the new document"
+        return
+    }
+    app^.status = "New document - use Save As to choose its path"
+}
+
+copy_selection :: proc(app: ^App) -> bool {
+    buffer := active_buffer(app)
+    (start, end, selected) := turbo_editor.selection(buffer)
+    if !selected {
+        app^.status = "Nothing is selected"
+        return false
+    }
+    array.clear(&app^.clipboard)
+    array.reserve(&app^.clipboard, end - start)
+    bytes := turbo_editor.content(buffer)
+    for index := start; index < end; index += 1 {
+        array.append(&app^.clipboard, bytes[index])
+    }
+    app^.status = "Copied selection to the IDE clipboard"
+    return true
+}
+
+cut_selection :: proc(app: ^App) {
+    if turbo_editor.is_read_only(active_buffer(app)) {
+        app^.status = "Compiler and dependency sources are read-only"
+        return
+    }
+    if copy_selection(app) && turbo_editor.delete_selection(active_buffer(app)) {
+        source_changed(app)
+        app^.status = "Cut selection to the IDE clipboard"
+    }
+}
+
+paste_clipboard :: proc(app: ^App) {
+    if turbo_editor.is_read_only(active_buffer(app)) {
+        app^.status = "Compiler and dependency sources are read-only"
+        return
+    }
+    if app^.clipboard.length == 0 {
+        app^.status = "The IDE clipboard is empty"
+        return
+    }
+    turbo_editor.insert(active_buffer(app), array.view(&app^.clipboard))
+    source_changed(app)
+    app^.status = "Pasted from the IDE clipboard"
+}
+
+select_all :: proc(app: ^App) {
+    turbo_editor.select_all(active_buffer(app))
+    focus_editor(app)
+    app^.status = "Selected the complete document"
+}
+
 // undo_active/redo_active are application commands rather than editor-view
 // key paths. This makes the advertised shortcuts and Edit menu work while a
-// Sources or semantic window has focus, then refreshes compiler overlays only
+// Program Files or a semantic window has focus, then refreshes compiler
+// overlays only
 // when document bytes actually changed.
 undo_active :: proc(app: ^App) {
     if turbo_editor.is_read_only(active_buffer(app)) {
@@ -3853,37 +4156,51 @@ paint_app_menu_bar :: proc(app: ^App, surface: ^tui.Surface) {
     turbo_ui.menu_title(
         &app^.ui, &app^.menus,
         Menu_File, Menu_File_Popup,
-        turbo_ui.Rect{column = 1, width = 8, height = 1},
+        turbo_ui.Rect{column = 1, width = 7, height = 1},
         "File", cast[u8]('f'),
-        turbo_ui.Rect{column = 1, row = 1, width = 31, height = 9},
+        turbo_ui.Rect{column = 1, row = 1, width = 35, height = 12},
     )
     turbo_ui.menu_title(
         &app^.ui, &app^.menus,
         Menu_Edit, Menu_Edit_Popup,
-        turbo_ui.Rect{column = 9, width = 8, height = 1},
+        turbo_ui.Rect{column = 8, width = 7, height = 1},
         "Edit", cast[u8]('e'),
-        turbo_ui.Rect{column = 9, row = 1, width = 40, height = 16},
+        turbo_ui.Rect{column = 8, row = 1, width = 32, height = 9},
     )
     turbo_ui.menu_title(
         &app^.ui, &app^.menus,
-        Menu_Build, Menu_Build_Popup,
-        turbo_ui.Rect{column = 17, width = 8, height = 1},
-        "Build", cast[u8]('b'),
-        turbo_ui.Rect{column = 17, row = 1, width = 31, height = 10},
+        Menu_Search, Menu_Search_Popup,
+        turbo_ui.Rect{column = 15, width = 9, height = 1},
+        "Search", cast[u8]('s'),
+        turbo_ui.Rect{column = 15, row = 1, width = 40, height = 15},
+    )
+    turbo_ui.menu_title(
+        &app^.ui, &app^.menus,
+        Menu_Run, Menu_Run_Popup,
+        turbo_ui.Rect{column = 24, width = 6, height = 1},
+        "Run", cast[u8]('r'),
+        turbo_ui.Rect{column = 24, row = 1, width = 31, height = 5},
+    )
+    turbo_ui.menu_title(
+        &app^.ui, &app^.menus,
+        Menu_Workspace, Menu_Workspace_Popup,
+        turbo_ui.Rect{column = 30, width = 12, height = 1},
+        "Workspace", cast[u8]('k'),
+        turbo_ui.Rect{column = 30, row = 1, width = 37, height = 6},
     )
     turbo_ui.menu_title(
         &app^.ui, &app^.menus,
         Menu_Window, Menu_Window_Popup,
-        turbo_ui.Rect{column = 25, width = 10, height = 1},
+        turbo_ui.Rect{column = 42, width = 9, height = 1},
         "Window", cast[u8]('w'),
-        turbo_ui.Rect{column = 25, row = 1, width = 35, height = 17},
+        turbo_ui.Rect{column = 42, row = 1, width = 37, height = 18},
     )
     turbo_ui.menu_title(
         &app^.ui, &app^.menus,
         Menu_Help, Menu_Help_Popup,
-        turbo_ui.Rect{column = 35, width = 8, height = 1},
+        turbo_ui.Rect{column = 51, width = 7, height = 1},
         "Help", cast[u8]('h'),
-        turbo_ui.Rect{column = 35, row = 1, width = 35, height = 3},
+        turbo_ui.Rect{column = 51, row = 1, width = 28, height = 3},
     )
     turbo_ui.menu_bar_end(&app^.ui, &app^.menus)
 }
@@ -3927,51 +4244,81 @@ menu_window_toggle :: proc(
 // pointers. Returning true means the complete clean/discard quit policy ended.
 paint_app_menus :: proc(app: ^App) -> bool {
     should_quit := false
+    buffer := active_buffer(app)
+    (_, _, has_selection) := turbo_editor.selection(buffer)
+    editable := !turbo_editor.is_read_only(buffer)
+
     file_menu := turbo_ui.begin_menu(
         &app^.ui, &app^.menus,
         Menu_File, Menu_File_Popup,
-        turbo_ui.Rect{column = 1, row = 1, width = 31, height = 9},
+        turbo_ui.Rect{column = 1, row = 1, width = 35, height = 12},
     )
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &file_menu,
-        536, "Workspace Sources...", "F2",
-        access_key = cast[u8]('u'),
+        910, "New File", "Ctrl-N",
+        access_key = cast[u8]('n'),
     ) {
-        turbo_ui.show_window(
-            &app^.ui,
-            app^.windows[:],
-            app^.windows[Window_Sources].id,
-        )
-        app^.ui.focused_id = 530
-        app^.status = "Choose a workspace source and press Enter"
+        new_file(app)
     }
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &file_menu,
-        537, "Open File...", "",
+        911, "Open...", "Ctrl-O",
         access_key = cast[u8]('o'),
     ) {
         request_open_file(app)
     }
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &file_menu,
-        538, "Open Folder...", "", app^.host.open_workspace != nil,
-        access_key = cast[u8]('f'),
+        916, "Files in Active Program...", "F2",
+        app^.host.source_count != nil,
+        access_key = cast[u8]('p'),
     ) {
-        request_open_folder(app)
+        turbo_ui.show_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Program_Files].id,
+        )
+        app^.ui.focused_id = 530
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &file_menu,
+        917, "Open Files...", "Alt-0",
+        access_key = cast[u8]('i'),
+    ) {
+        turbo_ui.show_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Open_Files].id,
+        )
+        app^.ui.focused_id = 532
     }
     turbo_ui.menu_separator(&app^.ui, &file_menu)
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &file_menu,
-        540, "Save", "Ctrl-S",
+        912, "Save", "Ctrl-S", editable,
         access_key = cast[u8]('s'),
     ) {
         save_active_buffer(app)
     }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &file_menu,
+        913, "Save As...", "", editable,
+        access_key = cast[u8]('a'),
+    ) {
+        request_save_as(app)
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &file_menu,
+        914, "Save All", "", has_dirty_buffers(app),
+        access_key = cast[u8]('l'),
+    ) {
+        save_all_documents(app)
+    }
     turbo_ui.menu_separator(&app^.ui, &file_menu)
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &file_menu,
-        541, "Quit", "Alt-X",
-        access_key = cast[u8]('q'),
+        915, "Exit", "Alt-X",
+        access_key = cast[u8]('x'),
     ) {
         should_quit = request_quit(app)
     }
@@ -3980,18 +4327,18 @@ paint_app_menus :: proc(app: ^App) -> bool {
     edit_menu := turbo_ui.begin_menu(
         &app^.ui, &app^.menus,
         Menu_Edit, Menu_Edit_Popup,
-        turbo_ui.Rect{column = 9, row = 1, width = 40, height = 16},
+        turbo_ui.Rect{column = 8, row = 1, width = 32, height = 9},
     )
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &edit_menu,
-        542, "Undo", "Ctrl-Z",
+        920, "Undo", "Ctrl-Z", editable,
         access_key = cast[u8]('u'),
     ) {
         undo_active(app)
     }
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &edit_menu,
-        543, "Redo", "Ctrl-Y",
+        921, "Redo", "Ctrl-Y", editable,
         access_key = cast[u8]('r'),
     ) {
         redo_active(app)
@@ -3999,66 +4346,104 @@ paint_app_menus :: proc(app: ^App) -> bool {
     turbo_ui.menu_separator(&app^.ui, &edit_menu)
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &edit_menu,
-        563, "Find...", "Ctrl-F",
-        access_key = cast[u8]('f'),
+        922, "Cut", "Ctrl-X", editable && has_selection,
+        access_key = cast[u8]('t'),
+    ) {
+        cut_selection(app)
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &edit_menu,
+        923, "Copy", "Ctrl-C", has_selection,
+        access_key = cast[u8]('c'),
+    ) {
+        _ = copy_selection(app)
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &edit_menu,
+        924, "Paste", "Ctrl-V", editable && app^.clipboard.length != 0,
+        access_key = cast[u8]('p'),
+    ) {
+        paste_clipboard(app)
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &edit_menu,
+        925, "Select All", "Ctrl-A",
+        access_key = cast[u8]('a'),
+    ) {
+        select_all(app)
+    }
+    turbo_ui.end_menu(&app^.ui, &app^.menus, edit_menu)
+
+    search_menu := turbo_ui.begin_menu(
+        &app^.ui, &app^.menus,
+        Menu_Search, Menu_Search_Popup,
+        turbo_ui.Rect{column = 15, row = 1, width = 40, height = 15},
+    )
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &search_menu,
+        930, "Find...", "Ctrl-F", access_key = cast[u8]('f'),
     ) {
         request_search(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
-        564, "Find Next", "F3",
-        access_key = cast[u8]('n'),
+        &app^.ui, &app^.menus, &search_menu,
+        931, "Find Next", "F3", access_key = cast[u8]('n'),
     ) {
         _ = perform_find(app, false)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
-        565, "Find Previous", "Shift-F3",
-        access_key = cast[u8]('p'),
+        &app^.ui, &app^.menus, &search_menu,
+        932, "Find Previous", "Shift-F3", access_key = cast[u8]('p'),
     ) {
         _ = perform_find(app, true)
     }
+    turbo_ui.menu_separator(&app^.ui, &search_menu)
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
-        566, "Replace...", "Ctrl-H",
-        access_key = cast[u8]('l'),
+        &app^.ui, &app^.menus, &search_menu,
+        933, "Replace...", "Ctrl-H", access_key = cast[u8]('r'),
     ) {
         request_replace(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
-        567, "Replace Current", "Ctrl-R",
-        access_key = cast[u8]('c'),
+        &app^.ui, &app^.menus, &search_menu,
+        934, "Replace Next", "Ctrl-R", editable,
+        access_key = cast[u8]('e'),
     ) {
         _ = replace_current(app, true)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
-        568, "Go to Line...", "Ctrl-G",
-        access_key = cast[u8]('g'),
+        &app^.ui, &app^.menus, &search_menu,
+        935, "Replace All", "", editable,
+        access_key = cast[u8]('a'),
+    ) {
+        _ = replace_every_match(app)
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &search_menu,
+        936, "Go to Line...", "Ctrl-G", access_key = cast[u8]('g'),
     ) {
         request_go_to_line(app)
     }
-    turbo_ui.menu_separator(&app^.ui, &edit_menu)
+    turbo_ui.menu_separator(&app^.ui, &search_menu)
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
-        569, "Go to Definition", "F12",
+        &app^.ui, &app^.menus, &search_menu,
+        937, "Go to Definition", "F12",
         app^.host.prepare_navigation != nil,
         access_key = cast[u8]('d'),
     ) {
         _ = go_to_definition(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
-        571, "Find Usages", "Shift-F12",
+        &app^.ui, &app^.menus, &search_menu,
+        938, "Find Usages", "Shift-F12",
         app^.host.prepare_navigation != nil,
-        access_key = cast[u8]('i'),
+        access_key = cast[u8]('u'),
     ) {
         _ = find_symbol_usages(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
-        572, "Navigation Back", "Alt-Left",
+        &app^.ui, &app^.menus, &search_menu,
+        939, "Back", "Alt-Left",
         app^.navigation_history_count != 0 &&
             app^.navigation_history_index != 0,
         access_key = cast[u8]('b'),
@@ -4066,122 +4451,138 @@ paint_app_menus :: proc(app: ^App) -> bool {
         _ = navigate_history(app, false)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &edit_menu,
-        573, "Navigation Forward", "Alt-Right",
+        &app^.ui, &app^.menus, &search_menu,
+        940, "Forward", "Alt-Right",
         app^.navigation_history_count != 0 &&
-            app^.navigation_history_index + 1 <
-                app^.navigation_history_count,
-        access_key = cast[u8]('v'),
+            app^.navigation_history_index + 1 < app^.navigation_history_count,
+        access_key = cast[u8]('o'),
     ) {
         _ = navigate_history(app, true)
     }
-    turbo_ui.end_menu(&app^.ui, &app^.menus, edit_menu)
+    turbo_ui.end_menu(&app^.ui, &app^.menus, search_menu)
 
-    build_menu := turbo_ui.begin_menu(
+    run_menu := turbo_ui.begin_menu(
         &app^.ui, &app^.menus,
-        Menu_Build, Menu_Build_Popup,
-        turbo_ui.Rect{column = 17, row = 1, width = 31, height = 10},
+        Menu_Run, Menu_Run_Popup,
+        turbo_ui.Rect{column = 24, row = 1, width = 31, height = 5},
     )
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &build_menu,
-        544, "Check", "", app^.host.check != nil,
+        &app^.ui, &app^.menus, &run_menu,
+        950, "Check", "Alt-F9", app^.host.check != nil,
         access_key = cast[u8]('c'),
     ) {
         refresh_host(app)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &build_menu,
-        545, "Build", "", app^.host.build != nil,
+        &app^.ui, &app^.menus, &run_menu,
+        951, "Build", "F9", app^.host.build != nil,
         access_key = cast[u8]('b'),
     ) {
         host_action(app, false)
     }
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &build_menu,
-        546, "Build and run", "F5", app^.host.build != nil,
+        &app^.ui, &app^.menus, &run_menu,
+        952, "Build and Run", "F5", app^.host.build != nil,
         access_key = cast[u8]('r'),
     ) {
         host_action(app, true)
     }
-    turbo_ui.menu_separator(&app^.ui, &build_menu)
+    turbo_ui.end_menu(&app^.ui, &app^.menus, run_menu)
+
+    workspace_menu := turbo_ui.begin_menu(
+        &app^.ui, &app^.menus,
+        Menu_Workspace, Menu_Workspace_Popup,
+        turbo_ui.Rect{column = 30, row = 1, width = 37, height = 6},
+    )
     if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &build_menu,
-        549, "Programs & packages...", "F6", app^.host.select_root != nil,
-        access_key = cast[u8]('s'),
+        &app^.ui, &app^.menus, &workspace_menu,
+        960, "Switch Workspace...", "", app^.host.open_workspace != nil,
+        access_key = cast[u8]('w'),
+    ) {
+        request_open_folder(app)
+    }
+    turbo_ui.menu_separator(&app^.ui, &workspace_menu)
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &workspace_menu,
+        961, "Program and Run Settings...", "F6",
+        app^.host.select_root != nil,
+        access_key = cast[u8]('p'),
+    ) {
+        turbo_ui.show_window(
+            &app^.ui,
+            app^.windows[:],
+            app^.windows[Window_Program_Settings].id,
+        )
+        app^.ui.focused_id = 760
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &workspace_menu,
+        963, "Packages and Imports", "", app^.host.copy_tooling != nil,
+        access_key = cast[u8]('k'),
     ) {
         turbo_ui.show_window(
             &app^.ui,
             app^.windows[:],
             app^.windows[Window_Programs].id,
         )
-        app^.ui.focused_id = 760
+        app^.ui.focused_id = 770
     }
-    if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &build_menu,
-        547, "Next Program", "", app^.host.select_root != nil,
-        access_key = cast[u8]('n'),
-    ) {
-        cycle_program_root(app)
-    }
-    if turbo_ui.menu_action(
-        &app^.ui, &app^.menus, &build_menu,
-        548, "Next target", "", app^.host.select_target != nil,
-        access_key = cast[u8]('t'),
-    ) {
-        cycle_build_target(app)
-    }
-    turbo_ui.end_menu(&app^.ui, &app^.menus, build_menu)
+    turbo_ui.end_menu(&app^.ui, &app^.menus, workspace_menu)
 
     window_menu := turbo_ui.begin_menu(
         &app^.ui, &app^.menus,
         Menu_Window, Menu_Window_Popup,
-        turbo_ui.Rect{column = 25, row = 1, width = 35, height = 17},
+        turbo_ui.Rect{column = 42, row = 1, width = 37, height = 18},
     )
     menu_window_toggle(
-        app, &window_menu, 561, Window_Editor, "Editor", "", cast[u8]('e'),
+        app, &window_menu, 970, Window_Editor, "Editor", "", cast[u8]('e'),
     )
     menu_window_toggle(
-        app, &window_menu, 550, Window_Sources,
-        "Workspace Sources", "F2", cast[u8]('s'),
+        app, &window_menu, 971, Window_Program_Files,
+        "Files in Active Program", "F2", cast[u8]('f'),
     )
     menu_window_toggle(
-        app, &window_menu, 551, Window_Buffers,
-        "Buffers", "Alt-0", cast[u8]('b'),
+        app, &window_menu, 972, Window_Open_Files,
+        "Open Files", "Alt-0", cast[u8]('o'),
     )
     turbo_ui.menu_separator(&app^.ui, &window_menu)
     menu_window_toggle(
-        app, &window_menu, 552, Window_Programs,
-        "Programs & Packages", "F6", cast[u8]('p'),
+        app, &window_menu, 973, Window_Program_Settings,
+        "Program Settings", "F6", cast[u8]('p'),
     )
     menu_window_toggle(
-        app, &window_menu, 553, Window_Declarations,
-        "Declarations", "F7", cast[u8]('d'),
+        app, &window_menu, 974, Window_Programs,
+        "Packages and Imports", "", cast[u8]('k'),
     )
     menu_window_toggle(
-        app, &window_menu, 554, Window_References,
-        "References", "F8", cast[u8]('r'),
+        app, &window_menu, 975, Window_Declarations,
+        "Declarations", "", cast[u8]('d'),
     )
     menu_window_toggle(
-        app, &window_menu, 555, Window_Effects, "Effects", "F9", cast[u8]('c'),
+        app, &window_menu, 976, Window_References,
+        "References", "", cast[u8]('r'),
     )
     menu_window_toggle(
-        app, &window_menu, 556, Window_Denials, "Denials", "F10", cast[u8]('n'),
+        app, &window_menu, 977, Window_Effects, "Effects", "", cast[u8]('c'),
     )
     menu_window_toggle(
-        app, &window_menu, 557, Window_Diagnostics,
-        "Diagnostics", "F11", cast[u8]('g'),
+        app, &window_menu, 978, Window_Denials, "Denials", "", cast[u8]('n'),
+    )
+    menu_window_toggle(
+        app, &window_menu, 979, Window_Diagnostics,
+        "Diagnostics", "F8", cast[u8]('g'),
     )
     turbo_ui.menu_separator(&app^.ui, &window_menu)
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &window_menu,
-        558, "Tile", "",
+        980, "Tile", "",
         access_key = cast[u8]('t'),
     ) {
         turbo_ui.tile_windows(app^.windows[:], app^.ui.desktop)
     }
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &window_menu,
-        559, "Cascade", "",
+        981, "Cascade", "",
         access_key = cast[u8]('a'),
     ) {
         turbo_ui.cascade_windows(app^.windows[:], app^.ui.desktop)
@@ -4189,7 +4590,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
     turbo_ui.menu_separator(&app^.ui, &window_menu)
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &window_menu,
-        560, "Next window", "Ctrl-F6",
+        982, "Next Window", "Ctrl-F6",
         access_key = cast[u8]('w'),
     ) {
         turbo_ui.activate_next_window(&app^.ui, app^.windows[:])
@@ -4199,11 +4600,11 @@ paint_app_menus :: proc(app: ^App) -> bool {
     help_menu := turbo_ui.begin_menu(
         &app^.ui, &app^.menus,
         Menu_Help, Menu_Help_Popup,
-        turbo_ui.Rect{column = 35, row = 1, width = 35, height = 3},
+        turbo_ui.Rect{column = 51, row = 1, width = 28, height = 3},
     )
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &help_menu,
-        562, "Keyboard Shortcuts...", "F1",
+        990, "Keyboard Shortcuts...", "F1",
         access_key = cast[u8]('k'),
     ) {
         request_shortcut_help(app)
@@ -4272,47 +4673,51 @@ paint_app :: proc(
     for order_index: usize = 0; order_index < count; order_index += 1 {
         index := order[order_index]
         window := &app^.windows[index]
-        title := "Workspace Sources (F2)"
+        title := "Files in Active Program (F2)"
         if index == Window_Editor {
-            if turbo_editor.is_read_only(active_buffer(app)) {
-                title = "Editor [read-only]"
-            } else {
-                title = "Editor"
-            }
-        } else if index == Window_Buffers {
-            title = "Buffers"
+            // The editor title is the actual document label/path, not the
+            // generic word "Editor". begin_window receives an empty title and
+            // the byte-owned path paints immediately afterward.
+            title = ""
+        } else if index == Window_Open_Files {
+            title = "Open Files"
         } else if index == Window_Search {
             title = "Find"
         } else if index == Window_Quit {
             title = "Unsaved changes"
         } else if index == Window_Diagnostics {
-            title = "Diagnostics (F11)"
+            title = "Diagnostics (F8)"
         } else if index == Window_Programs {
-            title = "Programs & Packages (F6)"
+            title = "Packages and Imports"
         } else if index == Window_Declarations {
-            title = "Declarations / visibility (F7)"
+            title = "Declarations and Visibility"
         } else if index == Window_References {
             if app^.semantic_usages_visible {
                 title = "Symbol Usages (Shift-F12)"
             } else {
-                title = "References / calls (F8)"
+                title = "References and Calls"
             }
         } else if index == Window_Effects {
-            title = "Effects (F9)"
+            title = "Effects"
         } else if index == Window_Denials {
-            title = "Denials (F10)"
+            title = "Denials"
         } else if index == Window_Open_Folder {
-            title = "Open Folder"
+            title = "Switch Workspace"
         } else if index == Window_Open_File {
             title = "Open File"
+            if app^.file_dialog_action == .save_as {
+                title = "Save As"
+            }
         } else if index == Window_Folder_Confirm {
-            title = "Unsaved buffers"
+            title = "Unsaved documents"
         } else if index == Window_Help {
             title = "Keyboard Shortcuts (F1)"
         } else if index == Window_Replace {
             title = "Replace"
         } else if index == Window_Go_To_Line {
             title = "Go to Line"
+        } else if index == Window_Program_Settings {
+            title = "Program and Run Settings (F6)"
         }
         window_context: turbo_ui.Window_Context
         if index == Window_Search || index == Window_Quit ||
@@ -4325,6 +4730,13 @@ paint_app :: proc(
             window_context = turbo_ui.begin_window(&app^.ui, window, title)
         }
         if window_context.visible {
+            if index == Window_Editor {
+                _ = turbo_ui.window_title_bytes(
+                    &app^.ui,
+                    window,
+                    editor_title_bytes(app),
+                )
+            }
             switch index {
             case Window_Editor:
                 edit_result := turbo_editor.edit(
@@ -4344,19 +4756,19 @@ paint_app :: proc(
                 if edit_result.changed {
                     source_changed(app)
                 }
-            case Window_Sources:
+            case Window_Program_Files:
                 paint_path_list(
                     app,
                     window_context.content,
                     530,
-                    .workspace_sources,
+                    .program_files,
                 )
-            case Window_Buffers:
+            case Window_Open_Files:
                 paint_path_list(
                     app,
                     window_context.content,
                     532,
-                    .open_buffers,
+                    .open_files,
                 )
             case Window_Search:
                 paint_search(app, window_context.content)
@@ -4365,7 +4777,7 @@ paint_app :: proc(
             case Window_Diagnostics:
                 paint_text_view(app, index, window_context.content)
             case Window_Programs:
-                paint_programs_view(app, window_context.content)
+                paint_packages_view(app, window_context.content)
             case Window_Declarations:
                 paint_text_view(app, index, window_context.content)
             case Window_References:
@@ -4390,6 +4802,8 @@ paint_app :: proc(
                 paint_replace(app, window_context.content)
             case Window_Go_To_Line:
                 paint_go_to_line(app, window_context.content)
+            case Window_Program_Settings:
+                paint_program_settings(app, window_context.content)
             case:
             }
         }
@@ -4402,10 +4816,10 @@ paint_app :: proc(
             } else if index == Window_Open_Folder ||
                 index == Window_Folder_Confirm {
                 close_folder_dialogs(app)
-                app^.status = "Open Folder cancelled"
+                app^.status = "Workspace switch cancelled"
             } else if index == Window_Open_File {
                 close_open_file(app)
-                app^.status = "Open File cancelled"
+                app^.status = "File operation cancelled"
             } else if index == Window_Help {
                 close_shortcut_help(app)
             } else if index == Window_Replace {
@@ -4634,7 +5048,7 @@ run_interactive :: proc(
         if now >= next_disk_poll {
             disk := turbo_editor.poll_disk(active_buffer(app))
             if disk == .conflict {
-                app^.status = "Disk changed while buffer is dirty: explicit conflict"
+                app^.status = "Disk changed while document is dirty: explicit conflict"
                 paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
                 repaint = true
             } else if disk == .reloaded {
@@ -4849,6 +5263,32 @@ report_error :: proc(message: string) {
     }
 }
 
+// running_over_ssh recognizes the conventional process markers installed by
+// OpenSSH. Remote PTYs are otherwise ordinary terminals; the only policy
+// difference is suppressing unpressed pointer-motion reports, which can flood
+// the network and event loop without contributing a click or drag.
+running_over_ssh :: proc() -> bool {
+    names := [3]string{"SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"}
+    for entry in os.environment() {
+        for name in names {
+            if len(entry) <= len(name) || entry[len(name)] != cast[u8]('=') {
+                continue
+            }
+            matches := true
+            for index: usize = 0; index < len(name); index += 1 {
+                if entry[index] != name[index] {
+                    matches = false
+                    break
+                }
+            }
+            if matches {
+                return true
+            }
+        }
+    }
+    return false
+}
+
 // run_app_terminal is the one terminal-resource owner shared by every caller.
 // Resources are acquired in input, resize, screen, mouse order and every
 // resource cleanup runs in exact reverse order. After disabling mouse reports,
@@ -4868,9 +5308,17 @@ run_app_terminal :: proc(app: ^App) -> int {
     screen: terminal.Screen
     reporting: terminal.Mouse_Reporting
     run_error: io.Error = .unavailable
+    mouse_mode: terminal.Mouse_Reporting_Mode = .all_motion
+    if running_over_ssh() {
+        mouse_mode = .buttons_and_drag
+    }
     if resize_error == .none &&
         terminal.begin_screen(&screen, os.standard_output) == .none &&
-        terminal.begin_mouse_reporting(&reporting, &screen) == .none {
+        terminal.begin_mouse_reporting(
+            &reporting,
+            &screen,
+            mouse_mode,
+        ) == .none {
         run_error = run_interactive(
             app,
             &session,
@@ -4917,18 +5365,9 @@ pub run_with_host :: proc(
     app.host = host
     bind_active_buffer_to_host_root(&app)
     refresh_program_roots(&app)
-    refresh_workspace_sources(&app)
+    refresh_program_files(&app)
     app.status = "Turbo Draft compiler session attached"
     refresh_host(&app)
-    if app.program_root_count > 1 {
-        turbo_ui.show_window(
-            &app.ui,
-            app.windows[:],
-            app.windows[Window_Programs].id,
-        )
-        app.ui.focused_id = 760
-        app.status = "Choose the active Program in Programs & Packages"
-    }
     return run_app_terminal(&app)
 }
 
@@ -4950,18 +5389,9 @@ pub run_with_host_bytes :: proc(
     app.host = host
     bind_active_buffer_to_host_root(&app)
     refresh_program_roots(&app)
-    refresh_workspace_sources(&app)
+    refresh_program_files(&app)
     app.status = "Turbo Draft compiler session attached"
     refresh_host(&app)
-    if app.program_root_count > 1 {
-        turbo_ui.show_window(
-            &app.ui,
-            app.windows[:],
-            app.windows[Window_Programs].id,
-        )
-        app.ui.focused_id = 760
-        app.status = "Choose the active Program in Programs & Packages"
-    }
     if has_smoke_argument() {
         if app.diagnostic_count != 0 || app.syntax_span_count == 0 ||
             app.tooling_length[1] == 0 || app.tooling_length[2] == 0 ||
@@ -5003,7 +5433,7 @@ pub run_standalone :: proc() -> int {
     }
     app: App
     if !init_app(&app) {
-        report_error("turbo-editor: could not open the requested buffers\n")
+        report_error("turbo-editor: could not open the requested documents\n")
         return 1
     }
     defer destroy_app(&app)

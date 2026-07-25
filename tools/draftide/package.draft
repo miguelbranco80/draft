@@ -1,5 +1,5 @@
 // Turbo Draft is an ordinary Draft executable. It owns command-line selection,
-// the project/editor/UI lifetime, and the real hosted main. The bootstrap C++
+// the Workspace/editor/UI lifetime, and the real hosted main. The bootstrap C++
 // implementation appears only as an explicitly mapped compiler-service
 // provider behind an opaque handle; it never calls into this application.
 package draftide

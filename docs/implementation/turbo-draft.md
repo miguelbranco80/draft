@@ -40,8 +40,10 @@ package inside one. The nearest marker establishes the import and `.draft/`
 state boundary. With no marker, the opened directory is a standalone
 workspace. The service discovers executable roots below that boundary; with
 one it selects it directly, and with several it selects the first deterministic
-row and opens the program/package view so the user can choose. An explicitly
-opened library package remains selectable for checking even without `main`.
+row and exposes the choice through Program and Run Settings. Startup still
+shows only the active document; compiler inspectors never obscure it. An
+explicitly opened library package remains selectable for checking even without
+`main`.
 
 When a marker names a default program, the IDE initially selects its `root`:
 
@@ -53,14 +55,15 @@ default = editor
 root = apps/editor
 ```
 
-The IDE consumes the workspace boundary, exclusions, default program, and the
-complete effective build/run layer for every root. The Programs & Packages
-window shows the selected Program's effective target, optimization, artifact,
-output, debug/assertion policy, native providers and assets, arguments,
-environment, and working directory. The service formats this projection only
-after applying manifest precedence, so the Draft application neither duplicates
-the workspace parser nor guesses which values Build and F5 will use. `--source`
-may select one
+The IDE consumes the workspace boundary, exclusions, default Program, and the
+complete effective Build/Run layer for every root. Program and Run Settings
+contains an explicit root selector and the active Program's effective target,
+optimization, artifact, output, debug/assertion policy, native providers and
+assets, arguments, environment, and working directory. Packages and Imports is
+a separate semantic inspector rather than part of this routine selection. The
+service formats both projections only after applying manifest precedence, so
+the Draft application neither duplicates the workspace parser nor guesses
+which values Build and F5 will use. `--source` may select one
 direct file inside the active package. Without it, the compiler opens the first
 target-selected source in bytewise filename order; `package.draft` has no
 privileged IDE meaning. No root selector is required because the opened path or
@@ -87,10 +90,10 @@ open `..` with root `examples/turbo-editor`; opening `.` with root
 `turbo-editor` would intentionally exclude the repository's top-level `lib/`.
 
 Source remains normal `.draft` files. After checking, the service publishes the
-target-selected workspace files in the reachable package graph as deterministic
-workspace-relative names plus canonical I/O paths. Workspace Sources browses
-that table;
-Buffers separately lists the ordinary documents currently open in memory.
+target-selected files in the active Program's reachable graph as deterministic
+Workspace-relative names plus canonical I/O paths. Files in Active Program
+browses that table; Open Files separately lists the ordinary documents currently
+open in memory.
 `turbo_editor.Buffer` owns each open file and its unsaved bytes. Switching roots
 reuses an already-open buffer by path or opens another ordinary buffer; every
 buffer records the compiler root that owns it. Reactivating an older buffer
@@ -100,14 +103,14 @@ writes the normal file, and polling reports an explicit conflict when disk and
 dirty memory diverge. There is no IDE source database, candidate workspace,
 revision history, or IDE state under `.draft/`.
 
-File > Open File accepts an ordinary pathname without changing the Workspace.
+File > Open accepts an ordinary pathname without changing the Workspace.
 Relative paths start at the Workspace when the compiler host is attached;
-absolute paths retain their native meaning. A path in Workspace Sources keeps
+absolute paths retain their native meaning. A path in Files in Active Program keeps
 its selected Program association, while any other file is explicitly
 editing-only and cannot enter a compiler override by accident. Reopening the
 same exact path reuses its in-memory buffer and unsaved bytes.
 
-File > Open Folder accepts another directory without restarting. The native
+Workspace > Switch Workspace accepts another directory without restarting. The native
 service constructs and validates a complete replacement compiler session before
 swapping it behind the stable host handle. Draft then replaces its source table
 and buffers. Dirty buffers require an explicit Save all, Discard, or Cancel
@@ -185,13 +188,15 @@ These are views, not another parser, indexer, or semantic engine. The Draft UI
 copies them into its own bounded storage and presents independent movable,
 resizable windows. The document editor uses that same ordinary window model:
 its content is the reusable `turbo_editor` view, while the application owns its
-close, zoom, z-order, and arrangement policy. Sources and Buffers are auxiliary
-non-tileable tool panes, so Tile/Cascade arrange the document together with
-visible semantic windows without moving those browsers. Opening a buffer
+close, zoom, z-order, and arrangement policy. Program Files and Open Files are
+auxiliary non-tileable tool panes, so Tile/Cascade arrange the document together
+with visible semantic windows without moving those browsers. The document
+window title uses the Program's Workspace-relative file label where available,
+not a generic title or a space-consuming canonical host path. Opening a file
 reopens and focuses the document window if it was closed.
 
-Workspace Sources, Buffers, executable roots, the package tree, and read-only semantic
-sections share `lib/turbo_ui`'s collection viewport policy. Applications retain
+Program Files, Open Files, executable roots, the package tree, and read-only
+semantic sections share `lib/turbo_ui`'s collection viewport policy. Applications retain
 cursor and offset only; the reusable layer owns keyboard movement, distinct
 activation, wheel scrolling, proportional scrollbar geometry, and visible-row
 mapping.
@@ -214,6 +219,11 @@ Menu titles and rows derive both their visible underlined mnemonic and their
 activation from one access-key value. Right-aligned command shortcuts remain
 application policy, so Turbo Draft handles them before focused controls and
 invokes the same direct operation as the corresponding menu branch.
+Disabled menu rows neither acquire the pointer highlight nor discard the last
+enabled selection; crossing separators or leaving/re-entering a popup likewise
+preserves that selection. Buttons expose one measured minimum footprint which
+includes brackets and the shadow column, preventing application-authored labels
+from being clipped by layout guesses.
 No retained widget tree, callback table, or editor pointer crosses that layer.
 
 The event loop drains immediately queued terminal reads before one renderer
@@ -222,18 +232,20 @@ motion across read boundaries, and skips repeated motion observations which
 cannot change hover or drag state. A private decoder state is exposed only as
 `terminal.decoder_pending`; the application uses that fact for a 25-ms Escape
 ambiguity deadline even while mouse reports continue. Scrollbar arrows retain
-capture and consume explicit application-timed repeat pulses. Escape is solely
-a popup/dialog/window-operation cancel key; Alt-X starts the explicit quit
-policy.
+capture and consume explicit application-timed repeat pulses. Local sessions
+request all-motion reports for hover. An OpenSSH environment selects the core
+terminal layer's button-and-drag mode, so unpressed cell crossings do not flood
+the network and event loop; clicks, releases, wheels, and drags remain intact.
+Escape is solely a popup/dialog/window-operation cancel key; Alt-X or Ctrl-Q
+starts the explicit exit policy.
 
 F1 opens a modal, scrollable reference generated from the application's single
-authored shortcut table. F6 opens Programs & Packages: its top list selects a
-runnable root by mouse or Enter, its middle section displays the complete
-effective Build/Run configuration, and its lower section displays an expandable
-checked package/dependency tree.
-Click or Enter toggles a package; Left/Right close, open, or enter branches.
-F7 through F11 toggle declaration, reference/call, effect, denial, and
-diagnostic views. F12 resolves the symbol at the exact editor byte offset and
+authored shortcut table. F2 opens Files in Active Program, Alt-0 opens Open
+Files, F6 opens Program and Run Settings, and F8 opens Diagnostics. Packages
+and Imports is an explicitly requested structured semantic view; Click or Enter
+toggles a package and Left/Right closes, opens, or enters branches. Other
+declaration, reference/call, effect, and denial inspectors live under Window.
+F12 resolves the symbol at the exact editor byte offset and
 selects its definition; Shift-F12 replaces the References window with a
 structured, ordered Usages list. Alt-Left/Alt-Right traverse application-owned
 path/range history after later compiler checks invalidate service-local file
@@ -263,8 +275,8 @@ program.
 
 Normal IDE exit disables mouse reporting, discards reports already queued in
 raw input, and only then restores the screen and cooked input. This prevents
-all-motion SGR report fragments from becoming visible shell command bytes after
-a long synchronous build or check.
+SGR report fragments from becoming visible shell command bytes after a long
+synchronous build or check.
 
 ## Deliberate first-version limits
 
@@ -276,8 +288,8 @@ program configured as O2 deliberately pays the ordinary O2/ThinLTO cost.
 
 Identifier completion, background checking, broad Codex worktree editing,
 named configuration variants, and body-only invalidation remain later
-measurements or features. Open Folder currently uses a typed path rather than
-a directory browser.
+measurements or features. Open and Switch Workspace currently use typed paths
+rather than introducing a second filesystem browser.
 Ordinary Codex can continue editing the normal files, and Draft `...` retains
 its existing compiler-synthesis meaning.
 
@@ -293,9 +305,10 @@ transactional workspace replacement,
 root/target switching, traversal rejection, effective program configuration,
 live manifest/summary refresh, target-specialized named-root discovery,
 run-setting copying, configured output kinds, and native Build. Draft package
-tests cover the application-side Host table, lexical-only typing path, overlay assembly, configured
-Draft-owned Run, read-only buffer enforcement, shortcut/help behavior,
-semantic history, and the buffer/root invariant. `draft_draftide_smoke` launches
+tests cover the application-side Host table, lexical-only typing path, overlay
+assembly, configured Draft-owned Run, read-only buffer enforcement, real
+document/clipboard/save-as commands, shortcut/help/menu behavior, semantic
+history, and the buffer/root invariant. `draft_draftide_smoke` launches
 the real Draft-built executable, reads the repository workspace marker,
 builds its selected program through the real shared compiler service, retrieves
 syntax/semantic products, and paints a frame without entering an interactive

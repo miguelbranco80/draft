@@ -1,4 +1,4 @@
-# Native validation for the reusable Draft project, Turbo UI, and editor
+# Native validation for the reusable Draft package, Turbo UI, and editor
 # packages. The copied workspace preserves normal `lib/...` import identities
 # while keeping validation evidence and native artifacts out of the checkout.
 
@@ -39,7 +39,7 @@ execute_process(
   ERROR_VARIABLE editor_error
 )
 if(NOT editor_status EQUAL 0 OR
-   NOT editor_output MATCHES "test passed: 46 selected procedures")
+   NOT editor_output MATCHES "test passed: 51 selected procedures")
   message(FATAL_ERROR
     "Turbo IDE library tests failed (${editor_status})\n"
     "stdout:\n${editor_output}\nstderr:\n${editor_error}")

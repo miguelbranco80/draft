@@ -181,11 +181,13 @@ defaults to the native host. Unless `--target` supplies an explicit override,
 selecting a named program applies its effective workspace/program target.
 IDE-local root/window selections are not stored in the workspace manifest.
 
-Turbo Draft opens ordinary files; File > Open File accepts absolute or
-Workspace-relative paths without changing the Workspace. The active buffer and
-every other dirty workspace buffer form one in-memory compiler transaction, and
-saving updates the same files. File > Open Folder swaps to another validated
-directory after explicit dirty-buffer handling. Build and F5 use the complete
+Turbo Draft opens ordinary files; File > Open accepts absolute or
+Workspace-relative paths without changing the Workspace. Files in Active
+Program lists the compiler-selected reachable source set, while Open Files lists
+documents already owned by the editor. The active file and every other dirty
+active-Program file form one in-memory compiler transaction, and saving updates
+the same files. Workspace > Switch Workspace swaps to another validated
+directory after explicit dirty-document handling. Build and F5 use the complete
 effective `[build]` plus matching `[program]` configuration: target, optimization,
 artifact kind/output, debug symbols, assertions, providers and summaries, and
 runtime assets. F5 runs an executable with the program's arguments,
@@ -194,9 +196,10 @@ built but deliberately not launched.
 Saving `draft.workspace` affects the next Check, Build, or F5 without reopening
 the IDE. Provider-summary files are likewise reread at that foreground
 boundary; unchanged structural configuration keeps the retained checked graph.
-F1 opens the complete shortcut reference. F6 opens the Program list, effective
-Build/Run configuration, and package/dependency view; F7-F11 toggle other
-compiler-derived semantic windows.
+F1 opens the complete shortcut reference. F2 opens Program Files, Alt-0 opens
+Open Files, F6 opens the Program selector and effective Build/Run configuration,
+and F8 opens Diagnostics. Packages/imports and other compiler-derived semantic
+inspectors are explicitly available from Workspace and Window.
 F12 goes to the exact semantic definition beneath the cursor, Shift-F12 opens
 ordered usage locations, and Alt-Left/Alt-Right move through navigation
 history. Definitions in compiler-distributed core or dependency sources open

@@ -97,17 +97,18 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
   do not introduce another parser or semantic engine.
 - [x] Allow one opened workspace to switch among several active roots. Root and
   target select the checked graph, resolution/build namespace and run setup.
-- [x] Put a root selector above the F6 package/dependency view and preserve each
-  buffer's owning root so F5 always checks/builds the right graph.
+- [x] Put the root selector and effective Build/Run policy in Program and Run
+  Settings, separate from the Packages and Imports inspector, and preserve each
+  document's owning root so F5 always checks/builds the right graph.
 - [x] Keep “open directory” as the workspace model. `draft.workspace` records
   named Build/Run configurations but does not enumerate source files or become
   a dependency manager.
-- [x] Make Workspace Sources the compiler-discovered source browser and Buffers
-  the open document list. Add transactional Open Folder with Save all / Discard
-  / Cancel dirty-buffer policy.
+- [x] Make Files in Active Program the compiler-discovered source browser and
+  Open Files the open-document list. Add transactional Switch Workspace with
+  Save All / Discard / Cancel dirty-document policy.
 - [x] Add reusable compound lists, proportional scrollbars, read-only text
-  viewports and preorder trees; present the F6 package/dependency graph as an
-  expandable compiler-backed tree without parsing its text report.
+  viewports and preorder trees; present Packages and Imports as an expandable
+  compiler-backed tree without parsing its text report.
 - [x] Honor every relevant `draft.workspace` Build/Run field in the IDE through
   the compiler driver's shared manifest contract rather than an IDE schema.
 - [x] Add the classic editing command set: Undo/Redo, persistent forward/reverse

@@ -758,8 +758,8 @@ void CompilerSession::rebuild_source_options() {
   std::vector<SourceOption> sources;
   for (const WorkspacePackage &package : last_good_->graph.packages) {
     // Core and pinned dependency files are inspectable compiler inputs but are
-    // not editable members of this workspace. Workspace Sources exposes only
-    // source paths whose semantic root is the user's open workspace.
+    // not editable members of this workspace. Files in Active Program exposes
+    // only source paths whose semantic root is the user's open workspace.
     if (package.identity.root_identity != "workspace")
       continue;
     for (const LoadedPackageFile &file : package.loaded.files) {

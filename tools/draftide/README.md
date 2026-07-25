@@ -1,92 +1,70 @@
 # Turbo Draft
 
-Turbo Draft is a full-screen terminal IDE written in Draft. The only C++ part
-is the bootstrap compiler service behind an opaque C ABI; workspace selection,
-files, editor state, syntax-colored UI, Build/Run policy, and `main` live here
-or in reusable Draft libraries.
+Turbo Draft is the full-screen terminal IDE written in Draft. The only C++
+component is the bootstrap compiler service behind an opaque C ABI; ordinary
+files, documents, menus, terminal/UI state, compiler commands, and `main` are
+Draft code.
 
-Build and run on a native supported host:
+Build and open a Workspace or any package inside it:
 
 ```sh
 cmake --build build --target draftide --parallel
-build/draftide .
+build/draftide examples/raylib-asteroids
 ```
 
-The first path may be a workspace or a package inside one. Turbo Draft searches
-upward for the nearest `draft.workspace`; without one, the opened directory is
-a standalone workspace. It discovers packages containing `main`; if there are
-several, the Programs & Packages window opens so you can choose the active
-Program. A workspace may choose the initial program with:
+DraftIDE searches upward for the nearest `draft.workspace`. That file may set a
+default Program and Build/Run settings, but it does not enumerate source files.
+Without a marker, the opened directory is a standalone Workspace. The compiler
+discovers packages and executable Programs normally; `--source <file>` is only
+an optional initial-file override.
 
-```text
-draft-workspace-v1
-default = turbo-editor
+The UI uses four deliberately separate concepts:
 
-[program turbo-editor]
-root = examples/turbo-editor
-```
+- **Workspace**: filesystem/import boundary and optional `draft.workspace`.
+- **Program**: active root package; it is runnable when it contains `main`.
+- **Document**: one open file or unsaved `Untitled N` buffer.
+- **Program and Run Settings**: effective target, optimization, artifact,
+  providers, arguments, environment, and working directory used by Build/F5.
 
-Without the marker, no manifest is required. `--source` optionally selects one
-direct file in the initial package.
-Imports such as
-`lib/turbo_editor_app` are resolved below the workspace, while `core/terminal`
-comes from the compiler's pinned core distribution. Thus, when launching from
-this repository's `examples/` directory, keep the repository as the workspace:
+DraftIDE starts with one editor window whose title is the active file's
+Workspace-relative path. File contains ordinary document actions: New, Open,
+Files in Active Program, Open Files, Save, Save As, Save All, and Exit. Open and
+Save As accept an absolute path or one relative to the Workspace. A file outside
+the active Program remains editing-only. Workspace contains Switch Workspace,
+Program and Run Settings, and Packages and Imports. Compiler inspection windows
+live under Window rather than obscuring startup.
 
-```sh
-../build/draftide ..
-```
+The main shortcuts are visible in Help > Keyboard Shortcuts:
 
-Opening the `turbo-editor` package directly still finds the repository marker
-above it and therefore keeps top-level `lib/` imports available. Turbo Draft
-needs no package list: it discovers packages containing `main`, and Programs &
-Packages selects among those Programs. An explicitly selected package may also
-be a library for focused editing, although it is not runnable.
+- Ctrl-N/O/S and Ctrl-X/C/V/A: document and selection commands.
+- Ctrl-F, F3/Shift-F3, Ctrl-H, Ctrl-R, Ctrl-G: find/replace/navigation.
+- Alt-F9, F9, F5: Check, Build, Build and Run.
+- F2, Alt-0, F6, F8: Program Files, Open Files, Program settings, Diagnostics.
+- F12/Shift-F12 and Alt-Left/Alt-Right: semantic definition/usages/history.
+- Ctrl-F6/Ctrl-Shift-F6, Alt-F3, Ctrl-F5: desktop window commands.
+- Alt-X or Ctrl-Q: Exit. Escape only cancels the current menu/dialog/operation.
 
-The top row contains real File, Edit, Build, Window, and Help drop-down menus.
-Their access letters are underlined: use Alt-F/Alt-E/Alt-B/Alt-W/Alt-H to open a
-menu, then press an underlined command letter, or use the mouse. F1 opens the
-complete in-application keyboard reference. Shortcuts are active
-application-wide rather than only when the editor owns focus: Ctrl-S saves,
-Ctrl-F opens Find, Ctrl-H opens Replace, Ctrl-G goes to a line, and F2 opens
-Workspace Sources. F5 checks, builds, and runs the currently selected program.
-F6 opens Programs & Packages, with a selectable Program list, its complete
-effective Build/Run configuration, and an expandable package/dependency tree.
-Click or Enter
-toggles a package; Left closes a branch or selects its parent, and Right opens
-a branch or enters its first child. F7-F11 open declaration, reference, effect,
-denial, and diagnostic windows. F12 resolves the symbol beneath the cursor to
-its exact definition; Shift-F12 opens an ordered semantic Usages list, and
-Alt-Left/Alt-Right traverse navigation history. Compiler-distributed core and
-dependency definitions open in ordinary visibly read-only editor buffers.
-Workspace Sources lists the compiler-discovered files reachable from the active
-Program; arrow keys browse without changing documents, and Enter opens a row.
-Buffers is the separate list of already-open documents and marks dirty rows.
-File > Open File accepts absolute or Workspace-relative paths; files outside
-Workspace Sources remain editing-only rather than entering compiler overlays.
-File > Open Folder accepts another workspace directory and requires Save all,
-Discard, or Cancel before replacing dirty buffers. Alt-F3 closes the active
-tool window, Ctrl-F5 enters keyboard move/size mode, and
-Ctrl-F6/Ctrl-Shift-F6 select the next/previous window. The editor itself is an
-ordinary closable, zoomable desktop window;
-Window > Editor or opening a source brings it back. Tile and Cascade arrange
-that editor together with visible semantic windows, while leaving Sources,
-Buffers, and fixed dialogs in their application-selected positions. Editing,
-selection, search,
-save, undo/redo, mouse input, and dirty-file conflict rules are inherited from
-`lib/turbo_editor_app` and `lib/turbo_editor`.
+Alt-F/E/S/R/K/W/H opens File, Edit, Search, Run, Workspace, Window, or Help;
+an open menu accepts its underlined command letter directly. Conventional
+terminals cannot distinguish Ctrl-Shift-S from Ctrl-S, so Save As and Replace
+All use their visible menu access paths instead of advertising fake shortcuts.
 
-F5 temporarily restores the primary terminal and runs the selected Program
-with its configured arguments, environment, and working directory. Output is
-left visible until Enter is pressed, after which the full-screen IDE resumes.
-The CMake `draftide` target builds the Draft application at O2 so editor input
-uses the normal optimized runtime.
+F5 checks the exact visible edits, builds with the active Program's effective
+Workspace configuration, restores the primary terminal, runs the executable
+with its configured arguments/environment/working directory, and waits for
+Enter before resuming the IDE. An invalid current edit is never replaced by an
+older retained executable.
 
-For a noninteractive integration proof:
+Typing runs only the production lexer for syntax color; package semantics run
+on explicit Check/Build/Run or semantic navigation. Local terminals enable
+hover motion. When an OpenSSH environment is detected, DraftIDE requests only
+click/drag/wheel reports so pointer movement does not flood the remote PTY.
+
+For a noninteractive compiler/UI composition proof:
 
 ```sh
 build/draftide . --smoke
 ```
 
-The complete ownership and compiler-transaction design is documented in
-[`docs/implementation/turbo-draft.md`](../../docs/implementation/turbo-draft.md).
+See [the implementation boundary](../../docs/implementation/turbo-draft.md)
+for ownership, compiler transaction, rendering, and verification details.
