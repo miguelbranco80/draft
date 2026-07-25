@@ -81,6 +81,7 @@ Shortcut_Row_Count :: 41
 Text_Window_First :: Window_Diagnostics
 Text_Window_Count :: 6
 Tooling_Text_Capacity :: 32768
+Program_Configuration_Capacity :: 32768
 Host_Path_Capacity :: 4096
 
 Maximum_Syntax_Spans :: 4096
@@ -160,6 +161,9 @@ App :: struct {
     tooling_text: [Text_Window_Count][Tooling_Text_Capacity]u8,
     tooling_length: [Text_Window_Count]usize,
     tooling_views: [Text_Window_Count]turbo_ui.Text_View_State,
+    program_configuration: [Program_Configuration_Capacity]u8,
+    program_configuration_length: usize,
+    program_configuration_view: turbo_ui.Text_View_State,
     program_root_names: [Maximum_Program_Roots][Program_Root_Name_Capacity]u8,
     program_root_length: [Maximum_Program_Roots]usize,
     program_root_count: usize,
@@ -232,7 +236,7 @@ init_windows :: proc(app: ^App) {
     )
     app^.windows[Window_Programs] = turbo_ui.window_init(
         405,
-        turbo_ui.Rect{column = 3, row = 3, width = 62, height = 18},
+        turbo_ui.Rect{column = 3, row = 2, width = 82, height = 25},
         4,
     )
     app^.windows[Window_Declarations] = turbo_ui.window_init(
@@ -797,6 +801,19 @@ refresh_tooling_text :: proc(app: ^App) {
     for index: usize = 0; index < Text_Window_Count; index += 1 {
         app^.tooling_length[index] = 0
         app^.tooling_views[index].offset = 0
+    }
+    app^.program_configuration_length = 0
+    app^.program_configuration_view.offset = 0
+    if app^.host.copy_program_configuration != nil {
+        required := app^.host.copy_program_configuration(
+            app^.host.user,
+            cast[[^]u8](&app^.program_configuration[0]),
+            Program_Configuration_Capacity,
+        )
+        if required >= Program_Configuration_Capacity {
+            required = Program_Configuration_Capacity - 1
+        }
+        app^.program_configuration_length = required
     }
     if app^.host.copy_diagnostics != nil {
         required := app^.host.copy_diagnostics(
@@ -3352,12 +3369,28 @@ paint_package_tree :: proc(app: ^App, content: turbo_ui.Rect) {
     }
 }
 
-// paint_programs_view combines the selectable program-root table with the
-// structured semantic package/import tree for the currently checked root. A
-// provider without the newer row functions falls back to its retained package
-// text, preserving the optional-host boundary without parsing that text.
+paint_program_configuration :: proc(app: ^App, bounds: turbo_ui.Rect) {
+    bytes := app^.program_configuration[
+        :app^.program_configuration_length
+    ]
+    turbo_ui.text_view_bytes(
+        &app^.ui,
+        780,
+        781,
+        bounds,
+        bytes,
+        &app^.program_configuration_view,
+    )
+}
+
+// paint_programs_view combines three explicit views of one selected Program:
+// the root selector, its complete effective Build/Run configuration, and the
+// structured reachable package graph. The service supplies configuration text
+// after applying workspace/program precedence, so DraftIDE displays policy but
+// never recreates manifest semantics. A provider without structured package
+// rows still falls back to its retained package text.
 paint_programs_view :: proc(app: ^App, content: turbo_ui.Rect) {
-    if content.height < 4 {
+    if content.height < 8 {
         paint_text_view(app, Window_Programs, content)
         return
     }
@@ -3378,12 +3411,12 @@ paint_programs_view :: proc(app: ^App, content: turbo_ui.Rect) {
         app^.ui.surface,
         turbo_ui.intersect(app^.ui.clip, header),
         turbo_ui.Point{column = header.column, row = header.row},
-        "Run roots (* active; Enter selects)",
+        "Programs (* active; Enter selects)",
         app^.ui.theme.border,
     )
-    picker_height: usize = 5
-    if picker_height > content.height - 3 {
-        picker_height = content.height - 3
+    picker_height: usize = 4
+    if content.height < 12 {
+        picker_height = 2
     }
     picker := turbo_ui.Rect{
         column = content.column,
@@ -3402,18 +3435,70 @@ paint_programs_view :: proc(app: ^App, content: turbo_ui.Rect) {
             width = content.width,
             height = 1,
         },
-        '─',
+        ' ',
         app^.ui.theme.border,
     )
-    graph := turbo_ui.Rect{
+    turbo_ui.write_clipped(
+        app^.ui.surface,
+        turbo_ui.intersect(
+            app^.ui.clip,
+            turbo_ui.Rect{
+                column = content.column,
+                row = separator_row,
+                width = content.width,
+                height = 1,
+            },
+        ),
+        turbo_ui.Point{column = content.column, row = separator_row},
+        "Effective Build / Run Configuration",
+        app^.ui.theme.border,
+    )
+    remaining := content.height - picker_height - 2
+    configuration_height := remaining / 2
+    if configuration_height == 0 {
+        configuration_height = 1
+    }
+    configuration := turbo_ui.Rect{
         column = content.column,
         row = separator_row + 1,
         width = content.width,
-        height = content.height - picker_height - 2,
+        height = configuration_height,
     }
-    if app^.package_row_count != 0 {
+    paint_program_configuration(app, configuration)
+
+    graph_header_row := configuration.row + configuration.height
+    graph_header := turbo_ui.Rect{
+        column = content.column,
+        row = graph_header_row,
+        width = content.width,
+        height = 1,
+    }
+    turbo_ui.fill_rect(
+        app^.ui.surface,
+        app^.ui.clip,
+        graph_header,
+        ' ',
+        app^.ui.theme.border,
+    )
+    turbo_ui.write_clipped(
+        app^.ui.surface,
+        turbo_ui.intersect(app^.ui.clip, graph_header),
+        turbo_ui.Point{column = graph_header.column, row = graph_header.row},
+        "Packages / Dependencies",
+        app^.ui.theme.border,
+    )
+    graph: turbo_ui.Rect
+    if graph_header_row + 1 < content.row + content.height {
+        graph = turbo_ui.Rect{
+            column = content.column,
+            row = graph_header_row + 1,
+            width = content.width,
+            height = content.row + content.height - graph_header_row - 1,
+        }
+    }
+    if graph.height != 0 && app^.package_row_count != 0 {
         paint_package_tree(app, graph)
-    } else {
+    } else if graph.height != 0 {
         paint_text_view(app, Window_Programs, graph)
     }
 }

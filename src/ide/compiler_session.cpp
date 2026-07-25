@@ -1376,6 +1376,69 @@ CompilerSession::run_working_directory() const {
   return active_program().working_directory;
 }
 
+std::string CompilerSession::program_configuration_text() const {
+  const EffectiveProgramConfiguration &program = active_program();
+  const ResolvedBuildPolicy &build = program.build;
+  std::string text;
+  const auto line = [&text](std::string_view name, std::string_view value) {
+    text += name;
+    text += ": ";
+    text += value;
+    text += '\n';
+  };
+  line("program", root_options_[selected_root_].root_relative_path);
+  line("target", build.target.facts.file_tag);
+  line("optimization", native_optimization_level_name(build.optimization));
+  line("artifact", native_artifact_kind_name(build.artifact_kind));
+  const std::filesystem::path output =
+      build.output_path.value_or(default_output_path());
+  line("output", output.string());
+  line("debug symbols", build.emit_debug_symbols ? "on" : "off");
+  line("runtime assertions", build.runtime_assertions ? "on" : "off");
+
+  if (build.foreign_providers.empty()) {
+    line("providers", "none");
+  } else {
+    for (const ForeignProviderInput &provider : build.foreign_providers) {
+      std::string value = provider.provider;
+      value += '=';
+      value += foreign_artifact_kind_name(provider.kind);
+      value += ':';
+      value += provider.path.string();
+      line("provider", value);
+    }
+  }
+  for (const ForeignProviderSummaryInput &summary : build.provider_summaries) {
+    std::string value = summary.provider;
+    value += ':';
+    value += summary.path.string();
+    line("provider summary", value);
+  }
+  for (const RuntimeAssetInput &asset : build.runtime_assets) {
+    std::string value = asset.name;
+    value += ':';
+    value += asset.path.string();
+    line("runtime asset", value);
+  }
+  if (program.arguments.empty()) {
+    line("arguments", "none");
+  } else {
+    for (const std::string &argument : program.arguments)
+      line("argument", argument);
+  }
+  if (program.environment.empty()) {
+    line("environment", "inherited");
+  } else {
+    for (const std::string &environment : program.environment)
+      line("environment", environment);
+  }
+  line("working directory",
+       program.working_directory.has_value()
+           ? program.working_directory->string()
+           : "inherited from DraftIDE");
+  return text;
+}
+
 std::string
 CompilerSession::navigation_source_path(std::size_t source) const {
   if (!last_good_.has_value() ||

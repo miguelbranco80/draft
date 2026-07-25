@@ -689,6 +689,15 @@ std::size_t draft_compiler_session_copy_run_working_directory(
                    capacity);
 }
 
+std::size_t draft_compiler_session_copy_program_configuration(
+    void *opaque_session, std::uint8_t *destination, std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr)
+    return 0;
+  const std::string configuration = session->program_configuration_text();
+  return copy_text(configuration, destination, capacity);
+}
+
 std::size_t draft_compiler_session_root_count(void *opaque_session) {
   draft::ide::CompilerSession *session = compiler_session(opaque_session);
   return session == nullptr ? 0 : session->root_count();

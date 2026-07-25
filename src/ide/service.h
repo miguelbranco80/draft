@@ -254,6 +254,15 @@ draft_compiler_session_copy_run_working_directory(void *session,
                                                   uint8_t *destination,
                                                   size_t capacity);
 
+// Copies the selected program's complete effective Build/Run configuration as
+// deterministic labeled lines for direct IDE presentation. This projection is
+// refreshed by the same foreground operation that rereads draft.workspace; it
+// is not parsed back into compiler state.
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_copy_program_configuration(void *session,
+                                                  uint8_t *destination,
+                                                  size_t capacity);
+
 // Root rows are deterministic workspace-relative package names for the current
 // target. Selection is synchronous, returns one on success, and invalidates the
 // retained compiler graph rather than reinterpreting it under a different root.

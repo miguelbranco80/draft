@@ -628,6 +628,37 @@ void test_manifest_program_build_and_run_configuration(TestState &state) {
   EXPECT(state, session != nullptr);
   if (session == nullptr)
     return;
+  const std::string canonical_working_directory =
+      std::filesystem::canonical(working_directory).string();
+
+  // The IDE receives one authoritative effective policy projection rather than
+  // reconstructing manifest precedence in Draft. All user-visible Build/Run
+  // selections are present before the first build.
+  std::array<std::uint8_t, 8192> configuration_bytes{};
+  const std::size_t configuration_size =
+      draft_compiler_session_copy_program_configuration(
+          session, configuration_bytes.data(), configuration_bytes.size());
+  const std::string_view configuration_text{
+      reinterpret_cast<const char *>(configuration_bytes.data()),
+      configuration_size,
+  };
+  EXPECT(state, configuration_text.find("program: app\n") !=
+                    std::string_view::npos);
+  EXPECT(state, configuration_text.find(
+                    "target: " + std::string(native_target_name()) + "\n") !=
+                    std::string_view::npos);
+  EXPECT(state, configuration_text.find("optimization: O0\n") !=
+                    std::string_view::npos);
+  EXPECT(state, configuration_text.find("artifact: object\n") !=
+                    std::string_view::npos);
+  EXPECT(state, configuration_text.find("argument: first argument\n") !=
+                    std::string_view::npos);
+  EXPECT(state, configuration_text.find(
+                    "environment: DRAFT_SERVICE_TEST=expected\n") !=
+                    std::string_view::npos);
+  EXPECT(state, configuration_text.find(
+                    "working directory: " + canonical_working_directory +
+                    "\n") != std::string_view::npos);
 
   // With no explicit IDE override, the selected program target wins over the
   // deliberately different create-time host fallback.
@@ -649,8 +680,6 @@ void test_manifest_program_build_and_run_configuration(TestState &state) {
   const std::size_t directory_size =
       draft_compiler_session_copy_run_working_directory(
           session, directory_bytes.data(), directory_bytes.size());
-  const std::string canonical_working_directory =
-      std::filesystem::canonical(working_directory).string();
   EXPECT(state, directory_size == canonical_working_directory.size());
   EXPECT(state, std::string_view(
                     reinterpret_cast<const char *>(directory_bytes.data()),

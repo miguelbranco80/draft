@@ -259,6 +259,12 @@ public:
   [[nodiscard]] const std::optional<std::filesystem::path> &
   run_working_directory() const;
 
+  // Returns a deterministic human-readable projection of the selected root's
+  // complete effective Build/Run policy. This is operator-facing text, not a
+  // semantic dump or an input to compilation. It is rebuilt on demand so a
+  // foreground manifest refresh is immediately visible to DraftIDE.
+  [[nodiscard]] std::string program_configuration_text() const;
+
   // Resolves the semantic symbol at one exact current editor byte offset and
   // publishes its definition plus deterministic reference rows. Navigation is
   // permitted only after the latest check succeeded; retained last-good data

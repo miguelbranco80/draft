@@ -54,7 +54,13 @@ root = apps/editor
 ```
 
 The IDE consumes the workspace boundary, exclusions, default program, and the
-complete effective build/run layer for every root. `--source` may select one
+complete effective build/run layer for every root. The Programs & Packages
+window shows the selected Program's effective target, optimization, artifact,
+output, debug/assertion policy, native providers and assets, arguments,
+environment, and working directory. The service formats this projection only
+after applying manifest precedence, so the Draft application neither duplicates
+the workspace parser nor guesses which values Build and F5 will use. `--source`
+may select one
 direct file inside the active package. Without it, the compiler opens the first
 target-selected source in bytewise filename order; `package.draft` has no
 privileged IDE meaning. No root selector is required because the opened path or
@@ -208,8 +214,9 @@ policy.
 
 F1 opens a modal, scrollable reference generated from the application's single
 authored shortcut table. F6 opens Programs & Packages: its top list selects a
-runnable root by mouse or Enter and
-its lower section displays an expandable checked package/dependency tree.
+runnable root by mouse or Enter, its middle section displays the complete
+effective Build/Run configuration, and its lower section displays an expandable
+checked package/dependency tree.
 Click or Enter toggles a package; Left/Right close, open, or enter branches.
 F7 through F11 toggle declaration, reference/call, effect, denial, and
 diagnostic views. F12 resolves the symbol at the exact editor byte offset and

@@ -194,6 +194,7 @@ pub Host_Api :: c struct {
     run_environment_count: Count_Proc,
     copy_run_environment: Copy_Indexed_Text_Proc,
     copy_run_working_directory: Copy_Text_Proc,
+    copy_program_configuration: Copy_Text_Proc,
     root_count: Count_Proc,
     selected_root: Index_Proc,
     copy_root_name: Copy_Indexed_Text_Proc,

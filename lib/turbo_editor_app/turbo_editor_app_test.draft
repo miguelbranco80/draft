@@ -182,6 +182,25 @@ fake_copy_bytes :: c proc(
     return length
 }
 
+// fake_program_configuration supplies the already-resolved operator policy
+// through the same bounded copy contract as the native compiler service. The
+// application must retain this text independently of later host calls because
+// painting never borrows storage across the C boundary.
+fake_program_configuration :: c proc(
+    user: rawptr,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    text := "program: examples/editor\ntarget: aarch64-macos\noptimization: O2\n"
+    return fake_copy_bytes(
+        cast[rawptr](raw_data(text)),
+        len(text),
+        destination,
+        capacity,
+    )
+}
+
 fake_artifact_kind :: c proc(user: rawptr) -> u8 {
     _ = user
     kind: draft_compiler_api.Artifact_Kind = .executable
@@ -352,6 +371,24 @@ test_buffer_activation_restores_compiler_root :: proc(test: ^testing.Test) {
     testing.expect(test, !activate_buffer(&app, 0))
     testing.expect(test, app.active == 1)
     testing.expect(test, roots.selected == 1)
+}
+
+// Programs & Packages displays effective configuration copied from the host;
+// it does not reinterpret draft.workspace fields in Draft. This regression
+// fixes that ownership boundary and the complete-copy length contract.
+test_refreshes_effective_program_configuration :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    defer destroy_app(&app)
+    app.host.copy_program_configuration = fake_program_configuration
+
+    refresh_tooling_text(&app)
+
+    expected := "program: examples/editor\ntarget: aarch64-macos\noptimization: O2\n"
+    testing.expect(test, app.program_configuration_length == len(expected))
+    for index: usize = 0; index < len(expected); index += 1 {
+        testing.expect(test, app.program_configuration[index] == expected[index])
+    }
 }
 
 // Check and Build must see every open workspace buffer in one call, while syntax

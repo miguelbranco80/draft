@@ -121,7 +121,8 @@ Workspace Sources is populated from the compiler's target-selected reachable wor
 graph, while Buffers lists open documents. Check and F5 submit the active buffer
 plus every other dirty buffer belonging to that graph as one transactional
 source-override set; the active buffer also chooses the syntax-span result.
-F6 presents the checked package/import graph as an expandable structured tree;
+F6 presents the selected Program, its effective Build/Run configuration, and
+the checked package/import graph as an expandable structured tree;
 F7-F11 present read-only semantic reports. F12 uses the current successful
 compiler graph to select an exact definition, Shift-F12 opens ordered usages,
 and Alt-Left/Alt-Right traverse app-owned navigation history. A failed latest
