@@ -101,12 +101,15 @@ downloads dependencies, or changes language semantics. Turbo Draft uses the
 same upward boundary discovery and may use the named default; `--source`
 optionally chooses the initial direct-child file. Without it, the compiler uses
 the first target-selected source in bytewise filename order; `package.draft`
-remains only a convention. F5 always
-checks/builds/runs the root associated with the active editor buffer and honors
-its effective target, optimization, artifact/output, debug/assertion,
+remains only a convention. F5 always checks/builds/runs the Program associated
+with the active editor buffer and honors its effective target, optimization,
+artifact/output, debug/assertion,
 provider/asset, argument, environment, and working-directory settings. An
 explicit IDE target replaces manifest targets, and non-executable artifacts are
 built without being launched.
+The repository's CMake `draftide` target compiles the IDE application itself at
+O2; this is independent of the optimization selected for the Program built by
+F5.
 Saving `draft.workspace` or a provider-summary file affects the next Check,
 Build, or F5 without reopening the IDE. Any parsed manifest change
 conservatively invalidates the retained checked graph; provider-summary files

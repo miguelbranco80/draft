@@ -161,7 +161,9 @@ locating failure-path costs.
 ## Run Turbo Draft
 
 The default CMake build also produces `build/draftide`: a Draft-hosted terminal
-IDE linked to the sibling bootstrap compiler service.
+IDE linked to the sibling bootstrap compiler service. The CMake target compiles
+the Draft application at O2; this affects IDE runtime code, while each selected
+Program's own optimization still comes from its effective workspace policy.
 
 ```sh
 cmake --build build --target draftide --parallel
@@ -179,11 +181,12 @@ defaults to the native host. Unless `--target` supplies an explicit override,
 selecting a named program applies its effective workspace/program target.
 IDE-local root/window selections are not stored in the workspace manifest.
 
-Turbo Draft opens ordinary files; the active buffer and every other dirty
-workspace buffer form one in-memory compiler transaction, and saving updates
-the same files. File > Open Folder swaps to another validated directory after
-explicit dirty-buffer handling. Build and F5 use the complete effective
-`[build]` plus matching `[program]` configuration: target, optimization,
+Turbo Draft opens ordinary files; File > Open File accepts absolute or
+Workspace-relative paths without changing the Workspace. The active buffer and
+every other dirty workspace buffer form one in-memory compiler transaction, and
+saving updates the same files. File > Open Folder swaps to another validated
+directory after explicit dirty-buffer handling. Build and F5 use the complete
+effective `[build]` plus matching `[program]` configuration: target, optimization,
 artifact kind/output, debug symbols, assertions, providers and summaries, and
 runtime assets. F5 runs an executable with the program's arguments,
 environment overrides, and working directory; a non-executable artifact is
@@ -191,8 +194,9 @@ built but deliberately not launched.
 Saving `draft.workspace` affects the next Check, Build, or F5 without reopening
 the IDE. Provider-summary files are likewise reread at that foreground
 boundary; unchanged structural configuration keeps the retained checked graph.
-F1 opens the complete shortcut reference. F6 opens the program-root list and
-package/dependency view; F7-F11 toggle other compiler-derived semantic windows.
+F1 opens the complete shortcut reference. F6 opens the Program list, effective
+Build/Run configuration, and package/dependency view; F7-F11 toggle other
+compiler-derived semantic windows.
 F12 goes to the exact semantic definition beneath the cursor, Shift-F12 opens
 ordered usage locations, and Alt-Left/Alt-Right move through navigation
 history. Definitions in compiler-distributed core or dependency sources open

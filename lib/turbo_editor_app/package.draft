@@ -89,7 +89,7 @@ Maximum_Syntax_Spans :: 4096
 Maximum_Program_Roots :: 64
 Maximum_Workspace_Sources :: 512
 Program_Root_Name_Capacity :: 512
-Program_Root_Overflow_Label :: "<root path exceeds IDE display limit>"
+Program_Root_Overflow_Label :: "<Program path exceeds IDE display limit>"
 Workspace_Source_Copy_Capacity :: 4096
 Maximum_Package_Rows :: 512
 Package_Row_Text_Capacity :: 512
@@ -1709,20 +1709,20 @@ select_program_root :: proc(app: ^App, selected: usize) -> bool {
 cycle_program_root :: proc(app: ^App) {
     if app^.host.root_count == nil || app^.host.selected_root == nil ||
         app^.host.select_root == nil {
-        app^.status = "No compiler root selector is attached"
+        app^.status = "No Program selector is attached"
         return
     }
     count := app^.host.root_count(app^.host.user)
     if count <= 1 {
-        app^.status = "Workspace has one selectable root"
+        app^.status = "Workspace has one selectable Program"
         return
     }
     next := (app^.host.selected_root(app^.host.user) + 1) % count
     if !select_program_root(app, next) {
-        app^.status = "Selected root could not be opened; selection restored"
+        app^.status = "Selected Program could not be opened; selection restored"
         return
     }
-    app^.status = "Active workspace root changed"
+    app^.status = "Active Program changed"
 }
 
 cycle_build_target :: proc(app: ^App) {
@@ -2346,7 +2346,7 @@ continue_quit :: proc(app: ^App) -> bool {
         bit := cast[u64](1) << cast[u64](index)
         if app^.buffers[index].dirty && (app^.quit_discard_mask & bit) == 0 {
             if !activate_buffer(app, index) {
-                app^.status = "Could not restore the dirty buffer's root package"
+                app^.status = "Could not restore the dirty buffer's Program"
                 return false
             }
             turbo_ui.hide_window(
@@ -3485,9 +3485,9 @@ paint_program_root_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
     }
     if view.activated {
         if select_program_root(app, view.activated_index) {
-            app^.status = "Active root package changed"
+            app^.status = "Active Program changed"
         } else {
-            app^.status = "Could not activate the selected root package"
+            app^.status = "Could not activate the selected Program"
         }
     }
 }
@@ -4033,7 +4033,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
     }
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &build_menu,
-        547, "Next root package", "", app^.host.select_root != nil,
+        547, "Next Program", "", app^.host.select_root != nil,
         access_key = cast[u8]('n'),
     ) {
         cycle_program_root(app)
@@ -4833,7 +4833,7 @@ pub run_with_host :: proc(
             app.windows[Window_Programs].id,
         )
         app.ui.focused_id = 760
-        app.status = "Choose the active Build/Run root in Programs & Packages"
+        app.status = "Choose the active Program in Programs & Packages"
     }
     return run_app_terminal(&app)
 }
@@ -4866,7 +4866,7 @@ pub run_with_host_bytes :: proc(
             app.windows[Window_Programs].id,
         )
         app.ui.focused_id = 760
-        app.status = "Choose the active Build/Run root in Programs & Packages"
+        app.status = "Choose the active Program in Programs & Packages"
     }
     if has_smoke_argument() {
         if app.diagnostic_count != 0 || app.syntax_span_count == 0 ||
