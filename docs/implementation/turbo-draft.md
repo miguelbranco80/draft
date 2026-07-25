@@ -100,6 +100,13 @@ writes the normal file, and polling reports an explicit conflict when disk and
 dirty memory diverge. There is no IDE source database, candidate workspace,
 revision history, or IDE state under `.draft/`.
 
+File > Open File accepts an ordinary pathname without changing the Workspace.
+Relative paths start at the Workspace when the compiler host is attached;
+absolute paths retain their native meaning. A path in Workspace Sources keeps
+its selected Program association, while any other file is explicitly
+editing-only and cannot enter a compiler override by accident. Reopening the
+same exact path reuses its in-memory buffer and unsaved bytes.
+
 File > Open Folder accepts another directory without restarting. The native
 service constructs and validates a complete replacement compiler session before
 swapping it behind the stable host handle. Draft then replaces its source table
@@ -240,8 +247,10 @@ configuration retains it. The service returns the resulting kind and path to
 Draft. Run rejects non-executable kinds, then suspends mouse reporting, the
 alternate screen, and raw input in restoration order. Draft copies the selected
 program's arbitrary-length argument/environment rows and working directory,
-launches and waits through `core/process.run_with_options`; and the
-application resumes the terminal and invalidates the differential renderer.
+launches and waits through `core/process.run_with_options`. Child output is
+written directly to the restored primary terminal and remains visible behind
+an explicit Enter prompt; only then does the application resume raw input and
+the alternate screen and invalidate the differential renderer.
 Consequently an invalid edit can never cause Run to execute the older retained
 program.
 

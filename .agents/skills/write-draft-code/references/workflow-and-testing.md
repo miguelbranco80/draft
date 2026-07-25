@@ -116,7 +116,9 @@ policy also invalidates that graph.
 F5 launches executables directly without a shell. Arguments remain literal and
 ordered. Environment rows are `NAME=value` overrides on the inherited
 environment with the last occurrence winning. Relative working directories are
-workspace-relative; an absent one inherits DraftIDE's working directory.
+workspace-relative; an absent one inherits DraftIDE's working directory. The
+child inherits the restored primary terminal, and DraftIDE waits for Enter
+after completion so program output remains readable before the TUI resumes.
 Workspace Sources is populated from the compiler's target-selected reachable workspace
 graph, while Buffers lists open documents. Check and F5 submit the active buffer
 plus every other dirty buffer belonging to that graph as one transactional

@@ -201,6 +201,24 @@ fake_program_configuration :: c proc(
     )
 }
 
+fake_workspace_path :: c proc(
+    user: rawptr,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    path := "/tmp/draft-open-workspace"
+    when target.os == .windows {
+        path = "C:\\draft-open-workspace"
+    }
+    return fake_copy_bytes(
+        cast[rawptr](raw_data(path)),
+        len(path),
+        destination,
+        capacity,
+    )
+}
+
 fake_artifact_kind :: c proc(user: rawptr) -> u8 {
     _ = user
     kind: draft_compiler_api.Artifact_Kind = .executable
@@ -389,6 +407,46 @@ test_refreshes_effective_program_configuration :: proc(test: ^testing.Test) {
     for index: usize = 0; index < len(expected); index += 1 {
         testing.expect(test, app.program_configuration[index] == expected[index])
     }
+}
+
+// Open File resolves a relative spelling against the Workspace, creates one
+// ordinary editing-only buffer, and reuses that same owner on a second open.
+// No filesystem fixture is created: a nonexistent path is a valid new buffer.
+test_open_file_dialog_resolves_and_reuses_workspace_path :: proc(
+    test: ^testing.Test,
+) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-open-existing.draft"))
+    defer destroy_app(&app)
+    app.host.copy_workspace_path = fake_workspace_path
+
+    request_open_file(&app)
+    testing.expect(test, app.windows[Window_Open_File].visible)
+    testing.expect(test, app.ui.focused_id == 830)
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.file_box,
+        app.file_path[:],
+        "notes.draft",
+    ))
+    submit_open_file(&app)
+
+    expected := "/tmp/draft-open-workspace/notes.draft"
+    when target.os == .windows {
+        expected = "C:\\draft-open-workspace\\notes.draft"
+    }
+    testing.expect(test, app.buffer_count == 2)
+    testing.expect(test, !app.windows[Window_Open_File].visible)
+    path := turbo_editor.path_bytes(active_buffer(&app))
+    testing.expect(test, len(path) == len(expected))
+    for index: usize = 0; index < len(expected); index += 1 {
+        testing.expect(test, path[index] == expected[index])
+    }
+    testing.expect(test, !app.buffer_has_root[app.active])
+
+    request_open_file(&app)
+    submit_open_file(&app)
+    testing.expect(test, app.buffer_count == 2)
 }
 
 // Check and Build must see every open workspace buffer in one call, while syntax
@@ -715,6 +773,40 @@ test_semantic_navigation_shortcuts_and_history :: proc(test: ^testing.Test) {
     testing.expect(test, app.navigation_row_count == 2)
     testing.expect(test, app.windows[Window_References].visible)
     testing.expect(test, app.ui.focused_id == 820)
+}
+
+// Reaching the fixed history bound must preserve a complete Back/Forward pair.
+// This catches the subtle case where appending the current row filled the table
+// and appending the destination independently cleared that current row.
+test_navigation_history_bound_preserves_back_entry :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-history-current.draft"))
+    defer destroy_app(&app)
+
+    destination: Navigation_Target
+    memory.owned_string_copy(&destination.path, "turbo-history-destination.draft")
+    defer navigation_target_destroy(&destination)
+    for index: usize = 0; index < 40; index += 1 {
+        destination.start = index
+        destination.end = index
+        record_navigation_transition(&app, &destination)
+    }
+
+    testing.expect(test, app.navigation_history_count >= 2)
+    testing.expect(
+        test,
+        app.navigation_history_count <= Maximum_Navigation_History,
+    )
+    testing.expect(
+        test,
+        app.navigation_history_index == app.navigation_history_count - 1,
+    )
+    testing.expect(test, navigate_history(&app, false))
+    testing.expect(
+        test,
+        app.navigation_history_index + 1 == app.navigation_history_count - 1,
+    )
 }
 
 // Help is both a discoverable menu and the authoritative in-application

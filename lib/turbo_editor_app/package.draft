@@ -58,7 +58,8 @@ Window_Folder_Confirm :: 12
 Window_Replace :: 13
 Window_Go_To_Line :: 14
 Window_Help :: 15
-Window_Count :: 16
+Window_Open_File :: 16
+Window_Count :: 17
 
 Menu_File :: 520
 Menu_File_Popup :: 521
@@ -145,6 +146,8 @@ App :: struct {
     replacement_box: turbo_ui.Text_Box_State,
     go_line: [Go_Line_Capacity]u8,
     go_line_box: turbo_ui.Text_Box_State,
+    file_path: [Host_Path_Capacity]u8,
+    file_box: turbo_ui.Text_Box_State,
     workspace_path: [Host_Path_Capacity]u8,
     workspace_box: turbo_ui.Text_Box_State,
     workspace_error: [512]u8,
@@ -283,6 +286,11 @@ init_windows :: proc(app: ^App) {
         414,
         turbo_ui.Rect{column = 10, row = 3, width = 70, height = 25},
         16,
+    )
+    app^.windows[Window_Open_File] = turbo_ui.dialog_window_init(
+        415,
+        turbo_ui.Rect{column = 13, row = 6, width = 64, height = 9},
+        17,
     )
     app^.windows[Window_Buffers].visible = false
     app^.windows[Window_Search].visible = false
@@ -1104,6 +1112,22 @@ record_navigation_transition :: proc(
             &app^.navigation_history[app^.navigation_history_count - 1],
             &current,
         )
+    needs_destination := !navigation_target_equal(&current, destination)
+    required_rows: usize
+    if needs_current {
+        required_rows += 1
+    }
+    if needs_destination {
+        required_rows += 1
+    }
+    if app^.navigation_history_count + required_rows >
+        Maximum_Navigation_History {
+        // Reserve the complete current/destination pair before appending it.
+        // Letting append_navigation_history clear between those two writes
+        // would strand history at the destination and lose the Back entry.
+        truncate_navigation_history(app, 0)
+        needs_current = true
+    }
     if needs_current {
         _ = append_navigation_history(app, &current)
     }
@@ -1760,6 +1784,132 @@ close_folder_dialogs :: proc(app: ^App) {
     )
 }
 
+close_open_file :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Open_File].id,
+    )
+}
+
+// path_is_absolute recognizes the native hosted path roots needed by the Open
+// File dialog. DraftIDE does not normalize or reinterpret an absolute spelling:
+// the editor passes it to core/os exactly as entered. Windows drive roots and
+// UNC/current-drive separators are selected only for the Windows build.
+path_is_absolute :: proc(path: []u8) -> bool {
+    if len(path) == 0 {
+        return false
+    }
+    when target.os == .windows {
+        return path[0] == cast[u8]('/') || path[0] == cast[u8]('\\') ||
+            (len(path) >= 2 && path[1] == cast[u8](':'))
+    } else {
+        return path[0] == cast[u8]('/')
+    }
+}
+
+// resolve_open_file_path gives relative dialog input one stable and useful
+// meaning: it is relative to the current Workspace when a compiler host is
+// attached, and otherwise relative to the standalone editor process. The
+// result borrows destination only until the caller returns. No truncation is
+// permitted because a truncated pathname could open a different file.
+resolve_open_file_path :: proc(
+    app: ^App,
+    input: []u8,
+    destination: []u8,
+) -> ([]u8, bool) {
+    if len(input) == 0 || len(input) > len(destination) {
+        return (destination[:0], false)
+    }
+    if path_is_absolute(input) || app^.host.copy_workspace_path == nil {
+        for index: usize = 0; index < len(input); index += 1 {
+            destination[index] = input[index]
+        }
+        return (destination[:len(input)], true)
+    }
+
+    workspace_length := app^.host.copy_workspace_path(
+        app^.host.user,
+        cast[[^]u8](&destination[0]),
+        len(destination),
+    )
+    if workspace_length == 0 || workspace_length >= len(destination) {
+        return (destination[:0], false)
+    }
+    needs_separator := destination[workspace_length - 1] != cast[u8]('/') &&
+        destination[workspace_length - 1] != cast[u8]('\\')
+    required := workspace_length + len(input)
+    if needs_separator {
+        required += 1
+    }
+    if required > len(destination) {
+        return (destination[:0], false)
+    }
+    write_at := workspace_length
+    if needs_separator {
+        when target.os == .windows {
+            destination[write_at] = cast[u8]('\\')
+        } else {
+            destination[write_at] = cast[u8]('/')
+        }
+        write_at += 1
+    }
+    for index: usize = 0; index < len(input); index += 1 {
+        destination[write_at + index] = input[index]
+    }
+    return (destination[:required], true)
+}
+
+// submit_open_file opens or creates one ordinary editor buffer. Paths already
+// published by Workspace Sources retain the selected Program association;
+// arbitrary files remain editing-only and are never submitted as compiler
+// overlays. Reopening an exact path reuses the existing owner and its unsaved
+// bytes instead of reading disk over it.
+submit_open_file :: proc(app: ^App) {
+    input := turbo_ui.text_box_bytes(&app^.file_box, app^.file_path[:])
+    storage: [Host_Path_Capacity]u8
+    (path, valid) := resolve_open_file_path(app, input, storage[:])
+    if !valid {
+        app^.status = "Enter a valid file path within the IDE path limit"
+        return
+    }
+    index := buffer_index_for_path(app, path)
+    if index == app^.buffer_count {
+        if !init_one_buffer_bytes(app, path) {
+            app^.status = "Could not open the file"
+            return
+        }
+        index = app^.buffer_count - 1
+        source_index := workspace_source_index(app, path)
+        if source_index < app^.workspace_source_count &&
+            app^.host.selected_root != nil {
+            app^.buffer_root[index] = app^.host.selected_root(app^.host.user)
+            app^.buffer_has_root[index] = true
+            app^.sources.cursor = source_index
+        }
+    }
+    close_open_file(app)
+    if !activate_buffer(app, index) {
+        app^.status = "Could not activate the opened file"
+        return
+    }
+    if workspace_source_index(app, path) < app^.workspace_source_count {
+        app^.status = "Workspace source opened"
+    } else {
+        app^.status = "File opened for editing; it is outside the selected Program"
+    }
+}
+
+request_open_file :: proc(app: ^App) {
+    turbo_ui.show_modal_window(
+        &app^.ui,
+        app^.windows[:],
+        app^.windows[Window_Open_File].id,
+    )
+    app^.ui.focused_id = 830
+    app^.status = "Enter a file path; relative paths start at the Workspace"
+}
+
 // open_folder_now crosses the one mutable workspace boundary. The host first
 // constructs and validates a complete replacement compiler session behind its
 // stable user pointer. Only then are old Draft buffers destroyed and the new
@@ -2238,6 +2388,7 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
         app^.windows[Window_Search].visible ||
         app^.windows[Window_Quit].visible ||
         app^.windows[Window_Open_Folder].visible ||
+        app^.windows[Window_Open_File].visible ||
         app^.windows[Window_Folder_Confirm].visible ||
         app^.windows[Window_Replace].visible ||
         app^.windows[Window_Go_To_Line].visible ||
@@ -2749,6 +2900,69 @@ paint_open_folder :: proc(app: ^App, content: turbo_ui.Rect) {
     }
     if submitted {
         submit_open_folder(app)
+    }
+}
+
+paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
+    turbo_ui.write_clipped(
+        app^.ui.surface,
+        content,
+        turbo_ui.Point{column = content.column + 1, row = content.row},
+        "File path (relative paths start at the Workspace):",
+        app^.ui.theme.text,
+    )
+    submitted := false
+    if content.width > 2 && content.height > 2 {
+        result := turbo_ui.text_box(
+            &app^.ui,
+            830,
+            turbo_ui.Rect{
+                column = content.column + 1,
+                row = content.row + 2,
+                width = content.width - 2,
+                height = 2,
+            },
+            &app^.file_box,
+            app^.file_path[:],
+        )
+        submitted = result.submitted
+    }
+    if content.width > 2 && content.height > 5 {
+        buttons := turbo_ui.layout_begin(
+            turbo_ui.Rect{
+                column = content.column + 1,
+                row = content.row + 5,
+                width = content.width - 2,
+                height = 1,
+            },
+            .horizontal,
+            0,
+            1,
+        )
+        submitted = submitted || turbo_ui.button(
+            &app^.ui,
+            831,
+            turbo_ui.layout_next(&buttons, 8),
+            "Open",
+            true,
+            .default_action,
+            cast[u8]('o'),
+        )
+        if turbo_ui.button(
+            &app^.ui,
+            832,
+            turbo_ui.layout_next(&buttons, 10),
+            "Cancel",
+            true,
+            .cancel_action,
+            cast[u8]('c'),
+        ) {
+            close_open_file(app)
+            app^.status = "Open File cancelled"
+        }
+    }
+    if submitted {
+        submit_open_file(app)
     }
 }
 
@@ -3556,7 +3770,7 @@ paint_app_menu_bar :: proc(app: ^App, surface: ^tui.Surface) {
         Menu_File, Menu_File_Popup,
         turbo_ui.Rect{column = 1, width = 8, height = 1},
         "File", cast[u8]('f'),
-        turbo_ui.Rect{column = 1, row = 1, width = 31, height = 8},
+        turbo_ui.Rect{column = 1, row = 1, width = 31, height = 9},
     )
     turbo_ui.menu_title(
         &app^.ui, &app^.menus,
@@ -3631,7 +3845,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
     file_menu := turbo_ui.begin_menu(
         &app^.ui, &app^.menus,
         Menu_File, Menu_File_Popup,
-        turbo_ui.Rect{column = 1, row = 1, width = 31, height = 8},
+        turbo_ui.Rect{column = 1, row = 1, width = 31, height = 9},
     )
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &file_menu,
@@ -3648,8 +3862,15 @@ paint_app_menus :: proc(app: ^App) -> bool {
     }
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &file_menu,
-        537, "Open Folder...", "", app^.host.open_workspace != nil,
+        537, "Open File...", "",
         access_key = cast[u8]('o'),
+    ) {
+        request_open_file(app)
+    }
+    if turbo_ui.menu_action(
+        &app^.ui, &app^.menus, &file_menu,
+        538, "Open Folder...", "", app^.host.open_workspace != nil,
+        access_key = cast[u8]('f'),
     ) {
         request_open_folder(app)
     }
@@ -3946,6 +4167,8 @@ paint_app :: proc(
         modal = app^.windows[Window_Folder_Confirm].id
     } else if app^.windows[Window_Open_Folder].visible {
         modal = app^.windows[Window_Open_Folder].id
+    } else if app^.windows[Window_Open_File].visible {
+        modal = app^.windows[Window_Open_File].id
     }
     turbo_ui.begin_window_frame(
         &app^.ui,
@@ -3995,6 +4218,8 @@ paint_app :: proc(
             title = "Denials (F10)"
         } else if index == Window_Open_Folder {
             title = "Open Folder"
+        } else if index == Window_Open_File {
+            title = "Open File"
         } else if index == Window_Folder_Confirm {
             title = "Unsaved buffers"
         } else if index == Window_Help {
@@ -4007,6 +4232,7 @@ paint_app :: proc(
         window_context: turbo_ui.Window_Context
         if index == Window_Search || index == Window_Quit ||
             index == Window_Open_Folder ||
+            index == Window_Open_File ||
             index == Window_Folder_Confirm || index == Window_Help ||
             index == Window_Replace || index == Window_Go_To_Line {
             window_context = turbo_ui.dialog_begin(&app^.ui, window, title)
@@ -4069,6 +4295,8 @@ paint_app :: proc(
                 paint_text_view(app, index, window_context.content)
             case Window_Open_Folder:
                 paint_open_folder(app, window_context.content)
+            case Window_Open_File:
+                paint_open_file(app, window_context.content)
             case Window_Folder_Confirm:
                 paint_folder_confirm(app, window_context.content)
             case Window_Help:
@@ -4090,6 +4318,9 @@ paint_app :: proc(
                 index == Window_Folder_Confirm {
                 close_folder_dialogs(app)
                 app^.status = "Open Folder cancelled"
+            } else if index == Window_Open_File {
+                close_open_file(app)
+                app^.status = "Open File cancelled"
             } else if index == Window_Help {
                 close_shortcut_help(app)
             } else if index == Window_Replace {
@@ -4215,6 +4446,49 @@ shorten_timeout :: proc(
     if remaining < timeout^ {
         timeout^ = remaining
     }
+}
+
+// begin_run_output marks the primary terminal as child-owned before launch.
+// stdout and stderr remain inherited rather than captured, which preserves
+// interactive console programs and exact stream ordering. The header is
+// emitted only after raw mode and the alternate screen have been suspended.
+begin_run_output :: proc() -> io.Error {
+    return os.write_text_all(
+        os.standard_output,
+        "\n--- DraftIDE Program Output ---\n",
+    )
+}
+
+// wait_after_run leaves the child's output visible until the user acknowledges
+// it. Input is in its restored cooked mode, so one read receives an ordinary
+// line rather than terminal escape fragments. EOF is a valid acknowledgement;
+// any other read/write failure prevents a safe return to the full-screen IDE.
+wait_after_run :: proc(app: ^App) -> io.Error {
+    if os.write_text_all(os.standard_output, "\n--- DraftIDE: ") != .none ||
+        os.write_text_all(os.standard_output, app^.status) != .none ||
+        os.write_text_all(
+            os.standard_output,
+            " ---\nPress Enter to return to DraftIDE...",
+        ) != .none {
+        return .unavailable
+    }
+    input: [128]u8
+    for {
+        (count, error) := os.read(os.standard_input, input[:])
+        if error == .end_of_input {
+            return .none
+        }
+        if error != .none {
+            return error
+        }
+        for index: usize = 0; index < count; index += 1 {
+            if input[index] == cast[u8]('\n') ||
+                input[index] == cast[u8]('\r') {
+                return .none
+            }
+        }
+    }
+    return .none
 }
 
 run_interactive :: proc(
@@ -4441,8 +4715,13 @@ run_interactive :: proc(
             screen_suspended := mouse_suspended &&
                 terminal.suspend_screen(screen)
             input_suspended := screen_suspended && terminal.suspend(session)
+            run_io_error: io.Error
             if mouse_suspended && screen_suspended && input_suspended {
-                execute_host_action(app, true)
+                run_io_error = begin_run_output()
+                if run_io_error == .none {
+                    execute_host_action(app, true)
+                    run_io_error = wait_after_run(app)
+                }
             }
             input_resumed := input_suspended && terminal.resume(session)
             screen_resumed := input_resumed && terminal.resume_screen(screen)
@@ -4452,6 +4731,9 @@ run_interactive :: proc(
             if !mouse_suspended || !screen_suspended || !input_suspended ||
                 !input_resumed || !screen_resumed || !mouse_resumed {
                 return .unavailable
+            }
+            if run_io_error != .none {
+                return run_io_error
             }
             paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
             if tui.present(&renderer, screen) != .none {
