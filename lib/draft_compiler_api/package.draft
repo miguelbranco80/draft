@@ -15,8 +15,17 @@ pub Result :: c struct {
     span_count: usize,
 }
 
+// Syntax_Result describes one independent production-lexer pass. It has no
+// diagnostic count because colorization neither checks program meaning nor
+// replaces the diagnostics belonging to the latest semantic operation.
+pub Syntax_Result :: c struct {
+    success: u8,
+    span_count: usize,
+}
+
 // Span is one styled half-open byte range in the exact source supplied to the
-// latest check. kind is interpreted by the editor only after range checking.
+// latest check, build, or colorize call. kind is interpreted by the editor only
+// after range checking against that same complete buffer.
 pub Span :: c struct {
     start: usize,
     end: usize,
@@ -39,6 +48,12 @@ pub Batch_Proc :: c proc(
     overlay_count: usize,
     active_overlay: usize,
     result: ^Result,
+)
+
+pub Colorize_Proc :: c proc(
+    user: rawptr,
+    source: ^Overlay,
+    result: ^Syntax_Result,
 )
 
 pub Span_Proc :: c proc(user: rawptr, index: usize, result: ^Span)
@@ -168,6 +183,7 @@ pub Host_Api :: c struct {
     user: rawptr,
     check: Batch_Proc,
     build: Batch_Proc,
+    colorize: Colorize_Proc,
     span: Span_Proc,
     copy_diagnostics: Copy_Text_Proc,
     copy_tooling: Copy_Tooling_Proc,

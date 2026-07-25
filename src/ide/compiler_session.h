@@ -220,6 +220,14 @@ public:
   [[nodiscard]] CheckResult build(std::span<const SourceOverlay> overlays,
                                   std::size_t active_overlay);
 
+  // Lexes one complete editor buffer with the production lexer and replaces
+  // only syntax_spans_. This operation deliberately does not refresh package
+  // configuration, type-check source, publish diagnostics, or mutate the
+  // retained semantic graph. It is therefore suitable for the foreground
+  // typing path; callers still perform check before requesting semantic
+  // navigation for changed bytes.
+  void colorize(const SourceOverlay &source);
+
   // Discovers target-selected executable roots and establishes the stable root
   // list used by the Draft workspace UI. Selection replaces compiler products;
   // it never attempts to reinterpret a checked graph under another root/target.

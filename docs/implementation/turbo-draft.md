@@ -126,16 +126,23 @@ the resulting artifact kind/path and copied run arguments, environment, and
 working directory. The manifest does not list source files, redefine package
 discovery, or become a dependency manager.
 
-## Synchronous checking transaction
+## Foreground coloring and semantic transactions
 
-The active buffer plus every other dirty buffer belonging to the checked graph
-enters one synchronous source transaction. Clean inactive files remain ordinary
-disk inputs, avoiding conservative invalidation of unchanged packages. The
-active overlay separately selects which exact bytes the production lexer
-colors, including comments and invalid ranges, so classic
-Turbo-style syntax colors remain buffer-local even when semantic checking
-fails. Declaration coloring is a small token-context classification over that
-same stream, not a second lexer.
+Ordinary editing synchronously lexes only the active complete buffer. This
+operation uses the production Draft lexer, including its recovery tokens, but
+does not discover packages, refresh workspace configuration, type-check source,
+propagate effects, lower IR, or emit native code. It replaces only buffer-local
+syntax spans. Declaration coloring is a small token-context classification over
+that same stream, not a second lexer. Diagnostics and semantic inspection views
+remain the result of the latest explicit semantic operation while an edit is
+pending.
+
+Check, Build, Run, Go to Definition, and Find Usages are explicit semantic
+operations. They submit the active buffer plus every other dirty buffer
+belonging to the checked graph as one synchronous source transaction. Clean
+inactive files remain ordinary disk inputs, avoiding conservative invalidation
+of unchanged packages. Definition and usage navigation first checks pending
+edits so exact source ranges can never come from a stale retained graph.
 
 After one successful compile, the common semantic path copies the retained
 command-local graph, applies all complete source-file overrides as conservative
@@ -149,9 +156,9 @@ performs a complete fresh workspace compile with the same in-memory override.
 Neither path writes the unsaved bytes to disk.
 
 This internal transaction is not a user-visible “candidate” mechanism. The
-editor has one current buffer and one latest diagnostic set. Background work,
-generation counters, and cancellation are intentionally absent until measured
-latency justifies them.
+editor has one current buffer and one latest explicit diagnostic set. Background
+semantic work, generation counters, and cancellation are intentionally absent;
+the keystroke path remains fast by doing only lexical work.
 
 ## Compiler-derived views and native actions
 
@@ -278,15 +285,15 @@ its existing compiler-synthesis meaning.
 
 `draft_workspace_selection_tests` cover marker discovery, manifest grammar,
 and path constraints. `draft_compiler_service_tests` cover C ABI creation,
-canonical paths, multi-file source transactions, source enumeration, production
-syntax spans, structured package rows, definition/usage navigation, stale-check
+canonical paths, multi-file source transactions, source enumeration, independent
+production-lexer coloring, structured package rows, definition/usage navigation, stale-check
 navigation rejection, semantic views, invalid-overlay diagnostics,
 retained last-good state, topology changes, automatic root discovery,
 transactional workspace replacement,
 root/target switching, traversal rejection, effective program configuration,
 live manifest/summary refresh, target-specialized named-root discovery,
 run-setting copying, configured output kinds, and native Build. Draft package
-tests cover the application-side Host table, overlay assembly, configured
+tests cover the application-side Host table, lexical-only typing path, overlay assembly, configured
 Draft-owned Run, read-only buffer enforcement, shortcut/help behavior,
 semantic history, and the buffer/root invariant. `draft_draftide_smoke` launches
 the real Draft-built executable, reads the repository workspace marker,

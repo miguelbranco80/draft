@@ -207,6 +207,28 @@ void test_service_transactions_and_native_build(TestState &state) {
   EXPECT(state, observed_styles[4]); // number
   EXPECT(state, observed_styles[5]); // declaration
 
+  // Foreground colorization is intentionally a lexical-only service call. It
+  // accepts incomplete editor bytes, replaces the span table, and preserves
+  // diagnostics plus the retained checked WorkspaceGraph. This is the
+  // contract that keeps package semantics off DraftIDE's keystroke path.
+  const std::string incomplete =
+      "package app\nmain :: proc() { \"unterminated\n";
+  const DraftCompilerServiceOverlay incomplete_overlay =
+      overlay(canonical_source_text, incomplete);
+  DraftCompilerServiceSyntaxResult colored{};
+  draft_compiler_session_colorize(session, &incomplete_overlay, &colored);
+  EXPECT(state, colored.success == 1);
+  EXPECT(state, colored.span_count != 0);
+  EXPECT(state, draft_compiler_session_copy_diagnostics(
+                    session, nullptr, 0) == 0);
+  EXPECT(state, draft_compiler_session_package_row_count(session) == 1);
+  for (std::size_t index = 0; index < colored.span_count; ++index) {
+    DraftCompilerServiceSpan span{};
+    draft_compiler_session_span(session, index, &span);
+    EXPECT(state, span.start <= span.end);
+    EXPECT(state, span.end <= incomplete.size());
+  }
+
   // Navigation consumes the same successful graph and exact overlay bytes as
   // checking. The definition range selects only the authored declaration name,
   // while the usage table contains the resolved reference in main. Source text

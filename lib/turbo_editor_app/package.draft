@@ -161,6 +161,11 @@ App :: struct {
     syntax_spans: [Maximum_Syntax_Spans]turbo_editor.Syntax_Span,
     syntax_span_count: usize,
     diagnostic_count: u32,
+    // semantic_dirty means at least one open workspace buffer has changed
+    // since the latest complete compiler transaction. Lexical coloring remains
+    // current while this bit is set, but diagnostics and semantic tooling are
+    // deliberately retained as the last explicit Check/Build/Run result.
+    semantic_dirty: bool,
     tooling_text: [Text_Window_Count][Tooling_Text_Capacity]u8,
     tooling_length: [Text_Window_Count]usize,
     tooling_views: [Text_Window_Count]turbo_ui.Text_View_State,
@@ -529,8 +534,8 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
         // check. A compiler-distributed source is not an editable overlay, so
         // retaining the previous buffer's spans would color unrelated offsets.
         app^.syntax_span_count = 0
-    } else if app^.host.check != nil {
-        refresh_host(app)
+    } else if app^.host.colorize != nil {
+        refresh_syntax(app)
     }
     return true
 }
@@ -854,16 +859,88 @@ refresh_tooling_text :: proc(app: ^App) {
     refresh_package_tree(app)
 }
 
-// refresh_host synchronously checks current bytes and replaces syntax spans
-// only with ranges returned for that exact attempt. A failed semantic check
-// still publishes recovery-lexer colors and diagnostics while the compiler service
-// retains its last successful program internally.
-refresh_host :: proc(app: ^App) {
-    if app^.host.check == nil {
-        app^.syntax_span_count = 0
+// copy_syntax_spans transfers the service's latest lexical product into the
+// active Buffer's byte domain. The service is allowed to return more ranges
+// than this first-version UI retains; invalid or stale ranges are omitted
+// rather than clipped into a different token.
+copy_syntax_spans :: proc(app: ^App, requested_count: usize) {
+    buffer := active_buffer(app)
+    count := requested_count
+    if count > len(app^.syntax_spans) {
+        count = len(app^.syntax_spans)
+    }
+    app^.syntax_span_count = 0
+    if app^.host.span == nil {
+        return
+    }
+    for index: usize = 0; index < count; index += 1 {
+        host_span: draft_compiler_api.Span
+        app^.host.span(app^.host.user, index, &host_span)
+        if host_span.start > host_span.end ||
+            host_span.end > buffer^.bytes.length ||
+            host_span.kind >= turbo_editor.Syntax_Kind_Count {
+            continue
+        }
+        app^.syntax_spans[app^.syntax_span_count] =
+            turbo_editor.Syntax_Span{
+                start = host_span.start,
+                end = host_span.end,
+                kind = cast[turbo_editor.Syntax_Kind](host_span.kind),
+            }
+        app^.syntax_span_count += 1
+    }
+}
+
+// refresh_syntax runs only the compiler's production lexer for the active
+// complete buffer. No workspace discovery, package semantics, diagnostics,
+// effects, MIR, or native work may enter this foreground editing operation.
+refresh_syntax :: proc(app: ^App) {
+    app^.syntax_span_count = 0
+    if app^.host.colorize == nil || turbo_editor.is_read_only(active_buffer(app)) {
         return
     }
     buffer := active_buffer(app)
+    path := turbo_editor.path_bytes(buffer)
+    path_data: rawptr = nil
+    if len(path) != 0 {
+        path_data = cast[rawptr](&path[0])
+    }
+    source_data: rawptr = nil
+    if buffer^.bytes.length != 0 {
+        source_data = cast[rawptr](&buffer^.bytes.data[0])
+    }
+    source := draft_compiler_api.Overlay{
+        path_data = path_data,
+        path_length = len(path),
+        source_data = source_data,
+        source_length = buffer^.bytes.length,
+    }
+    result: draft_compiler_api.Syntax_Result
+    app^.host.colorize(app^.host.user, &source, &result)
+    if result.success != 0 {
+        copy_syntax_spans(app, result.span_count)
+    }
+}
+
+// source_changed is the complete foreground response to an authored edit. It
+// marks semantic products stale, refreshes only lexical styling, and leaves
+// the expensive complete transaction to an explicit semantic command.
+source_changed :: proc(app: ^App) {
+    app^.semantic_dirty = true
+    refresh_syntax(app)
+    app^.status = "Modified - Check, Build, or Run refreshes diagnostics"
+}
+
+// refresh_host synchronously checks current bytes and replaces syntax spans
+// only with ranges returned for that exact attempt. A failed semantic check
+// still publishes recovery-lexer colors and diagnostics while the compiler
+// service retains its last successful program internally. The return value is
+// true only when these exact visible bytes form a complete valid program.
+refresh_host :: proc(app: ^App) -> bool {
+    if app^.host.check == nil {
+        app^.syntax_span_count = 0
+        return false
+    }
     overlays: [Maximum_Buffers]draft_compiler_api.Overlay
     (overlay_count, active_overlay, valid_overlays) := collect_host_overlays(
         app,
@@ -872,7 +949,7 @@ refresh_host :: proc(app: ^App) {
     if !valid_overlays {
         app^.syntax_span_count = 0
         app^.status = "Active buffer is not in the checked workspace source graph"
-        return
+        return false
     }
     result: draft_compiler_api.Result
     app^.host.check(
@@ -882,30 +959,9 @@ refresh_host :: proc(app: ^App) {
         active_overlay,
         &result,
     )
+    app^.semantic_dirty = false
     app^.diagnostic_count = result.diagnostic_count
-    count := result.span_count
-    if count > len(app^.syntax_spans) {
-        count = len(app^.syntax_spans)
-    }
-    app^.syntax_span_count = 0
-    if app^.host.span != nil {
-        for index: usize = 0; index < count; index += 1 {
-            host_span: draft_compiler_api.Span
-            app^.host.span(app^.host.user, index, &host_span)
-            if host_span.start > host_span.end ||
-                host_span.end > buffer^.bytes.length ||
-                host_span.kind >= turbo_editor.Syntax_Kind_Count {
-                continue
-            }
-            app^.syntax_spans[app^.syntax_span_count] =
-                turbo_editor.Syntax_Span{
-                    start = host_span.start,
-                    end = host_span.end,
-                    kind = cast[turbo_editor.Syntax_Kind](host_span.kind),
-                }
-            app^.syntax_span_count += 1
-        }
-    }
+    copy_syntax_spans(app, result.span_count)
     if result.success != 0 {
         app^.status = "Checked  F6 Programs & Packages  F7-F11 semantic views"
         if app^.host.source_count != nil &&
@@ -916,6 +972,7 @@ refresh_host :: proc(app: ^App) {
         app^.status = "Check failed: diagnostics retain the last good program"
     }
     refresh_tooling_text(app)
+    return result.success != 0
 }
 
 // Run_Configuration owns every variable-length service string for one
@@ -1285,6 +1342,12 @@ prepare_navigation :: proc(app: ^App) -> draft_compiler_api.Navigation_Status {
     if app^.host.prepare_navigation == nil {
         return .unavailable
     }
+    // Exact semantic locations cannot be read from the retained last-good
+    // graph after an edit. Navigation is an explicit semantic command, so it
+    // may pay for one complete check here while ordinary typing never does.
+    if app^.semantic_dirty && !refresh_host(app) {
+        return .current_check_failed
+    }
     buffer := active_buffer(app)
     path := turbo_editor.path_bytes(buffer)
     path_data: rawptr = nil
@@ -1498,7 +1561,9 @@ execute_host_action :: proc(app: ^App, run: bool) {
         active_overlay,
         &result,
     )
+    app^.semantic_dirty = false
     app^.diagnostic_count = result.diagnostic_count
+    copy_syntax_spans(app, result.span_count)
     if result.success != 0 {
         if run {
             artifact_kind: draft_compiler_api.Artifact_Kind = .executable
@@ -2232,7 +2297,7 @@ replace_current :: proc(app: ^App, advance: bool) -> bool {
         app^.status = "Compiler and dependency sources are read-only"
         return false
     }
-    refresh_host(app)
+    source_changed(app)
     if advance {
         if !perform_find(app, false) {
             app^.status = "Replaced current match; no further match"
@@ -2264,7 +2329,7 @@ replace_every_match :: proc(app: ^App) -> bool {
         return false
     }
     if result.count != 0 {
-        refresh_host(app)
+        source_changed(app)
         focus_editor(app)
     }
     set_replace_count_status(app, result.count)
@@ -3757,7 +3822,7 @@ undo_active :: proc(app: ^App) {
     if turbo_editor.is_read_only(active_buffer(app)) {
         app^.status = "Compiler and dependency sources are read-only"
     } else if turbo_editor.undo(active_buffer(app)) {
-        refresh_host(app)
+        source_changed(app)
         focus_editor(app)
         app^.status = "Undid last edit"
     } else {
@@ -3769,7 +3834,7 @@ redo_active :: proc(app: ^App) {
     if turbo_editor.is_read_only(active_buffer(app)) {
         app^.status = "Compiler and dependency sources are read-only"
     } else if turbo_editor.redo(active_buffer(app)) {
-        refresh_host(app)
+        source_changed(app)
         focus_editor(app)
         app^.status = "Redid last edit"
     } else {
@@ -4277,7 +4342,7 @@ paint_app :: proc(
                     request_search(app)
                 }
                 if edit_result.changed {
-                    refresh_host(app)
+                    source_changed(app)
                 }
             case Window_Sources:
                 paint_path_list(

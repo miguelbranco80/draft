@@ -37,6 +37,9 @@ static_assert(sizeof(DraftCompilerServiceConfiguration) == 56);
 static_assert(alignof(DraftCompilerServiceConfiguration) == alignof(void *));
 static_assert(sizeof(DraftCompilerServiceResult) == 16);
 static_assert(alignof(DraftCompilerServiceResult) == alignof(std::size_t));
+static_assert(sizeof(DraftCompilerServiceSyntaxResult) == 16);
+static_assert(alignof(DraftCompilerServiceSyntaxResult) ==
+              alignof(std::size_t));
 static_assert(sizeof(DraftCompilerServiceSpan) == 24);
 static_assert(alignof(DraftCompilerServiceSpan) == alignof(std::size_t));
 static_assert(sizeof(DraftCompilerServiceOverlay) == 32);
@@ -296,6 +299,27 @@ checked_overlays(const DraftCompilerServiceOverlay *overlays, std::size_t count,
   return result;
 }
 
+// checked_overlay validates the raw C ranges without consulting the current
+// WorkspaceGraph. Syntax coloring is useful for a new or otherwise
+// editing-only file, so imposing semantic package membership here would put
+// filesystem discovery back on the keystroke path.
+[[nodiscard]] std::optional<draft::ide::SourceOverlay>
+checked_overlay(const DraftCompilerServiceOverlay *overlay) {
+  if (overlay == nullptr || overlay->path_data == nullptr ||
+      overlay->path_length == 0 ||
+      (overlay->source_data == nullptr && overlay->source_length != 0)) {
+    return std::nullopt;
+  }
+  const std::string_view path =
+      borrowed_text(overlay->path_data, overlay->path_length);
+  if (path.find('\0') != std::string_view::npos)
+    return std::nullopt;
+  return draft::ide::SourceOverlay{
+      std::filesystem::path(path),
+      borrowed_text(overlay->source_data, overlay->source_length),
+  };
+}
+
 // navigation_location copies the compiler-owned value into its C ABI twin.
 // The all-zero record is the single out-of-range/unavailable sentinel; valid
 // FileId zero remains distinguishable because every valid range has one-based
@@ -430,6 +454,24 @@ void draft_compiler_session_build(void *opaque_session,
   if (session == nullptr || !checked.has_value())
     return;
   *result = service_result(*session, session->build(*checked, active_overlay));
+}
+
+void draft_compiler_session_colorize(
+    void *opaque_session, const DraftCompilerServiceOverlay *source,
+    DraftCompilerServiceSyntaxResult *result) {
+  if (result == nullptr)
+    return;
+  *result = {};
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  const std::optional<draft::ide::SourceOverlay> checked =
+      checked_overlay(source);
+  if (session == nullptr || !checked.has_value())
+    return;
+  session->colorize(*checked);
+  *result = {
+      1,
+      session->syntax_spans().size(),
+  };
 }
 
 void draft_compiler_session_span(void *opaque_session, std::size_t index,

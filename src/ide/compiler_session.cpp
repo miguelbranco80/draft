@@ -981,6 +981,13 @@ void CompilerSession::collect_syntax_spans(const SourceOverlay &active) {
   }
 }
 
+void CompilerSession::colorize(const SourceOverlay &source) {
+  // Keep this public operation as a named phase boundary rather than exposing
+  // the span vector to mutation. collect_syntax_spans owns the exact mapping
+  // from production tokens to the IDE's intentionally small style vocabulary.
+  collect_syntax_spans(source);
+}
+
 void CompilerSession::rebuild_tooling_index() {
   for (std::string &text : tooling_text_)
     text.clear();

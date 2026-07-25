@@ -48,10 +48,19 @@ typedef struct DraftCompilerServiceResult {
   size_t span_count;
 } DraftCompilerServiceResult;
 
+// SyntaxResult describes the independent foreground lexical pass. It contains
+// no diagnostic count because colorize neither replaces nor validates semantic
+// diagnostics. A valid byte range succeeds even when it contains invalid Draft
+// tokens; those tokens are returned with the Invalid syntax style.
+typedef struct DraftCompilerServiceSyntaxResult {
+  uint8_t success;
+  size_t span_count;
+} DraftCompilerServiceSyntaxResult;
+
 // Span is one half-open byte range in the exact source passed to the latest
-// check/build. kind uses the fixed SyntaxStyle ordinal table documented by the
-// Draft binding. Padding is part of this versioned native ABI and is asserted
-// against the Draft c-struct layout by the implementation.
+// check/build/colorize operation. kind uses the fixed SyntaxStyle ordinal table
+// documented by the Draft binding. Padding is part of this versioned native
+// ABI and is asserted against the Draft c-struct layout by the implementation.
 typedef struct DraftCompilerServiceSpan {
   size_t start;
   size_t end;
@@ -136,9 +145,18 @@ draft_compiler_session_build(void *session,
                              size_t overlay_count, size_t active_overlay,
                              DraftCompilerServiceResult *result);
 
-// span and copy_diagnostics inspect the latest attempt. Out-of-range span
-// access writes a zero record. Text-copy operations return the complete source
-// byte count, copy at most capacity-1 bytes, and NUL-terminate when possible.
+// colorize lexes exactly one complete source buffer and publishes only its
+// syntax spans. It performs no filesystem discovery, package checking, tooling
+// rebuild, or native work. The caller must still check changed bytes before
+// relying on semantic navigation or diagnostics.
+DRAFT_COMPILER_SERVICE_API void draft_compiler_session_colorize(
+    void *session, const DraftCompilerServiceOverlay *source,
+    DraftCompilerServiceSyntaxResult *result);
+
+// span inspects the latest check/build/colorize operation, while diagnostics
+// inspect the latest semantic check/build attempt. Out-of-range span access
+// writes a zero record. Text-copy operations return the complete source byte
+// count, copy at most capacity-1 bytes, and NUL-terminate when possible.
 DRAFT_COMPILER_SERVICE_API void
 draft_compiler_session_span(void *session, size_t index,
                             DraftCompilerServiceSpan *result);

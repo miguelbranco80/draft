@@ -21,6 +21,41 @@ Fake_Navigation_State :: c struct {
     second_length: usize,
 }
 
+// Fake_Foreground_State distinguishes the lexical typing path from an explicit
+// semantic transaction. The counters cross the same C callback table as the
+// real embedded compiler, so the regression cannot accidentally pass through
+// a private editor-only shortcut.
+Fake_Foreground_State :: c struct {
+    check_count: usize,
+    colorize_count: usize,
+}
+
+fake_check :: c proc(
+    user: rawptr,
+    overlays: ^draft_compiler_api.Overlay,
+    overlay_count: usize,
+    active_overlay: usize,
+    result: ^draft_compiler_api.Result,
+) {
+    _ = overlays
+    _ = overlay_count
+    _ = active_overlay
+    state := cast[^Fake_Foreground_State](user)
+    state^.check_count += 1
+    result^.success = 1
+}
+
+fake_colorize :: c proc(
+    user: rawptr,
+    source: ^draft_compiler_api.Overlay,
+    result: ^draft_compiler_api.Syntax_Result,
+) {
+    _ = source
+    state := cast[^Fake_Foreground_State](user)
+    state^.colorize_count += 1
+    result^.success = 1
+}
+
 fake_selected_root :: c proc(user: rawptr) -> usize {
     state := cast[^Fake_Root_State](user)
     return state^.selected
@@ -504,6 +539,32 @@ test_collects_all_open_workspace_overlays :: proc(test: ^testing.Test) {
         test,
         overlays[1].path_length == len(turbo_editor.path_bytes(&app.buffers[1])),
     )
+}
+
+// An authored edit must never enter package semantics on the event/render
+// thread. Semantic navigation is an explicit command and therefore performs
+// exactly one current-byte check before it asks the service for a location.
+test_typing_only_runs_foreground_lexing :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-typing-path.draft"))
+    defer destroy_app(&app)
+
+    state: Fake_Foreground_State
+    app.host.user = cast[rawptr](&state)
+    app.host.check = fake_check
+    app.host.colorize = fake_colorize
+    app.host.prepare_navigation = fake_prepare_navigation
+
+    source_changed(&app)
+    testing.expect(test, state.colorize_count == 1)
+    testing.expect(test, state.check_count == 0)
+    testing.expect(test, app.semantic_dirty)
+
+    testing.expect(test, prepare_navigation(&app) == .ready)
+    testing.expect(test, state.colorize_count == 1)
+    testing.expect(test, state.check_count == 1)
+    testing.expect(test, !app.semantic_dirty)
 }
 
 // Open Folder never discards dirty document owners directly. Submission

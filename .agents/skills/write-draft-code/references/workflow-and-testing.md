@@ -123,9 +123,11 @@ workspace-relative; an absent one inherits DraftIDE's working directory. The
 child inherits the restored primary terminal, and DraftIDE waits for Enter
 after completion so program output remains readable before the TUI resumes.
 Workspace Sources is populated from the compiler's target-selected reachable workspace
-graph, while Buffers lists open documents. Check and F5 submit the active buffer
-plus every other dirty buffer belonging to that graph as one transactional
-source-override set; the active buffer also chooses the syntax-span result.
+graph, while Buffers lists open documents. Typing runs only the production lexer
+over the active complete buffer; it does not check packages or refresh semantic
+views. Check and F5 submit the active buffer plus every other dirty buffer
+belonging to that graph as one transactional source-override set. F12 and
+Shift-F12 first check pending edits before requesting exact semantic ranges.
 F6 presents the selected Program, its effective Build/Run configuration, and
 the checked package/import graph as an expandable structured tree;
 F7-F11 present read-only semantic reports. F12 uses the current successful
