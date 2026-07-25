@@ -387,4 +387,21 @@ test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
     testing.expect(test, app.windows[Window_Search].visible)
     testing.expect(test, app.ui.active_window == app.windows[Window_Search].id)
     testing.expect(test, app.ui.focused_id == 500)
+
+    // Escape cancels local UI only; it never acts as the application quit
+    // command. Once the modal is closed, a bare Escape is consumed harmlessly,
+    // while the advertised Alt-X completes a clean workspace quit.
+    close_search(&app)
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{code = .escape},
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{
+            code = .character,
+            byte_value = cast[u8]('x'),
+            alt = true,
+        },
+    ))
+    testing.expect(test, quit && remaining.kind == .none)
 }

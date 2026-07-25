@@ -256,11 +256,20 @@ byte_key :: proc(byte: u8, alt: bool) -> Key {
 plain_key :: proc(byte: u8, alt: bool) -> Key {
     switch byte {
     case 10, 13:
-        return Key{kind = .enter, alt = alt}
+        return Key{kind = .enter, byte_value = byte, alt = alt}
     case 9:
-        return Key{kind = .tab, alt = alt}
+        return Key{kind = .tab, byte_value = byte, alt = alt}
     case 8, 127:
-        return Key{kind = .backspace, alt = alt}
+        // BS is also the physical Ctrl-H byte, while DEL is the other common
+        // Backspace spelling. Preserve the exact byte and expose Control only
+        // for BS so a full-screen application may intentionally bind Ctrl-H
+        // without treating a terminal's DEL Backspace as that shortcut.
+        return Key{
+            kind = .backspace,
+            byte_value = byte,
+            alt = alt,
+            control = byte == 8,
+        }
     }
     return byte_key(byte, alt)
 }
@@ -596,4 +605,14 @@ pub flush_input :: proc(decoder: ^Decoder) -> Input {
     }
     empty: Input
     return empty
+}
+
+// decoder_pending reports whether the caller must retain its ambiguity
+// deadline because Decoder owns an incomplete Escape-prefixed input sequence.
+// The concrete states remain private: event loops need only decide when to call
+// flush_input, not interpret CSI, SS3, or mouse protocol internals themselves.
+// A completed key or mouse result returns the decoder to rest before this
+// query, while a lone Escape and every fragmented control sequence return true.
+pub decoder_pending :: proc(decoder: ^Decoder) -> bool {
+    return decoder^.state != .plain
 }

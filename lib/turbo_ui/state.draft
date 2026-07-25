@@ -76,8 +76,10 @@ pub State :: struct {
     // where a drag began. It is meaningful only while active_kind is
     // scrollbar. Retaining this one scalar makes dragging preserve the point
     // under the mouse instead of making the thumb jump to center on first
-    // movement.
+    // movement. scrollbar_repeat_direction is -1 or +1 only while a held arrow
+    // owns the same scrollbar capture; zero distinguishes thumb dragging.
     scrollbar_grab_offset: usize,
+    scrollbar_repeat_direction: i8,
 
     // repaint_requested is frame output, not persistent application state.
     // A control sets it when interaction can only be resolved after its row or

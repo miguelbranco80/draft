@@ -1,9 +1,10 @@
 // Scroll controls translate one caller-owned logical offset into terminal
-// geometry. The module owns no content, timer, repetition policy, or retained
-// widget object. It computes proportional thumb geometry with wide arithmetic,
-// handles arrows, page regions, wheel input, and grab-relative dragging, then
-// paints through the current turbo_ui frame. Lists and text viewports share
-// these exact rules so their last page and terminal behavior cannot diverge.
+// geometry. The module owns no content, clock, or retained widget object. It
+// computes proportional thumb geometry with wide arithmetic, handles arrows,
+// page regions, wheel input, held-arrow repeat pulses, and grab-relative
+// dragging, then paints through the current turbo_ui frame. Lists and text
+// viewports share these exact rules so their last page and terminal behavior
+// cannot diverge.
 package turbo_ui
 
 // Scrollbar_Geometry is the complete frame-local vertical decomposition. All
@@ -134,9 +135,10 @@ scrollbar_geometry :: proc(
 }
 
 // scrollbar_vertical mutates offset inside [0, maximum_scroll]. Arrow presses
-// move one row, track presses move one page, the wheel moves three rows, and a
-// thumb drag preserves its original grab row. Pressing an unscrollable control
-// consumes no event. The return value reports a logical offset change.
+// move one row and capture repeat_event pulses until release, track presses move
+// one page, the wheel moves three rows, and a thumb drag preserves its original
+// grab row. Pressing an unscrollable control consumes no event. The return value
+// reports a logical offset change.
 pub scrollbar_vertical :: proc(
     state: ^State,
     id: Widget_Id,
@@ -173,13 +175,20 @@ pub scrollbar_vertical :: proc(
             }
             if point_in_rect(mouse.position, geometry.up) {
                 scroll_backward(offset, 1)
+                state^.active_id = id
+                state^.active_kind = .scrollbar
+                state^.scrollbar_repeat_direction = -1
             } else if point_in_rect(mouse.position, geometry.down) {
                 scroll_forward(offset, geometry.maximum, 1)
+                state^.active_id = id
+                state^.active_kind = .scrollbar
+                state^.scrollbar_repeat_direction = 1
             } else if point_in_rect(mouse.position, geometry.thumb) {
                 state^.active_id = id
                 state^.active_kind = .scrollbar
                 state^.scrollbar_grab_offset =
                     mouse.position.row - geometry.thumb.row
+                state^.scrollbar_repeat_direction = 0
             } else if point_in_rect(mouse.position, geometry.track) {
                 if mouse.position.row < geometry.thumb.row {
                     scroll_backward(offset, page)
@@ -193,7 +202,8 @@ pub scrollbar_vertical :: proc(
 
     dragging := state^.active_id == id && state^.active_kind == .scrollbar &&
         state^.event.kind == .mouse
-    if dragging && state^.event.mouse.action == .move &&
+    if dragging && state^.scrollbar_repeat_direction == 0 &&
+        state^.event.mouse.action == .move &&
         state^.event.mouse.primary_down && geometry.track.height != 0 {
         travel := geometry.track.height - geometry.thumb.height
         desired := geometry.track.row
@@ -220,12 +230,36 @@ pub scrollbar_vertical :: proc(
         }
         state^.event_handled = true
     }
+    if dragging && state^.event.mouse.action == .move &&
+        !state^.event.mouse.primary_down {
+        // Some terminal/multiplexer paths lose the release report but later
+        // motion states the button is no longer held. Treat that authoritative
+        // observation as release so an arrow cannot repeat forever.
+        state^.active_id = No_Widget
+        state^.active_kind = .none
+        state^.scrollbar_grab_offset = 0
+        state^.scrollbar_repeat_direction = 0
+        state^.event_handled = true
+    }
     if dragging && state^.event.mouse.action == .release &&
         state^.event.mouse.button == .primary {
         state^.active_id = No_Widget
         state^.active_kind = .none
         state^.scrollbar_grab_offset = 0
+        state^.scrollbar_repeat_direction = 0
         state^.event_handled = true
+    }
+
+    if !state^.event_handled && state^.event.kind == .repeat &&
+        scope_accepts_keyboard(state) && state^.active_id == id &&
+        state^.active_kind == .scrollbar {
+        if state^.scrollbar_repeat_direction < 0 {
+            scroll_backward(offset, 1)
+            state^.event_handled = true
+        } else if state^.scrollbar_repeat_direction > 0 {
+            scroll_forward(offset, geometry.maximum, 1)
+            state^.event_handled = true
+        }
     }
 
     // Recompute after interaction so the thumb in this frame represents the
@@ -252,4 +286,12 @@ pub scrollbar_vertical :: proc(
         )
     }
     return offset^ != old
+}
+
+// scrollbar_repeat_active tells an event loop whether it should schedule the
+// next repeat pulse. It exposes only the timer obligation, not the captured
+// widget or direction, so application code cannot forge scrollbar ownership.
+pub scrollbar_repeat_active :: proc(state: ^State) -> bool {
+    return state^.active_kind == .scrollbar &&
+        state^.scrollbar_repeat_direction != 0
 }

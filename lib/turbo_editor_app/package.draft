@@ -30,8 +30,13 @@ import lib/turbo_ui_terminal
 Maximum_Buffers :: 64
 Search_Capacity :: 128
 Input_Capacity :: 128
+Input_Drain_Batch_Limit :: 32
 Maximum_Columns :: 300
 Maximum_Rows :: 120
+Input_Idle_Timeout :: 100 * time.millisecond
+Escape_Ambiguity_Timeout :: 25 * time.millisecond
+Scrollbar_Initial_Repeat :: 350 * time.millisecond
+Scrollbar_Repeat_Interval :: 50 * time.millisecond
 
 Window_Editor :: 0
 Window_Files :: 1
@@ -261,7 +266,7 @@ init_app :: proc(app: ^App) -> bool {
             }
         }
     }
-    app^.status = "F2 Files  F3 Buffers  Ctrl-S Save  Ctrl-F Find  Esc Quit"
+    app^.status = "F2 Sources  Alt-0 Buffers  Ctrl-S Save  Ctrl-F Find  Alt-X Quit"
     return app^.buffer_count != 0
 }
 
@@ -1383,10 +1388,12 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
         return (event, false)
     }
     key := event.key
-    // Popups and modal dialogs get first refusal. This is essential for
-    // Escape dismissal, menu arrows, dialog defaults, and text-box Enter; the
-    // desktop shortcut layer must not reinterpret those keys as editor acts.
+    // Popups, modal dialogs, and keyboard window manipulation get first
+    // refusal. This is essential for Escape dismissal/cancellation, menu
+    // arrows, dialog defaults, and text-box Enter; the desktop shortcut layer
+    // must not reinterpret those keys as editor commands.
     if app^.ui.popup_id != turbo_ui.No_Widget ||
+        app^.ui.keyboard_window != turbo_ui.No_Widget ||
         app^.windows[Window_Search].visible ||
         app^.windows[Window_Quit].visible ||
         app^.windows[Window_Open_Workspace].visible ||
@@ -1407,8 +1414,18 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
             return (turbo_ui.no_event(), false)
         }
     }
-    if key.code == .escape {
+    if key.code == .character && key.alt && !key.control &&
+        (key.byte_value == cast[u8]('x') ||
+            key.byte_value == cast[u8]('X')) {
         return (turbo_ui.no_event(), request_quit(app))
+    }
+    if key.code == .escape {
+        // Escape is strictly a local cancel key. At the bare desktop there is
+        // no operation to cancel, so consuming it is safer than surprising the
+        // user with an application-wide quit dialog. Alt-X is the explicit
+        // quit command advertised by the File menu and status line.
+        app^.status = "Nothing to cancel"
+        return (turbo_ui.no_event(), false)
     }
     if key.code == .f2 && !key.alt && !key.control {
         turbo_ui.show_window(
@@ -2100,7 +2117,7 @@ save_active_buffer :: proc(app: ^App) {
     if turbo_editor.save(active_buffer(app)) {
         app^.status = "Saved"
     } else if active_buffer(app)^.disk_conflict {
-        app^.status = "Disk conflict: Save refused; Esc offers overwrite/discard"
+        app^.status = "Disk conflict: Save refused; Alt-X offers overwrite/discard"
     } else {
         app^.status = "Save failed"
     }
@@ -2220,7 +2237,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
     turbo_ui.menu_separator(&app^.ui, &file_menu)
     if turbo_ui.menu_action(
         &app^.ui, &app^.menus, &file_menu,
-        541, "Quit", "Esc",
+        541, "Quit", "Alt-X",
         access_key = cast[u8]('q'),
     ) {
         should_quit = request_quit(app)
@@ -2595,6 +2612,34 @@ run_smoke :: proc() -> int {
     return 0
 }
 
+// same_motion_observation identifies terminal motion reports which cannot
+// change hover, drag, or modifier state. All-motion reporting may repeat the
+// same cell many times; skipping those events avoids rebuilding a complete
+// immediate-mode frame when the observable pointer state is unchanged.
+same_motion_observation :: proc(left, right: turbo_ui.Mouse_Event) -> bool {
+    return left.position.column == right.position.column &&
+        left.position.row == right.position.row &&
+        left.primary_down == right.primary_down &&
+        left.shift == right.shift && left.alt == right.alt &&
+        left.control == right.control
+}
+
+// shorten_timeout retains the smallest nonnegative event-loop deadline. A due
+// deadline produces a zero-duration native poll; a future deadline cannot make
+// the normal idle wait longer.
+shorten_timeout :: proc(
+    timeout: ^time.Duration,
+    now, deadline: time.Duration,
+) {
+    remaining: time.Duration
+    if deadline > now {
+        remaining = deadline - now
+    }
+    if remaining < timeout^ {
+        timeout^ = remaining
+    }
+}
+
 run_interactive :: proc(
     app: ^App,
     session: ^terminal.Session,
@@ -2613,6 +2658,10 @@ run_interactive :: proc(
     decoder: terminal.Decoder
     input: [Input_Capacity]u8
     next_disk_poll := time.monotonic_now() + 1 * time.second
+    escape_deadline: time.Duration
+    scrollbar_repeat_deadline: time.Duration
+    last_motion: turbo_ui.Mouse_Event
+    last_motion_valid := false
 
     paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
     if tui.present(&renderer, screen) != .none {
@@ -2635,21 +2684,47 @@ run_interactive :: proc(
             }
         }
 
+        repaint := false
         now := time.monotonic_now()
         if now >= next_disk_poll {
             disk := turbo_editor.poll_disk(active_buffer(app))
             if disk == .conflict {
                 app^.status = "Disk changed while buffer is dirty: explicit conflict"
+                paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
+                repaint = true
             } else if disk == .reloaded {
                 app^.status = "Reloaded changed file from disk"
+                paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
+                repaint = true
             }
             next_disk_poll = now + 1 * time.second
         }
 
+        // The ordinary idle wait remains coarse, but precise pending
+        // interaction deadlines shorten it. Escape therefore resolves after
+        // 25 ms even under continuous mouse traffic, and a held scrollbar
+        // arrow repeats at its own UI cadence without a busy loop.
+        read_timeout := Input_Idle_Timeout
+        if terminal.decoder_pending(&decoder) {
+            if escape_deadline == 0 {
+                escape_deadline = now + Escape_Ambiguity_Timeout
+            }
+            shorten_timeout(&read_timeout, now, escape_deadline)
+        } else {
+            escape_deadline = 0
+        }
+        if turbo_ui.scrollbar_repeat_active(&app^.ui) {
+            if scrollbar_repeat_deadline == 0 {
+                scrollbar_repeat_deadline = now + Scrollbar_Initial_Repeat
+            }
+            shorten_timeout(&read_timeout, now, scrollbar_repeat_deadline)
+        } else {
+            scrollbar_repeat_deadline = 0
+        }
         (count, read_error) := terminal.read(
             session,
             input[:],
-            100 * time.millisecond,
+            read_timeout,
         )
         if read_error == .end_of_input {
             return .none
@@ -2657,53 +2732,124 @@ run_interactive :: proc(
         if read_error != .none {
             return read_error
         }
-        repaint := changed
         pending_motion: turbo_ui.Event
         motion_pending := false
-        for index: usize = 0; index < count; index += 1 {
-            event := turbo_ui_terminal.decode(&decoder, input[index])
-            if event.kind == .none {
-                continue
+        batch_count := count
+        drained_batches: usize
+        for {
+            for index: usize = 0; index < batch_count; index += 1 {
+                event := turbo_ui_terminal.decode(&decoder, input[index])
+                if event.kind == .none {
+                    continue
+                }
+                if event.kind == .mouse && event.mouse.action == .move {
+                    // Motion is coalesced across every immediately queued
+                    // native read, not merely within the first 128-byte batch.
+                    // A press/release/wheel/key still flushes prior motion so
+                    // capture and activation order remain exact.
+                    pending_motion = event
+                    motion_pending = true
+                    continue
+                }
+                if motion_pending {
+                    if !last_motion_valid || !same_motion_observation(
+                        pending_motion.mouse,
+                        last_motion,
+                    ) {
+                        if paint_app(
+                            app,
+                            tui.surface(&renderer),
+                            pending_motion,
+                        ) {
+                            return .none
+                        }
+                        last_motion = pending_motion.mouse
+                        last_motion_valid = true
+                        repaint = true
+                    }
+                    motion_pending = false
+                }
+                if paint_app(app, tui.surface(&renderer), event) {
+                    return .none
+                }
+                if event.kind == .mouse {
+                    last_motion = event.mouse
+                    last_motion_valid = true
+                }
+                repaint = true
             }
-            if event.kind == .mouse && event.mouse.action == .move {
-                // Xterm all-motion reporting can place many obsolete pointer
-                // positions in one native read. Only the final consecutive
-                // position affects hover state; retain drag ordering by
-                // flushing it before every press, release, wheel, or key.
-                pending_motion = event
-                motion_pending = true
-                continue
+            drained_batches += 1
+            if drained_batches == Input_Drain_Batch_Limit {
+                // A terminal may generate motion indefinitely. Bound one
+                // publication batch so fresh motion cannot starve rendering,
+                // resize polling, disk polling, or Escape/repeat deadlines.
+                break
             }
-            if motion_pending {
+            (batch_count, read_error) = terminal.read(session, input[:], 0)
+            if read_error == .end_of_input {
+                return .none
+            }
+            if read_error != .none {
+                return read_error
+            }
+            if batch_count == 0 {
+                break
+            }
+        }
+        if motion_pending {
+            if !last_motion_valid || !same_motion_observation(
+                pending_motion.mouse,
+                last_motion,
+            ) {
                 if paint_app(app, tui.surface(&renderer), pending_motion) {
                     return .none
                 }
+                last_motion = pending_motion.mouse
+                last_motion_valid = true
                 repaint = true
-                motion_pending = false
             }
-            if paint_app(app, tui.surface(&renderer), event) {
-                return .none
-            }
-            repaint = true
         }
-        if motion_pending {
-            if paint_app(app, tui.surface(&renderer), pending_motion) {
-                return .none
-            }
-            repaint = true
-        }
+
         // Escape is both a complete key and the prefix of every terminal
-        // control sequence. The decoder holds a lone byte until one quiet read
-        // proves that no suffix followed. Without this explicit flush, Escape
-        // could never close a dialog or quit either editor application.
-        if count == 0 {
+        // control sequence. Resolve the private pending decoder state against
+        // an explicit short deadline instead of waiting for a 100-ms empty
+        // read. The time comparison runs after draining motion, so mouse input
+        // cannot indefinitely postpone dialog/menu cancellation.
+        now = time.monotonic_now()
+        if terminal.decoder_pending(&decoder) {
+            if escape_deadline == 0 {
+                escape_deadline = now + Escape_Ambiguity_Timeout
+            }
+        } else {
+            escape_deadline = 0
+        }
+        if escape_deadline != 0 && now >= escape_deadline {
             event := turbo_ui_terminal.flush(&decoder)
+            escape_deadline = 0
             if event.kind != .none {
                 if paint_app(app, tui.surface(&renderer), event) {
                     return .none
                 }
                 repaint = true
             }
+        }
+
+        if turbo_ui.scrollbar_repeat_active(&app^.ui) {
+            if scrollbar_repeat_deadline == 0 {
+                scrollbar_repeat_deadline = now + Scrollbar_Initial_Repeat
+            } else if now >= scrollbar_repeat_deadline {
+                if paint_app(
+                    app,
+                    tui.surface(&renderer),
+                    turbo_ui.repeat_event(),
+                ) {
+                    return .none
+                }
+                repaint = true
+                scrollbar_repeat_deadline = now + Scrollbar_Repeat_Interval
+            }
+        } else {
+            scrollbar_repeat_deadline = 0
         }
         if app^.run_requested {
             app^.run_requested = false

@@ -102,6 +102,12 @@ test_key_decoder :: proc(test: ^testing.Test) {
     testing.expect(test, tab.kind == .tab)
     backspace := decode_key(&decoder, 127)
     testing.expect(test, backspace.kind == .backspace)
+    testing.expect(test, backspace.byte_value == 127)
+    testing.expect(test, !backspace.control)
+    control_h := decode_key(&decoder, 8)
+    testing.expect(test, control_h.kind == .backspace)
+    testing.expect(test, control_h.byte_value == 8)
+    testing.expect(test, control_h.control)
     control_c := decode_key(&decoder, 3)
     testing.expect(test, control_c.kind == .byte)
     testing.expect(test, control_c.byte_value == 3)
@@ -198,7 +204,9 @@ test_key_decoder :: proc(test: ^testing.Test) {
         decode_key(&decoder, cast[u8]('q')).kind == .byte)
 
     testing.expect(test, decode_key(&decoder, 27).kind == .none)
+    testing.expect(test, decoder_pending(&decoder))
     testing.expect(test, flush_key(&decoder).kind == .escape)
+    testing.expect(test, !decoder_pending(&decoder))
     testing.expect(test, flush_key(&decoder).kind == .none)
 }
 

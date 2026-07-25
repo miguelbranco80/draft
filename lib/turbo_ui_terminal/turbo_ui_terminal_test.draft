@@ -32,6 +32,12 @@ test_terminal_adapter :: proc(test: ^testing.Test) {
     testing.expect(test, escape.kind == .key)
     testing.expect(test, escape.key.code == .escape)
 
+    control_h := decode(&decoder, 8)
+    testing.expect(test, control_h.kind == .key)
+    testing.expect(test, control_h.key.code == .backspace)
+    testing.expect(test, control_h.key.byte_value == 8)
+    testing.expect(test, control_h.key.control)
+
     size := resize(terminal.Size{columns = 100, rows = 40})
     testing.expect(test, size.kind == .resize)
     testing.expect(test, size.resize.columns == 100 && size.resize.rows == 40)

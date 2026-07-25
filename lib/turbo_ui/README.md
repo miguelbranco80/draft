@@ -119,7 +119,9 @@ returned row. Wheel and scrollbar movement change only the viewport; keyboard
 selection is what keeps the cursor visible. `Text_View_State` and
 `text_view_bytes` provide the same scrolling behavior for allocation-free
 read-only line views. Vertical scrollbars have arrow cells, a proportional
-thumb, page regions, and grab-relative dragging.
+thumb, page regions, grab-relative dragging, and held-arrow capture. The UI
+owns no clock: an application schedules deterministic `repeat_event()` pulses
+while `scrollbar_repeat_active(&ui)` is true.
 
 `tree_view` applies that same list behavior to a caller-owned flat preorder
 table of `Tree_Node` records. Each node retains its own expansion bit; the

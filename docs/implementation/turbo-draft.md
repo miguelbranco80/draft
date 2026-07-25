@@ -191,6 +191,16 @@ application policy, so Turbo Draft handles them before focused controls and
 invokes the same direct operation as the corresponding menu branch.
 No retained widget tree, callback table, or editor pointer crosses that layer.
 
+The event loop drains immediately queued terminal reads before one renderer
+publication. It preserves press/release/wheel/key order, coalesces consecutive
+motion across read boundaries, and skips repeated motion observations which
+cannot change hover or drag state. A private decoder state is exposed only as
+`terminal.decoder_pending`; the application uses that fact for a 25-ms Escape
+ambiguity deadline even while mouse reports continue. Scrollbar arrows retain
+capture and consume explicit application-timed repeat pulses. Escape is solely
+a popup/dialog/window-operation cancel key; Alt-X starts the explicit quit
+policy.
+
 F6 opens Project: its top list selects a runnable root by mouse or Enter and
 its lower section displays an expandable checked package/dependency tree.
 Click or Enter toggles a package; Left/Right close, open, or enter branches.

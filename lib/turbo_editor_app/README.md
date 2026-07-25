@@ -23,3 +23,11 @@ table empty.
 
 This split keeps `lib/turbo_editor`, `lib/turbo_ui`, and the useful standalone
 editor independent of LLVM and the bootstrap compiler.
+
+The terminal loop drains all immediately queued input before presenting one
+frame. Consecutive pointer motion is coalesced across native read boundaries,
+and a repeated observation of the same cell/button/modifier state does not
+repaint. A lone Escape has a 25-ms ambiguity deadline independent of the
+ordinary idle read, so mouse reporting cannot postpone menu/dialog cancellation.
+Held scrollbar arrows use application-timed repeat pulses. Bare Escape never
+quits the application; Alt-X is the explicit workspace-wide quit command.

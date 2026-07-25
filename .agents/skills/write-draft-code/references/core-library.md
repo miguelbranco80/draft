@@ -582,6 +582,7 @@ terminal.Mouse_Action // move, press, release, wheel, none
 terminal.Mouse_Button // primary, middle, secondary, none
 terminal.decode_input(&decoder, byte: u8) -> terminal.Input
 terminal.flush_input(&decoder) -> terminal.Input
+terminal.decoder_pending(&decoder) -> bool
 
 terminal.Mouse_Reporting
 terminal.Mouse_Reporting_State // inactive, active, suspended
@@ -646,8 +647,11 @@ fails. Windows compares a native size query on every poll behind the same API.
 
 Decoder preserves ordinary input as `.byte` keys and recognizes Enter, Tab,
 Backspace, cursor, home/end, insert/delete, page, and F1-F12 forms across
-fragmented reads. Escape alone is emitted only by `flush_key`, after the
-caller's chosen timeout. An Escape-prefixed ordinary byte carries Alt; xterm
+fragmented reads. Semantic Enter, Tab, and Backspace keys retain their physical
+byte in `byte_value`; BS carries Control because it is also Ctrl-H, while DEL
+does not. Escape alone is emitted only by `flush_key`, after the caller's chosen
+timeout. `decoder_pending` exposes the presence of an incomplete sequence
+without exposing private decoder states. An Escape-prefixed ordinary byte carries Alt; xterm
 modifier parameters carry Shift/Alt/Control on semantic keys. It does not decode
 UTF-8: each source byte remains available to the application or `core/utf8`.
 Physical combinations that a byte protocol cannot distinguish—such as Enter

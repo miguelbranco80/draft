@@ -11,6 +11,7 @@ pub Event_Kind :: enum u8 {
     text,
     mouse,
     resize,
+    repeat,
 }
 
 pub Key_Code :: enum u8 {
@@ -120,4 +121,13 @@ pub resize_event :: proc(columns, rows: usize) -> Event {
         kind = .resize,
         resize = Resize_Event{columns = columns, rows = rows},
     }
+}
+
+// repeat_event is an application-timed pulse for controls which retain a
+// physical press, currently scrollbar arrows. Keeping time outside turbo_ui
+// makes synthetic tests deterministic and lets each event loop choose one
+// platform-appropriate initial delay and interval. A repeat carries no widget
+// identity: the State's explicit active capture is the sole destination.
+pub repeat_event :: proc() -> Event {
+    return Event{kind = .repeat}
 }

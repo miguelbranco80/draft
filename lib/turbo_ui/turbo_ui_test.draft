@@ -304,6 +304,36 @@ test_collection_viewports :: proc(test: ^testing.Test) {
     testing.expect(test, up_valid && up.value == '▲')
     testing.expect(test, down_valid && down.value == '▼')
 
+    // An arrow owns capture after its initial one-row action. Application
+    // timer pulses repeat that exact action until release; the UI itself owns
+    // no clock, which keeps this behavior deterministic under synthetic input.
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 30, row = 10},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    testing.expect(test, scrollbar_vertical(
+        &state, 30, scrollbar_bounds, 40, 10, &offset,
+    ))
+    end_frame(&state)
+    testing.expect(test, offset == 11)
+    testing.expect(test, scrollbar_repeat_active(&state))
+    begin_frame(&state, &surface, repeat_event(), theme)
+    testing.expect(test, scrollbar_vertical(
+        &state, 30, scrollbar_bounds, 40, 10, &offset,
+    ))
+    end_frame(&state)
+    testing.expect(test, offset == 12)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 30, row = 10},
+        action = .release,
+        button = .primary,
+    }), theme)
+    scrollbar_vertical(&state, 30, scrollbar_bounds, 40, 10, &offset)
+    end_frame(&state)
+    testing.expect(test, !scrollbar_repeat_active(&state))
+
     // Press the lower half of a two-row thumb, then move it. Preserving the
     // one-row grab offset yields logical offset 25 rather than jumping as if
     // the pointer always grabbed the leading cell.
