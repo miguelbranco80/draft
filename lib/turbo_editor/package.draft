@@ -31,11 +31,16 @@ Edit_Kind :: enum u8 {
     delete,
 }
 
-// Edit records one forward operation. byte_start/byte_length address the
-// append-only history byte pool, not live document storage. before_cursor and
-// after_cursor restore the user-visible insertion point for undo/redo.
+// Edit records one primitive forward operation. byte_start/byte_length address
+// inserted bytes for insert or removed bytes for delete in the append-only
+// history byte pool. before_cursor and after_cursor restore the user-visible
+// insertion point for undo/redo. joined_to_previous is true only on the insert
+// half of one atomic replacement; Undo/Redo then consume the adjacent
+// delete+insert pair as one user transaction. The flag occupies existing enum
+// padding, retaining the compact record representation used by ordinary edits.
 Edit :: struct {
     kind: Edit_Kind,
+    joined_to_previous: bool,
     at: usize,
     byte_start: usize,
     byte_length: usize,
@@ -429,9 +434,44 @@ delete_raw :: proc(buffer: ^Buffer, at, count: usize) {
     }
 }
 
-// record_edit discards redo records before appending. Exceeding either history
-// bound clears only history, then records the new edit when its payload itself
-// fits. This simple policy gives a hard memory bound without a compacting ring.
+// prepare_history_append discards redo records and guarantees room for one
+// atomic record. Crossing the aggregate record/byte bound clears prior history;
+// a payload larger than the complete byte policy is rejected without changing
+// existing history. Replace uses that rejection to avoid applying an operation
+// which could not satisfy its one-step undo contract.
+prepare_history_append :: proc(
+    buffer: ^Buffer,
+    payload_size, record_count: usize,
+) -> bool {
+    if payload_size > History_Byte_Limit || record_count > History_Limit {
+        return false
+    }
+    for index := buffer^.history_index; index < buffer^.history.length; index += 1 {
+        empty: Edit
+        buffer^.history.data[index] = empty
+    }
+    buffer^.history.length = buffer^.history_index
+
+    exceeds_records := buffer^.history.length > History_Limit - record_count
+    exceeds_bytes := buffer^.history_bytes.length >
+        History_Byte_Limit - payload_size
+    if exceeds_records || exceeds_bytes {
+        clear_history(buffer)
+    }
+    return true
+}
+
+append_history_bytes :: proc(buffer: ^Buffer, source: []u8) -> usize {
+    start := buffer^.history_bytes.length
+    for byte in source {
+        array.append(&buffer^.history_bytes, byte)
+    }
+    return start
+}
+
+// record_edit stores the single payload used by insert/delete. Oversized
+// ordinary typing retains the historical bounded behavior: the document edit
+// remains valid but is not undoable after the previous history is cleared.
 record_edit :: proc(
     buffer: ^Buffer,
     kind: Edit_Kind,
@@ -439,25 +479,11 @@ record_edit :: proc(
     source: []u8,
     before_cursor, after_cursor: usize,
 ) {
-    for index := buffer^.history_index; index < buffer^.history.length; index += 1 {
-        empty: Edit
-        buffer^.history.data[index] = empty
-    }
-    buffer^.history.length = buffer^.history_index
-
-    exceeds_records := buffer^.history.length >= History_Limit
-    exceeds_bytes := len(source) > History_Byte_Limit ||
-        buffer^.history_bytes.length > History_Byte_Limit - len(source)
-    if exceeds_records || exceeds_bytes {
+    if !prepare_history_append(buffer, len(source), 1) {
         clear_history(buffer)
-    }
-    if len(source) > History_Byte_Limit {
         return
     }
-    start := buffer^.history_bytes.length
-    for byte in source {
-        array.append(&buffer^.history_bytes, byte)
-    }
+    start := append_history_bytes(buffer, source)
     array.append(&buffer^.history, Edit{
         kind = kind,
         at = at,
@@ -467,6 +493,45 @@ record_edit :: proc(
         after_cursor = after_cursor,
     })
     buffer^.history_index = buffer^.history.length
+}
+
+// record_replace stores old and replacement bytes in one joined record pair. The caller
+// must not mutate Buffer until this succeeds: false means the combined payload
+// or two-record group exceeds the explicit history limit and the atomic
+// operation must be refused.
+record_replace :: proc(
+    buffer: ^Buffer,
+    at: usize,
+    old, replacement: []u8,
+    before_cursor, after_cursor: usize,
+) -> bool {
+    if len(old) > ~cast[usize](0) - len(replacement) {
+        return false
+    }
+    if !prepare_history_append(buffer, len(old) + len(replacement), 2) {
+        return false
+    }
+    old_start := append_history_bytes(buffer, old)
+    replacement_start := append_history_bytes(buffer, replacement)
+    array.append(&buffer^.history, Edit{
+        kind = .delete,
+        at = at,
+        byte_start = old_start,
+        byte_length = len(old),
+        before_cursor = before_cursor,
+        after_cursor = at,
+    })
+    array.append(&buffer^.history, Edit{
+        kind = .insert,
+        joined_to_previous = true,
+        at = at,
+        byte_start = replacement_start,
+        byte_length = len(replacement),
+        before_cursor = at,
+        after_cursor = after_cursor,
+    })
+    buffer^.history_index = buffer^.history.length
+    return true
 }
 
 pub selection :: proc(buffer: ^Buffer) -> (usize, usize, bool) {
@@ -725,6 +790,21 @@ pub move_file_end :: proc(buffer: ^Buffer, extend: bool = false) {
     buffer^.preferred_column_valid = false
 }
 
+// go_to_line moves to the first byte of a one-based document line. Zero and
+// values beyond the indexed document are rejected without changing selection
+// or viewport state. The successful transition uses the retained line-start
+// table and requests one cursor reveal; it never rescans source bytes.
+pub go_to_line :: proc(buffer: ^Buffer, one_based_line: usize) -> bool {
+    if one_based_line == 0 || one_based_line > buffer^.line_starts.length {
+        return false
+    }
+    buffer^.cursor = buffer^.line_starts.data[one_based_line - 1]
+    clear_selection(buffer)
+    buffer^.preferred_column_valid = false
+    buffer^.reveal_cursor = true
+    return true
+}
+
 display_column :: proc(buffer: ^Buffer, start, end: usize) -> usize {
     column: usize
     cursor := start
@@ -841,22 +921,44 @@ pub delete_forward :: proc(buffer: ^Buffer) -> bool {
     return true
 }
 
+// undo_primitive applies exactly one inverse history record without changing
+// history_index, cursor, selection, or dirty state. Public undo owns atomic
+// grouping and publishes those user-visible state transitions once.
+undo_primitive :: proc(buffer: ^Buffer, edit: Edit) {
+    if edit.kind == .insert {
+        if edit.byte_length != 0 {
+            delete_raw(buffer, edit.at, edit.byte_length)
+        }
+    } else {
+        if edit.byte_length != 0 {
+            source_data := cast[[^]u8](
+                &buffer^.history_bytes.data[edit.byte_start],
+            )
+            source := source_data[:edit.byte_length]
+            insert_raw(buffer, edit.at, source)
+        }
+    }
+}
+
 pub undo :: proc(buffer: ^Buffer) -> bool {
     if buffer^.history_index == 0 {
         return false
     }
     edit := buffer^.history.data[buffer^.history_index - 1]
-    source_data := cast[[^]u8](
-        &buffer^.history_bytes.data[edit.byte_start],
-    )
-    source := source_data[:edit.byte_length]
-    if edit.kind == .insert {
-        delete_raw(buffer, edit.at, edit.byte_length)
-    } else {
-        insert_raw(buffer, edit.at, source)
-    }
+    undo_primitive(buffer, edit)
     buffer^.history_index -= 1
-    buffer^.cursor = edit.before_cursor
+    before_cursor := edit.before_cursor
+    if edit.joined_to_previous {
+        assert(buffer^.history_index != 0,
+            "joined editor history must have a preceding record")
+        previous := buffer^.history.data[buffer^.history_index - 1]
+        assert(!previous.joined_to_previous,
+            "editor replacement history groups exactly two records")
+        undo_primitive(buffer, previous)
+        buffer^.history_index -= 1
+        before_cursor = previous.before_cursor
+    }
+    buffer^.cursor = before_cursor
     clear_selection(buffer)
     buffer^.preferred_column_valid = false
     buffer^.reveal_cursor = true
@@ -865,6 +967,25 @@ pub undo :: proc(buffer: ^Buffer) -> bool {
         array.view(&buffer^.disk_bytes),
     )
     return true
+}
+
+// redo_primitive applies one forward history record. It mirrors
+// undo_primitive so pair grouping remains a small index policy rather than a
+// third storage mutation path.
+redo_primitive :: proc(buffer: ^Buffer, edit: Edit) {
+    if edit.kind == .insert {
+        if edit.byte_length != 0 {
+            source_data := cast[[^]u8](
+                &buffer^.history_bytes.data[edit.byte_start],
+            )
+            source := source_data[:edit.byte_length]
+            insert_raw(buffer, edit.at, source)
+        }
+    } else {
+        if edit.byte_length != 0 {
+            delete_raw(buffer, edit.at, edit.byte_length)
+        }
+    }
 }
 
 pub redo :: proc(buffer: ^Buffer) -> bool {
@@ -872,17 +993,19 @@ pub redo :: proc(buffer: ^Buffer) -> bool {
         return false
     }
     edit := buffer^.history.data[buffer^.history_index]
-    source_data := cast[[^]u8](
-        &buffer^.history_bytes.data[edit.byte_start],
-    )
-    source := source_data[:edit.byte_length]
-    if edit.kind == .insert {
-        insert_raw(buffer, edit.at, source)
-    } else {
-        delete_raw(buffer, edit.at, edit.byte_length)
-    }
+    assert(!edit.joined_to_previous,
+        "redo must begin at an atomic history group boundary")
+    redo_primitive(buffer, edit)
     buffer^.history_index += 1
-    buffer^.cursor = edit.after_cursor
+    after_cursor := edit.after_cursor
+    if buffer^.history_index < buffer^.history.length &&
+        buffer^.history.data[buffer^.history_index].joined_to_previous {
+        joined := buffer^.history.data[buffer^.history_index]
+        redo_primitive(buffer, joined)
+        buffer^.history_index += 1
+        after_cursor = joined.after_cursor
+    }
+    buffer^.cursor = after_cursor
     clear_selection(buffer)
     buffer^.preferred_column_valid = false
     buffer^.reveal_cursor = true
@@ -893,43 +1016,306 @@ pub redo :: proc(buffer: ^Buffer) -> bool {
     return true
 }
 
-// find selects the next exact byte occurrence at/after the cursor and wraps
-// once to the start. Empty needles do nothing. Search is deliberately literal;
-// case folding and Unicode normalization require separate explicit policies.
-pub find :: proc(buffer: ^Buffer, needle: []u8) -> bool {
-    if len(needle) == 0 || len(needle) > buffer^.bytes.length {
+// Find_Result distinguishes an ordinary match from one found only after
+// crossing a document end. The IDE uses wrapped for precise status feedback;
+// both cases publish the same visible Buffer selection.
+pub Find_Result :: struct {
+    found: bool,
+    wrapped: bool,
+}
+
+// Replace_Result makes refusal explicit: selection_mismatch means the visible
+// selection is not the caller's exact query; history_limit means applying the
+// change would violate the promised one-record undo bound. Neither mutates.
+pub Replace_Result :: enum u8 {
+    replaced,
+    selection_mismatch,
+    history_limit,
+}
+
+// Replace_All_Result reports both the number of nonoverlapping source matches
+// and whether the atomic edit was applied. completed is false only when the
+// combined old/new undo payload exceeds the explicit history bound; count may
+// then be nonzero, but Buffer remains entirely unchanged.
+pub Replace_All_Result :: struct {
+    count: usize,
+    completed: bool,
+}
+
+bytes_match_at :: proc(buffer: ^Buffer, needle: []u8, at: usize) -> bool {
+    if len(needle) > buffer^.bytes.length ||
+        at > buffer^.bytes.length - len(needle) {
         return false
     }
-    start := buffer^.cursor
-    pass: usize
-    for pass < 2 {
-        limit := buffer^.bytes.length - len(needle)
-        cursor := start
-        for cursor <= limit {
-            match := true
-            for index: usize = 0; index < len(needle); index += 1 {
-                if buffer^.bytes.data[cursor + index] != needle[index] {
-                    match = false
-                    break
-                }
-            }
-            if match {
-                buffer^.anchor = cursor
-                buffer^.cursor = cursor + len(needle)
-                buffer^.selection_active = true
-                buffer^.preferred_column_valid = false
-                buffer^.reveal_cursor = true
-                return true
-            }
-            cursor += 1
+    for index: usize = 0; index < len(needle); index += 1 {
+        if buffer^.bytes.data[at + index] != needle[index] {
+            return false
         }
-        if start == 0 {
-            break
-        }
-        start = 0
-        pass += 1
     }
-    return false
+    return true
+}
+
+select_match :: proc(buffer: ^Buffer, start, length: usize) {
+    buffer^.anchor = start
+    buffer^.cursor = start + length
+    buffer^.selection_active = true
+    buffer^.preferred_column_valid = false
+    buffer^.reveal_cursor = true
+}
+
+// find_forward_range returns the first match start in [begin,end), where end
+// is a candidate-start boundary rather than a byte boundary. The all-ones
+// sentinel cannot be a valid Dynamic-array offset.
+find_forward_range :: proc(
+    buffer: ^Buffer,
+    needle: []u8,
+    begin, end: usize,
+) -> usize {
+    cursor := begin
+    for cursor < end {
+        if bytes_match_at(buffer, needle, cursor) {
+            return cursor
+        }
+        cursor += 1
+    }
+    return ~cast[usize](0)
+}
+
+// find_reverse_range returns the greatest match start in [begin,end). Counting
+// through end as an exclusive one-past value avoids unsigned underflow at row
+// zero and keeps reverse search deterministic for an empty leading range.
+find_reverse_range :: proc(
+    buffer: ^Buffer,
+    needle: []u8,
+    begin, end: usize,
+) -> usize {
+    cursor := end
+    for cursor > begin {
+        cursor -= 1
+        if bytes_match_at(buffer, needle, cursor) {
+            return cursor
+        }
+    }
+    return ~cast[usize](0)
+}
+
+// find_next selects the next literal byte occurrence at/after the cursor and
+// wraps once to the start. Empty needles do nothing. Search is deliberately
+// literal; case folding and Unicode normalization require separate policies.
+pub find_next :: proc(buffer: ^Buffer, needle: []u8) -> Find_Result {
+    result: Find_Result
+    if len(needle) == 0 || len(needle) > buffer^.bytes.length {
+        return result
+    }
+    candidate_count := buffer^.bytes.length - len(needle) + 1
+    start := buffer^.cursor
+    if start > candidate_count {
+        start = candidate_count
+    }
+    match := find_forward_range(buffer, needle, start, candidate_count)
+    if match == ~cast[usize](0) && start != 0 {
+        match = find_forward_range(buffer, needle, 0, start)
+        result.wrapped = match != ~cast[usize](0)
+    }
+    if match != ~cast[usize](0) {
+        select_match(buffer, match, len(needle))
+        result.found = true
+    }
+    return result
+}
+
+// find_previous starts before the current selection (or cursor), then wraps
+// from the last legal candidate. This makes Shift-F3 move away from the visible
+// match rather than selecting it again until a real one-match wrap occurs.
+pub find_previous :: proc(buffer: ^Buffer, needle: []u8) -> Find_Result {
+    result: Find_Result
+    if len(needle) == 0 || len(needle) > buffer^.bytes.length {
+        return result
+    }
+    candidate_count := buffer^.bytes.length - len(needle) + 1
+    start := buffer^.cursor
+    (selected_start, _, selected) := selection(buffer)
+    if selected {
+        start = selected_start
+    }
+    if start > candidate_count {
+        start = candidate_count
+    }
+    match := find_reverse_range(buffer, needle, 0, start)
+    if match == ~cast[usize](0) {
+        match = find_reverse_range(buffer, needle, start, candidate_count)
+        result.wrapped = match != ~cast[usize](0)
+    }
+    if match != ~cast[usize](0) {
+        select_match(buffer, match, len(needle))
+        result.found = true
+    }
+    return result
+}
+
+// find retains the original small API for callers which do not need wrap
+// feedback. New interactive code should use find_next/find_previous.
+pub find :: proc(buffer: ^Buffer, needle: []u8) -> bool {
+    return find_next(buffer, needle).found
+}
+
+// replace_selected applies one exact selected query match as one undo record.
+// needle and replacement are borrowed only for this call and must not alias
+// Buffer storage. A selection mismatch performs no mutation. Replacing bytes
+// with themselves still clears the transient selection and counts as success,
+// but does not manufacture a meaningless history record.
+pub replace_selected :: proc(
+    buffer: ^Buffer,
+    needle, replacement: []u8,
+) -> Replace_Result {
+    (start, end, selected) := selection(buffer)
+    if !selected || end - start != len(needle) ||
+        !bytes_match_at(buffer, needle, start) {
+        return .selection_mismatch
+    }
+    same := len(needle) == len(replacement)
+    if same {
+        for index: usize = 0; index < len(needle); index += 1 {
+            if needle[index] != replacement[index] {
+                same = false
+                break
+            }
+        }
+    }
+    if same {
+        buffer^.cursor = end
+        clear_selection(buffer)
+        buffer^.reveal_cursor = true
+        return .replaced
+    }
+    old_data := cast[[^]u8](&buffer^.bytes.data[start])
+    if !record_replace(
+        buffer,
+        start,
+        old_data[:end - start],
+        replacement,
+        buffer^.cursor,
+        start + len(replacement),
+    ) {
+        return .history_limit
+    }
+    delete_raw(buffer, start, end - start)
+    if len(replacement) != 0 {
+        insert_raw(buffer, start, replacement)
+    }
+    buffer^.cursor = start + len(replacement)
+    clear_selection(buffer)
+    buffer^.preferred_column_valid = false
+    buffer^.reveal_cursor = true
+    buffer^.dirty = true
+    return .replaced
+}
+
+// replace_all scans only the original document and advances by needle length,
+// so replacement text is never re-matched during the same operation. It builds
+// one candidate byte array, records the entire before/after pair as one atomic
+// history entry, then publishes the new bytes through the same raw mutation
+// operations used by undo/redo. No match is a successful zero-count operation.
+pub replace_all :: proc(
+    buffer: ^Buffer,
+    needle, replacement: []u8,
+) -> Replace_All_Result {
+    result := Replace_All_Result{completed = true}
+    if len(needle) == 0 || len(needle) > buffer^.bytes.length {
+        return result
+    }
+    final_length := buffer^.bytes.length
+    source: usize
+    last_start := buffer^.bytes.length - len(needle)
+    for source <= last_start {
+        if bytes_match_at(buffer, needle, source) {
+            result.count += 1
+            if len(replacement) >= len(needle) {
+                growth := len(replacement) - len(needle)
+                if growth > ~cast[usize](0) - final_length {
+                    result.completed = false
+                    return result
+                }
+                final_length += growth
+            } else {
+                final_length -= len(needle) - len(replacement)
+            }
+            source += len(needle)
+        } else {
+            source += 1
+        }
+    }
+    if result.count == 0 {
+        return result
+    }
+
+    candidate: Byte_Array
+    array.init(&candidate)
+    array.reserve(&candidate, final_length)
+    before_cursor := buffer^.cursor
+    after_cursor: usize
+    cursor_mapped := false
+    source = 0
+    for source < buffer^.bytes.length {
+        if source <= last_start &&
+            bytes_match_at(buffer, needle, source) {
+            output_start := candidate.length
+            if !cursor_mapped && before_cursor >= source &&
+                before_cursor <= source + len(needle) {
+                after_cursor = output_start + len(replacement)
+                cursor_mapped = true
+            }
+            for byte in replacement {
+                array.append(&candidate, byte)
+            }
+            source += len(needle)
+        } else {
+            if !cursor_mapped && before_cursor == source {
+                after_cursor = candidate.length
+                cursor_mapped = true
+            }
+            array.append(&candidate, buffer^.bytes.data[source])
+            source += 1
+        }
+    }
+    if !cursor_mapped {
+        after_cursor = candidate.length
+    }
+    assert(candidate.length == final_length,
+        "replace-all size preflight must match constructed bytes")
+
+    old := array.view(&buffer^.bytes)
+    replacement_document := array.view(&candidate)
+    if bytes_equal(old, replacement_document) {
+        array.destroy(&candidate)
+        clear_selection(buffer)
+        buffer^.reveal_cursor = true
+        return result
+    }
+    if !record_replace(
+        buffer,
+        0,
+        old,
+        replacement_document,
+        before_cursor,
+        after_cursor,
+    ) {
+        array.destroy(&candidate)
+        result.completed = false
+        return result
+    }
+    old_length := buffer^.bytes.length
+    delete_raw(buffer, 0, old_length)
+    if candidate.length != 0 {
+        insert_raw(buffer, 0, array.view(&candidate))
+    }
+    array.destroy(&candidate)
+    buffer^.cursor = after_cursor
+    clear_selection(buffer)
+    buffer^.preferred_column_valid = false
+    buffer^.reveal_cursor = true
+    buffer^.dirty = true
+    return result
 }
 
 pub can_close :: proc(buffer: ^Buffer, force: bool = false) -> bool {

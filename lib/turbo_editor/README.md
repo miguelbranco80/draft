@@ -14,9 +14,13 @@ The package provides:
 - Unicode grapheme-aware cursor movement with one-byte invalid-data recovery,
   Draft-identifier word movement, file Home/End, viewport-sized paging, and a
   preferred visual column retained across short lines;
-- selection, mouse positioning, literal search, and independent
-  horizontal/vertical scroll (wheel movement never snaps back to the cursor);
-- bounded undo/redo with a 128-operation/1 MiB history policy;
+- selection, mouse positioning, wrapped forward/reverse literal search,
+  one-based line navigation, and independent horizontal/vertical scroll (wheel
+  movement never snaps back to the cursor);
+- single-match and whole-document replacement. Replace All scans only original
+  bytes, reports its exact count, and never re-matches replacement text;
+- bounded undo/redo with a 128-record/1 MiB history policy; each replacement is
+  a joined record pair and therefore remains one atomic user undo/redo step;
 - dirty close protection and polling-based disk conflict detection;
 - optional byte-offset syntax spans with a classic Turbo C/Pascal palette;
   painting advances one monotonic span cursor across the visible viewport.

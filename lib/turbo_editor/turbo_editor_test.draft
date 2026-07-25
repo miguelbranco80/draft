@@ -22,6 +22,18 @@ remove_test_path :: proc() {
     memory.owned_string_destroy(&path)
 }
 
+buffer_equals_text :: proc(buffer: ^Buffer, text: string) -> bool {
+    if buffer^.bytes.length != len(text) {
+        return false
+    }
+    for index: usize = 0; index < len(text); index += 1 {
+        if buffer^.bytes.data[index] != text[index] {
+            return false
+        }
+    }
+    return true
+}
+
 test_edit_history_and_unicode_movement :: proc(test: ^testing.Test) {
     buffer: Buffer
     buffer_init(&buffer, Test_Path)
@@ -106,6 +118,10 @@ test_line_index_and_navigation :: proc(test: ^testing.Test) {
     testing.expect(test, file_end == 7)
     move_file_end(&buffer)
     testing.expect(test, buffer.cursor == buffer.bytes.length)
+    testing.expect(test, go_to_line(&buffer, 3))
+    testing.expect(test, buffer.cursor == 9)
+    testing.expect(test, !go_to_line(&buffer, 0))
+    testing.expect(test, buffer.cursor == 9)
 
     // Removing two complete rows collapses their starts; undo and redo must
     // restore the exact same table rather than lazily rebuilding on paint.
@@ -168,6 +184,69 @@ test_viewport_page_and_wheel :: proc(test: ^testing.Test) {
     )
     turbo_ui.end_frame(&ui)
     testing.expect(test, buffer.scroll_line == 3)
+}
+
+// test_find_directions_and_atomic_replace fixes the interactive search state
+// transitions and the crucial history contract. Forward/backward search report
+// wrap, one replacement undoes in one step, and Replace All scans only original
+// bytes then restores the complete document with one undo/redo pair.
+test_find_directions_and_atomic_replace :: proc(test: ^testing.Test) {
+    buffer: Buffer
+    buffer_init(&buffer, Test_Path)
+    defer buffer_destroy(&buffer)
+    insert_text(&buffer, "one two one")
+    clear_history(&buffer)
+    buffer.dirty = false
+    buffer.cursor = 0
+
+    one := [3]u8{cast[u8]('o'), cast[u8]('n'), cast[u8]('e')}
+    next := find_next(&buffer, one[:])
+    testing.expect(test, next.found && !next.wrapped)
+    testing.expect(test, buffer.anchor == 0 && buffer.cursor == 3)
+    next = find_next(&buffer, one[:])
+    testing.expect(test, next.found && !next.wrapped)
+    testing.expect(test, buffer.anchor == 8 && buffer.cursor == 11)
+    next = find_next(&buffer, one[:])
+    testing.expect(test, next.found && next.wrapped)
+    testing.expect(test, buffer.anchor == 0 && buffer.cursor == 3)
+    previous := find_previous(&buffer, one[:])
+    testing.expect(test, previous.found && previous.wrapped)
+    testing.expect(test, buffer.anchor == 8 && buffer.cursor == 11)
+
+    replacement := [1]u8{cast[u8]('1')}
+    testing.expect(
+        test,
+        replace_selected(&buffer, one[:], replacement[:]) == .replaced,
+    )
+    testing.expect(test, buffer_equals_text(&buffer, "one two 1"))
+    testing.expect(test, buffer.history.length == 2)
+    testing.expect(test, undo(&buffer))
+    testing.expect(test, buffer_equals_text(&buffer, "one two one"))
+    testing.expect(test, redo(&buffer))
+    testing.expect(test, buffer_equals_text(&buffer, "one two 1"))
+
+    // Replacement "aa" contains the query "a". Scanning the candidate would
+    // loop or over-count; scanning the original yields exactly two matches.
+    replacement_buffer: Buffer
+    buffer_init(&replacement_buffer, Test_Path)
+    defer buffer_destroy(&replacement_buffer)
+    insert_text(&replacement_buffer, "a\na")
+    clear_history(&replacement_buffer)
+    replacement_buffer.dirty = false
+    replacement_buffer.cursor = 0
+    query := [1]u8{cast[u8]('a')}
+    doubled := [2]u8{cast[u8]('a'), cast[u8]('a')}
+    all := replace_all(&replacement_buffer, query[:], doubled[:])
+    testing.expect(test, all.completed && all.count == 2)
+    testing.expect(test, buffer_equals_text(&replacement_buffer, "aa\naa"))
+    testing.expect(test, replacement_buffer.line_starts.length == 2)
+    testing.expect(test, replacement_buffer.line_starts.data[1] == 3)
+    testing.expect(test, replacement_buffer.history.length == 2)
+    testing.expect(test, undo(&replacement_buffer))
+    testing.expect(test, buffer_equals_text(&replacement_buffer, "a\na"))
+    testing.expect(test, replacement_buffer.line_starts.data[1] == 2)
+    testing.expect(test, redo(&replacement_buffer))
+    testing.expect(test, buffer_equals_text(&replacement_buffer, "aa\naa"))
 }
 
 test_file_round_trip_and_conflict :: proc(test: ^testing.Test) {
