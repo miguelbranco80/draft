@@ -180,6 +180,11 @@ main :: proc() {
         Reading{value = 30, kind = .measured},
         Reading{value = 40, kind = .estimated},
     }
+    index_total: usize
+    for _, index in readings {
+        index_total += index
+    }
+    assert(index_total == 6)
     outcome := summarize(readings[:])
     switch outcome {
     case .ok(summary):

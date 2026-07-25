@@ -841,8 +841,8 @@ private:
     if (node.kind == NodeKind::ForStatement && !node.children.empty()) {
       const SyntaxNode &header = tree.node(node.children.front());
       if (header.kind == NodeKind::IterationHeader &&
-          !header.children.empty()) {
-        const SyntaxNode &iterable = tree.node(header.children.front());
+          (header.children.size() == 2 || header.children.size() == 3)) {
+        const SyntaxNode &iterable = tree.node(header.children.back());
         const std::vector<SourceName> iterable_names = names_in_span(
             tree, iterable.token_begin, iterable.token_end);
         if (iterable_names.size() == 1) {

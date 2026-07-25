@@ -1991,17 +1991,40 @@ private:
     controls_.push_back(
         {exit_block, post_block, defer_scopes_.size(), true});
     current_ = body_block;
-    if (!statement.bindings.empty()) {
-      const MirLocalId value_local = ensure_local(statement.bindings[0]);
-      store(
-          local_address(value_local, statement.range),
-          iteration_element(
-              iterable_local, iterable_expression.type, index, statement.range),
-          statement.range);
+    if (statement.bindings.size() !=
+        statement.iteration_binding_sources.size()) {
+      diagnostics_.error(
+          statement.range,
+          "iteration loop HIR binding roles are inconsistent");
     }
-    if (statement.bindings.size() > 1) {
-      const MirLocalId source_index = ensure_local(statement.bindings[1]);
-      store(local_address(source_index, statement.range), index, statement.range);
+    const std::size_t binding_count = std::min(
+        statement.bindings.size(),
+        statement.iteration_binding_sources.size());
+    MirValueId element;
+    for (std::size_t binding_index = 0;
+         binding_index < binding_count;
+         ++binding_index) {
+      const MirLocalId local = ensure_local(statement.bindings[binding_index]);
+      switch (statement.iteration_binding_sources[binding_index].kind) {
+      case HirIterationBindingKind::Element:
+        if (!element.is_valid()) {
+          element = iteration_element(
+              iterable_local,
+              iterable_expression.type,
+              index,
+              statement.range);
+        }
+        store(local_address(local, statement.range), element, statement.range);
+        break;
+      case HirIterationBindingKind::TupleMember:
+        diagnostics_.error(
+            statement.range,
+            "tuple iteration binding reached MIR before tuple lowering was implemented");
+        break;
+      case HirIterationBindingKind::Index:
+        store(local_address(local, statement.range), index, statement.range);
+        break;
+      }
     }
     lower_block(statement.blocks.front());
     branch(post_block, statement.range);

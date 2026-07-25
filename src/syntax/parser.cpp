@@ -525,6 +525,31 @@ private:
     return tree_.add_node(NodeKind::TuplePattern, start, position_, std::move(children));
   }
 
+  // Iteration's unparenthesized comma separates the element binding from the
+  // optional index binding; it never groups declaration names. Construct one
+  // ordinary BindingPattern around exactly one contextual name so every later
+  // phase can distinguish `for value, index in values` without inspecting
+  // token positions. Parenthesized element patterns reuse declaration tuple
+  // syntax and therefore retain the same arity and discard grammar.
+  [[nodiscard]] NodeId parse_iteration_binding_pattern(
+      std::string diagnostic, bool allow_tuple) {
+    if (allow_tuple && at(TokenKind::LeftParen)) {
+      return parse_binding_pattern();
+    }
+
+    const std::uint32_t pattern_start = position_;
+    const std::uint32_t name_start = position_;
+    (void)expect_name(std::move(diagnostic));
+    const NodeId names = tree_.add_node(
+        NodeKind::NameList, name_start, position_);
+    std::vector<NodeId> children{names};
+    return tree_.add_node(
+        NodeKind::BindingPattern,
+        pattern_start,
+        position_,
+        std::move(children));
+  }
+
   [[nodiscard]] NodeId parse_parametric_parameters() {
     const std::uint32_t start = position_;
     std::vector<NodeId> parameters;
@@ -1412,8 +1437,33 @@ private:
 
   [[nodiscard]] bool begins_iteration_header() const {
     std::uint32_t distance = 0;
-    if (!is_contextual_name(lookahead(distance).kind)) return false;
-    ++distance;
+    if (is_contextual_name(lookahead(distance).kind)) {
+      ++distance;
+    } else if (lookahead(distance).kind == TokenKind::LeftParen) {
+      // A conditional loop may begin with an arbitrary parenthesized
+      // expression. Only treat it as an iteration pattern when the matching
+      // close is followed by the optional index binding and `in`. Balancing
+      // parentheses keeps calls inside a malformed would-be condition from
+      // making this syntax look like a tuple pattern accidentally.
+      std::uint32_t parenthesis_depth = 0;
+      do {
+        const TokenKind kind = lookahead(distance).kind;
+        if (kind == TokenKind::EndOfFile ||
+            kind == TokenKind::LeftBrace ||
+            kind == TokenKind::Semicolon) {
+          return false;
+        }
+        if (kind == TokenKind::LeftParen) {
+          ++parenthesis_depth;
+        } else if (kind == TokenKind::RightParen) {
+          if (parenthesis_depth == 0) return false;
+          --parenthesis_depth;
+        }
+        ++distance;
+      } while (parenthesis_depth != 0);
+    } else {
+      return false;
+    }
     if (lookahead(distance).kind == TokenKind::Comma) {
       ++distance;
       if (!is_contextual_name(lookahead(distance).kind)) return false;
@@ -1430,12 +1480,15 @@ private:
       children.push_back(parse_block());
     } else if (begins_iteration_header()) {
       const std::uint32_t header_start = position_;
-      (void)expect_name("expected iteration binding");
+      std::vector<NodeId> header_children;
+      header_children.push_back(parse_iteration_binding_pattern(
+          "expected iteration value binding", true));
       if (match(TokenKind::Comma)) {
-        (void)expect_name("expected index binding after ','");
+        header_children.push_back(parse_iteration_binding_pattern(
+            "expected index binding after ','", false));
       }
       (void)expect(TokenKind::KeywordIn, "expected 'in' in iteration header");
-      std::vector<NodeId> header_children{parse_expression(1, false)};
+      header_children.push_back(parse_expression(1, false));
       children.push_back(tree_.add_node(
           NodeKind::IterationHeader, header_start, position_, std::move(header_children)));
       children.push_back(parse_block());

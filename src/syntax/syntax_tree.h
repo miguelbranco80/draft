@@ -115,6 +115,11 @@ enum class NodeKind {
   DeferStatement,
   IfStatement,
   ForStatement,
+  // IterationHeader owns the surface binding structure instead of leaving
+  // semantic consumers to rediscover it from token offsets. Its children are
+  // the element BindingPattern or TuplePattern, an optional single-name index
+  // BindingPattern, and the iterable expression in that order. This shape
+  // preserves discarded positions and tuple-member order through parsing.
   IterationHeader,
   ForClause,
   SwitchStatement,

@@ -4732,12 +4732,13 @@ private:
     const SyntaxNode &header = tree.node(statement.children.front());
 
     if (header.kind == NodeKind::IterationHeader) {
-      if (header.children.size() != 1) {
+      if (header.children.size() != 2 && header.children.size() != 3) {
         return failed_execution(fail(
             header.range, "malformed compile-time iteration header", required));
       }
+      const NodeId iterable_id = header.children.back();
       const EvalResult iterable = evaluate_expression(
-          tree, header.children.front(), scope, required);
+          tree, iterable_id, scope, required);
       if (iterable.status != EvalStatus::Ready) {
         return failed_execution(iterable);
       }
@@ -4749,22 +4750,38 @@ private:
             "compile-time iteration currently requires an array constant",
             required));
       }
-      std::vector<std::string> bindings;
-      const SyntaxNode &iterable_node = tree.node(header.children.front());
-      for (std::uint32_t token_index = header.token_begin;
-           token_index < iterable_node.token_begin;
-           ++token_index) {
-        const Token &token = tree.token(token_index);
-        if (token_is_contextual_name(token.kind)) {
-          bindings.emplace_back(sources_.text(token.range));
+      auto pattern_names = [&] (NodeId pattern_id) {
+        std::vector<std::string> names;
+        const SyntaxNode &pattern = tree.node(pattern_id);
+        for (NodeId child_id : pattern.children) {
+          const SyntaxNode &child = tree.node(child_id);
+          if (child.kind != NodeKind::NameList) continue;
+          for (std::uint32_t token_index = child.token_begin;
+               token_index < child.token_end;
+               ++token_index) {
+            const Token &token = tree.token(token_index);
+            if (token_is_contextual_name(token.kind)) {
+              names.emplace_back(sources_.text(token.range));
+            }
+          }
         }
-      }
-      if (bindings.empty() || bindings.size() > 2) {
+        return names;
+      };
+      const SyntaxNode &value_pattern = tree.node(header.children.front());
+      const std::vector<std::string> value_names = pattern_names(
+          header.children.front());
+      const std::vector<std::string> index_names = header.children.size() == 3
+          ? pattern_names(header.children[1])
+          : std::vector<std::string>{};
+      if (value_pattern.kind != NodeKind::BindingPattern ||
+          value_names.size() != 1 || index_names.size() > 1) {
         return failed_execution(fail(
             header.range,
             "compile-time array iteration requires one value and optional index binding",
             required));
       }
+      std::vector<std::string> bindings = value_names;
+      if (!index_names.empty()) bindings.push_back(index_names.front());
 
       const Type array_type = semantic_.types.type(iterable.type);
       local_frames_.back().scopes.emplace_back();

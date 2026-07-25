@@ -368,25 +368,17 @@ private:
     if (loop.children.empty()) return std::nullopt;
     const SyntaxNode &header = tree->node(loop.children.front());
     if (header.kind != NodeKind::IterationHeader ||
-        header.children.empty()) {
+        (header.children.size() != 2 && header.children.size() != 3)) {
       return std::nullopt;
     }
-
-    std::optional<std::uint32_t> comma_end;
-    for (std::uint32_t index = header.token_begin;
-         index < header.token_end; ++index) {
-      if (tree->token(index).kind == TokenKind::Comma) {
-        comma_end = tree->token(index).range.end.offset;
-        break;
-      }
-    }
-    if (!comma_end.has_value()) return std::nullopt;
-
     SymbolId index_binding;
-    for (SymbolId binding : statement.bindings) {
-      const Symbol &symbol = package_.symbols.symbol(binding);
-      if (symbol.name_range.begin.offset >= *comma_end) {
-        index_binding = binding;
+    const std::size_t binding_count = std::min(
+        statement.bindings.size(),
+        statement.iteration_binding_sources.size());
+    for (std::size_t index = 0; index < binding_count; ++index) {
+      if (statement.iteration_binding_sources[index].kind ==
+          HirIterationBindingKind::Index) {
+        index_binding = statement.bindings[index];
         break;
       }
     }
@@ -403,7 +395,7 @@ private:
     SemanticLoopRange fact;
     fact.kind = SemanticLoopRangeKind::IterationIndex;
     fact.binding = index_binding;
-    fact.upper = {statement.syntax.file, header.children.front()};
+    fact.upper = {statement.syntax.file, header.children.back()};
     fact.upper_type = hir_.expression(statement.expressions.front()).type;
     collect_expression_symbols(
         hir_, statement.expressions.front(), fact.upper_symbols);

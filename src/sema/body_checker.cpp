@@ -997,6 +997,27 @@ private:
     return names;
   }
 
+  // Returns the ordered names owned by one parser-produced binding pattern.
+  // Iteration headers now carry this node directly, so semantic checking does
+  // not infer whether a comma belongs to a tuple or to the optional index from
+  // surrounding token offsets. Malformed recovery nodes simply produce an
+  // empty list and their parser diagnostic remains authoritative.
+  [[nodiscard]] std::vector<SourceName> names_in_binding_pattern(
+      const SyntaxTree &tree, NodeId pattern_id) const {
+    const SyntaxNode &pattern = tree.node(pattern_id);
+    if (pattern.kind != NodeKind::BindingPattern &&
+        pattern.kind != NodeKind::TuplePattern) {
+      return {};
+    }
+    for (NodeId child_id : pattern.children) {
+      const SyntaxNode &child = tree.node(child_id);
+      if (child.kind == NodeKind::NameList) {
+        return names_in_span(tree, child.token_begin, child.token_end);
+      }
+    }
+    return {};
+  }
+
   // A contextual alternative has a deliberately narrower keyword exception
   // than an ordinary source name. Keep that exception out of names_in_span so
   // `struct` and `distinct` cannot start behaving like declaration, package,
@@ -7813,11 +7834,13 @@ private:
     const SyntaxNode &node = tree.node(statement_id);
     if (node.children.empty()) return std::nullopt;
     const SyntaxNode &header = tree.node(node.children.front());
-    if (header.kind != NodeKind::IterationHeader || header.children.empty()) {
+    if (header.kind != NodeKind::IterationHeader ||
+        (header.children.size() != 2 && header.children.size() != 3)) {
       return std::nullopt;
     }
+    const NodeId iterable_id = header.children.back();
     const StaticArgumentPack *pack = active_static_argument_pack(
-        tree, header.children.front(), scope);
+        tree, iterable_id, scope);
     if (pack == nullptr) return std::nullopt;
 
     HirStatement statement;
@@ -7828,15 +7851,21 @@ private:
       return hir_.add_statement(std::move(statement));
     }
 
-    const SyntaxNode &iterable = tree.node(header.children.front());
-    const std::vector<SourceName> names = names_in_span(
-        tree, header.token_begin, iterable.token_begin);
-    if (names.empty() || names.size() > 2) {
+    const SyntaxNode &value_pattern = tree.node(header.children.front());
+    const std::vector<SourceName> value_names = names_in_binding_pattern(
+        tree, header.children.front());
+    const std::vector<SourceName> index_names = header.children.size() == 3
+        ? names_in_binding_pattern(tree, header.children[1])
+        : std::vector<SourceName>{};
+    if (value_pattern.kind != NodeKind::BindingPattern ||
+        value_names.size() != 1 || index_names.size() > 1) {
       diagnostics_.error(
           header.range,
-          "static pack iteration requires a value and optional index binding");
+          "static pack iteration requires a single value and optional index binding");
       return hir_.add_statement(std::move(statement));
     }
+    std::vector<SourceName> names = value_names;
+    if (!index_names.empty()) names.push_back(index_names.front());
 
     auto declare_iteration_binding = [&](
         const SourceName &name,
@@ -8057,11 +8086,15 @@ private:
         statement.for_kind = HirForKind::Iteration;
         const NodeId header_id = node.children.front();
         const SyntaxNode &header = tree.node(header_id);
-        if (header.children.empty()) break;
+        if (header.children.size() != 2 && header.children.size() != 3) {
+          diagnostics_.error(header.range, "malformed iteration header");
+          break;
+        }
+        const NodeId iterable_id = header.children.back();
         const ScopeId loop_scope = semantic_.symbols.add_scope(
             ScopeKind::Block, scope, header.range);
         const HirExpressionId iterable =
-            check_expression(tree, header.children.front(), scope);
+            check_expression(tree, iterable_id, scope);
         statement.expressions.push_back(iterable);
         const Type iterable_type = runtime_scalar_type(
             hir_.expression(iterable).type);
@@ -8071,29 +8104,56 @@ private:
         } else {
           diagnostics_.error(header.range, "iteration requires an array or slice");
         }
-        const SyntaxNode &iterable_syntax = tree.node(header.children.front());
-        const std::vector<SourceName> names = names_in_span(
-            tree, header.token_begin, iterable_syntax.token_begin);
-        for (std::size_t index = 0; index < names.size() && index < 2; ++index) {
-          if (names[index].text == "_") continue;
+        const SyntaxNode &value_pattern = tree.node(header.children.front());
+        const std::vector<SourceName> value_names = names_in_binding_pattern(
+            tree, header.children.front());
+        const std::vector<SourceName> index_names = header.children.size() == 3
+            ? names_in_binding_pattern(tree, header.children[1])
+            : std::vector<SourceName>{};
+        if (value_pattern.kind != NodeKind::BindingPattern ||
+            value_names.size() != 1 || index_names.size() > 1) {
+          diagnostics_.error(
+              value_pattern.range,
+              "iteration requires a single value and optional index binding");
+        }
+
+        auto declare_iteration_binding = [&](
+            const SourceName &name,
+            TypeId type,
+            HirIterationBindingSource source) {
+          if (name.text == "_") return;
           Symbol binding;
-          binding.name = names[index].text;
+          binding.name = name.text;
           binding.kind = SymbolKind::Local;
           binding.scope = loop_scope;
-          binding.type = index == 0
-              ? element_type
-              : semantic_.types.builtins().usize_type;
+          binding.type = type;
           binding.syntax = {tree.file(), header_id};
-          binding.name_range = names[index].range;
+          binding.name_range = name.range;
           const SymbolId binding_id =
               semantic_.symbols.declare(std::move(binding), diagnostics_);
-          if (binding_id.is_valid()) statement.bindings.push_back(binding_id);
+          if (binding_id.is_valid()) {
+            statement.bindings.push_back(binding_id);
+            statement.iteration_binding_sources.push_back(source);
+          }
+        };
+        if (value_pattern.kind == NodeKind::BindingPattern &&
+            value_names.size() == 1) {
+          declare_iteration_binding(
+              value_names.front(),
+              element_type,
+              {HirIterationBindingKind::Element, 0});
+        }
+        if (index_names.size() == 1) {
+          declare_iteration_binding(
+              index_names.front(),
+              semantic_.types.builtins().usize_type,
+              {HirIterationBindingKind::Index, 0});
         }
         if (node.children.size() >= 2) {
           SemanticBranchRefinement refinement;
           refinement.kind =
               SemanticBranchRefinementKind::LoopIteration;
-          refinement.subject = {tree.file(), header.children.front()};
+          refinement.subject = {tree.file(), iterable_id};
           refinement.subject_type = hir_.expression(iterable).type;
           active_branch_refinements_.push_back(std::move(refinement));
           statement.blocks.push_back(check_block(

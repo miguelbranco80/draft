@@ -393,6 +393,40 @@ main :: proc() -> int {
   EXPECT(state, source.tree.count(draft::NodeKind::Judgment) == 1);
 }
 
+void test_iteration_header_structure(TestState &state) {
+  ParsedSource source(R"draft(
+package iteration_headers
+
+run :: proc(values: [2]u32, pairs: [2](u32, bool), ready: bool) {
+    for value, index in values {}
+    for (number, _), index in pairs {}
+    for (ready) {}
+}
+)draft");
+
+  expect_clean(state, source);
+  EXPECT(state, source.tree.count(draft::NodeKind::IterationHeader) == 2);
+
+  bool saw_simple_binding = false;
+  bool saw_tuple_binding = false;
+  for (const draft::SyntaxNode &node : source.tree.nodes()) {
+    if (node.kind != draft::NodeKind::IterationHeader) continue;
+    EXPECT(state, node.children.size() == 3);
+    if (node.children.size() != 3) continue;
+    const draft::NodeKind value_kind =
+        source.tree.node(node.children[0]).kind;
+    const draft::NodeKind index_kind =
+        source.tree.node(node.children[1]).kind;
+    EXPECT(state, index_kind == draft::NodeKind::BindingPattern);
+    saw_simple_binding = saw_simple_binding ||
+        value_kind == draft::NodeKind::BindingPattern;
+    saw_tuple_binding = saw_tuple_binding ||
+        value_kind == draft::NodeKind::TuplePattern;
+  }
+  EXPECT(state, saw_simple_binding);
+  EXPECT(state, saw_tuple_binding);
+}
+
 void test_binary_xor_and_postfix_dereference(TestState &state) {
   ParsedSource source(R"draft(
 package operators
@@ -512,6 +546,7 @@ void test_invalid_production_recovery(TestState &state) {
       {"missing denied expression open", "package bad\nvalue := deny asm 1\n", "expected '{' before denied expression"},
       {"missing block open", "package bad\nrun :: proc() { if true return }\n", "expected '{' to begin block"},
       {"missing for separator", "package bad\nrun :: proc() { for i := 0; i < 4 {} }\n", "expected second ';' in for clause"},
+      {"invalid iteration tuple binding", "package bad\nrun :: proc(values: [1](u32, u32)) { for (left, 42) in values {} }\n", "expected binding name after ',' in tuple pattern"},
       {"missing switch open", "package bad\nrun :: proc(value: u32) { switch value case: return }\n", "expected '{' after switch subject"},
       {"missing switch case keyword", "package bad\nrun :: proc(value: u32) { switch value { value: return } }\n", "expected 'case' in switch"},
       {"missing switch case colon", "package bad\nrun :: proc(value: u32) { switch value { case 1 return } }\n", "expected ':' after switch case labels"},
@@ -690,6 +725,7 @@ int main() {
   test_every_valid_node_production(state);
   test_types_declarations_and_interop(state);
   test_procedure_control_flow_and_expressions(state);
+  test_iteration_header_structure(state);
   test_binary_xor_and_postfix_dereference(state);
   test_synthesis_and_assembly_surface(state);
   test_static_argument_pack_syntax(state);

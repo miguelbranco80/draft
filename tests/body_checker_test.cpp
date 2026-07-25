@@ -648,6 +648,9 @@ loop_sum :: proc(values: []i64) -> i64 {
             break
         }
     }
+    for _, index in values {
+        total += cast[i64](index)
+    }
     for total < 100 {
         total += 1
     }
@@ -749,6 +752,7 @@ main :: proc() {
   bool saw_switch_shape = false;
   bool saw_tuple_destructuring = false;
   bool saw_variant_payload_binding = false;
+  bool saw_index_only_iteration = false;
   for (const draft::ProcedureBodyHirResult &product :
        source.bodies.procedures) {
     for (std::size_t index = 0;
@@ -774,6 +778,13 @@ main :: proc() {
            statement.local_destructures_tuple &&
            statement.bindings.size() == 1 &&
            statement.binding_member_indices.size() == 1);
+      saw_index_only_iteration = saw_index_only_iteration ||
+          (statement.kind == draft::HirStatementKind::For &&
+           statement.for_kind == draft::HirForKind::Iteration &&
+           statement.bindings.size() == 1 &&
+           statement.iteration_binding_sources.size() == 1 &&
+           statement.iteration_binding_sources.front().kind ==
+               draft::HirIterationBindingKind::Index);
       if (statement.kind == draft::HirStatementKind::Switch) {
         saw_switch_shape = saw_switch_shape ||
             (statement.switch_cases.size() == 2 &&
@@ -796,6 +807,7 @@ main :: proc() {
   EXPECT(state, saw_switch_shape);
   EXPECT(state, saw_tuple_destructuring);
   EXPECT(state, saw_variant_payload_binding);
+  EXPECT(state, saw_index_only_iteration);
 }
 
 void test_body_diagnostics(TestState &state) {

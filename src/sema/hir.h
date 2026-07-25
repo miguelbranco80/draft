@@ -224,6 +224,31 @@ enum class HirForKind {
   Iteration,
 };
 
+// HirIterationBindingKind identifies the logical source copied into one
+// retained iteration binding. Element is the complete sequence element;
+// TupleMember is one member extracted from a tuple element; Index is the hidden
+// zero-based usize induction value. The enum order is neither serialized nor
+// part of a content hash.
+enum class HirIterationBindingKind {
+  Element,
+  TupleMember,
+  Index,
+};
+
+// One HirIterationBindingSource explains which value initializes the symbol at
+// the same index in HirStatement::bindings. tuple_member_index is meaningful
+// only for TupleMember and names the member in the iterable's element tuple;
+// other kinds keep it zero. The vector is populated only for
+// HirForKind::Iteration and has exactly the same length as bindings, including
+// when an authored `_` removed an earlier source position. Keeping the source
+// explicit prevents lowering and analyses from mistaking the first retained
+// binding in `for _, index in ...` for the discarded element value. These are
+// procedure-local HIR facts and are not serialized or content-hashed.
+struct HirIterationBindingSource {
+  HirIterationBindingKind kind = HirIterationBindingKind::Element;
+  std::size_t tuple_member_index = 0;
+};
+
 // HirStatement owns references to evaluated expressions, nested structured
 // blocks, and any local symbols it introduces. Assignment lvalues precede their
 // right-hand expressions in expressions, preserving Draft evaluation order;
@@ -238,6 +263,7 @@ struct HirStatement {
   std::vector<HirExpressionId> expressions;
   std::vector<HirBlockId> blocks;
   std::vector<SymbolId> bindings;
+  std::vector<HirIterationBindingSource> iteration_binding_sources;
   // A tuple-pattern declaration evaluates one aggregate initializer and gives
   // each non-discard binding one selected member. This parallel vector records
   // those source member indices; discarded `_` positions simply have no row.
