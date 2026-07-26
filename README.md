@@ -152,6 +152,6 @@ does not require an adjacent checkout or `core` path configuration. The
 repository skill remains separately installable for external coding agents;
 ordinary compiler use does not require Codex.
 
-See [Turbo Draft](tools/draftide/README.md) for controls and
-[the implementation boundary](docs/implementation/turbo-draft.md) for the
+See [DraftIDE](tools/draftide/README.md) for controls and
+[the implementation boundary](docs/implementation/draftide.md) for the
 ownership design.

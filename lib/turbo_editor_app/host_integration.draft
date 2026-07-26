@@ -1,5 +1,5 @@
 // Host integration contains the optional compiler-facing state transitions for
-// Turbo Draft. It copies variable-length service results into Draft ownership,
+// DraftIDE. It copies variable-length service results into Draft ownership,
 // maintains stable semantic navigation destinations, restores each document's
 // root package before a compiler action, and translates Build/Run results into one
 // explicit child-process request.

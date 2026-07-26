@@ -660,7 +660,7 @@ bool CompilerSession::create_build_directory(DiagnosticSink &diagnostics) {
       std::filesystem::temp_directory_path(error);
   if (error) {
     diagnostics.error(SourceRange::invalid(),
-                      "cannot locate a temporary directory for Turbo Draft: " +
+                      "cannot locate a temporary directory for DraftIDE: " +
                           error.message());
     return false;
   }
@@ -683,14 +683,14 @@ bool CompilerSession::create_build_directory(DiagnosticSink &diagnostics) {
     if (error && error != std::errc::file_exists) {
       diagnostics.error(
           SourceRange::invalid(),
-          "cannot create a temporary Turbo Draft build directory: " +
+          "cannot create a temporary DraftIDE build directory: " +
               error.message());
       return false;
     }
   }
   diagnostics.error(
       SourceRange::invalid(),
-      "cannot reserve a unique temporary Turbo Draft build directory");
+      "cannot reserve a unique temporary DraftIDE build directory");
   return false;
 }
 

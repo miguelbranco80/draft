@@ -1,6 +1,6 @@
-# Turbo Draft
+# DraftIDE
 
-Turbo Draft is the full-screen terminal IDE written in Draft. The bootstrap
+DraftIDE is the full-screen terminal IDE written in Draft. The bootstrap
 compiler service is the only C++ component; ordinary files, editor state,
 menus, dialogs, terminal/UI policy, compiler commands, and `main` are Draft.
 
@@ -80,5 +80,5 @@ For a noninteractive compiler/UI composition proof:
 build/draftide . --smoke
 ```
 
-See [the implementation boundary](../../docs/implementation/turbo-draft.md)
+See [the implementation boundary](../../docs/implementation/draftide.md)
 for ownership, compiler transactions, rendering, and verification details.

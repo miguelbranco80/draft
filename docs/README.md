@@ -41,7 +41,7 @@ generalize those facts to every future Draft target.
 - [Elaboration, semantic context, and pins](implementation/elaboration-and-pins.md)
 - [Native backend and artifacts](implementation/native-backend-and-artifacts.md)
 - [Hosted runtime and core packages](implementation/runtime-and-core.md)
-- [Turbo Draft and the embedded compiler service](implementation/turbo-draft.md)
+- [DraftIDE and the embedded compiler service](implementation/draftide.md)
 - [Validation, judgments, and evidence](implementation/validation-and-evidence.md)
 - [Implementation limits](implementation/implementation-limits.md)
 

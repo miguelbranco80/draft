@@ -1,5 +1,5 @@
 // turbo_editor_app's package module owns the long-lived application model shared
-// by the standalone editor and Turbo Draft: documents, compiler-derived rows,
+// by the standalone editor and DraftIDE: documents, compiler-derived rows,
 // window values, text inputs, navigation history, and local clipboard bytes.
 // Sibling modules implement commands, views, desktop composition, optional host
 // integration, and terminal lifetime over this one explicit owner.

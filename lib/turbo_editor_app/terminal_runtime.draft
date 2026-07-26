@@ -569,7 +569,7 @@ pub run_with_host :: proc(
     refresh_root_packages(&app)
     refresh_reachable_sources(&app)
     if workspace_files_ready {
-        app.status = "Turbo Draft compiler session attached"
+        app.status = "DraftIDE compiler session attached"
     } else {
         app.status = "Compiler attached; Workspace Files is unavailable"
     }
@@ -599,7 +599,7 @@ pub run_with_host_bytes :: proc(
     refresh_root_packages(&app)
     refresh_reachable_sources(&app)
     if workspace_files_ready {
-        app.status = "Turbo Draft compiler session attached"
+        app.status = "DraftIDE compiler session attached"
     } else {
         app.status = "Compiler attached; Workspace Files is unavailable"
     }

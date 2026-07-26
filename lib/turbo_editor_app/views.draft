@@ -1837,12 +1837,14 @@ paint_close_document :: proc(app: ^App, content: turbo_ui.Rect) {
     }
 }
 
+// paint_about presents only DraftIDE's product role and authorship plus one
+// local close action. It borrows the current dialog content rectangle, retains
+// no label storage, and changes application state only when Close is activated.
 paint_about :: proc(app: ^App, content: turbo_ui.Rect) {
-    lines := [4]string{
-        "Turbo Draft",
-        "A terminal-native Draft development environment",
-        "C++ compiler service; Draft editor and Turbo UI",
-        "Files and draft.workspace are the source of truth",
+    lines := [3]string{
+        "DraftIDE is the default IDE for Draft.",
+        "Created by Miguel Branco",
+        "msb@spacebase.org",
     }
     for index: usize = 0; index < len(lines); index += 1 {
         turbo_ui.label(

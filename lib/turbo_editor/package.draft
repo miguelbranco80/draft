@@ -1,5 +1,5 @@
 // turbo_editor is the reusable document engine and cell-editor view used by
-// Turbo Draft. It owns byte buffers, one pathname, a saved-disk baseline, and
+// DraftIDE. It owns byte buffers, one pathname, a saved-disk baseline, and
 // bounded undo history; it borrows turbo_ui frame state only while painting or
 // applying one semantic event. It does not own a terminal, renderer, event
 // loop, compiler, process, project, or background task.

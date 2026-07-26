@@ -158,7 +158,7 @@ the work the command actually performed. Failed commands still print the
 completed portion of an enabled report, which makes the option useful for
 locating failure-path costs.
 
-## Run Turbo Draft
+## Run DraftIDE
 
 The default CMake build also produces `build/draftide`: a Draft-hosted terminal
 IDE linked to the sibling bootstrap compiler service. The CMake target compiles
@@ -172,7 +172,7 @@ build/draftide path/to/workspace \
   [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows]
 ```
 
-Turbo Draft uses the same upward workspace discovery and `draft.workspace`
+DraftIDE uses the same upward workspace discovery and `draft.workspace`
 default program as `draftc`. Without a marker it discovers executable roots in
 the standalone directory. `--source` may select the initial direct package
 file; otherwise the compiler opens the first target-selected source in bytewise
@@ -181,7 +181,7 @@ defaults to the native host. Unless `--target` supplies an explicit override,
 selecting a named program applies its effective workspace/program target.
 IDE-local root/window selections are not stored in the workspace manifest.
 
-Turbo Draft opens ordinary files. File > Open File, Save As, and Open Workspace
+DraftIDE opens ordinary files. File > Open File, Save As, and Open Workspace
 share a modal directory browser. Window > Workspace Files opens an independent
 persistent browser rooted at the active Workspace; Enter or a same-row double
 click navigates or opens the selected row, one click only selects, and Up cannot

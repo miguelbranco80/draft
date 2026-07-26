@@ -1,9 +1,9 @@
-# Turbo Draft and the embedded compiler service
+# DraftIDE and the embedded compiler service
 
 Status: first synchronous terminal IDE implemented on every current hosted
 target; native execution is qualified on matching hosts.
 
-Turbo Draft is a Draft program, not a C++ editor wrapped around Draft widgets.
+DraftIDE is a Draft program, not a C++ editor wrapped around Draft widgets.
 `tools/draftide` contains the hosted Draft `main`; `lib/turbo_editor_app` owns
 buffers, terminal resources, immediate-mode UI state, workspace interaction,
 Build/Run policy, and the event loop. The same application package runs without
@@ -246,7 +246,7 @@ three forms of chrome. Flat hit testing ends at the frame, matching the cells
 actually painted.
 Menu titles and rows derive both their visible underlined mnemonic and their
 activation from one access-key value. Right-aligned command shortcuts remain
-application policy, so Turbo Draft handles them before focused controls and
+application policy, so DraftIDE handles them before focused controls and
 invokes the same direct operation as the corresponding menu branch.
 Disabled menu rows neither acquire the pointer highlight nor discard the last
 enabled selection; crossing separators or leaving/re-entering a popup likewise

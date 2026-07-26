@@ -1,7 +1,7 @@
 # turbo_editor_app
 
 `turbo_editor_app` is the reusable Draft application shell shared by the
-standalone editor and Turbo Draft. It owns documents, terminal resources, the
+standalone editor and DraftIDE. It owns documents, terminal resources, the
 event loop, File/Edit/Compile/Run/Window/Help menus, dialogs, desktop windows,
 filesystem browsing, and optional compiler interaction.
 

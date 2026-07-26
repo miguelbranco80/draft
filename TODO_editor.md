@@ -1,7 +1,7 @@
-# Turbo UI and Turbo Draft
+# Turbo UI and DraftIDE
 
 Build the reusable Turbo-style terminal UI first, then use it to construct
-Turbo Draft. The UI is an ordinary Draft library of its own—not `core`, not an
+DraftIDE. The UI is an ordinary Draft library of its own—not `core`, not an
 editor-private module, and not coupled to the compiler.
 
 Suggested source layout:
@@ -48,7 +48,7 @@ candidate or revision system, and IDE state does not belong under `.draft/`.
   resize notifications to `turbo_ui` events.
 - [x] Build `turbo-ui-gallery` with the blue palette, menus, dialogs, lists,
   checkboxes, splitters and overlapping windows. It is the interactive API
-  example and the proof that the library is independent of Turbo Draft.
+  example and the proof that the library is independent of DraftIDE.
 - [x] Check the library and gallery on all four targets and run native smoke
   tests on matching hosts.
 

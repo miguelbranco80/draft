@@ -1,5 +1,5 @@
 // Desktop composition is the application-facing presentation layer. It authors
-// Turbo Draft's menu vocabulary, window titles, modal routing, window content
+// DraftIDE's menu vocabulary, window titles, modal routing, window content
 // dispatch, and status bar while delegating widget mechanics to lib/turbo_ui
 // and document rendering to lib/turbo_editor.
 //
@@ -406,12 +406,12 @@ paint_app_menus :: proc(app: ^App) -> bool {
         request_shortcut_help(app)
     }
     if turbo_ui.menu_action(&app.ui, &app.menus, &help_menu,
-        991, "About Turbo Draft...", "", access_key = cast[u8]('a')) {
+        991, "About DraftIDE...", "", access_key = cast[u8]('a')) {
         turbo_ui.show_modal_window(
             &app.ui, app.windows[:], app.windows[Window_About].id,
         )
         app.ui.focused_id = 9100
-        app.status = "About Turbo Draft"
+        app.status = "About DraftIDE"
     }
     turbo_ui.end_menu(&app.ui, &app.menus, help_menu)
     return should_quit
@@ -544,7 +544,7 @@ paint_app :: proc(
         } else if index == Window_Close_Document {
             title = "Close Document"
         } else if index == Window_About {
-            title = "About Turbo Draft"
+            title = "About DraftIDE"
         }
         window_context: turbo_ui.Window_Context
         if index == Window_Find || index == Window_Quit ||

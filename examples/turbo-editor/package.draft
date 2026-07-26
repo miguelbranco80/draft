@@ -1,6 +1,6 @@
 // The standalone Turbo editor is intentionally a tiny client of the reusable
 // application package. It proves that the editor, terminal UI, and file model
-// do not require the bootstrap compiler service used by Turbo Draft.
+// do not require the bootstrap compiler service used by DraftIDE.
 package turbo_editor_example
 
 import lib/turbo_editor_app

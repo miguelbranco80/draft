@@ -1,4 +1,4 @@
-// End-to-end tests for the opaque compiler service consumed by Turbo Draft.
+// End-to-end tests for the opaque compiler service consumed by DraftIDE.
 //
 // These fixtures exercise the public C ABI rather than reaching into the UI:
 // create-time path validation, production-lexer spans, successful and failed

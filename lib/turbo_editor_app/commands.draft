@@ -762,7 +762,7 @@ submit_go_to_line :: proc(app: ^App) {
 }
 
 toggle_window :: proc(app: ^App, index: usize) {
-    assert(index < Window_Count, "Turbo Draft window index is invalid")
+    assert(index < Window_Count, "DraftIDE window index is invalid")
     id := app.windows[index].id
     if app.windows[index].visible {
         turbo_ui.hide_window(&app.ui, app.windows[:], id)

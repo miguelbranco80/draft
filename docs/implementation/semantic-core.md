@@ -15,7 +15,7 @@ ordinary lex. Editors therefore share UTF-8 validation, literal recognition,
 keyword classification, recovery transitions, and token boundaries with the
 compiler instead of maintaining another Draft lexer.
 
-The stream deliberately contains lexical facts only. Turbo Draft derives its
+The stream deliberately contains lexical facts only. DraftIDE derives its
 small declaration-name color from adjacent production tokens and derives all
 package/declaration/reference/effect/denial views from successful semantic
 products. Color themes and display policy remain outside `syntax`.

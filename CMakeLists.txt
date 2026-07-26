@@ -475,7 +475,7 @@ elseif(UNIX)
   )
 endif()
 
-# draftc builds Turbo Draft as an ordinary Draft executable with a hosted Draft
+# draftc builds DraftIDE as an ordinary Draft executable with a hosted Draft
 # main. The service is merely an explicitly mapped foreign provider. The build
 # graph remains acyclic: draftc does not consume the service, and the service
 # does not call back into the Draft UI.
@@ -531,7 +531,7 @@ if(DRAFTIDE_HOST_TARGET)
       draft_compiler_service
       ${DRAFTIDE_DRAFT_SOURCES}
       "${CMAKE_CURRENT_SOURCE_DIR}/draft.workspace"
-    COMMENT "Building the Draft-owned Turbo Draft executable"
+    COMMENT "Building the Draft-owned DraftIDE executable"
     VERBATIM
   )
   add_custom_target(draftide ALL DEPENDS "${DRAFTIDE_BUILD_STAMP}")

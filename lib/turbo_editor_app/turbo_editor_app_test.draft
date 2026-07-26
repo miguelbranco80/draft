@@ -1608,7 +1608,7 @@ test_complete_menu_vocabulary :: proc(test: ^testing.Test) {
 
     open_menu_for_test(&app, &surface, cast[u8]('h'))
     expect_surface_text(test, &surface, 43, 2, "Keyboard Shortcuts...")
-    expect_surface_text(test, &surface, 43, 3, "About Turbo Draft...")
+    expect_surface_text(test, &surface, 43, 3, "About DraftIDE...")
     testing.expect(test, !surface_has_black_shadow(&surface))
 }
 
@@ -1672,7 +1672,7 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
         "Key                  Command",
         "Arguments (one exact argv row)",
         "The active document has unsaved changes.",
-        "A terminal-native Draft development environment",
+        "DraftIDE is the default IDE for Draft.",
     }
     expected_actions := [10]string{
         "Next",
@@ -1712,6 +1712,12 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
         has_action := surface_contains(&surface, expected_actions[ordinal])
         testing.expect(test, has_field)
         testing.expect(test, has_action)
+        if index == Window_About {
+            testing.expect(test,
+                surface_contains(&surface, "Created by Miguel Branco"))
+            testing.expect(test,
+                surface_contains(&surface, "msb@spacebase.org"))
+        }
         testing.expect(test, !surface_has_black_shadow(&surface))
         turbo_ui.hide_window(&app.ui, app.windows[:], app.windows[index].id)
     }

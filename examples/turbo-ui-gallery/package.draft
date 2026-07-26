@@ -179,7 +179,7 @@ paint_files :: proc(
         "turbo-ui-gallery",
         "docs",
         "implementation",
-        "turbo-draft.md",
+        "draftide.md",
     }
     if content.width == 0 {
         return
