@@ -617,6 +617,41 @@ toggle_zoom :: proc(window: ^Window_State, desktop: Rect) {
     }
 }
 
+// toggle_active_window_zoom applies the same restore/zoom transition as the
+// title-bar control to the current ordinary window. Dialogs and tool windows
+// advertise zoomable=false and therefore reject the command. The operation is
+// useful to a conventional Window > Zoom/Restore menu without exposing the
+// private geometry helper or making the application duplicate restore bounds.
+pub toggle_active_window_zoom :: proc(
+    state: ^State,
+    windows: []Window_State,
+) -> bool {
+    index := window_index(windows, state.active_window)
+    if index == len(windows) || !windows[index].visible ||
+        !windows[index].flags.zoomable {
+        return false
+    }
+    toggle_zoom(&windows[index], state.desktop)
+    return true
+}
+
+// request_close_active_window feeds the active ordinary window through the
+// same close_requested result as Alt-F3 and the title-bar close control. The
+// application remains the authority over what closing that window means—for
+// example, an editor may ask about dirty document bytes before destroying it.
+pub request_close_active_window :: proc(
+    state: ^State,
+    windows: []Window_State,
+) -> bool {
+    index := window_index(windows, state.active_window)
+    if index == len(windows) || !windows[index].visible ||
+        !windows[index].flags.closable {
+        return false
+    }
+    state.window_close_command = state.active_window
+    return true
+}
+
 // apply_keyboard_window_command implements the classic explicit size/move mode.
 // Ctrl-F5 enters it for the active window, arrows move, Shift-arrows resize,
 // Enter accepts, and Escape restores the entry rectangle. Host applications

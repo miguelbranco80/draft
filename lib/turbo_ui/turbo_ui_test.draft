@@ -1064,6 +1064,80 @@ test_utf8_text_box :: proc(test: ^testing.Test) {
     testing.expect(test, fourth.changed && field.length == 4)
 }
 
+// Scalar-constrained fields reject invalid bytes before they enter caller
+// storage. This is the contract used by DraftIDE's Go to Line dialog: later
+// validation needs to check only range and overflow, never repair text input.
+test_unsigned_integer_text_box :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 24, 4)
+    defer tui.surface_destroy(&surface)
+    state: State
+    state.focused_id = 61
+    field: Text_Box_State
+    storage: [8]u8
+    begin_frame(&state, &surface, text_event("a1界2"), turbo_theme())
+    result := text_box(
+        &state,
+        61,
+        Rect{column = 1, row = 1, width = 12, height = 1},
+        &field,
+        storage[:],
+        true,
+        .unsigned_integer,
+    )
+    end_frame(&state)
+    testing.expect(test, result.changed && field.length == 2)
+    testing.expect(
+        test,
+        storage[0] == cast[u8]('1') && storage[1] == cast[u8]('2'),
+    )
+}
+
+// A sectioned status bar keeps command feedback and stable session identity
+// visually separate, but always preserves feedback when the terminal becomes
+// too narrow for both.
+test_sectioned_status_bar :: proc(test: ^testing.Test) {
+    surface: tui.Surface
+    tui.surface_init(&surface, 24, 3)
+    defer tui.surface_destroy(&surface)
+    state: State
+    right_text := [4]u8{67, 116, 120, 50}
+    begin_frame(&state, &surface, no_event(), turbo_theme())
+    status_bar_sections(
+        &state,
+        Rect{width = 24, height = 1},
+        "Ready",
+        right_text[:],
+    )
+    end_frame(&state)
+    (left, left_valid) := tui.cell_at(&surface, 0, 0)
+    (right, right_valid) := tui.cell_at(&surface, 20, 0)
+    testing.expect(test, left_valid && left.value == 'R')
+    testing.expect(test, right_valid && right.value == 'C')
+
+    begin_frame(&state, &surface, no_event(), turbo_theme())
+    status_bar_sections(
+        &state,
+        Rect{width = 5, height = 1},
+        "Ready",
+        right_text[:],
+    )
+    end_frame(&state)
+    (last, last_valid) := tui.cell_at(&surface, 4, 0)
+    testing.expect(test, last_valid && last.value == 'y')
+
+    begin_frame(&state, &surface, no_event(), turbo_theme())
+    status_bar_sections(
+        &state,
+        Rect{width = 8, height = 1},
+        "Ready",
+        right_text[:],
+    )
+    end_frame(&state)
+    (narrow_last, narrow_last_valid) := tui.cell_at(&surface, 7, 0)
+    testing.expect(test, narrow_last_valid && narrow_last.value == ' ')
+}
+
 // submit_test_combo keeps the field/popup draw order identical across events.
 submit_test_combo :: proc(
     state: ^State,

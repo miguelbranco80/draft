@@ -22,6 +22,23 @@ pub Text_Box_Result :: struct {
     full: bool,
 }
 
+// Text_Box_Kind constrains bytes at the control boundary when a field has a
+// semantic scalar type. `text` accepts the existing printable UTF-8 contract;
+// `unsigned_integer` accepts ASCII decimal digits only. The latter is useful
+// for line numbers and other bounded values: an invalid character never enters
+// caller storage, so validation errors can concern range rather than syntax.
+pub Text_Box_Kind :: enum u8 {
+    text,
+    unsigned_integer,
+}
+
+text_box_accepts_byte :: proc(kind: Text_Box_Kind, byte: u8) -> bool {
+    if kind == .unsigned_integer {
+        return byte >= cast[u8]('0') && byte <= cast[u8]('9')
+    }
+    return true
+}
+
 single_line_text :: proc(bytes: []u8) -> bool {
     if !utf8.valid_bytes(bytes) {
         return false
@@ -346,6 +363,7 @@ pub text_box :: proc(
     field: ^Text_Box_State,
     storage: []u8,
     enabled: bool = true,
+    kind: Text_Box_Kind = .text,
 ) -> Text_Box_Result {
     assert(field.length <= len(storage), "turbo_ui text box length exceeds storage")
     assert(field.cursor <= field.length, "turbo_ui text box cursor exceeds text")
@@ -381,6 +399,9 @@ pub text_box :: proc(
                     if byte < 32 || byte == 127 {
                         continue
                     }
+                    if !text_box_accepts_byte(kind, byte) {
+                        continue
+                    }
                     (changed, full) := accept_character(field, storage, byte)
                     result.changed = result.changed || changed
                     result.full = result.full || full
@@ -391,13 +412,15 @@ pub text_box :: proc(
             key := state.event.key
             bytes := storage[:field.length]
             if key.code == .character && !key.control && !key.alt {
-                (changed, full) := accept_character(
-                    field,
-                    storage,
-                    key.byte_value,
-                )
-                result.changed = changed
-                result.full = full
+                if text_box_accepts_byte(kind, key.byte_value) {
+                    (changed, full) := accept_character(
+                        field,
+                        storage,
+                        key.byte_value,
+                    )
+                    result.changed = changed
+                    result.full = full
+                }
                 state.event_handled = true
             } else if key.code == .left {
                 field.cursor = previous_grapheme(bytes, field.cursor)

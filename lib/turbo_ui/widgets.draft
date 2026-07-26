@@ -473,6 +473,108 @@ pub status_bar_bytes :: proc(state: ^State, bounds: Rect, text: []u8) {
     )
 }
 
+status_bytes_columns :: proc(text: []u8) -> (usize, bool) {
+    columns: usize
+    offset: usize
+    for offset < len(text) {
+        (next, width, error) := unicode.next_grapheme_bytes(text, offset)
+        if error != .none || next <= offset {
+            return (0, false)
+        }
+        columns = saturated_add(columns, width)
+        offset = next
+    }
+    return (columns, true)
+}
+
+// status_bar_sections keeps transient command feedback on the left and a
+// caller-owned session identity on the right. The right section is shown only
+// when it and one separating cell fit; on a narrow terminal the command result
+// wins rather than becoming unreadable. Both inputs are borrowed for this
+// frame and clipped by terminal columns, including non-ASCII workspace names.
+pub status_bar_sections :: proc(
+    state: ^State,
+    bounds: Rect,
+    left: string,
+    right: []u8,
+) {
+    fill_rect(state.surface, state.clip, bounds, ' ', state.theme.status)
+    left_bounds := bounds
+    (left_columns, left_valid) := text_columns(left)
+    (right_columns, right_valid) := status_bytes_columns(right)
+    right_bounds: Rect
+    required := saturated_add(saturated_add(left_columns, right_columns), 1)
+    show_right := left_valid && right_valid && len(right) != 0 &&
+        required <= bounds.width
+    if show_right {
+        right_bounds = Rect{
+            column = rect_right(bounds) - right_columns,
+            row = bounds.row,
+            width = right_columns,
+            height = bounds.height,
+        }
+        left_bounds.width = right_bounds.column - bounds.column - 1
+    }
+    write_clipped(
+        state.surface,
+        intersect(state.clip, left_bounds),
+        Point{column = left_bounds.column, row = left_bounds.row},
+        left,
+        state.theme.status,
+    )
+    if show_right {
+        write_clipped_bytes(
+            state.surface,
+            intersect(state.clip, right_bounds),
+            Point{column = right_bounds.column, row = right_bounds.row},
+            right,
+            state.theme.status,
+        )
+    }
+}
+
+// status_bar_sections_bytes is the mutable-left counterpart used for formatted
+// counts. It deliberately shares the same geometry rule as the string form.
+pub status_bar_sections_bytes :: proc(
+    state: ^State,
+    bounds: Rect,
+    left, right: []u8,
+) {
+    fill_rect(state.surface, state.clip, bounds, ' ', state.theme.status)
+    left_bounds := bounds
+    (left_columns, left_valid) := status_bytes_columns(left)
+    (right_columns, right_valid) := status_bytes_columns(right)
+    right_bounds: Rect
+    required := saturated_add(saturated_add(left_columns, right_columns), 1)
+    show_right := left_valid && right_valid && len(right) != 0 &&
+        required <= bounds.width
+    if show_right {
+        right_bounds = Rect{
+            column = rect_right(bounds) - right_columns,
+            row = bounds.row,
+            width = right_columns,
+            height = bounds.height,
+        }
+        left_bounds.width = right_bounds.column - bounds.column - 1
+    }
+    write_clipped_bytes(
+        state.surface,
+        intersect(state.clip, left_bounds),
+        Point{column = left_bounds.column, row = left_bounds.row},
+        left,
+        state.theme.status,
+    )
+    if show_right {
+        write_clipped_bytes(
+            state.surface,
+            intersect(state.clip, right_bounds),
+            Point{column = right_bounds.column, row = right_bounds.row},
+            right,
+            state.theme.status,
+        )
+    }
+}
+
 // dialog_begin uses the ordinary window mechanism and then repaints its content
 // with the dialog style. Modality remains application policy: the caller passes
 // only the dialog window to begin_window_frame when it should capture input.

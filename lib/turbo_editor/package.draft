@@ -182,6 +182,28 @@ pub is_unnamed :: proc(buffer: ^Buffer) -> bool {
     return buffer.unnamed
 }
 
+// can_undo/can_redo expose only history availability, not the history records
+// themselves. Menus can therefore present an honest disabled state while all
+// mutation and bounded-history invariants remain owned by undo/redo below.
+pub can_undo :: proc(buffer: ^Buffer) -> bool {
+    return !buffer.read_only && buffer.history_index != 0
+}
+
+pub can_redo :: proc(buffer: ^Buffer) -> bool {
+    return !buffer.read_only && buffer.history_index < buffer.history.length
+}
+
+// can_delete reports whether Delete can change bytes under the current cursor
+// or selection. It deliberately does not consider Backspace, whose boundary is
+// different and is invoked directly from the editor key path.
+pub can_delete :: proc(buffer: ^Buffer) -> bool {
+    if buffer.read_only {
+        return false
+    }
+    (_, _, selected) := selection(buffer)
+    return selected || buffer.cursor < buffer.bytes.length
+}
+
 clear_history :: proc(buffer: ^Buffer) {
     array.clear(&buffer.history)
     array.clear(&buffer.history_bytes)

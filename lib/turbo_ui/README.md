@@ -37,6 +37,9 @@ call `hide_window`. The frame includes a close box, reversible zoom box, and
 visible lower-right resize handle. Alt-F3 requests close; Ctrl-F5 enters
 keyboard move/size mode, arrows move, Shift-arrows resize, Enter accepts, and
 Escape restores the entry rectangle.
+Application menus can invoke the identical policies through
+`request_close_active_window` and `toggle_active_window_zoom`; neither helper
+silently applies application-specific close semantics.
 When a title lives in mutable/owned byte storage, pass an empty static title to
 `begin_window` and immediately call `window_title_bytes` before painting the
 content. This keeps Draft 1's string immutability boundary explicit while still
@@ -114,8 +117,14 @@ default action has distinct angle-bracket chrome, keyboard focus is visibly
 selected, and labels are centered by terminal columns. Text boxes preserve
 valid UTF-8 while accepting byte-stream terminal input, move/delete by
 grapheme, scroll horizontally, and report `changed`, `submitted`, and `full`.
+`Text_Box_Kind.text` accepts ordinary UTF-8 bytes; `unsigned_integer` accepts
+only ASCII decimal digits for fields such as one-based line numbers. The caller
+still owns range and semantic validation when the field is submitted.
 `status_bar_bytes` complements the immutable-string form for caller-formatted
 counts without allocation; its slice is borrowed only for the current frame.
+The two `status_bar_sections` forms keep transient feedback on the left and a
+session identity right-aligned only when both complete sections and their gap
+fit, dropping the identity first on a narrow terminal.
 Combo boxes keep their item slice borrowed and separate the owner-window field
 pass from the popup pass so choices remain above every window.
 
