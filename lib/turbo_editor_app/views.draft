@@ -116,15 +116,10 @@ paint_search :: proc(
         close_search(app)
     }
     if find_next_requested || find_previous_requested {
-        if perform_find(app, find_previous_requested) {
-            // Search text remains in App after dismissal. F3 and Shift-F3
-            // therefore continue this exact query without reopening a modal.
-            turbo_ui.hide_window(
-                &app.ui,
-                app.windows[:],
-                app.windows[Window_Find].id,
-            )
-        }
+        // Finding is a repeatable dialog action. The shared command updates the
+        // document selection underneath this modal, then restores this dialog
+        // and its query focus; only Cancel/Escape/window-close dismisses it.
+        _ = perform_find(app, find_previous_requested)
     }
 }
 

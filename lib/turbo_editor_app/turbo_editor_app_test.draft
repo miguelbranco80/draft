@@ -1804,6 +1804,94 @@ test_editing_shortcuts_apply_the_advertised_commands :: proc(test: ^testing.Test
     testing.expect(test, buffer.cursor == 12)
 }
 
+// Find and Replace are modal search sessions rather than one-shot prompts.
+// Their repeated actions update the document underneath, request the necessary
+// event-free repaint, and then restore the same dialog above the editor. This
+// regression drives the real immediate-mode controls because merely calling
+// perform_find would not catch a dialog which was hidden or left behind the
+// newly raised editor window.
+test_search_dialog_actions_keep_the_dialog_active :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-find-dialog.draft"))
+    defer destroy_app(&app)
+    buffer := active_buffer(&app)
+    turbo_editor.insert_text(buffer, "one two one")
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.search_box,
+        app.search[:],
+        "one",
+    ))
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.replacement_box,
+        app.replacement[:],
+        "ONE",
+    ))
+
+    surface: tui.Surface
+    tui.surface_init(&surface, 80, 24)
+    defer tui.surface_destroy(&surface)
+
+    turbo_editor.move_file_start(buffer)
+    request_search(&app)
+    _ = paint_app(&app, &surface, turbo_ui.no_event())
+    _ = paint_app(
+        &app,
+        &surface,
+        turbo_ui.key_event(turbo_ui.Key_Event{code = .enter}),
+    )
+    (match_start, match_end, selected) := turbo_editor.selection(buffer)
+    testing.expect(test, selected && match_start == 0 && match_end == 3)
+    testing.expect(test, app.windows[Window_Find].visible)
+    testing.expect(test,
+        app.ui.active_window == app.windows[Window_Find].id &&
+        app.ui.modal_window == app.windows[Window_Find].id)
+    testing.expect(test, app.ui.focused_id == 500)
+
+    // Previous from the first result wraps to the final result, but the search
+    // session itself remains active and ready for another Enter/Next command.
+    app.ui.focused_id = 503
+    _ = paint_app(
+        &app,
+        &surface,
+        turbo_ui.key_event(turbo_ui.Key_Event{code = .enter}),
+    )
+    (match_start, match_end, selected) = turbo_editor.selection(buffer)
+    testing.expect(test, selected && match_start == 8 && match_end == 11)
+    testing.expect(test, app.windows[Window_Find].visible)
+    testing.expect(test, app.ui.active_window == app.windows[Window_Find].id)
+    testing.expect(test, app.ui.focused_id == 500)
+
+    close_search(&app)
+    turbo_editor.move_file_start(buffer)
+    request_replace(&app)
+    _ = paint_app(&app, &surface, turbo_ui.no_event())
+    app.ui.focused_id = 584
+    _ = paint_app(
+        &app,
+        &surface,
+        turbo_ui.key_event(turbo_ui.Key_Event{code = .enter}),
+    )
+    (match_start, match_end, selected) = turbo_editor.selection(buffer)
+    testing.expect(test, selected && match_start == 0 && match_end == 3)
+    testing.expect(test, app.windows[Window_Replace].visible)
+    testing.expect(test,
+        app.ui.active_window == app.windows[Window_Replace].id &&
+        app.ui.modal_window == app.windows[Window_Replace].id)
+    testing.expect(test, app.ui.focused_id == 580)
+
+    app.ui.focused_id = 582
+    _ = paint_app(
+        &app,
+        &surface,
+        turbo_ui.key_event(turbo_ui.Key_Event{code = .enter}),
+    )
+    testing.expect(test, buffer.bytes.data[0] == cast[u8]('O'))
+    testing.expect(test, app.windows[Window_Replace].visible)
+    testing.expect(test, app.ui.active_window == app.windows[Window_Replace].id)
+    testing.expect(test, app.ui.focused_id == 580)
+}
+
 // New/Cut/Copy/Paste are ordinary document operations, not placeholder menu
 // rows. This regression drives the same C0 shortcuts produced by a raw local or
 // SSH terminal and proves the IDE-owned clipboard survives between documents.

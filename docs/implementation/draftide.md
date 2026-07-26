@@ -279,6 +279,12 @@ preserves that selection. Buttons expose separate measured widths for a classic
 shadow-capable footprint and an exact compact face; DraftIDE uses one-row faces,
 right-aligns dialog actions, and keeps toolbar actions at their leading edge.
 Both widths measure terminal columns rather than UTF-8 byte length.
+Find and Replace are repeatable modal sessions rather than one-shot prompts.
+Their document operation temporarily activates the editor to request an
+event-free repaint of its changed selection or bytes, then restores and raises
+the still-visible dialog with query focus. Cancel, Escape, and the close control
+remain the only session-ending actions; standalone F3/Shift-F3/F4 instead leave
+focus in the editor.
 No retained widget tree, callback table, or editor pointer crosses that layer.
 
 The event loop drains immediately queued terminal reads before one renderer
@@ -398,8 +404,9 @@ Diagnostics, explicit separation of Build/Resolve/Judge callbacks,
 pre-terminal F5 failure, runtime-result separation, configured
 Draft-owned Run, read-only buffer enforcement, real
 document/clipboard/save-as commands, directory browsing, structured run-setting
-editing, exhaustive menu/help behavior, 80x24 dialog layout, semantic history,
-and the buffer/root invariant. `draft_draftide_smoke` launches
+editing, repeatable Find/Replace dialog activation, exhaustive menu/help
+behavior, 80x24 dialog layout, semantic history, and the buffer/root invariant.
+`draft_draftide_smoke` launches
 the real Draft-built executable, reads the repository workspace marker,
 builds its selected program through the real shared compiler service, retrieves
 syntax/semantic products, and paints a frame without entering an interactive

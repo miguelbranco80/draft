@@ -63,6 +63,11 @@ The principal shortcuts are also listed by **Help > Keyboard Shortcuts**:
 - Alt-F/E/C/R/W/H: open the six menus; Alt-X exits; Escape only cancels the
   current menu, dialog, or window operation.
 
+The Find and Replace dialogs remain open across their repeatable actions, so
+Next/Previous or replacement work can continue until Cancel, Escape, or the
+window close control is used. Standalone F3, Shift-F3, and F4 perform the same
+document operations without opening a dialog.
+
 F5 checks the exact visible edits, builds using the selected root's effective
 workspace configuration, and only then restores the primary terminal and runs
 the executable

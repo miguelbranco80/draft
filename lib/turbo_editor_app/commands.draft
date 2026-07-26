@@ -526,6 +526,31 @@ focus_editor :: proc(app: ^App) {
     )
 }
 
+// focus_search_result repaints the document selection produced by a search or
+// replacement without ending an open search session. The editor is activated
+// first so an immediate-mode pass is requested after its already-painted bytes
+// change; a visible Find or Replace dialog is then restored above it with its
+// query field focused. Standalone F3/F4 calls have no visible dialog and keep
+// the ordinary editor-focus behavior.
+focus_search_result :: proc(app: ^App) {
+    focus_editor(app)
+    if app.windows[Window_Find].visible {
+        _ = turbo_ui.activate_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Find].id,
+        )
+        app.ui.focused_id = 500
+    } else if app.windows[Window_Replace].visible {
+        _ = turbo_ui.activate_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Replace].id,
+        )
+        app.ui.focused_id = 580
+    }
+}
+
 // perform_find applies the persistent query without reopening a dialog. F3 and
 // Shift-F3 share this operation with dialog buttons, including exact wrap and
 // no-match feedback.
@@ -545,7 +570,7 @@ perform_find :: proc(app: ^App, reverse: bool) -> bool {
         app.status = "No match"
         return false
     }
-    focus_editor(app)
+    focus_search_result(app)
     if result.wrapped && reverse {
         app.status = "Previous match selected (wrapped to end)"
     } else if result.wrapped {
@@ -695,10 +720,15 @@ replace_current :: proc(app: ^App, advance: bool) -> bool {
     source_changed(app)
     if advance {
         if !perform_find(app, false) {
+            // The replacement changed editor bytes after the editor painted,
+            // even though there is no next selection to trigger the shared
+            // successful-find path. Preserve the dialog and request the same
+            // event-free document repaint explicitly.
+            focus_search_result(app)
             app.status = "Replaced current match; no further match"
         }
     } else {
-        focus_editor(app)
+        focus_search_result(app)
         app.status = "Replaced current match"
     }
     return true
@@ -725,7 +755,7 @@ replace_every_match :: proc(app: ^App) -> bool {
     }
     if result.count != 0 {
         source_changed(app)
-        focus_editor(app)
+        focus_search_result(app)
     }
     set_replace_count_status(app, result.count)
     return true

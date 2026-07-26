@@ -71,6 +71,11 @@ shortcut. New documents remain `Untitled N` until Save As installs a real path;
 closing a dirty document or workspace always requires an explicit save,
 discard, or cancel decision.
 
+Find and Replace are repeatable modal sessions. Next, Previous, Replace, Replace
+All, and Find Next update and repaint the document underneath while keeping the
+active dialog and query focus; only Cancel, Escape, or the window close control
+ends the session. Standalone F3, Shift-F3, and F4 still focus the editor.
+
 The terminal loop drains queued input before one differential presentation,
 coalesces pointer motion, resolves a lone Escape after 25 ms, and drives held
 scrollbar repeat from explicit deadlines. Local DraftIDE enables hover motion;
