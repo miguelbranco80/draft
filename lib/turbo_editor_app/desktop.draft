@@ -571,7 +571,12 @@ paint_app :: proc(
                 edit_result := turbo_editor.edit(
                     active_buffer(app),
                     &app.ui,
-                    cast[turbo_ui.Widget_Id](600 + app.active),
+                    cast[turbo_ui.Widget_Id](
+                        Editor_Body_Id_Base + app.active,
+                    ),
+                    cast[turbo_ui.Widget_Id](
+                        Editor_Scrollbar_Id_Base + app.active,
+                    ),
                     window_context.content,
                     app.syntax_spans[:app.syntax_span_count],
                     editor_theme,

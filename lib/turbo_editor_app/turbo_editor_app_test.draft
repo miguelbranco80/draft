@@ -1196,7 +1196,7 @@ test_editor_is_a_normal_tileable_window :: proc(test: ^testing.Test) {
     testing.expect(test, activate_buffer(&app, 0))
     testing.expect(test, editor.visible)
     testing.expect(test, app.ui.active_window == editor.id)
-    testing.expect(test, app.ui.focused_id == 600)
+    testing.expect(test, app.ui.focused_id == Editor_Body_Id_Base)
 
     // Startup shows one understandable document surface, not a pile of
     // compiler inspectors. Its title is the actual document path so the user

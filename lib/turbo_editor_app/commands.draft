@@ -517,7 +517,9 @@ focus_editor :: proc(app: ^App) {
         app.windows[:],
         app.windows[Window_Editor].id,
     )
-    app.ui.focused_id = cast[turbo_ui.Widget_Id](600 + app.active)
+    app.ui.focused_id = cast[turbo_ui.Widget_Id](
+        Editor_Body_Id_Base + app.active,
+    )
 }
 
 // perform_find applies the persistent query without reopening a dialog. F3 and

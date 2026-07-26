@@ -406,31 +406,62 @@ paint_text_row :: proc(
 }
 
 // edit applies one event when focused, keeps the cursor visible, and paints the
-// complete viewport. The caller owns search UI and save error reporting; their
-// shortcuts are returned as explicit requests.
+// complete viewport. body_id and scrollbar_id must be distinct stable IDs. The
+// final column is reserved whenever the view is wide enough, preventing source
+// text from shifting when the document grows beyond one page; a proportional
+// vertical scrollbar is painted there only when scrolling is possible. The
+// caller owns search UI and save error reporting; their shortcuts are returned
+// as explicit requests.
 pub edit :: proc(
     buffer: ^Buffer,
     state: ^turbo_ui.State,
-    id: turbo_ui.Widget_Id,
+    body_id, scrollbar_id: turbo_ui.Widget_Id,
     bounds: turbo_ui.Rect,
     spans: []Syntax_Span,
     theme: Editor_Theme,
 ) -> Edit_Result {
     result: Edit_Result
+    assert(body_id != turbo_ui.No_Widget &&
+        scrollbar_id != turbo_ui.No_Widget,
+        "turbo editor IDs must be nonzero")
+    assert(body_id != scrollbar_id, "turbo editor IDs must be distinct")
     if turbo_ui.rect_empty(bounds) {
         return result
     }
+
+    editor_bounds := bounds
+    scrollbar_bounds: turbo_ui.Rect
+    if editor_bounds.width > 1 {
+        editor_bounds.width -= 1
+        scrollbar_bounds = turbo_ui.Rect{
+            column = editor_bounds.column + editor_bounds.width,
+            row = bounds.row,
+            width = 1,
+            height = bounds.height,
+        }
+    }
     gutter_width: usize = Gutter_Columns
-    if gutter_width >= bounds.width {
+    if gutter_width >= editor_bounds.width {
         gutter_width = 0
     }
     text_bounds := turbo_ui.Rect{
-        column = bounds.column + gutter_width,
-        row = bounds.row,
-        width = bounds.width - gutter_width,
-        height = bounds.height,
+        column = editor_bounds.column + gutter_width,
+        row = editor_bounds.row,
+        width = editor_bounds.width - gutter_width,
+        height = editor_bounds.height,
     }
-    focus := turbo_ui.focus_area(state, id, text_bounds)
+    // Clamp before applying this frame's event. In particular, growing the
+    // window can make the complete document fit and hide the scrollbar; the
+    // retained offset must still return to zero rather than leaving an empty
+    // viewport merely because no visible control remains to clamp it.
+    maximum_scroll: usize
+    if buffer.line_starts.length > text_bounds.height {
+        maximum_scroll = buffer.line_starts.length - text_bounds.height
+    }
+    if buffer.scroll_line > maximum_scroll {
+        buffer.scroll_line = maximum_scroll
+    }
+    focus := turbo_ui.focus_area(state, body_id, text_bounds)
     if state.event.kind == .mouse {
         mouse := state.event.mouse
         if focus.activated || (focus.held && mouse.action == .move) {
@@ -450,17 +481,13 @@ pub edit :: proc(
                     buffer.scroll_line += 3
                 }
             }
-            maximum_scroll: usize
-            if buffer.line_starts.length > text_bounds.height {
-                maximum_scroll = buffer.line_starts.length - text_bounds.height
-            }
             if buffer.scroll_line > maximum_scroll {
                 buffer.scroll_line = maximum_scroll
             }
             state.event_handled = true
         }
     }
-    if turbo_ui.has_focus(state, id) && !state.event_handled {
+    if turbo_ui.has_focus(state, body_id) && !state.event_handled {
         if state.event.kind == .key {
             result = apply_key(buffer, state.event.key, text_bounds.height)
             state.event_handled = true
@@ -476,6 +503,29 @@ pub edit :: proc(
         buffer.reveal_cursor = false
     }
     turbo_ui.fill_rect(state.surface, bounds, bounds, ' ', theme.text)
+    scrollbar_needed := maximum_scroll != 0
+    if !turbo_ui.rect_empty(scrollbar_bounds) && scrollbar_needed {
+        event_was_handled := state.event_handled
+        _ = turbo_ui.scrollbar_vertical(
+            state,
+            scrollbar_id,
+            scrollbar_bounds,
+            buffer.line_starts.length,
+            text_bounds.height,
+            &buffer.scroll_line,
+        )
+        // A scrollbar is part of the editor compound control. Give its body
+        // keyboard focus only after the scrollbar proves that the mouse reached
+        // this window's active input scope; testing geometry alone would let a
+        // covered editor steal focus through an overlapping popup or window.
+        if !event_was_handled && state.event_handled &&
+            state.event.kind == .mouse && turbo_ui.point_in_rect(
+                state.event.mouse.position,
+                scrollbar_bounds,
+            ) {
+            state.focused_id = body_id
+        }
+    }
     current_line := line_number(buffer, buffer.cursor)
     start := line_at_number(buffer, buffer.scroll_line)
     line := buffer.scroll_line
@@ -488,8 +538,8 @@ pub edit :: proc(
             paint_gutter(
                 state,
                 turbo_ui.Rect{
-                    column = bounds.column,
-                    row = bounds.row + row,
+                    column = editor_bounds.column,
+                    row = editor_bounds.row + row,
                     width = gutter_width,
                     height = 1,
                 },

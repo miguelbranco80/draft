@@ -210,7 +210,11 @@ are auxiliary non-tileable tool panes, so Tile/Cascade arrange the document
 together with visible semantic windows without moving either browser. The
 document window title uses the root package's Workspace-relative file label
 where available, not a generic title or a space-consuming canonical host path.
-Opening a file reopens and focuses the document window if it was closed.
+Opening a file reopens and focuses the document window if it was closed. The
+editor view reserves one stable final column and paints the shared proportional
+vertical scrollbar there only when its retained line table exceeds the visible
+viewport. The body and scrollbar keep distinct widget identities while both
+restore keyboard focus to the same document editor.
 
 Open Documents, executable roots, the package tree, both filesystem browsers,
 and read-only semantic sections share `lib/turbo_ui`'s collection viewport

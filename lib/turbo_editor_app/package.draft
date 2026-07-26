@@ -24,6 +24,12 @@ import lib/turbo_ui
 // complete owner table small and fixed; document/history bytes remain dynamic
 // allocations rather than inflating App's stack footprint.
 Maximum_Buffers :: 64
+// Each occupied document slot derives one keyboard/body identity and one
+// scrollbar capture identity even though only the active slot is painted. The
+// two disjoint 64-ID ranges prevent a thumb drag from aliasing another slot's
+// editor focus or any of the application's lower-numbered authored controls.
+Editor_Body_Id_Base :: 600
+Editor_Scrollbar_Id_Base :: 1600
 Search_Capacity :: 128
 Replacement_Capacity :: 128
 Go_Line_Capacity :: 20
@@ -304,7 +310,7 @@ init_windows :: proc(app: ^App) {
     // giving the editor real chrome and an ordinary restore rectangle. The
     // first Tile/Cascade operation leaves zoom and arranges it normally.
     app.windows[Window_Editor].zoomed = true
-    app.windows[Window_Editor].focus_id = 600
+    app.windows[Window_Editor].focus_id = Editor_Body_Id_Base
     app.windows[Window_Open_Documents] = turbo_ui.tool_window_init(
         401,
         turbo_ui.Rect{column = 18, row = 5, width = 34, height = 13},
@@ -704,7 +710,7 @@ activate_buffer :: proc(app: ^App, index: usize) -> bool {
     }
     app.active = index
     app.open_documents.cursor = index
-    editor_focus := cast[turbo_ui.Widget_Id](600 + app.active)
+    editor_focus := cast[turbo_ui.Widget_Id](Editor_Body_Id_Base + app.active)
     app.windows[Window_Editor].focus_id = editor_focus
     turbo_ui.show_window(
         &app.ui,

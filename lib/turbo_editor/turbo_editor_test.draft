@@ -213,12 +213,84 @@ test_viewport_page_and_wheel :: proc(test: ^testing.Test) {
         &buffer,
         &ui,
         80,
+        81,
         turbo_ui.Rect{width = 30, height = 3},
         empty_spans[:0],
         turbo_editor_theme(),
     )
     turbo_ui.end_frame(&ui)
     testing.expect(test, buffer.scroll_line == 3)
+}
+
+// test_editor_vertical_scrollbar proves that the editor exposes its retained
+// line offset through the shared proportional control. The scrollbar reserves
+// the final column, paints the common arrow vocabulary, moves exactly one line
+// on a down-arrow press, and returns keyboard focus to the compound editor.
+test_editor_vertical_scrollbar :: proc(test: ^testing.Test) {
+    buffer: Buffer
+    buffer_init(&buffer, Test_Path)
+    defer buffer_destroy(&buffer)
+    insert_text(&buffer, "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n")
+    buffer.cursor = 0
+    buffer.scroll_line = 0
+    buffer.reveal_cursor = false
+
+    surface: tui.Surface
+    tui.surface_init(&surface, 20, 20)
+    defer tui.surface_destroy(&surface)
+    ui: turbo_ui.State
+    turbo_ui.begin_frame(
+        &ui,
+        &surface,
+        turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+            position = turbo_ui.Point{column = 19, row = 4},
+            action = .press,
+            button = .primary,
+            primary_down = true,
+        }),
+        turbo_ui.turbo_theme(),
+    )
+    empty_spans: [1]Syntax_Span
+    edit(
+        &buffer,
+        &ui,
+        82,
+        83,
+        turbo_ui.Rect{width = 20, height = 5},
+        empty_spans[:0],
+        turbo_editor_theme(),
+    )
+    turbo_ui.end_frame(&ui)
+
+    testing.expect(test, buffer.scroll_line == 1)
+    testing.expect(test, ui.focused_id == 82)
+    (up, up_valid) := tui.cell_at(&surface, 19, 0)
+    (down, down_valid) := tui.cell_at(&surface, 19, 4)
+    testing.expect(test, up_valid && up.value == '▲')
+    testing.expect(test, down_valid && down.value == '▼')
+
+    // Growing the viewport beyond the complete document hides the scrollbar
+    // but must still clamp the retained offset. Otherwise the invisible
+    // control would leave the editor painted from a stale middle line.
+    turbo_ui.begin_frame(
+        &ui,
+        &surface,
+        turbo_ui.no_event(),
+        turbo_ui.turbo_theme(),
+    )
+    edit(
+        &buffer,
+        &ui,
+        82,
+        83,
+        turbo_ui.Rect{width = 20, height = 20},
+        empty_spans[:0],
+        turbo_editor_theme(),
+    )
+    turbo_ui.end_frame(&ui)
+    testing.expect(test, buffer.scroll_line == 0)
+    (hidden, hidden_valid) := tui.cell_at(&surface, 19, 0)
+    testing.expect(test, hidden_valid && hidden.value == ' ')
 }
 
 // test_find_directions_and_atomic_replace fixes the interactive search state
@@ -393,6 +465,7 @@ test_editor_paint_and_syntax_style :: proc(test: ^testing.Test) {
         &buffer,
         &ui,
         50,
+        51,
         turbo_ui.Rect{width = 30, height = 5},
         spans[:],
         turbo_editor_theme(),

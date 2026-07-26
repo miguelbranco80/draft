@@ -17,7 +17,9 @@ The package provides:
   preferred visual column retained across short lines;
 - selection, mouse positioning, wrapped forward/reverse literal search,
   one-based line navigation, and independent horizontal/vertical scroll (wheel
-  movement never snaps back to the cursor);
+  movement never snaps back to the cursor); the editor reserves a stable final
+  column and paints a proportional vertical scrollbar when the document exceeds
+  the viewport;
 - single-match and whole-document replacement. Replace All scans only original
   bytes, reports its exact count, and never re-matches replacement text;
 - bounded undo/redo with a 128-record/1 MiB history policy; each replacement is

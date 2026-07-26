@@ -18,10 +18,10 @@ directory or opens a document; one click only selects.
 
 DraftIDE supplies one flat application theme to every window, menu popup, and
 button. Modal action rows are compact and right-aligned; toolbar actions remain
-left-aligned. Lists, trees, and read-only text views retain a stable reserved
-scrollbar column but paint it only when content can actually scroll. The
-reusable `lib/turbo_ui` default remains the classic shadowed presentation for
-other clients.
+left-aligned. The editor, lists, trees, and read-only text views retain a stable
+reserved scrollbar column but paint it only when content can actually scroll.
+The reusable `lib/turbo_ui` default remains the classic shadowed presentation
+for other clients.
 
 The package is split by owned transition rather than widget type:
 
