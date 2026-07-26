@@ -705,6 +705,7 @@ void CompilerSession::reset_checked_program() {
     text.clear();
   package_tree_rows_.clear();
   diagnostics_text_.clear();
+  diagnostic_rows_.clear();
   diagnostic_count_ = 0;
   built_output_path_.clear();
 }
@@ -1174,6 +1175,72 @@ void CompilerSession::rebuild_tooling_index() {
 void CompilerSession::publish_diagnostics(const SourceManager &sources,
                                           const DiagnosticSink &diagnostics) {
   diagnostics_text_ = render_diagnostics(sources, diagnostics);
+  diagnostic_rows_.clear();
+  diagnostic_rows_.reserve(diagnostics.diagnostics().size());
+  for (const Diagnostic &diagnostic : diagnostics.diagnostics()) {
+    DiagnosticRow row;
+    row.severity = diagnostic.severity;
+
+    const bool valid_range =
+        diagnostic.range.is_valid() &&
+        diagnostic.range.begin.file.value < sources.file_count() &&
+        static_cast<std::size_t>(diagnostic.range.end.offset) <=
+            sources.text(diagnostic.range.begin.file).size();
+    if (valid_range) {
+      const SourceFile &source = sources.file(diagnostic.range.begin.file);
+      const LineColumn coordinate =
+          sources.line_column(diagnostic.range.begin);
+      row.source_text = source.text;
+      row.start = diagnostic.range.begin.offset;
+      row.end = diagnostic.range.end.offset;
+      row.line = coordinate.line;
+      row.column = coordinate.column;
+      row.navigable = true;
+
+      // Only exact canonical workspace paths may be opened for editing. A
+      // generated interval shares a complete source file with surface bytes,
+      // but its offset names the generated replacement. Retaining that file
+      // read-only preserves the exact compiler range and avoids attributing
+      // provider bytes to an unrelated surface offset.
+      const SourceExpansionMap *expansion =
+          sources.expansion_map(diagnostic.range.begin);
+      constexpr std::string_view kResolvedSuffix = " [resolved]";
+      std::string display_path = source.display_path;
+      if (std::string_view(display_path).ends_with(kResolvedSuffix)) {
+        display_path.resize(display_path.size() - kResolvedSuffix.size());
+      }
+      row.editable = expansion == nullptr;
+      if (row.editable) {
+        std::error_code path_error;
+        const std::filesystem::path diagnostic_path =
+            std::filesystem::weakly_canonical(display_path, path_error);
+        row.editable = !path_error &&
+            std::any_of(source_options_.begin(), source_options_.end(),
+                        [&diagnostic_path](const SourceOption &option) {
+                          return option.physical_path == diagnostic_path;
+                        });
+        if (row.editable) {
+          row.path = diagnostic_path.string();
+          display_path = row.path;
+        }
+      }
+      if (!row.editable) {
+        row.path = expansion == nullptr ? "draft-source:" : "draft-generated:";
+        row.path += display_path;
+        if (expansion != nullptr) {
+          row.path += '#';
+          row.path += expansion->site_identity;
+        }
+      }
+      row.label = display_path + ":" + std::to_string(row.line) + ":" +
+                  std::to_string(row.column) + ": ";
+    }
+
+    row.label += std::string(diagnostic_severity_name(diagnostic.severity));
+    row.label += ": ";
+    row.label += diagnostic.message;
+    diagnostic_rows_.push_back(std::move(row));
+  }
   diagnostic_count_ = static_cast<std::uint32_t>(std::min<std::size_t>(
       diagnostics.error_count(), std::numeric_limits<std::uint32_t>::max()));
 }
@@ -1337,6 +1404,10 @@ const std::vector<SyntaxSpan> &CompilerSession::syntax_spans() const {
 
 std::string_view CompilerSession::diagnostics_text() const {
   return diagnostics_text_;
+}
+
+const std::vector<DiagnosticRow> &CompilerSession::diagnostic_rows() const {
+  return diagnostic_rows_;
 }
 
 std::string_view CompilerSession::tooling_text(ToolingSection section) const {

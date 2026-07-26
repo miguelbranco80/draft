@@ -8,3 +8,5 @@ into the fixed C ABI and constructs the provider-free Host table consumed by
 The caller explicitly owns `create`/`session_destroy`. The native service copies
 configuration paths and borrows all later byte buffers synchronously. Compiler,
 filesystem, C++, and LLVM representations never cross this package boundary.
+Build/check timing and structured diagnostic rows cross only as fixed scalars
+plus caller-owned indexed byte copies.

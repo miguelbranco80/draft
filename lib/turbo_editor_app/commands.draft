@@ -232,9 +232,13 @@ reset_workspace_views :: proc(app: ^App) {
     app.session_summary_length = 0
     app.syntax_span_count = 0
     app.diagnostic_count = 0
+    app.diagnostic_row_count = 0
+    app.diagnostics = turbo_ui.List_State{}
     app.semantic_dirty = false
     app.run_configuration_loaded = false
     app.run_configuration_overridden = false
+    app.build_output_length = 0
+    app.build_output_view.offset = 0
     for index: usize = 0; index < Text_Window_Count; index += 1 {
         app.tooling_length[index] = 0
         app.tooling_views[index].offset = 0

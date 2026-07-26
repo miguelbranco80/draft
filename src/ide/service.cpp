@@ -20,6 +20,7 @@
 #include "workspace/selection.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -29,14 +30,18 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace {
 
 static_assert(sizeof(DraftCompilerServiceConfiguration) == 56);
 static_assert(alignof(DraftCompilerServiceConfiguration) == alignof(void *));
-static_assert(sizeof(DraftCompilerServiceResult) == 16);
+static_assert(sizeof(DraftCompilerServiceResult) == 24);
 static_assert(alignof(DraftCompilerServiceResult) == alignof(std::size_t));
+static_assert(sizeof(DraftCompilerServiceDiagnosticRow) == 40);
+static_assert(alignof(DraftCompilerServiceDiagnosticRow) ==
+              alignof(std::size_t));
 static_assert(sizeof(DraftCompilerServiceSyntaxResult) == 16);
 static_assert(alignof(DraftCompilerServiceSyntaxResult) ==
               alignof(std::size_t));
@@ -265,13 +270,32 @@ create_session(const DraftCompilerServiceConfiguration &input,
 
 [[nodiscard]] DraftCompilerServiceResult
 service_result(draft::ide::CompilerSession &session,
-               draft::ide::CheckResult result) {
+               draft::ide::CheckResult result,
+               std::uint64_t elapsed_nanoseconds) {
   const std::size_t spans = session.syntax_spans().size();
   return {
       static_cast<std::uint8_t>(result.ok ? 1 : 0),
       result.diagnostic_count,
       spans,
+      elapsed_nanoseconds,
   };
+}
+
+// elapsed_nanoseconds performs a saturating conversion because the public ABI
+// uses an unsigned nanosecond count while steady_clock has an implementation-
+// selected signed representation. A real foreground compiler operation cannot
+// approach this bound; saturation keeps the conversion defined regardless.
+[[nodiscard]] std::uint64_t elapsed_nanoseconds(
+    std::chrono::steady_clock::time_point started) {
+  const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - started);
+  if (elapsed.count() <= 0)
+    return 0;
+  using UnsignedCount = std::make_unsigned_t<decltype(elapsed.count())>;
+  const UnsignedCount count = static_cast<UnsignedCount>(elapsed.count());
+  if (count > std::numeric_limits<std::uint64_t>::max())
+    return std::numeric_limits<std::uint64_t>::max();
+  return static_cast<std::uint64_t>(count);
 }
 
 [[nodiscard]] std::optional<std::vector<draft::ide::SourceOverlay>>
@@ -429,12 +453,18 @@ void draft_compiler_session_check(void *opaque_session,
   if (result == nullptr)
     return;
   *result = {};
+  const auto started = std::chrono::steady_clock::now();
   draft::ide::CompilerSession *session = compiler_session(opaque_session);
   const std::optional<std::vector<draft::ide::SourceOverlay>> checked =
       checked_overlays(overlays, overlay_count, active_overlay);
-  if (session == nullptr || !checked.has_value())
+  if (session == nullptr || !checked.has_value()) {
+    result->elapsed_nanoseconds = elapsed_nanoseconds(started);
     return;
-  *result = service_result(*session, session->check(*checked, active_overlay));
+  }
+  const draft::ide::CheckResult checked_result =
+      session->check(*checked, active_overlay);
+  *result = service_result(
+      *session, checked_result, elapsed_nanoseconds(started));
 }
 
 void draft_compiler_session_build(void *opaque_session,
@@ -445,12 +475,17 @@ void draft_compiler_session_build(void *opaque_session,
   if (result == nullptr)
     return;
   *result = {};
+  const auto started = std::chrono::steady_clock::now();
   draft::ide::CompilerSession *session = compiler_session(opaque_session);
   const std::optional<std::vector<draft::ide::SourceOverlay>> checked =
       checked_overlays(overlays, overlay_count, active_overlay);
-  if (session == nullptr || !checked.has_value())
+  if (session == nullptr || !checked.has_value()) {
+    result->elapsed_nanoseconds = elapsed_nanoseconds(started);
     return;
-  *result = service_result(*session, session->build(*checked, active_overlay));
+  }
+  const draft::ide::CheckResult built =
+      session->build(*checked, active_overlay);
+  *result = service_result(*session, built, elapsed_nanoseconds(started));
 }
 
 void draft_compiler_session_colorize(void *opaque_session,
@@ -494,6 +529,62 @@ std::size_t draft_compiler_session_copy_diagnostics(void *opaque_session,
   if (session == nullptr)
     return 0;
   return copy_text(session->diagnostics_text(), destination, capacity);
+}
+
+std::size_t draft_compiler_session_diagnostic_row_count(void *opaque_session) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  return session == nullptr ? 0 : session->diagnostic_rows().size();
+}
+
+void draft_compiler_session_diagnostic_row(
+    void *opaque_session, std::size_t index,
+    DraftCompilerServiceDiagnosticRow *result) {
+  if (result == nullptr)
+    return;
+  *result = {};
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr || index >= session->diagnostic_rows().size())
+    return;
+  const draft::ide::DiagnosticRow &row = session->diagnostic_rows()[index];
+  *result = {
+      row.start,
+      row.end,
+      row.line,
+      row.column,
+      static_cast<std::uint8_t>(row.severity),
+      static_cast<std::uint8_t>(row.navigable ? 1 : 0),
+      static_cast<std::uint8_t>(row.editable ? 1 : 0),
+  };
+}
+
+std::size_t draft_compiler_session_copy_diagnostic_row_text(
+    void *opaque_session, std::size_t index, std::uint8_t *destination,
+    std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr || index >= session->diagnostic_rows().size())
+    return copy_text({}, destination, capacity);
+  return copy_text(session->diagnostic_rows()[index].label, destination,
+                   capacity);
+}
+
+std::size_t draft_compiler_session_copy_diagnostic_source_path(
+    void *opaque_session, std::size_t index, std::uint8_t *destination,
+    std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr || index >= session->diagnostic_rows().size())
+    return copy_text({}, destination, capacity);
+  return copy_text(session->diagnostic_rows()[index].path, destination,
+                   capacity);
+}
+
+std::size_t draft_compiler_session_copy_diagnostic_source_text(
+    void *opaque_session, std::size_t index, std::uint8_t *destination,
+    std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr || index >= session->diagnostic_rows().size())
+    return copy_text({}, destination, capacity);
+  return copy_text(session->diagnostic_rows()[index].source_text, destination,
+                   capacity);
 }
 
 std::size_t draft_compiler_session_copy_tooling_section(

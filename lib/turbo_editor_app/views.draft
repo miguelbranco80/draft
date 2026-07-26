@@ -1284,7 +1284,8 @@ paint_text_view :: proc(
     window_index: usize,
     content: turbo_ui.Rect,
 ) {
-    assert(window_index >= Text_Window_First && window_index < Window_Count,
+    assert(window_index >= Text_Window_First &&
+        window_index < Text_Window_First + Text_Window_Count,
         "tooling window index is invalid")
     text_index := window_index - Text_Window_First
     bytes := app.tooling_text[text_index][:app.tooling_length[text_index]]
@@ -1295,6 +1296,94 @@ paint_text_view :: proc(
         content,
         bytes,
         &app.tooling_views[text_index],
+        .when_needed,
+    )
+}
+
+// paint_diagnostics presents one selectable row per structured compiler
+// diagnostic. Labels are copied into bounded frame-local storage only for
+// visible rows; activation asks the host integration to open the exact retained
+// source range. The empty state is explicit so a manually retained Diagnostics
+// window remains meaningful after the next successful operation.
+paint_diagnostics :: proc(app: ^App, content: turbo_ui.Rect) {
+    if content.width == 0 || content.height == 0 {
+        return
+    }
+    if app.diagnostic_row_count == 0 {
+        turbo_ui.write_clipped(
+            app.ui.surface,
+            turbo_ui.intersect(app.ui.clip, content),
+            turbo_ui.Point{column = content.column, row = content.row},
+            "No diagnostics from the latest compiler operation.",
+            app.ui.theme.text,
+        )
+        return
+    }
+    view := turbo_ui.list_view(
+        &app.ui,
+        870,
+        871,
+        content,
+        app.diagnostic_row_count,
+        &app.diagnostics,
+        .click_and_enter,
+        .when_needed,
+    )
+    for index := view.first; index < view.end; index += 1 {
+        row := turbo_ui.list_row_begin(&app.ui, view, index)
+        storage: [Diagnostic_Row_Text_Capacity]u8
+        length: usize
+        if app.host.copy_diagnostic_row_text != nil {
+            length = app.host.copy_diagnostic_row_text(
+                app.host.user,
+                index,
+                cast[[^]u8](&storage[0]),
+                len(storage),
+            )
+            if length >= len(storage) {
+                length = len(storage) - 1
+            }
+        }
+        if length == 0 {
+            turbo_ui.write_clipped(
+                app.ui.surface,
+                turbo_ui.intersect(app.ui.clip, row.bounds),
+                turbo_ui.Point{
+                    column = row.bounds.column,
+                    row = row.bounds.row,
+                },
+                "<diagnostic text unavailable>",
+                row.style,
+            )
+        } else {
+            turbo_ui.write_clipped_bytes(
+                app.ui.surface,
+                turbo_ui.intersect(app.ui.clip, row.bounds),
+                turbo_ui.Point{
+                    column = row.bounds.column,
+                    row = row.bounds.row,
+                },
+                storage[:length],
+                row.style,
+            )
+        }
+    }
+    if view.activated && view.activated_index < app.diagnostic_row_count {
+        _ = activate_diagnostic(app, view.activated_index)
+    }
+}
+
+// paint_build_output is the persistent transcript for the latest Build plus
+// its optional Run Result. Updating these bytes never changes window
+// visibility; users may keep the view open, close it, or inspect it later.
+paint_build_output :: proc(app: ^App, content: turbo_ui.Rect) {
+    turbo_ui.text_view_bytes(
+        &app.ui,
+        872,
+        873,
+        content,
+        app.build_output[:app.build_output_length],
+        &app.build_output_view,
         .when_needed,
     )
 }
@@ -1934,6 +2023,12 @@ paint_packages_view :: proc(app: ^App, content: turbo_ui.Rect) {
     if graph.height != 0 && app.package_row_count != 0 {
         paint_package_tree(app, graph)
     } else if graph.height != 0 {
-        paint_text_view(app, Window_Packages, graph)
+        turbo_ui.write_clipped(
+            app.ui.surface,
+            turbo_ui.intersect(app.ui.clip, graph),
+            turbo_ui.Point{column = graph.column, row = graph.row},
+            "No checked package graph is available.",
+            app.ui.theme.text,
+        )
     }
 }

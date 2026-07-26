@@ -96,6 +96,37 @@ foreign draft_compiler_service {
         capacity: usize,
     ) -> usize
 
+    pub diagnostic_row_count as "draft_compiler_session_diagnostic_row_count" :: c proc(
+        session: rawptr,
+    ) -> usize
+
+    pub diagnostic_row as "draft_compiler_session_diagnostic_row" :: c proc(
+        session: rawptr,
+        index: usize,
+        result: ^draft_compiler_api.Diagnostic_Row,
+    )
+
+    pub copy_diagnostic_row_text as "draft_compiler_session_copy_diagnostic_row_text" :: c proc(
+        session: rawptr,
+        index: usize,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub copy_diagnostic_source_path as "draft_compiler_session_copy_diagnostic_source_path" :: c proc(
+        session: rawptr,
+        index: usize,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub copy_diagnostic_source_text as "draft_compiler_session_copy_diagnostic_source_text" :: c proc(
+        session: rawptr,
+        index: usize,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
     pub copy_tooling as "draft_compiler_session_copy_tooling_section" :: c proc(
         session: rawptr,
         section: u8,
@@ -346,6 +377,11 @@ pub host_api :: proc(session: rawptr) -> draft_compiler_api.Host_Api {
         colorize = colorize,
         span = span,
         copy_diagnostics = copy_diagnostics,
+        diagnostic_row_count = diagnostic_row_count,
+        diagnostic_row = diagnostic_row,
+        copy_diagnostic_row_text = copy_diagnostic_row_text,
+        copy_diagnostic_source_path = copy_diagnostic_source_path,
+        copy_diagnostic_source_text = copy_diagnostic_source_text,
         copy_tooling = copy_tooling,
         package_row_count = package_row_count,
         package_row = package_row,

@@ -46,7 +46,27 @@ typedef struct DraftCompilerServiceResult {
   uint8_t success;
   uint32_t diagnostic_count;
   size_t span_count;
+  // Monotonic wall time covers the complete synchronous service operation,
+  // including configuration refresh, checking, lowering, and native tools.
+  // It is presentation data only and never enters compiler identity.
+  uint64_t elapsed_nanoseconds;
 } DraftCompilerServiceResult;
+
+// DiagnosticRow is the fixed structural half of one latest-attempt diagnostic.
+// start/end are exact half-open byte offsets into the source copied for the
+// same row; line/column are one-based. severity uses error=0, warning=1,
+// note=2. navigable is zero for diagnostics without a source range. editable
+// is one only for an ordinary current workspace file. Strings are copied by
+// the indexed operations below, so this record contains no borrowed pointer.
+typedef struct DraftCompilerServiceDiagnosticRow {
+  size_t start;
+  size_t end;
+  size_t line;
+  size_t column;
+  uint8_t severity;
+  uint8_t navigable;
+  uint8_t editable;
+} DraftCompilerServiceDiagnosticRow;
 
 // SyntaxResult describes the independent foreground lexical pass. It contains
 // no diagnostic count because colorize neither replaces nor validates semantic
@@ -164,6 +184,27 @@ draft_compiler_session_span(void *session, size_t index,
 
 DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_diagnostics(
     void *session, uint8_t *destination, size_t capacity);
+
+// Structured diagnostic rows retain deterministic compiler insertion order.
+// Out-of-range record access writes a zero record. Label, source path, and
+// exact source bytes use the standard complete-size/truncated-copy contract.
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_diagnostic_row_count(void *session);
+
+DRAFT_COMPILER_SERVICE_API void draft_compiler_session_diagnostic_row(
+    void *session, size_t index, DraftCompilerServiceDiagnosticRow *result);
+
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_copy_diagnostic_row_text(
+    void *session, size_t index, uint8_t *destination, size_t capacity);
+
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_copy_diagnostic_source_path(
+    void *session, size_t index, uint8_t *destination, size_t capacity);
+
+DRAFT_COMPILER_SERVICE_API size_t
+draft_compiler_session_copy_diagnostic_source_text(
+    void *session, size_t index, uint8_t *destination, size_t capacity);
 
 // section uses ToolingSection's stable 0-4 C ordinals. An unknown value returns
 // zero and writes an empty string.

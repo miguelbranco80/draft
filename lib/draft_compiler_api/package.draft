@@ -8,11 +8,34 @@ package draft_compiler_api
 
 // Result summarizes one compiler operation. success is an explicit byte at the
 // C boundary; diagnostic_count and span_count describe data retrievable from
-// the same session after the call.
+// the same session after the call. elapsed_nanoseconds is monotonic wall time
+// for the complete synchronous operation and is presentation-only.
 pub Result :: c struct {
     success: u8,
     diagnostic_count: u32,
     span_count: usize,
+    elapsed_nanoseconds: u64,
+}
+
+// Diagnostic_Row is the fixed structural half of one diagnostic from the
+// latest semantic operation. start/end are exact half-open byte offsets into
+// the source copied for the same row; line/column are one-based. navigable is
+// false when no source exists. editable is true only for an ordinary current
+// workspace file; generated and compiler-owned sources open read-only.
+pub Diagnostic_Severity :: enum u8 {
+    error,
+    warning,
+    note,
+}
+
+pub Diagnostic_Row :: c struct {
+    start: usize,
+    end: usize,
+    line: usize,
+    column: usize,
+    severity: Diagnostic_Severity,
+    navigable: u8,
+    editable: u8,
 }
 
 // Syntax_Result describes one independent production-lexer pass. It has no
@@ -102,6 +125,12 @@ pub Package_Row_Proc :: c proc(
     result: ^Package_Row,
 )
 
+pub Diagnostic_Row_Proc :: c proc(
+    user: rawptr,
+    index: usize,
+    result: ^Diagnostic_Row,
+)
+
 // Navigation_Status reports why one semantic lookup did or did not publish a
 // definition and usage table. current_check_failed is intentionally distinct:
 // the service may retain a last-good program for tooling summaries, but exact
@@ -186,6 +215,11 @@ pub Host_Api :: c struct {
     colorize: Colorize_Proc,
     span: Span_Proc,
     copy_diagnostics: Copy_Text_Proc,
+    diagnostic_row_count: Count_Proc,
+    diagnostic_row: Diagnostic_Row_Proc,
+    copy_diagnostic_row_text: Copy_Indexed_Text_Proc,
+    copy_diagnostic_source_path: Copy_Indexed_Text_Proc,
+    copy_diagnostic_source_text: Copy_Indexed_Text_Proc,
     copy_tooling: Copy_Tooling_Proc,
     package_row_count: Count_Proc,
     package_row: Package_Row_Proc,

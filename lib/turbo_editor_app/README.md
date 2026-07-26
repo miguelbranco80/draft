@@ -35,7 +35,8 @@ The package is split by owned transition rather than widget type:
 - `desktop.draft` authors the complete menu vocabulary, window routing, and
   status bar;
 - `host_integration.draft` copies compiler-service products and performs
-  Check/Build/Run and semantic navigation; and
+  Check/Build/Run, structured diagnostic activation, persistent result
+  recording, and semantic navigation; and
 - `terminal_runtime.draft` alone owns the terminal session and event loop.
 
 An optional `draft_compiler_api.Host_Api` is a borrowed synchronous procedure
@@ -43,6 +44,14 @@ table rather than a compiler dependency. A zero table produces the standalone
 editor; DraftIDE supplies the compiler service; tests supply direct fakes.
 Typing invokes only the host's production-lexer color operation. Check, Build,
 Run, Definition, and Usages explicitly enter package semantics.
+
+Build and Check update an app-owned result transcript and timed status without
+changing result-window visibility on success. Compiler failure raises
+Diagnostics; selecting a row opens its exact half-open range, including a
+retained read-only source for generated/compiler-owned bytes. F5 prepares the
+artifact and run configuration before the terminal is suspended, so failed
+compilation never enters Program Output. Once launched, exit/signal/launch
+failures remain runtime results and do not mutate Diagnostics.
 
 Menu commands and global shortcuts call the same named operations. Disabled
 commands remain visible but inert, separators and blank popup space preserve

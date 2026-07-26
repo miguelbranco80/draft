@@ -53,6 +53,18 @@ surface_contains :: proc(surface: ^tui.Surface, expected: string) -> bool {
     return false
 }
 
+bytes_equal_string :: proc(bytes: []u8, expected: string) -> bool {
+    if len(bytes) != len(expected) {
+        return false
+    }
+    for index: usize = 0; index < len(expected); index += 1 {
+        if bytes[index] != expected[index] {
+            return false
+        }
+    }
+    return true
+}
+
 // surface_has_black_shadow identifies the exact decoration emitted by the
 // classic Turbo UI shadow style: a light-shade glyph with RGB black on RGB
 // black. Disabled scrollbars use the same glyph but a different
@@ -99,6 +111,11 @@ Fake_Root_State :: c struct {
     fail_selection: u8,
     target: u8,
     build_count: usize,
+    fail_build: u8,
+    diagnostic_path: rawptr,
+    diagnostic_path_length: usize,
+    diagnostic_source: rawptr,
+    diagnostic_source_length: usize,
     source_path: rawptr,
     source_length: usize,
 }
@@ -309,12 +326,99 @@ fake_build :: c proc(
     result: ^draft_compiler_api.Result,
 ) {
     if user != nil {
-        cast[^Fake_Root_State](user).build_count += 1
+        state := cast[^Fake_Root_State](user)
+        state.build_count += 1
+        result.success = 0 if state.fail_build != 0 else 1
+        result.diagnostic_count = 1 if state.fail_build != 0 else 0
+    } else {
+        result.success = 1
     }
     _ = overlays
     _ = overlay_count
     _ = active_overlay
-    result.success = 1
+    result.elapsed_nanoseconds = 360_000_000
+}
+
+fake_diagnostic_row_count :: c proc(user: rawptr) -> usize {
+    if user == nil || cast[^Fake_Root_State](user).fail_build == 0 {
+        return 0
+    }
+    return 1
+}
+
+fake_diagnostic_row :: c proc(
+    user: rawptr,
+    index: usize,
+    result: ^draft_compiler_api.Diagnostic_Row,
+) {
+    _ = user
+    if index != 0 {
+        return
+    }
+    result^ = draft_compiler_api.Diagnostic_Row{
+        start = 4,
+        end = 10,
+        line = 1,
+        column = 5,
+        severity = .error,
+        navigable = 1,
+        editable = 1,
+    }
+}
+
+fake_diagnostic_text :: c proc(
+    user: rawptr,
+    index: usize,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    if index != 0 {
+        return 0
+    }
+    text := "turbo-diagnostic-test.draft:1:5: error: expected name"
+    return fake_copy_bytes(
+        cast[rawptr](raw_data(text)),
+        len(text),
+        destination,
+        capacity,
+    )
+}
+
+fake_diagnostic_path :: c proc(
+    user: rawptr,
+    index: usize,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    if user == nil || index != 0 {
+        return 0
+    }
+    state := cast[^Fake_Root_State](user)
+    return fake_copy_bytes(
+        state.diagnostic_path,
+        state.diagnostic_path_length,
+        destination,
+        capacity,
+    )
+}
+
+fake_diagnostic_source :: c proc(
+    user: rawptr,
+    index: usize,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    if user == nil || index != 0 {
+        return 0
+    }
+    state := cast[^Fake_Root_State](user)
+    return fake_copy_bytes(
+        state.diagnostic_source,
+        state.diagnostic_source_length,
+        destination,
+        capacity,
+    )
 }
 
 fake_artifact_path :: c proc(
@@ -438,6 +542,30 @@ fake_run_argument :: c proc(
     )
 }
 
+fake_failing_run_argument_count :: c proc(user: rawptr) -> usize {
+    _ = user
+    return 2
+}
+
+fake_failing_run_argument :: c proc(
+    user: rawptr,
+    index: usize,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    text := "-c"
+    if index == 1 {
+        text = "exit 7"
+    }
+    return fake_copy_bytes(
+        cast[rawptr](raw_data(text)),
+        len(text),
+        destination,
+        capacity,
+    )
+}
+
 fake_run_environment_count :: c proc(user: rawptr) -> usize {
     _ = user
     when target.os == .windows {
@@ -502,15 +630,127 @@ test_draft_owned_run :: proc(test: ^testing.Test) {
     app.host.run_environment_count = fake_run_environment_count
     app.host.copy_run_environment = fake_run_environment
     app.host.copy_run_working_directory = fake_run_working_directory
-    execute_host_action(&app, true)
+    prepared: Prepared_Run
+    prepared_run_init(&prepared)
+    testing.expect(test, prepare_run(&app, &prepared))
+    diagnostics_was_visible := app.windows[Window_Diagnostics].visible
+    execute_prepared_run(&app, &prepared)
+    prepared_run_destroy(&prepared)
+    testing.expect(
+        test,
+        app.windows[Window_Diagnostics].visible == diagnostics_was_visible,
+    )
+    testing.expect(test, app.diagnostic_count == 0)
     when target.os == .windows {
         testing.expect(
             test,
-            text_equal(app.status, "Built program returned a nonzero status"),
+            text_equal(app.status, "Run failed: program returned a nonzero status"),
         )
     } else {
-        testing.expect(test, text_equal(app.status, "Run completed"))
+        testing.expect(test, app.status_bytes_active)
     }
+}
+
+// A launched program's nonzero exit belongs to Program Output and the
+// persistent Run Result. It must not manufacture compiler diagnostics or raise
+// the Diagnostics window after a successful build.
+test_runtime_failure_remains_run_output :: proc(test: ^testing.Test) {
+    when target.os != .windows {
+        app: App
+        init_windows(&app)
+        testing.expect(test, init_one_buffer(&app, "turbo-run-failure.draft"))
+        defer destroy_app(&app)
+        app.host.build = fake_build
+        app.host.copy_artifact_path = fake_artifact_path
+        app.host.artifact_kind = fake_artifact_kind
+        app.host.run_argument_count = fake_failing_run_argument_count
+        app.host.copy_run_argument = fake_failing_run_argument
+
+        prepared: Prepared_Run
+        prepared_run_init(&prepared)
+        testing.expect(test, prepare_run(&app, &prepared))
+        testing.expect(test, !app.windows[Window_Diagnostics].visible)
+        build_length := app.build_output_length
+        execute_prepared_run(&app, &prepared)
+        prepared_run_destroy(&prepared)
+        testing.expect(test, text_equal(
+            app.status,
+            "Run failed: program returned a nonzero status",
+        ))
+        testing.expect(test, !app.windows[Window_Diagnostics].visible)
+        testing.expect(test, app.diagnostic_count == 0)
+        testing.expect(test, app.build_output_length > build_length)
+    }
+}
+
+// Build results, diagnostic visibility, and exact activation form one UI
+// contract. Success updates the persistent transcript and path-bearing status
+// without opening a window. Failure raises Diagnostics, and a later success
+// updates its rows without hiding the window the user chose to retain.
+test_build_results_and_activatable_diagnostics :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-diagnostic-test.draft"))
+    defer destroy_app(&app)
+    turbo_editor.insert_text(active_buffer(&app), "0123456789ABC")
+
+    diagnostic_path := "turbo-diagnostic-test.draft"
+    diagnostic_source := "0123456789ABC"
+    state := Fake_Root_State{
+        diagnostic_path = cast[rawptr](raw_data(diagnostic_path)),
+        diagnostic_path_length = len(diagnostic_path),
+        diagnostic_source = cast[rawptr](raw_data(diagnostic_source)),
+        diagnostic_source_length = len(diagnostic_source),
+    }
+    app.host.user = cast[rawptr](&state)
+    app.host.build = fake_build
+    app.host.copy_artifact_path = fake_artifact_path
+    app.host.diagnostic_row_count = fake_diagnostic_row_count
+    app.host.diagnostic_row = fake_diagnostic_row
+    app.host.copy_diagnostic_row_text = fake_diagnostic_text
+    app.host.copy_diagnostic_source_path = fake_diagnostic_path
+    app.host.copy_diagnostic_source_text = fake_diagnostic_source
+
+    testing.expect(test, !app.windows[Window_Build_Output].visible)
+    testing.expect(test, build_active(&app))
+    testing.expect(test, !app.windows[Window_Build_Output].visible)
+    testing.expect(test, app.build_output_length != 0)
+    testing.expect(test, app.status_bytes_active)
+    expected_status := "Build succeeded in 0.36s → /bin/sh"
+    when target.os == .windows {
+        expected_status = "Build succeeded in 0.36s → C:\\Windows\\System32\\where.exe"
+    }
+    testing.expect(test, bytes_equal_string(
+        app.status_storage[:app.status_length],
+        expected_status,
+    ))
+
+    state.fail_build = 1
+    testing.expect(test, !build_active(&app))
+    testing.expect(test, app.windows[Window_Diagnostics].visible)
+    testing.expect(
+        test,
+        app.ui.active_window == app.windows[Window_Diagnostics].id,
+    )
+    testing.expect(test, app.diagnostic_row_count == 1)
+    testing.expect(test, !app.windows[Window_Build_Output].visible)
+    testing.expect(test, activate_diagnostic(&app, 0))
+    testing.expect(test, active_buffer(&app).anchor == 4)
+    testing.expect(test, active_buffer(&app).cursor == 10)
+    testing.expect(test, active_buffer(&app).selection_active)
+
+    // F5 preparation stops at the same compiler boundary. No artifact/config
+    // is prepared, so the terminal event loop has nothing it can launch.
+    prepared: Prepared_Run
+    prepared_run_init(&prepared)
+    testing.expect(test, !prepare_run(&app, &prepared))
+    testing.expect(test, !prepared.has_artifact_path)
+    prepared_run_destroy(&prepared)
+
+    state.fail_build = 0
+    testing.expect(test, build_active(&app))
+    testing.expect(test, app.windows[Window_Diagnostics].visible)
+    testing.expect(test, app.diagnostic_row_count == 0)
 }
 
 // Run Configuration keeps argv, environment, and working directory as three
@@ -719,6 +959,7 @@ test_build_all_programs_restores_selection :: proc(test: ^testing.Test) {
     app.host.copy_root_name = fake_root_name
     app.host.copy_source_path = fake_root_source_path
     app.host.build = fake_build
+    app.host.copy_artifact_path = fake_artifact_path
 
     build_all_programs(&app)
 
@@ -1604,6 +1845,7 @@ test_complete_menu_vocabulary :: proc(test: ^testing.Test) {
     expect_surface_text(test, &surface, 34, 15, "Effects")
     expect_surface_text(test, &surface, 34, 16, "Denials")
     expect_surface_text(test, &surface, 34, 17, "Diagnostics")
+    expect_surface_text(test, &surface, 34, 18, "Build Output")
     testing.expect(test, !surface_has_black_shadow(&surface))
 
     open_menu_for_test(&app, &surface, cast[u8]('h'))
@@ -1728,11 +1970,12 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
     // Options. Checking the visible title and clamped rectangle catches both a
     // missing content pass and chrome that spills outside the conventional
     // terminal, while the style scan enforces one visual policy everywhere.
-    desktop_windows := [10]usize{
+    desktop_windows := [11]usize{
         Window_Editor,
         Window_Open_Documents,
         Window_Workspace_Files,
         Window_Diagnostics,
+        Window_Build_Output,
         Window_Packages,
         Window_Declarations,
         Window_References,
@@ -1740,11 +1983,12 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
         Window_Denials,
         Window_Compiler_Options,
     }
-    expected_titles := [10]string{
+    expected_titles := [11]string{
         "turbo-dialog-layout.draft",
         "Open Documents (Alt-0)",
         "Workspace Files",
         "Diagnostics (F8)",
+        "Build Output",
         "Packages and Imports",
         "Declarations and Visibility",
         "References and Calls",

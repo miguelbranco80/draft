@@ -56,7 +56,7 @@ paint_app_menu_bar :: proc(app: ^App, surface: ^tui.Surface) {
         Menu_Window, Menu_Window_Popup,
         turbo_ui.Rect{column = 31, width = 9, height = 1},
         "Window", cast[u8]('w'),
-        turbo_ui.Rect{column = 31, row = 1, width = 43, height = 18},
+        turbo_ui.Rect{column = 31, row = 1, width = 43, height = 19},
     )
     turbo_ui.menu_title(
         &app.ui, &app.menus,
@@ -336,7 +336,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
 
     window_menu := turbo_ui.begin_menu(
         &app.ui, &app.menus, Menu_Window, Menu_Window_Popup,
-        turbo_ui.Rect{column = 31, row = 1, width = 43, height = 18},
+        turbo_ui.Rect{column = 31, row = 1, width = 43, height = 19},
     )
     if turbo_ui.menu_action(&app.ui, &app.menus, &window_menu,
         970, "Next", "Ctrl-F6", access_key = cast[u8]('n')) {
@@ -395,6 +395,8 @@ paint_app_menus :: proc(app: ^App) -> bool {
         "Denials", "", cast[u8]('i'), compiler_ready)
     menu_window_toggle(app, &window_menu, 983, Window_Diagnostics,
         "Diagnostics", "F8", cast[u8]('g'), compiler_ready)
+    menu_window_toggle(app, &window_menu, 985, Window_Build_Output,
+        "Build Output", "", cast[u8]('b'), compiler_ready)
     turbo_ui.end_menu(&app.ui, &app.menus, window_menu)
 
     help_menu := turbo_ui.begin_menu(
@@ -508,6 +510,8 @@ paint_app :: proc(
             title = "Unsaved changes"
         } else if index == Window_Diagnostics {
             title = "Diagnostics (F8)"
+        } else if index == Window_Build_Output {
+            title = "Build Output"
         } else if index == Window_Packages {
             title = "Packages and Imports"
         } else if index == Window_Declarations {
@@ -599,7 +603,9 @@ paint_app :: proc(
             case Window_Quit:
                 should_quit = paint_quit(app, window_context.content)
             case Window_Diagnostics:
-                paint_text_view(app, index, window_context.content)
+                paint_diagnostics(app, window_context.content)
+            case Window_Build_Output:
+                paint_build_output(app, window_context.content)
             case Window_Packages:
                 paint_packages_view(app, window_context.content)
             case Window_Declarations:

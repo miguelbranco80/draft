@@ -32,8 +32,8 @@ The six menus have conventional, non-overlapping responsibilities:
   navigation, and navigation history.
 - **Compile**: Compiler Options, Check, Build, and Build All Programs.
 - **Run**: Run and Run Configuration.
-- **Window**: desktop navigation/arrangement, Workspace Files, and document or
-  last-successful semantic windows.
+- **Window**: desktop navigation/arrangement, Workspace Files, Diagnostics,
+  persistent Build Output, and document or last-successful semantic windows.
 - **Help**: the complete shortcut reference and About.
 
 Open File, Save As, and Open Workspace use one real modal directory browser.
@@ -63,11 +63,20 @@ The principal shortcuts are also listed by **Help > Keyboard Shortcuts**:
   current menu, dialog, or window operation.
 
 F5 checks the exact visible edits, builds using the selected root's effective
-workspace configuration, restores the primary terminal, runs the executable
+workspace configuration, and only then restores the primary terminal and runs
+the executable
 with the structured Run Configuration, and waits for Enter before resuming the
 IDE. Relative working-directory overrides are Workspace-relative. An
 editing-only file outside the active root is rejected, and an invalid current
 edit is never replaced by an older executable.
+
+A successful Build does not open a popup; the status line reports its duration
+and artifact path. Every Build replaces the persistent Build Output transcript,
+whether or not that window is visible. Compiler failure shows and raises
+Diagnostics, whose selectable rows open the exact source range. DraftIDE does
+not hide Diagnostics after a later success. An F5 build failure stays inside
+the IDE; a launched program's nonzero exit or signal remains in Program Output
+and the Run Result rather than becoming a compiler diagnostic.
 
 Typing runs only the production lexer for syntax color. Package semantics run
 on explicit Check/Build/Run or semantic navigation. Local terminals enable

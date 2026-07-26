@@ -26,8 +26,9 @@ The C ABI owns no editor concept and never calls back into Draft. Draft creates
 and destroys the opaque compiler-session handle and supplies caller-owned byte
 buffers for every operation. The service borrows those buffers only during a
 synchronous call. C++ retains `SourceManager`, `CompileWorkspaceResult`,
-diagnostic text, syntax spans, tooling projections, structured package rows,
-exact navigation rows, and temporary native build artifacts. No STL,
+diagnostic text and structured diagnostic rows, syntax spans, tooling
+projections, structured package rows, exact navigation rows, and temporary
+native build artifacts. No STL,
 filesystem, compiler, or LLVM type crosses the boundary.
 This seam can therefore be replaced by the self-hosted compiler without
 rewriting the Draft application.
@@ -192,13 +193,18 @@ from existing compiler products:
 - references and direct calls from HIR and effect-call summaries;
 - closed procedure effects from effect summaries;
 - denial regions from semantic denial records;
-- diagnostics from the latest check attempt; and
+- diagnostics from the latest semantic attempt as ordered rows with severity,
+  label, exact half-open source range, retained source bytes, and conservative
+  editability; and
 - exact definition and ordered usage ranges resolved from symbol tables, HIR,
   imported-symbol identities, and retained syntax nodes.
 
-Package/import and navigation data cross the C ABI as fixed records, with
-labels, paths, and source text copied separately into Draft ownership. The
-other sections remain formatted text. Navigation is accepted only when the
+Package/import, diagnostic, and navigation data cross the C ABI as fixed
+records, with labels, paths, and source text copied separately into Draft
+ownership. The other sections remain formatted text. Activating a diagnostic
+opens its retained exact range; generated or compiler-owned bytes open as a
+read-only document instead of being misattributed to a surface file. Navigation
+is accepted only when the
 latest check succeeded against the visible bytes; a rejected edit may retain a
 last-good graph for summary windows, but F12 never consults it. Imported proxy
 symbols are canonicalized to their provider declaration, and member ranges are
@@ -277,7 +283,10 @@ Edit, Compile, Run, Window, and Help; every menu row and global shortcut invokes
 the same named application operation. Packages and Imports is an explicitly
 requested structured semantic view; Click or Enter
 toggles a package and Left/Right closes, opens, or enters branches. Other
-declaration, reference/call, effect, and denial inspectors live under Window.
+declaration, reference/call, effect, denial, Diagnostics, and persistent Build
+Output inspectors live under Window. A compiler failure shows and raises
+Diagnostics. A later success replaces its rows but deliberately does not hide
+the window; ordinary success never opens either result window.
 F12 resolves the symbol at the exact editor byte offset and
 selects its definition; Shift-F12 replaces the References window with a
 structured, ordered Usages list. Alt-Left/Alt-Right traverse application-owned
@@ -295,16 +304,27 @@ providers/summaries, and runtime assets come from the selected root's effective
 manifest configuration. Check and Build reread the small saved manifest, and
 also reread provider-summary inputs, before using the retained graph. A changed
 target, assertion, or summary invalidates that graph; unchanged structural
-configuration retains it. The service returns the resulting kind and path to
-Draft. Run rejects non-executable kinds and active editing-only files, then
-suspends mouse reporting, the alternate screen, and raw input in restoration
-order. Draft copies the selected program's arbitrary-length argument/environment
-rows and working directory; an IDE-entered relative working directory is
-resolved from the Workspace exactly like a manifest value. It launches and
-waits through `core/process.run_with_options`. Child output is
+configuration retains it. The service returns the resulting kind, path,
+diagnostic rows, and monotonic operation duration to Draft. Every Build replaces
+the app-owned Build Output transcript. Success leaves all window visibility
+alone and reports `Build succeeded in <time> → <artifact>` in the status
+line; failure raises Diagnostics and leaves last-good semantic inspectors
+available.
+
+F5 performs that complete build and copies the selected run configuration while
+DraftIDE still owns the alternate screen. A compiler failure therefore remains
+inside the IDE and never flashes Program Output. Only a successfully prepared
+executable suspends mouse reporting, the alternate screen, and raw input in
+restoration order. Draft copies the selected program's arbitrary-length
+argument/environment rows and working directory; an IDE-entered relative
+working directory is resolved from the Workspace exactly like a manifest value.
+It launches and waits through `core/process.run_with_options`. Child output is
 written directly to the restored primary terminal and remains visible behind
 an explicit Enter prompt; only then does the application resume raw input and
-the alternate screen and invalidate the differential renderer.
+the alternate screen and invalidate the differential renderer. Nonzero exits,
+signals, and launch failures are Run Results in Program Output and the
+persistent Build Output transcript; they never populate or raise compiler
+Diagnostics.
 Consequently an invalid edit can never cause Run to execute the older retained
 program.
 
@@ -333,14 +353,17 @@ its existing compiler-synthesis meaning.
 and path constraints. `draft_compiler_service_tests` cover C ABI creation,
 canonical paths, multi-file source transactions, source enumeration, independent
 production-lexer coloring, structured package rows, definition/usage navigation, stale-check
-navigation rejection, semantic views, invalid-overlay diagnostics,
+navigation rejection, semantic views, timed operations, structured exact-range
+diagnostics and retained overlay bytes,
 retained last-good state, topology changes, automatic root discovery,
 transactional workspace replacement,
 root/target switching, traversal rejection, effective build configuration and
 session-summary projection, live manifest/summary refresh, target-specialized
 named-root discovery, run-setting copying, configured output kinds, and native Build. Draft package
 tests cover the application-side Host table, lexical-only typing path, overlay
-assembly, configured Draft-owned Run, read-only buffer enforcement, real
+assembly, timed Build status/transcript behavior, raised and activatable
+Diagnostics, pre-terminal F5 failure, runtime-result separation, configured
+Draft-owned Run, read-only buffer enforcement, real
 document/clipboard/save-as commands, directory browsing, structured run-setting
 editing, exhaustive menu/help behavior, 80x24 dialog layout, semantic history,
 and the buffer/root invariant. `draft_draftide_smoke` launches

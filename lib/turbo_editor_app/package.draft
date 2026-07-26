@@ -33,7 +33,10 @@ Editor_Scrollbar_Id_Base :: 1600
 Search_Capacity :: 128
 Replacement_Capacity :: 128
 Go_Line_Capacity :: 20
-Status_Capacity :: 128
+// Build status may contain one complete host artifact path. Keep it bounded by
+// the same path policy as the compiler bridge rather than truncating the most
+// important result of a successful operation.
+Status_Capacity :: Host_Path_Capacity + 256
 Input_Capacity :: 128
 Input_Drain_Batch_Limit :: 32
 Maximum_Columns :: 300
@@ -64,7 +67,8 @@ Window_Run_Configuration :: 16
 Window_Close_Document :: 17
 Window_About :: 18
 Window_Workspace_Files :: 19
-Window_Count :: 20
+Window_Build_Output :: 20
+Window_Count :: 21
 
 // File_Browser_Mode gives one reusable directory browser three exact commit
 // operations. The browser itself owns only path navigation and selection;
@@ -107,9 +111,15 @@ Menu_Help_Popup :: 531
 // below is the single text source for the visible table and its coverage test.
 Shortcut_Row_Count :: 50
 
-Text_Window_First :: Window_Diagnostics
-Text_Window_Count :: 6
+// Only the four immutable semantic reports share the tooling-text table.
+// Diagnostics are structured activatable rows, and Build Output has a distinct
+// lifetime: both are results of the latest operation rather than projections
+// of the retained last-good compiler graph.
+Text_Window_First :: Window_Declarations
+Text_Window_Count :: 4
 Tooling_Text_Capacity :: 32768
+Build_Output_Capacity :: 32768
+Diagnostic_Row_Text_Capacity :: 1024
 Compiler_Configuration_Capacity :: 32768
 Session_Summary_Capacity :: 1024
 Host_Path_Capacity :: 4096
@@ -173,6 +183,7 @@ App :: struct {
     open_documents: turbo_ui.List_State,
     shortcut_list: turbo_ui.List_State,
     navigation_list: turbo_ui.List_State,
+    diagnostics: turbo_ui.List_State,
 
     search: [Search_Capacity]u8,
     search_box: turbo_ui.Text_Box_State,
@@ -226,6 +237,7 @@ App :: struct {
     syntax_spans: [Maximum_Syntax_Spans]turbo_editor.Syntax_Span,
     syntax_span_count: usize,
     diagnostic_count: u32,
+    diagnostic_row_count: usize,
     // semantic_dirty means at least one open active-root file has changed
     // since the latest complete compiler transaction. Lexical coloring remains
     // current while this bit is set, but diagnostics and semantic tooling are
@@ -234,6 +246,9 @@ App :: struct {
     tooling_text: [Text_Window_Count][Tooling_Text_Capacity]u8,
     tooling_length: [Text_Window_Count]usize,
     tooling_views: [Text_Window_Count]turbo_ui.Text_View_State,
+    build_output: [Build_Output_Capacity]u8,
+    build_output_length: usize,
+    build_output_view: turbo_ui.Text_View_State,
     compiler_configuration: [Compiler_Configuration_Capacity]u8,
     compiler_configuration_length: usize,
     compiler_configuration_view: turbo_ui.Text_View_State,
@@ -410,6 +425,11 @@ init_windows :: proc(app: ^App) {
         419,
         turbo_ui.Rect{column = 2, row = 2, width = 40, height = 22},
         850,
+    )
+    app.windows[Window_Build_Output] = turbo_ui.window_init(
+        420,
+        turbo_ui.Rect{column = 6, row = 5, width = 78, height = 18},
+        4,
     )
     app.windows[Window_Open_Documents].visible = false
     app.windows[Window_Find].visible = false
@@ -1039,23 +1059,24 @@ refresh_tooling_text :: proc(app: ^App) {
         }
         app.session_summary_length = required
     }
-    if app.host.copy_diagnostics != nil {
-        required := app.host.copy_diagnostics(
-            app.host.user,
-            text_destination(app, 0),
-            Tooling_Text_Capacity,
-        )
-        if required >= Tooling_Text_Capacity {
-            required = Tooling_Text_Capacity - 1
+    app.diagnostic_row_count = 0
+    if app.host.diagnostic_row_count != nil {
+        app.diagnostic_row_count = app.host.diagnostic_row_count(app.host.user)
+        if app.diagnostic_row_count == 0 {
+            app.diagnostics.cursor = 0
+            app.diagnostics.offset = 0
+        } else if app.diagnostics.cursor >= app.diagnostic_row_count {
+            app.diagnostics.cursor = app.diagnostic_row_count - 1
         }
-        app.tooling_length[0] = required
     }
     if app.host.copy_tooling == nil {
         refresh_package_tree(app)
         return
     }
-    for section_index: usize = 0; section_index < 5; section_index += 1 {
-        destination_index := section_index + 1
+    // packages (section zero) is a structured tree. The remaining four
+    // sections map directly to Declarations through Denials.
+    for section_index: usize = 1; section_index < 5; section_index += 1 {
+        destination_index := section_index - 1
         required := app.host.copy_tooling(
             app.host.user,
             cast[u8](section_index),
@@ -1173,16 +1194,35 @@ refresh_host :: proc(app: ^App) -> bool {
     app.semantic_dirty = false
     app.diagnostic_count = result.diagnostic_count
     copy_syntax_spans(app, result.span_count)
+    begin_result_output(
+        app,
+        "Check",
+        result.success != 0,
+        result.elapsed_nanoseconds,
+    )
     if result.success != 0 {
-        app.status = "Check succeeded; F8 shows diagnostics"
+        set_timed_status(
+            app,
+            "Check succeeded in ",
+            result.elapsed_nanoseconds,
+            "",
+        )
         if app.host.source_count != nil &&
             app.host.source_count(app.host.user) != app.reachable_source_count {
             refresh_reachable_sources(app)
         }
     } else {
-        app.status = "Check failed: diagnostics retain the last good program"
+        set_timed_status(
+            app,
+            "Check failed in ",
+            result.elapsed_nanoseconds,
+            "; see Diagnostics",
+        )
     }
     refresh_tooling_text(app)
+    if result.success == 0 {
+        show_diagnostics(app)
+    }
     return result.success != 0
 }
 

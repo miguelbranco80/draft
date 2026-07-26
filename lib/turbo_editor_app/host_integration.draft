@@ -10,8 +10,10 @@
 package turbo_editor_app
 
 import core/array
+import core/format
 import core/memory
 import core/process
+import core/time
 import core/tui
 import lib/draft_compiler_api
 import lib/turbo_editor
@@ -30,6 +32,17 @@ Run_Configuration :: struct {
     environment: array.Dynamic[cstring],
     working_directory: memory.Owned_String,
     has_working_directory: bool,
+}
+
+// Prepared_Run owns the exact artifact path and run configuration copied after
+// one successful F5 build. The event loop prepares this value while DraftIDE
+// still owns the alternate screen, then suspends the terminal only when an
+// executable is genuinely ready. This ownership boundary prevents a compiler
+// failure from flashing an empty Program Output screen.
+Prepared_Run :: struct {
+    configuration: Run_Configuration,
+    artifact_path: memory.Owned_String,
+    has_artifact_path: bool,
 }
 
 // run_configuration_init establishes all four Dynamic owners before any
@@ -60,6 +73,17 @@ run_configuration_destroy :: proc(configuration: ^Run_Configuration) {
     }
 }
 
+prepared_run_init :: proc(run: ^Prepared_Run) {
+    run.has_artifact_path = false
+}
+
+prepared_run_destroy :: proc(run: ^Prepared_Run) {
+    run_configuration_destroy(&run.configuration)
+    if run.has_artifact_path {
+        memory.owned_string_destroy(&run.artifact_path)
+    }
+}
+
 // copy_host_text allocates from the service's reported complete size, then
 // verifies that the second call observed the same value. A changed result would
 // mean the supposedly synchronous selected configuration mutated mid-copy.
@@ -80,6 +104,275 @@ copy_host_text :: proc(
     }
     memory.owned_string_copy_bytes(owned, storage[:length])
     memory.free_bytes(cast[rawptr](storage), length + 1, 1)
+    return true
+}
+
+// append_bounded_text and append_bounded_bytes are the allocation-free writer
+// used by status and Build Output. A false result leaves the already-written
+// prefix intact and lets the caller replace it with a short static fallback;
+// no compiler result is ever represented by an unterminated hidden owner.
+append_bounded_text :: proc(
+    destination: []u8,
+    length: ^usize,
+    source: string,
+) -> bool {
+    if length^ > len(destination) ||
+        len(source) > len(destination) - length^ {
+        return false
+    }
+    for index: usize = 0; index < len(source); index += 1 {
+        destination[length^] = source[index]
+        length^ += 1
+    }
+    return true
+}
+
+append_bounded_bytes :: proc(
+    destination: []u8,
+    length: ^usize,
+    source: []u8,
+) -> bool {
+    if length^ > len(destination) ||
+        len(source) > len(destination) - length^ {
+        return false
+    }
+    for byte in source {
+        destination[length^] = byte
+        length^ += 1
+    }
+    return true
+}
+
+// append_elapsed formats monotonic nanoseconds as rounded hundredths of a
+// second. Hundredths keep a status line stable while still distinguishing the
+// fast interactive path; the underlying exact count remains in the service
+// result and tests.
+append_elapsed :: proc(
+    destination: []u8,
+    length: ^usize,
+    nanoseconds: u64,
+) -> bool {
+    hundredths := nanoseconds / 10_000_000
+    if nanoseconds % 10_000_000 >= 5_000_000 {
+        hundredths += 1
+    }
+    whole := hundredths / 100
+    fraction := hundredths % 100
+    digits_storage: [20]u8
+    (digits, formatted) := format.unsigned_decimal(digits_storage[:], whole)
+    if !formatted || !append_bounded_bytes(destination, length, digits) ||
+        !append_bounded_text(destination, length, ".") {
+        return false
+    }
+    if fraction < 10 && !append_bounded_text(destination, length, "0") {
+        return false
+    }
+    (digits, formatted) = format.unsigned_decimal(
+        digits_storage[:],
+        fraction,
+    )
+    return formatted && append_bounded_bytes(destination, length, digits) &&
+        append_bounded_text(destination, length, "s")
+}
+
+begin_result_output :: proc(
+    app: ^App,
+    operation: string,
+    succeeded: bool,
+    elapsed_nanoseconds: u64,
+) {
+    app.build_output_length = 0
+    app.build_output_view.offset = 0
+    _ = append_bounded_text(
+        app.build_output[:],
+        &app.build_output_length,
+        operation,
+    )
+    outcome := " failed in "
+    if succeeded {
+        outcome = " succeeded in "
+    }
+    _ = append_bounded_text(
+        app.build_output[:],
+        &app.build_output_length,
+        outcome,
+    )
+    _ = append_elapsed(
+        app.build_output[:],
+        &app.build_output_length,
+        elapsed_nanoseconds,
+    )
+    _ = append_bounded_text(
+        app.build_output[:],
+        &app.build_output_length,
+        "\n",
+    )
+}
+
+append_result_detail :: proc(app: ^App, label: string, value: []u8) {
+    _ = append_bounded_text(
+        app.build_output[:],
+        &app.build_output_length,
+        label,
+    )
+    _ = append_bounded_bytes(
+        app.build_output[:],
+        &app.build_output_length,
+        value,
+    )
+    _ = append_bounded_text(
+        app.build_output[:],
+        &app.build_output_length,
+        "\n",
+    )
+}
+
+set_timed_status :: proc(
+    app: ^App,
+    prefix: string,
+    elapsed_nanoseconds: u64,
+    suffix: string,
+) {
+    app.status_length = 0
+    valid := append_bounded_text(
+        app.status_storage[:],
+        &app.status_length,
+        prefix,
+    ) && append_elapsed(
+        app.status_storage[:],
+        &app.status_length,
+        elapsed_nanoseconds,
+    ) && append_bounded_text(
+        app.status_storage[:],
+        &app.status_length,
+        suffix,
+    )
+    if !valid {
+        app.status = "Compiler operation completed"
+        app.status_length = 0
+        app.status_bytes_active = false
+        return
+    }
+    app.status_bytes_active = true
+}
+
+set_build_success_status :: proc(
+    app: ^App,
+    elapsed_nanoseconds: u64,
+    artifact: []u8,
+) {
+    app.status_length = 0
+    valid := append_bounded_text(
+        app.status_storage[:],
+        &app.status_length,
+        "Build succeeded in ",
+    ) && append_elapsed(
+        app.status_storage[:],
+        &app.status_length,
+        elapsed_nanoseconds,
+    ) && append_bounded_text(
+        app.status_storage[:],
+        &app.status_length,
+        " → ",
+    ) && append_bounded_bytes(
+        app.status_storage[:],
+        &app.status_length,
+        artifact,
+    )
+    if !valid {
+        app.status = "Build succeeded; artifact path exceeds status capacity"
+        app.status_length = 0
+        app.status_bytes_active = false
+        return
+    }
+    app.status_bytes_active = true
+}
+
+// set_plain_status ends any earlier byte-formatted status explicitly. Several
+// F5 phases run without an intervening input event, so assigning app.status
+// alone would leave the status bar painting the earlier Build message.
+set_plain_status :: proc(app: ^App, text: string) {
+    app.status = text
+    app.status_length = 0
+    app.status_bytes_active = false
+}
+
+show_diagnostics :: proc(app: ^App) {
+    turbo_ui.show_window(
+        &app.ui,
+        app.windows[:],
+        app.windows[Window_Diagnostics].id,
+    )
+    app.ui.focused_id = 870
+}
+
+// activate_diagnostic copies one row while it belongs to the latest compiler
+// attempt, retains non-workspace bytes as a read-only document, and reuses the
+// ordinary navigation operation to select the exact half-open range. No text
+// parsing or line-to-byte reconstruction occurs in the UI.
+activate_diagnostic :: proc(app: ^App, index: usize) -> bool {
+    if index >= app.diagnostic_row_count || app.host.diagnostic_row == nil ||
+        app.host.copy_diagnostic_source_path == nil {
+        app.status = "Diagnostic row is unavailable"
+        return false
+    }
+    row: draft_compiler_api.Diagnostic_Row
+    app.host.diagnostic_row(app.host.user, index, &row)
+    if row.navigable == 0 {
+        app.status = "This diagnostic has no source location"
+        return false
+    }
+    target: Navigation_Target
+    if !copy_host_indexed_text(
+        app.host.user,
+        app.host.copy_diagnostic_source_path,
+        index,
+        &target.path,
+    ) || target.path.length == 0 || row.end < row.start {
+        navigation_target_destroy(&target)
+        app.status = "Diagnostic source path is unavailable"
+        return false
+    }
+    target.start = row.start
+    target.end = row.end
+    target.line = row.line
+    target.column = row.column
+    target.editable = row.editable != 0
+    path := memory.owned_string_bytes(&target.path)
+    if !target.editable && buffer_index_for_path(app, path) == app.buffer_count {
+        if app.host.copy_diagnostic_source_text == nil {
+            navigation_target_destroy(&target)
+            app.status = "Diagnostic source bytes are unavailable"
+            return false
+        }
+        source: memory.Owned_String
+        copied := copy_host_indexed_text(
+            app.host.user,
+            app.host.copy_diagnostic_source_text,
+            index,
+            &source,
+        )
+        if !copied || !init_one_read_only_buffer(
+            app,
+            path,
+            memory.owned_string_bytes(&source),
+        ) {
+            if copied {
+                memory.owned_string_destroy(&source)
+            }
+            navigation_target_destroy(&target)
+            app.status = "Could not retain diagnostic source bytes"
+            return false
+        }
+        memory.owned_string_destroy(&source)
+    }
+    opened := open_navigation_target(app, &target, true)
+    navigation_target_destroy(&target)
+    if !opened {
+        app.status = "Could not open the diagnostic source range"
+        return false
+    }
+    app.status = "Diagnostic source range selected"
     return true
 }
 
@@ -681,13 +974,15 @@ load_run_configuration :: proc(
     return true
 }
 
-// execute_host_action submits all open source overlays, then optionally runs
-// only a successfully published executable. F5 snapshots run settings after
-// the build so artifact path, arguments, environment, and directory all belong
-// to the same selected root/configuration.
-execute_host_action :: proc(app: ^App, run: bool) -> bool {
-    procedure := app.host.build
-    if procedure == nil {
+// build_active submits all current root-owned overlays and publishes one
+// complete Build Output replacement. A compiler failure raises Diagnostics;
+// success never changes its visibility. When artifact_output is non-nil,
+// ownership of the copied artifact path moves to the caller for F5 preparation.
+build_active :: proc(
+    app: ^App,
+    artifact_output: ^memory.Owned_String = nil,
+) -> bool {
+    if app.host.build == nil {
         app.status = "No compiler host is attached"
         return false
     }
@@ -701,7 +996,7 @@ execute_host_action :: proc(app: ^App, run: bool) -> bool {
         return false
     }
     result: draft_compiler_api.Result
-    procedure(
+    app.host.build(
         app.host.user,
         &overlays[0],
         overlay_count,
@@ -711,78 +1006,227 @@ execute_host_action :: proc(app: ^App, run: bool) -> bool {
     app.semantic_dirty = false
     app.diagnostic_count = result.diagnostic_count
     copy_syntax_spans(app, result.span_count)
-    if result.success != 0 {
-        if run {
-            artifact_kind: draft_compiler_api.Artifact_Kind = .executable
-            if app.host.artifact_kind != nil {
-                artifact_kind = cast[draft_compiler_api.Artifact_Kind](
-                    app.host.artifact_kind(app.host.user),
-                )
-            }
-            if artifact_kind != .executable {
-                app.status = "Build completed; selected artifact is not executable"
-            } else if app.host.copy_artifact_path == nil {
-                app.status = "Compiler did not expose the built artifact path"
-            } else {
-                owned_path: memory.Owned_String
-                path_copied := copy_host_text(
-                    app.host.user,
-                    app.host.copy_artifact_path,
-                    &owned_path,
-                )
-                if !path_copied || owned_path.length == 0 {
-                    if path_copied {
-                        memory.owned_string_destroy(&owned_path)
-                    }
-                    app.status = "Built artifact path is unavailable"
-                } else {
-                    run_configuration: Run_Configuration
-                    loaded_run := load_run_configuration(app, &run_configuration)
-                    if !loaded_run {
-                        app.status = "Could not read the selected run configuration"
-                        run_configuration_destroy(&run_configuration)
-                        memory.owned_string_destroy(&owned_path)
-                        refresh_tooling_text(app)
-                        return false
-                    }
-                    working_directory: cstring
-                    if run_configuration.has_working_directory {
-                        working_directory = memory.owned_string_cstring(
-                            &run_configuration.working_directory,
-                        )
-                    }
-                    options := process.Options{
-                        arguments = array.view(&run_configuration.arguments),
-                        environment = array.view(&run_configuration.environment),
-                        working_directory = working_directory,
-                    }
-                    launched := process.run_with_options(
-                        memory.owned_string_cstring(&owned_path),
-                        options,
-                    )
-                    run_configuration_destroy(&run_configuration)
-                    memory.owned_string_destroy(&owned_path)
-                    if launched.error == .invalid_options {
-                        app.status = "Selected run configuration is invalid"
-                    } else if launched.error != .none {
-                        app.status = "Could not launch the built program"
-                    } else if !launched.exited {
-                        app.status = "Built program terminated by a signal"
-                    } else if launched.exit_code != 0 {
-                        app.status = "Built program returned a nonzero status"
-                    } else {
-                        app.status = "Run completed"
-                    }
-                }
-            }
-        } else {
-            app.status = "Build completed"
-        }
-    } else {
-        app.status = "Build/Run failed; see diagnostics"
-    }
+    begin_result_output(
+        app,
+        "Build",
+        result.success != 0,
+        result.elapsed_nanoseconds,
+    )
     refresh_tooling_text(app)
-    return result.success != 0
+    if result.success == 0 {
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            "See Diagnostics for compiler errors.\n",
+        )
+        set_timed_status(
+            app,
+            "Build failed in ",
+            result.elapsed_nanoseconds,
+            "; see Diagnostics",
+        )
+        show_diagnostics(app)
+        return false
+    }
+    if app.host.copy_artifact_path == nil {
+        set_plain_status(
+            app,
+            "Build succeeded, but no artifact path was published",
+        )
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            "Artifact path unavailable.\n",
+        )
+        turbo_ui.show_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Build_Output].id,
+        )
+        return false
+    }
+    owned_path: memory.Owned_String
+    path_copied := copy_host_text(
+        app.host.user,
+        app.host.copy_artifact_path,
+        &owned_path,
+    )
+    if !path_copied || owned_path.length == 0 {
+        if path_copied {
+            memory.owned_string_destroy(&owned_path)
+        }
+        set_plain_status(
+            app,
+            "Build succeeded, but its artifact path is unavailable",
+        )
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            "Artifact path unavailable.\n",
+        )
+        turbo_ui.show_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Build_Output].id,
+        )
+        return false
+    }
+    path := memory.owned_string_bytes(&owned_path)
+    append_result_detail(app, "Artifact: ", path)
+    set_build_success_status(app, result.elapsed_nanoseconds, path)
+    if artifact_output == nil {
+        memory.owned_string_destroy(&owned_path)
+    } else {
+        artifact_output^ = owned_path
+    }
+    return true
+}
+
+// prepare_run keeps all build and configuration work inside the IDE screen.
+// Its caller must initialize and later destroy prepared. A false return means
+// no child should be launched and, for compiler failures, Diagnostics is
+// already visible and active.
+prepare_run :: proc(app: ^App, prepared: ^Prepared_Run) -> bool {
+    if !build_active(app, &prepared.artifact_path) {
+        return false
+    }
+    prepared.has_artifact_path = true
+    artifact_kind: draft_compiler_api.Artifact_Kind = .executable
+    if app.host.artifact_kind != nil {
+        artifact_kind = cast[draft_compiler_api.Artifact_Kind](
+            app.host.artifact_kind(app.host.user),
+        )
+    }
+    if artifact_kind != .executable {
+        set_plain_status(
+            app,
+            "Build succeeded; the selected artifact is not executable",
+        )
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            "Run not started: selected artifact is not executable.\n",
+        )
+        turbo_ui.show_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Build_Output].id,
+        )
+        return false
+    }
+    if !load_run_configuration(app, &prepared.configuration) {
+        set_plain_status(
+            app,
+            "Build succeeded; run configuration could not be read",
+        )
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            "Run not started: run configuration is unavailable.\n",
+        )
+        turbo_ui.show_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Build_Output].id,
+        )
+        return false
+    }
+    return true
+}
+
+// execute_prepared_run owns only child execution and Run Results. It never
+// refreshes compiler diagnostics or changes the Diagnostics window, so a
+// nonzero exit or signal remains runtime output rather than masquerading as a
+// language error.
+execute_prepared_run :: proc(app: ^App, prepared: ^Prepared_Run) {
+    working_directory: cstring
+    if prepared.configuration.has_working_directory {
+        working_directory = memory.owned_string_cstring(
+            &prepared.configuration.working_directory,
+        )
+    }
+    options := process.Options{
+        arguments = array.view(&prepared.configuration.arguments),
+        environment = array.view(&prepared.configuration.environment),
+        working_directory = working_directory,
+    }
+    started := time.monotonic_now()
+    launched := process.run_with_options(
+        memory.owned_string_cstring(&prepared.artifact_path),
+        options,
+    )
+    finished := time.monotonic_now()
+    elapsed_nanoseconds: u64
+    if finished >= started {
+        elapsed_nanoseconds = cast[u64](cast[i64](finished - started))
+    }
+    _ = append_bounded_text(
+        app.build_output[:],
+        &app.build_output_length,
+        "\nRun ",
+    )
+    succeeded := launched.error == .none && launched.exited &&
+        launched.exit_code == 0
+    outcome := "failed in "
+    if succeeded {
+        outcome = "succeeded in "
+    }
+    _ = append_bounded_text(
+        app.build_output[:],
+        &app.build_output_length,
+        outcome,
+    )
+    _ = append_elapsed(
+        app.build_output[:],
+        &app.build_output_length,
+        elapsed_nanoseconds,
+    )
+    _ = append_bounded_text(
+        app.build_output[:],
+        &app.build_output_length,
+        "\n",
+    )
+    if launched.error == .invalid_options {
+        set_plain_status(app, "Run failed: selected configuration is invalid")
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            "Result: invalid run configuration.\n",
+        )
+    } else if launched.error != .none {
+        set_plain_status(app, "Run failed: could not launch the built program")
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            "Result: child process could not be launched.\n",
+        )
+    } else if !launched.exited {
+        set_plain_status(app, "Run failed: program terminated by a signal")
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            "Result: program terminated by a signal.\n",
+        )
+    } else if launched.exit_code != 0 {
+        set_plain_status(app, "Run failed: program returned a nonzero status")
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            "Result: program returned a nonzero status.\n",
+        )
+    } else {
+        set_timed_status(
+            app,
+            "Run succeeded in ",
+            elapsed_nanoseconds,
+            "",
+        )
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            "Result: exit status 0.\n",
+        )
+    }
 }
 
 host_action :: proc(app: ^App, run: bool) {
@@ -795,7 +1239,7 @@ host_action :: proc(app: ^App, run: bool) {
         app.status = "Run requested"
         return
     }
-    _ = execute_host_action(app, false)
+    _ = build_active(app)
 }
 
 // build_all_programs builds each compiler-discovered executable root exactly
@@ -818,7 +1262,7 @@ build_all_programs :: proc(app: ^App) {
     original_document := app.active
     completed: usize
     for index: usize = 0; index < count; index += 1 {
-        if !select_root_package(app, index) || !execute_host_action(app, false) {
+        if !select_root_package(app, index) || !build_active(app) {
             break
         }
         completed += 1
@@ -832,6 +1276,8 @@ build_all_programs :: proc(app: ^App) {
     } else {
         app.status = "Build All stopped at the first failed program"
     }
+    app.status_bytes_active = false
+    app.status_length = 0
 }
 
 byte_views_equal :: proc(left, right: []u8) -> bool {

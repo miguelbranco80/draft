@@ -163,9 +163,19 @@ begin_run_output :: proc() -> io.Error {
 // line rather than terminal escape fragments. EOF is a valid acknowledgement;
 // any other read/write failure prevents a safe return to the full-screen IDE.
 wait_after_run :: proc(app: ^App) -> io.Error {
-    if os.write_text_all(os.standard_output, "\n--- DraftIDE: ") != .none ||
-        os.write_text_all(os.standard_output, app.status) != .none ||
-        os.write_text_all(
+    if os.write_text_all(os.standard_output, "\n--- DraftIDE: ") != .none {
+        return .unavailable
+    }
+    status_error: io.Error
+    if app.status_bytes_active {
+        status_error = os.write_all(
+            os.standard_output,
+            app.status_storage[:app.status_length],
+        )
+    } else {
+        status_error = os.write_text_all(os.standard_output, app.status)
+    }
+    if status_error != .none || os.write_text_all(
             os.standard_output,
             " ---\nPress Enter to return to DraftIDE...",
         ) != .none {
@@ -412,13 +422,28 @@ run_interactive :: proc(
         }
         if app.run_requested {
             app.run_requested = false
-            // Publish the "Run requested" frame before yielding the terminal,
-            // then restore primary screen/input for the child process. Resume
-            // in acquisition order and invalidate the renderer because the
-            // child may have changed any visible cell.
+            // Publish the "Run requested" frame, then build and snapshot the
+            // executable while DraftIDE still owns the alternate screen. A
+            // compiler failure repaints raised Diagnostics here and never
+            // exposes an empty primary-screen Program Output view.
             if repaint && tui.present(&renderer, screen) != .none {
                 return .unavailable
             }
+            prepared: Prepared_Run
+            prepared_run_init(&prepared)
+            if !prepare_run(app, &prepared) {
+                prepared_run_destroy(&prepared)
+                paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
+                if tui.present(&renderer, screen) != .none {
+                    return .unavailable
+                }
+                repaint = false
+                continue
+            }
+
+            // Only a prepared executable crosses the terminal ownership
+            // boundary. Resume in acquisition order and invalidate the
+            // renderer because the child may have changed any visible cell.
             mouse_suspended := terminal.suspend_mouse_reporting(reporting)
             screen_suspended := mouse_suspended &&
                 terminal.suspend_screen(screen)
@@ -427,10 +452,11 @@ run_interactive :: proc(
             if mouse_suspended && screen_suspended && input_suspended {
                 run_io_error = begin_run_output()
                 if run_io_error == .none {
-                    execute_host_action(app, true)
+                    execute_prepared_run(app, &prepared)
                     run_io_error = wait_after_run(app)
                 }
             }
+            prepared_run_destroy(&prepared)
             input_resumed := input_suspended && terminal.resume(session)
             screen_resumed := input_resumed && terminal.resume_screen(screen)
             mouse_resumed := screen_resumed &&
@@ -617,7 +643,7 @@ pub run_with_host_bytes :: proc(
         // including continuation of the manifest-selected root through native
         // publication. Merely painting compiler text would not prove that the
         // durable root-package selection is sufficient to build the program.
-        _ = execute_host_action(&app, false)
+        _ = build_active(&app)
         artifact: [Host_Path_Capacity]u8
         if app.host.copy_artifact_path == nil ||
             app.host.copy_artifact_path(

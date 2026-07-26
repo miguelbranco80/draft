@@ -65,6 +65,28 @@ struct CheckResult {
   std::uint32_t diagnostic_count = 0;
 };
 
+// DiagnosticRow is the editor-facing structural form of one diagnostic from
+// the latest semantic operation. The row owns every string because failed
+// checks publish from a private SourceManager which dies when the operation
+// returns. start/end remain exact half-open offsets into source_text; line and
+// column are one-based display coordinates. A row without a valid source range
+// is still useful as a message but is not navigable. editable is conservative:
+// it is true only when path identifies one current workspace source option.
+// Generated-source ranges therefore open their retained exact bytes read-only
+// instead of pretending their offsets belong at the surface synthesis site.
+struct DiagnosticRow {
+  DiagnosticSeverity severity = DiagnosticSeverity::Error;
+  std::string label;
+  std::string path;
+  std::string source_text;
+  std::size_t start = 0;
+  std::size_t end = 0;
+  std::size_t line = 0;
+  std::size_t column = 0;
+  bool navigable = false;
+  bool editable = false;
+};
+
 // SourceOverlay is one synchronously borrowed editor buffer. physical_path is
 // an I/O-boundary identity only: CompilerSession resolves it against the
 // deterministic source table and converts it to PackageIdentity plus relative
@@ -256,6 +278,7 @@ public:
   // fixed-buffer facade instead of observing these C++ representations.
   [[nodiscard]] const std::vector<SyntaxSpan> &syntax_spans() const;
   [[nodiscard]] std::string_view diagnostics_text() const;
+  [[nodiscard]] const std::vector<DiagnosticRow> &diagnostic_rows() const;
   [[nodiscard]] std::string_view tooling_text(ToolingSection section) const;
   [[nodiscard]] const std::vector<PackageTreeRow> &package_tree_rows() const;
   [[nodiscard]] const std::filesystem::path &workspace_directory() const;
@@ -359,6 +382,7 @@ private:
   std::optional<NavigationLocation> navigation_definition_;
   std::vector<NavigationLocation> navigation_usages_;
   std::string diagnostics_text_;
+  std::vector<DiagnosticRow> diagnostic_rows_;
   std::uint32_t diagnostic_count_ = 0;
 };
 

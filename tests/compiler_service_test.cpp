@@ -318,6 +318,7 @@ void test_service_transactions_and_native_build(TestState &state) {
   check_source(session, canonical_source, invalid, rejected);
   EXPECT(state, rejected.success == 0);
   EXPECT(state, rejected.diagnostic_count != 0);
+  EXPECT(state, rejected.elapsed_nanoseconds != 0);
   std::array<std::uint8_t, 2048> diagnostic_bytes{};
   const std::size_t diagnostic_size = draft_compiler_session_copy_diagnostics(
       session, diagnostic_bytes.data(), diagnostic_bytes.size());
@@ -326,6 +327,57 @@ void test_service_transactions_and_native_build(TestState &state) {
                     reinterpret_cast<const char *>(diagnostic_bytes.data()),
                     std::min(diagnostic_size, diagnostic_bytes.size() - 1))
                         .find("missing_name") != std::string_view::npos);
+
+  // Diagnostics are also exposed as deterministic activatable rows. The row
+  // keeps the exact rejected overlay bytes rather than rereading the older
+  // source on disk, so a Draft client can open and select the compiler's
+  // half-open range without parsing the rendered diagnostic text.
+  const std::size_t diagnostic_row_count =
+      draft_compiler_session_diagnostic_row_count(session);
+  EXPECT(state, diagnostic_row_count != 0);
+  DraftCompilerServiceDiagnosticRow diagnostic_row{};
+  draft_compiler_session_diagnostic_row(session, 0, &diagnostic_row);
+  const std::size_t missing_name = invalid.find("missing_name");
+  EXPECT(state, missing_name != std::string::npos);
+  EXPECT(state, diagnostic_row.start == missing_name);
+  EXPECT(state, diagnostic_row.end == missing_name + 12);
+  EXPECT(state, diagnostic_row.line == 3);
+  EXPECT(state, diagnostic_row.column == 12);
+  EXPECT(state, diagnostic_row.severity == 0);
+  EXPECT(state, diagnostic_row.navigable == 1);
+  EXPECT(state, diagnostic_row.editable == 1);
+  std::array<std::uint8_t, 4096> diagnostic_row_bytes{};
+  const std::size_t diagnostic_label_size =
+      draft_compiler_session_copy_diagnostic_row_text(
+          session, 0, diagnostic_row_bytes.data(),
+          diagnostic_row_bytes.size());
+  EXPECT(state, diagnostic_label_size != 0);
+  EXPECT(state,
+         std::string_view(
+             reinterpret_cast<const char *>(diagnostic_row_bytes.data()),
+             diagnostic_label_size)
+                 .find("error: unknown name 'missing_name'") !=
+             std::string_view::npos);
+  diagnostic_row_bytes.fill(0);
+  const std::size_t diagnostic_path_size =
+      draft_compiler_session_copy_diagnostic_source_path(
+          session, 0, diagnostic_row_bytes.data(),
+          diagnostic_row_bytes.size());
+  EXPECT(state, diagnostic_path_size == canonical_source_text.size());
+  EXPECT(state,
+         std::string_view(
+             reinterpret_cast<const char *>(diagnostic_row_bytes.data()),
+             diagnostic_path_size) == canonical_source_text);
+  diagnostic_row_bytes.fill(0);
+  const std::size_t diagnostic_source_size =
+      draft_compiler_session_copy_diagnostic_source_text(
+          session, 0, diagnostic_row_bytes.data(),
+          diagnostic_row_bytes.size());
+  EXPECT(state, diagnostic_source_size == invalid.size());
+  EXPECT(state,
+         std::string_view(
+             reinterpret_cast<const char *>(diagnostic_row_bytes.data()),
+             diagnostic_source_size) == invalid);
 
   // A rejected current buffer changes diagnostics and syntax ranges only. The
   // declaration view is still the exact projection built from the previous
@@ -368,6 +420,7 @@ void test_service_transactions_and_native_build(TestState &state) {
   }
   EXPECT(state, reloaded.success == 1);
   EXPECT(state, reloaded.diagnostic_count == 0);
+  EXPECT(state, draft_compiler_session_diagnostic_row_count(session) == 0);
 
   // The deterministic row order is package followed by its authored imports.
   // Import rows name their parent package index and carry depth one, allowing a
@@ -457,6 +510,7 @@ void test_service_transactions_and_native_build(TestState &state) {
                                multi_overlays.size(), 0, &built);
   EXPECT(state, built.success == 1);
   EXPECT(state, built.diagnostic_count == 0);
+  EXPECT(state, built.elapsed_nanoseconds != 0);
   std::array<std::uint8_t, 4096> artifact_bytes{};
   const std::size_t artifact_size = draft_compiler_session_copy_artifact_path(
       session, artifact_bytes.data(), artifact_bytes.size());
