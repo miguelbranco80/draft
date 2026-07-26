@@ -1,0 +1,33 @@
+// core/filesystem is the small hosted directory-enumeration boundary used by
+// interactive tools. Its input is one borrowed, zero-terminated UTF-8 path;
+// its output is an explicitly owned Directory handle plus one copied entry
+// name at a time. The caller owns all name storage and must close every
+// successfully opened Directory exactly once.
+//
+// Enumeration order is deliberately unspecified because native filesystems do
+// not provide a semantic order. A caller whose result is user-visible or enters
+// a manifest/hash must sort the copied names explicitly. Target-selected files
+// own native handle/layout/encoding details. This common file owns only the
+// portable value vocabulary. Draft specification: sections 3, 5-7, and 12,
+// plus the selected target profile.
+package filesystem
+
+import core/io
+
+// Entry_Kind is a best-effort native classification. `unknown` includes
+// symlinks and filesystem objects whose type the enumeration API does not
+// expose. A caller that wants to enter an `other` row as a directory may try
+// opening that complete path; classification is not an authorization check.
+pub Entry_Kind :: enum u8 {
+    unknown,
+    regular_file,
+    directory,
+}
+
+// Entry describes the prefix initialized in the destination passed to read.
+// name_length is a byte count, excludes any terminator, and is valid only when
+// read returns io.Error.none. Names are UTF-8 on every hosted target.
+pub Entry :: struct {
+    kind: Entry_Kind,
+    name_length: usize,
+}

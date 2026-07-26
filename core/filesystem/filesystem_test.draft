@@ -1,0 +1,44 @@
+// These native tests exercise the portable directory-owner contract against
+// the test process's current directory. They do not assert host enumeration
+// order. The package's target-qualified implementations are also checked for
+// every target by the repository's embedded-core and example qualification
+// gates.
+package filesystem
+
+import core/memory
+import core/testing
+
+test_enumerates_current_directory :: proc(test: ^testing.Test) {
+    path: memory.Owned_String
+    memory.owned_string_copy(&path, ".")
+    defer memory.owned_string_destroy(&path)
+
+    (directory, error) := open(memory.owned_string_cstring(&path))
+    testing.expect(test, error == .none)
+    if error != .none {
+        return
+    }
+    defer close(&directory)
+
+    found_entry := false
+    name: [4096]u8
+    for {
+        (entry, read_error) := read(&directory, name[:])
+        if read_error == .end_of_input {
+            break
+        }
+        testing.expect(test, read_error == .none)
+        if read_error != .none {
+            return
+        }
+        testing.expect(test, entry.name_length != 0)
+        found_entry = true
+    }
+    testing.expect(test, found_entry)
+}
+
+test_inactive_close_is_idempotent :: proc(test: ^testing.Test) {
+    directory: Directory
+    testing.expect(test, close(&directory))
+    testing.expect(test, close(&directory))
+}

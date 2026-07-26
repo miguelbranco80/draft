@@ -1,0 +1,214 @@
+// This target-selected half of core/filesystem adapts Win32's UTF-16 directory
+// enumeration to Draft's UTF-8 copied-name contract. Directory owns one search
+// HANDLE and an inline WIN32_FIND_DATAW row. open materializes a temporary
+// `<path>\\*` pattern; read converts each borrowed UTF-16 filename before the
+// next FindNextFileW call. The fixed record layout and constants are facts of
+// the x86-64 Windows target profile.
+package filesystem
+
+import core/c_abi
+import core/io
+
+Windows_File_Time :: c struct {
+    low: c_abi.unsigned_long,
+    high: c_abi.unsigned_long,
+}
+
+Windows_Find_Data :: c struct {
+    attributes: c_abi.unsigned_long,
+    creation_time: Windows_File_Time,
+    access_time: Windows_File_Time,
+    write_time: Windows_File_Time,
+    size_high: c_abi.unsigned_long,
+    size_low: c_abi.unsigned_long,
+    reserved_0: c_abi.unsigned_long,
+    reserved_1: c_abi.unsigned_long,
+    name: [260]u16,
+    alternate_name: [14]u16,
+}
+
+foreign windows {
+    find_first_file as "FindFirstFileW" :: c proc(
+        pattern: [^]u16,
+        data: ^Windows_Find_Data,
+    ) -> rawptr
+    find_next_file as "FindNextFileW" :: c proc(
+        handle: rawptr,
+        data: ^Windows_Find_Data,
+    ) -> c_abi.int
+    find_close as "FindClose" :: c proc(handle: rawptr) -> c_abi.int
+    get_last_error as "GetLastError" :: c proc() -> c_abi.unsigned_long
+    multi_byte_to_wide_char as "MultiByteToWideChar" :: c proc(
+        code_page: c_abi.unsigned_int,
+        flags: c_abi.unsigned_long,
+        source: cstring,
+        source_length: c_abi.int,
+        destination: [^]u16,
+        destination_length: c_abi.int,
+    ) -> c_abi.int
+    wide_char_to_multi_byte as "WideCharToMultiByte" :: c proc(
+        code_page: c_abi.unsigned_int,
+        flags: c_abi.unsigned_long,
+        source: [^]u16,
+        source_length: c_abi.int,
+        destination: [^]u8,
+        destination_length: c_abi.int,
+        default_character: [^]u8,
+        used_default_character: ^c_abi.int,
+    ) -> c_abi.int
+}
+
+foreign libc {
+    native_allocate as "malloc" :: c proc(size: c_abi.size_t) -> rawptr
+    native_free as "free" :: c proc(storage: rawptr)
+}
+
+Cp_Utf8 :: cast[c_abi.unsigned_int](65001)
+Mb_Err_Invalid_Chars :: cast[c_abi.unsigned_long](0x00000008)
+Wc_Err_Invalid_Chars :: cast[c_abi.unsigned_long](0x00000080)
+Directory_Attribute :: cast[c_abi.unsigned_long](0x00000010)
+Error_No_More_Files :: cast[c_abi.unsigned_long](18)
+
+pub Directory :: struct {
+    handle: rawptr,
+    first_pending: bool,
+    data: Windows_Find_Data,
+}
+
+invalid_handle :: proc() -> rawptr {
+    return cast[rawptr](~cast[uintptr](0))
+}
+
+// search_pattern converts one UTF-8 path and appends the wildcard needed by
+// FindFirstFileW. The returned UCRT allocation is owned by the caller.
+search_pattern :: proc(path: cstring) -> [^]u16 {
+    required := multi_byte_to_wide_char(
+        Cp_Utf8,
+        Mb_Err_Invalid_Chars,
+        path,
+        -1,
+        nil,
+        0,
+    )
+    if required <= 0 {
+        return nil
+    }
+    count := cast[usize](required)
+    if count > (~cast[usize](0) / size_of(u16)) - 2 {
+        return nil
+    }
+    storage := cast[[^]u16](native_allocate((count + 2) * size_of(u16)))
+    if storage == nil {
+        return nil
+    }
+    converted := multi_byte_to_wide_char(
+        Cp_Utf8,
+        Mb_Err_Invalid_Chars,
+        path,
+        -1,
+        storage,
+        required,
+    )
+    if converted != required {
+        native_free(cast[rawptr](storage))
+        return nil
+    }
+    last := count - 1
+    if last != 0 &&
+        (storage[last - 1] == cast[u16]('\\') ||
+            storage[last - 1] == cast[u16]('/')) {
+        storage[last] = cast[u16]('*')
+        storage[last + 1] = 0
+    } else {
+        storage[last] = cast[u16]('\\')
+        storage[last + 1] = cast[u16]('*')
+        storage[last + 2] = 0
+    }
+    return storage
+}
+
+pub open :: proc(path: cstring) -> (Directory, io.Error) {
+    static_assert(size_of(Windows_Find_Data) == 592)
+    static_assert(align_of(Windows_Find_Data) == 4)
+    pattern := search_pattern(path)
+    if pattern == nil {
+        return (Directory{}, .invalid)
+    }
+    result: Directory
+    result.handle = find_first_file(pattern, &result.data)
+    native_free(cast[rawptr](pattern))
+    if result.handle == invalid_handle() {
+        result.handle = nil
+        return (Directory{}, .unavailable)
+    }
+    result.first_pending = true
+    return (result, .none)
+}
+
+pub read :: proc(
+    directory: ^Directory,
+    destination: []u8,
+) -> (Entry, io.Error) {
+    if directory.handle == nil {
+        return (Entry{}, .invalid)
+    }
+    if directory.first_pending {
+        directory.first_pending = false
+    } else if find_next_file(directory.handle, &directory.data) == 0 {
+        if get_last_error() == Error_No_More_Files {
+            return (Entry{}, .end_of_input)
+        }
+        return (Entry{}, .unavailable)
+    }
+    source_length: usize
+    for source_length < len(directory.data.name) &&
+        directory.data.name[source_length] != 0 {
+        source_length += 1
+    }
+    if source_length == len(directory.data.name) {
+        return (Entry{}, .invalid)
+    }
+    required := wide_char_to_multi_byte(
+        Cp_Utf8,
+        Wc_Err_Invalid_Chars,
+        cast[[^]u16](&directory.data.name[0]),
+        cast[c_abi.int](source_length),
+        nil,
+        0,
+        nil,
+        nil,
+    )
+    if required <= 0 || cast[usize](required) > len(destination) {
+        return (Entry{}, .invalid)
+    }
+    converted := wide_char_to_multi_byte(
+        Cp_Utf8,
+        Wc_Err_Invalid_Chars,
+        cast[[^]u16](&directory.data.name[0]),
+        cast[c_abi.int](source_length),
+        cast[[^]u8](&destination[0]),
+        required,
+        nil,
+        nil,
+    )
+    if converted != required {
+        return (Entry{}, .unavailable)
+    }
+    kind: Entry_Kind = .regular_file
+    if (directory.data.attributes & Directory_Attribute) != 0 {
+        kind = .directory
+    }
+    return (Entry{kind = kind, name_length = cast[usize](required)}, .none)
+}
+
+pub close :: proc(directory: ^Directory) -> bool {
+    if directory.handle == nil {
+        return true
+    }
+    if find_close(directory.handle) == 0 {
+        return false
+    }
+    directory.handle = nil
+    directory.first_pending = false
+    return true
+}

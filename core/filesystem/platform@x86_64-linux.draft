@@ -1,0 +1,79 @@
+// x86-64 Linux uses the same glibc dirent layout and procedure ABI as the
+// AArch64 Linux target. This target-qualified source remains explicit because
+// the layout is a target-profile fact rather than a language-level POSIX rule.
+package filesystem
+
+import core/c_abi
+import core/io
+
+Linux_Dirent :: c struct {
+    inode: u64,
+    offset: i64,
+    record_length: u16,
+    entry_type: u8,
+    name: [256]u8,
+}
+
+foreign linux {
+    native_open_directory as "opendir" :: c proc(path: cstring) -> rawptr
+    native_read_directory as "readdir" :: c proc(handle: rawptr) -> ^Linux_Dirent
+    native_close_directory as "closedir" :: c proc(handle: rawptr) -> c_abi.int
+}
+
+Directory_Type :: cast[u8](4)
+Regular_File_Type :: cast[u8](8)
+
+pub Directory :: struct {
+    handle: rawptr,
+}
+
+pub open :: proc(path: cstring) -> (Directory, io.Error) {
+    static_assert(size_of(Linux_Dirent) == 280)
+    static_assert(align_of(Linux_Dirent) == 8)
+    handle := native_open_directory(path)
+    if handle == nil {
+        return (Directory{}, .unavailable)
+    }
+    return (Directory{handle = handle}, .none)
+}
+
+pub read :: proc(
+    directory: ^Directory,
+    destination: []u8,
+) -> (Entry, io.Error) {
+    if directory.handle == nil {
+        return (Entry{}, .invalid)
+    }
+    native := native_read_directory(directory.handle)
+    if native == nil {
+        return (Entry{}, .end_of_input)
+    }
+    count: usize
+    for count < len(native.name) && native.name[count] != 0 {
+        count += 1
+    }
+    if count == len(native.name) || count > len(destination) {
+        return (Entry{}, .invalid)
+    }
+    for index: usize = 0; index < count; index += 1 {
+        destination[index] = native.name[index]
+    }
+    kind: Entry_Kind = .unknown
+    if native.entry_type == Directory_Type {
+        kind = .directory
+    } else if native.entry_type == Regular_File_Type {
+        kind = .regular_file
+    }
+    return (Entry{kind = kind, name_length = count}, .none)
+}
+
+pub close :: proc(directory: ^Directory) -> bool {
+    if directory.handle == nil {
+        return true
+    }
+    if native_close_directory(directory.handle) != 0 {
+        return false
+    }
+    directory.handle = nil
+    return true
+}

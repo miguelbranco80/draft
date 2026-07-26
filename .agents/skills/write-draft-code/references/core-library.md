@@ -20,6 +20,7 @@ from another standard library is not evidence that Draft provides it.
 - [`core/c_abi`](#corec_abi)
 - [`core/console`](#coreconsole)
 - [`core/format`](#coreformat)
+- [`core/filesystem`](#corefilesystem)
 - [`core/heap`](#coreheap)
 - [`core/io`](#coreio)
 - [`core/map`](#coremap)
@@ -198,6 +199,32 @@ The returned slice aliases `destination` and begins at index zero. A false
 result means the buffer was too small; the returned slice is empty and the
 destination contents are unspecified. There is no parsing, hex/binary, width,
 padding, floating-point, rune, or general formatting facility.
+
+## `core/filesystem`
+
+Portable hosted directory enumeration:
+
+```draft
+filesystem.Entry_Kind // .unknown, .regular_file, .directory
+filesystem.Entry{name_length, kind}
+filesystem.Directory
+filesystem.open(path: cstring) -> (filesystem.Directory, io.Error)
+filesystem.read(&directory, destination) -> (filesystem.Entry, io.Error)
+filesystem.close(&directory) -> bool
+```
+
+`Directory` owns one native enumeration handle and is non-copyable by
+convention. `read` copies one UTF-8 entry name into caller storage; the returned
+length excludes a terminator. End of enumeration is `io.Error.end_of_input`.
+Native enumeration order is unspecified, so callers must sort copied names
+before presenting or serializing a deterministic result. `.unknown` includes
+symlinks and native rows without a useful type classification; trying to open
+the complete path is the portable way to determine whether such a row can be
+entered as a directory.
+
+There is no owned path type, canonicalization, metadata/stat, recursive walk,
+directory creation/removal, rename, watch API, or ambient-current-directory
+query.
 
 ## `core/heap`
 
@@ -865,7 +892,7 @@ grapheme segmentation, case mapping, locale handling, or display width.
 The current core does not yet supply several facilities a larger application
 may need:
 
-- path manipulation, directories, metadata, random-access files, or rename;
+- path manipulation, metadata, random-access files, directory mutation, or rename;
 - general signal-safe terminal recovery beyond the scoped resize handler;
 - sockets, redirected/background processes, general signals,
   dynamic libraries, or event loops;

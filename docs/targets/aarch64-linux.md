@@ -87,6 +87,11 @@ for `EINTR = 4`, interprets the Linux/POSIX low-seven-bit signal and
 high-eight-bit exit fields, and terminates directory/exec failure through
 `_exit(126)`/`_exit(127)`.
 
+Directory enumeration uses glibc `opendir`/`readdir`/`closedir`. The selected
+Linux `dirent` prefix is two 64-bit words, a 16-bit record length, one-byte
+type, and a zero-terminated name. Type values 4 and 8 identify directories and
+regular files; native enumeration order is not semantic.
+
 The initial cross-target qualification used LLVM/LLD 22.1.8 and an Ubuntu
 24.04 arm64 sysroot containing glibc 2.39, Linux 6.8 UAPI headers, and the GCC
 13 runtime. That run is preserved in the

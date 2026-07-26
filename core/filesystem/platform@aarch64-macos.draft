@@ -1,0 +1,84 @@
+// This target-selected half of core/filesystem adapts Darwin's opendir/readdir
+// ABI to the portable copied-name contract. Directory owns one DIR pointer;
+// Darwin owns each returned dirent and may overwrite it on the next read, so
+// read copies exactly d_namlen bytes before returning. The declared dirent
+// layout is an AArch64 macOS target-profile fact.
+package filesystem
+
+import core/c_abi
+import core/io
+
+Darwin_Dirent :: c struct {
+    inode: u64,
+    seek_offset: u64,
+    record_length: u16,
+    name_length: u16,
+    entry_type: u8,
+    name: [1024]u8,
+}
+
+foreign darwin {
+    native_open_directory as "opendir" :: c proc(path: cstring) -> rawptr
+    native_read_directory as "readdir" :: c proc(handle: rawptr) -> ^Darwin_Dirent
+    native_close_directory as "closedir" :: c proc(handle: rawptr) -> c_abi.int
+}
+
+Directory_Type :: cast[u8](4)
+Regular_File_Type :: cast[u8](8)
+
+// Directory is a non-copyable-by-convention native resource. A nil handle is
+// inactive. Keep an active value at one stable address and close it once.
+pub Directory :: struct {
+    handle: rawptr,
+}
+
+pub open :: proc(path: cstring) -> (Directory, io.Error) {
+    static_assert(size_of(Darwin_Dirent) == 1048)
+    static_assert(align_of(Darwin_Dirent) == 8)
+    handle := native_open_directory(path)
+    if handle == nil {
+        return (Directory{}, .unavailable)
+    }
+    return (Directory{handle = handle}, .none)
+}
+
+// read copies one native entry name. A destination smaller than the complete
+// name reports invalid after consuming that native row; callers should provide
+// at least 1024 bytes when they need to enumerate every Darwin-valid name.
+pub read :: proc(
+    directory: ^Directory,
+    destination: []u8,
+) -> (Entry, io.Error) {
+    if directory.handle == nil {
+        return (Entry{}, .invalid)
+    }
+    native := native_read_directory(directory.handle)
+    if native == nil {
+        return (Entry{}, .end_of_input)
+    }
+    count := cast[usize](native.name_length)
+    if count > len(destination) || count > len(native.name) {
+        return (Entry{}, .invalid)
+    }
+    for index: usize = 0; index < count; index += 1 {
+        destination[index] = native.name[index]
+    }
+    kind: Entry_Kind = .unknown
+    if native.entry_type == Directory_Type {
+        kind = .directory
+    } else if native.entry_type == Regular_File_Type {
+        kind = .regular_file
+    }
+    return (Entry{kind = kind, name_length = count}, .none)
+}
+
+pub close :: proc(directory: ^Directory) -> bool {
+    if directory.handle == nil {
+        return true
+    }
+    if native_close_directory(directory.handle) != 0 {
+        return false
+    }
+    directory.handle = nil
+    return true
+}

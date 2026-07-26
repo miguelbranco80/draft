@@ -103,6 +103,12 @@ indefinitely, reads the DWORD exit code, and closes both process and thread
 handles. The logical `libc` and `windows` provider names match the target's
 closed UCRT/Kernel32 summaries.
 
+`core/filesystem` uses `FindFirstFileW`/`FindNextFileW`/`FindClose` with the
+Win32 `WIN32_FIND_DATAW` layout: eight DWORD attribute/size/reserved fields,
+three two-DWORD timestamps, 260 UTF-16 filename units, and 14 alternate-name
+units. Search paths and result names cross the public boundary as UTF-8;
+`FILE_ATTRIBUTE_DIRECTORY = 0x10` supplies directory classification.
+
 ## Native artifacts and assembly
 
 The embedded LLVM 22 adapter registers the X86 target and emits deterministic

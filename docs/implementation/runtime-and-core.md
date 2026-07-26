@@ -381,6 +381,23 @@ convention handle. Darwin selects `MAP_ANON = 0x1000`; Linux selects
 `MAP_ANONYMOUS = 0x20`; Windows owns its allocation/protection constants. These
 are versioned core/target facts, not values inferred from host headers.
 
+## Hosted directory enumeration
+
+Status: ordinary target-selected Draft implementation on every hosted target.
+
+`core/filesystem` owns one deliberately small directory-iteration seam for
+interactive tools. `open` acquires one move-by-convention `Directory`; `read`
+copies one native name into caller storage and reports its best-effort kind;
+`close` releases the handle. Names are UTF-8 on every target, but native order
+is explicitly unspecified and callers sort after copying. The package supplies
+no path object, recursive traversal, metadata, mutation, or semantic identity.
+
+Darwin and glibc retain a `DIR *` and copy the short-lived `dirent` name before
+the next `readdir` call. Windows retains a `FindFirstFileW` handle plus one
+inline `WIN32_FIND_DATAW`, converts the UTF-8 search path to a temporary UTF-16
+`path\\*` spelling, and converts each returned filename back to UTF-8. This is
+ordinary core code, not a runtime or compiler intrinsic.
+
 ## Minimal child-process execution
 
 Status: ordinary target-selected Draft implementation on every current hosted

@@ -74,6 +74,11 @@ calls. It retries wait only for Darwin `EINTR = 4`, interprets the standard
 low-seven-bit signal and high-eight-bit exit fields, and terminates
 directory/exec failure through `_exit(126)`/`_exit(127)`.
 
+Directory enumeration uses Darwin `opendir`/`readdir`/`closedir`. The selected
+`dirent` begins with two 64-bit fields, 16-bit record and name lengths, one-byte
+type, and a 1024-byte name array. Type values 4 and 8 identify directories and
+regular files; every other value remains an unknown portable entry kind.
+
 ## C enum ABI
 
 A `c enum` without an explicit backing follows Apple Clang's default
