@@ -7,22 +7,54 @@ package turbo_ui
 import core/testing
 import core/tui
 
+// colors_equal_for_test compares every semantic color payload used by widget tests.
+// Default ignores all payload bytes; indexed uses only index; RGB uses only its
+// three components, matching core/tui renderer equality without importing a
+// private implementation helper.
+colors_equal_for_test :: proc(left, right: tui.Color) -> bool {
+    if left.kind != right.kind {
+        return false
+    }
+    if left.kind == .indexed {
+        return left.index == right.index
+    }
+    if left.kind == .rgb {
+        return left.red == right.red && left.green == right.green &&
+            left.blue == right.blue
+    }
+    return true
+}
+
 // test_geometry_layout_and_paint fixes half-open rectangle arithmetic,
 // clipping, explicit row layout, and Unicode border output.
 test_geometry_layout_and_paint :: proc(test: ^testing.Test) {
-    // Turbo's logical palette follows the IBM PC numbering used by the source
-    // design, while terminals consume ANSI indices. Pin the red/blue/cyan/yellow
-    // permutation that prevents the intended blue desktop from rendering red.
-    ansi_palette := [16]u8{
-        0, 4, 2, 6, 1, 5, 3, 7,
-        8, 12, 10, 14, 9, 13, 11, 15,
+    // Pin every canonical EGA component. A terminal-profile lookup here would
+    // reintroduce the cross-terminal color drift that the truecolor theme
+    // deliberately removes.
+    reds := [16]u8{
+        0x00, 0x00, 0x00, 0x00, 0xaa, 0xaa, 0xaa, 0xaa,
+        0x55, 0x55, 0x55, 0x55, 0xff, 0xff, 0xff, 0xff,
     }
-    for logical: usize = 0; logical < len(ansi_palette); logical += 1 {
+    greens := [16]u8{
+        0x00, 0x00, 0xaa, 0xaa, 0x00, 0x00, 0x55, 0xaa,
+        0x55, 0x55, 0xff, 0xff, 0x55, 0x55, 0xff, 0xff,
+    }
+    blues := [16]u8{
+        0x00, 0xaa, 0x00, 0xaa, 0x00, 0xaa, 0x00, 0xaa,
+        0x55, 0xff, 0x55, 0xff, 0x55, 0xff, 0x55, 0xff,
+    }
+    for logical: usize = 0; logical < len(reds); logical += 1 {
         color := turbo_color(cast[u8](logical))
-        testing.expect(test, color.indexed)
-        testing.expect(test, color.index == ansi_palette[logical])
+        testing.expect(test, color.kind == .rgb)
+        testing.expect(test,
+            color.red == reds[logical] &&
+            color.green == greens[logical] &&
+            color.blue == blues[logical])
     }
-    testing.expect(test, turbo_theme().window.background.index == 4)
+    window_blue := turbo_theme().window.background
+    testing.expect(test,
+        window_blue.kind == .rgb && window_blue.red == 0x00 &&
+        window_blue.green == 0x00 && window_blue.blue == 0xaa)
 
     overlap := intersect(
         Rect{column = 2, row = 1, width = 5, height = 4},
@@ -160,7 +192,10 @@ test_button_chrome_and_access :: proc(test: ^testing.Test) {
     testing.expect(
         test,
         access_valid && access.value == 'O' && access.style.underline &&
-            access.style.background.index == theme.selected.background.index,
+            colors_equal_for_test(
+                access.style.background,
+                theme.selected.background,
+            ),
     )
     testing.expect(test, shadow_valid && shadow.value == Shadow_Glyph)
 
@@ -1147,10 +1182,14 @@ test_menu_popup_navigation :: proc(test: ^testing.Test) {
     testing.expect(
         test,
         disabled_label_valid && disabled_shortcut_valid &&
-            disabled_label.style.foreground.index ==
-                theme.menu_disabled.foreground.index &&
-            disabled_shortcut.style.foreground.index ==
-                theme.menu_disabled.foreground.index,
+            colors_equal_for_test(
+                disabled_label.style.foreground,
+                theme.menu_disabled.foreground,
+            ) &&
+            colors_equal_for_test(
+                disabled_shortcut.style.foreground,
+                theme.menu_disabled.foreground,
+            ),
     )
 
     // Separators are inert menu content. Crossing one keeps the last enabled

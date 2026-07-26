@@ -54,9 +54,10 @@ a previous-frame shadow changes glyph content as well as background style during
 differential repainting.
 
 `turbo_theme` authors its 16 colors in the IBM PC numbering used by Turbo-era
-interfaces and translates them to ANSI palette indices at style construction.
-In particular, logical blue and red must not be passed directly to ANSI, whose
-indices for those two colors are reversed.
+interfaces and translates them to canonical EGA sRGB values at style
+construction. The resulting truecolor cells do not consult a terminal's
+configurable ANSI palette, so blue and every other application color remain
+identical across terminal profiles.
 
 `tile_windows` and `cascade_windows` provide deterministic whole-desktop
 arrangement for visible windows whose independent `tileable` flag is set. Both

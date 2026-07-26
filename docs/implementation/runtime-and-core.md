@@ -342,8 +342,11 @@ mutable-byte-view counterpart `write_utf8_bytes` first validate and measure
 every extended grapheme before changing any cell. The
 renderer emits complete stored graphemes and advances by terminal columns, so a
 diff never splits a combining sequence or addresses the middle of a wide glyph.
-The zero style maps to terminal defaults; colors are either default or one ANSI
-256-color index.
+The zero style maps to terminal defaults. A color is either default, one ANSI
+256-color index, or explicit 8-bit sRGB. The renderer emits indexed colors as
+`38;5`/`48;5` SGR forms and RGB colors as `38;2`/`48;2`, retaining one
+deterministic cell model while letting an application choose between a
+terminal-owned palette and profile-independent truecolor.
 
 `core/tui.Renderer` owns desired and last-published Surfaces of equal size plus
 one reusable output byte array. Rendering scans in row-major order, groups each

@@ -34,55 +34,89 @@ pub Theme :: struct {
     shadows: bool,
 }
 
-// turbo_color maps the logical 16-color IBM PC palette used by Turbo-era
-// interfaces onto the terminal's ANSI palette. The two palettes number red and
-// blue differently: passing logical blue (1) directly to ANSI produces red,
-// while logical red (4) produces blue. Keeping the translation at style
-// construction prevents every authored palette entry from repeating that
-// non-obvious permutation. Values outside the closed 0..15 palette are an
-// application-authored invariant failure, not terminal input.
+// turbo_color maps one logical IBM PC palette entry to its canonical EGA sRGB
+// value. Explicit RGB avoids delegating the application's appearance to each
+// terminal profile's configurable ANSI entries: logical blue is #0000AA in
+// Apple Terminal, Ghostty, a multiplexer, and every other truecolor terminal.
+// Values outside the closed 0..15 palette are an application-authored invariant
+// failure, not terminal input. The switch is intentionally direct so the exact
+// palette remains inspectable without decoding a packed integer table.
 pub turbo_color :: proc(index: u8) -> tui.Color {
     assert(index < 16, "turbo_ui logical color must be in the 16-color palette")
-    ansi: u8
+    red, green, blue: u8
     switch index {
     case 0:
-        ansi = 0
+        red = 0x00
+        green = 0x00
+        blue = 0x00
     case 1:
-        ansi = 4
+        red = 0x00
+        green = 0x00
+        blue = 0xaa
     case 2:
-        ansi = 2
+        red = 0x00
+        green = 0xaa
+        blue = 0x00
     case 3:
-        ansi = 6
+        red = 0x00
+        green = 0xaa
+        blue = 0xaa
     case 4:
-        ansi = 1
+        red = 0xaa
+        green = 0x00
+        blue = 0x00
     case 5:
-        ansi = 5
+        red = 0xaa
+        green = 0x00
+        blue = 0xaa
     case 6:
-        ansi = 3
+        red = 0xaa
+        green = 0x55
+        blue = 0x00
     case 7:
-        ansi = 7
+        red = 0xaa
+        green = 0xaa
+        blue = 0xaa
     case 8:
-        ansi = 8
+        red = 0x55
+        green = 0x55
+        blue = 0x55
     case 9:
-        ansi = 12
+        red = 0x55
+        green = 0x55
+        blue = 0xff
     case 10:
-        ansi = 10
+        red = 0x55
+        green = 0xff
+        blue = 0x55
     case 11:
-        ansi = 14
+        red = 0x55
+        green = 0xff
+        blue = 0xff
     case 12:
-        ansi = 9
+        red = 0xff
+        green = 0x55
+        blue = 0x55
     case 13:
-        ansi = 13
+        red = 0xff
+        green = 0x55
+        blue = 0xff
     case 14:
-        ansi = 11
+        red = 0xff
+        green = 0xff
+        blue = 0x55
     case 15:
-        ansi = 15
+        red = 0xff
+        green = 0xff
+        blue = 0xff
     case:
         // The assertion above makes this path unreachable in checked builds;
         // retain a valid color when assertions are disabled.
-        ansi = 0
+        red = 0x00
+        green = 0x00
+        blue = 0x00
     }
-    return tui.indexed_color(ansi)
+    return tui.rgb_color(red, green, blue)
 }
 
 style :: proc(foreground, background: u8, bold: bool = false) -> tui.Style {

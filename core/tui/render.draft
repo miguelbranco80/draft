@@ -167,13 +167,19 @@ append_cursor :: proc(
 }
 
 color_equal :: proc(left, right: Color) -> bool {
-    if left.indexed != right.indexed {
+    if left.kind != right.kind {
         return false
     }
-    // The palette index is semantically absent in the default-color state.
-    // Ignoring its stored byte keeps structurally fabricated zero/default
-    // colors from causing needless style transitions.
-    return !left.indexed || left.index == right.index
+    if left.kind == .indexed {
+        return left.index == right.index
+    }
+    if left.kind == .rgb {
+        return left.red == right.red && left.green == right.green &&
+            left.blue == right.blue
+    }
+    // Every payload byte is semantically absent for the terminal default.
+    // Ignoring fabricated bytes prevents needless style transitions.
+    return true
 }
 
 style_equal :: proc(left, right: Style) -> bool {
@@ -240,8 +246,10 @@ append_cell_text :: proc(
 }
 
 // append_style resets every SGR field before enabling the requested direct
-// attributes and indexed colors. Reset-first is slightly longer than tracking
+// attributes and colors. Reset-first is slightly longer than tracking
 // individual disable codes, but it keeps the state transition exact and small.
+// Indexed and truecolor branches remain visibly separate because their payloads
+// have different semantic domains and ANSI encodings.
 append_style :: proc(output: ^Byte_Array, style: Style) {
     append_text(output, terminal.reset_style)
     if style.bold {
@@ -256,14 +264,30 @@ append_style :: proc(output: ^Byte_Array, style: Style) {
     if style.reverse {
         append_text(output, "\x1b[7m")
     }
-    if style.foreground.indexed {
+    if style.foreground.kind == .indexed {
         append_text(output, "\x1b[38;5;")
         append_unsigned(output, cast[u64](style.foreground.index))
         append_byte(output, cast[u8]('m'))
+    } else if style.foreground.kind == .rgb {
+        append_text(output, "\x1b[38;2;")
+        append_unsigned(output, cast[u64](style.foreground.red))
+        append_byte(output, cast[u8](';'))
+        append_unsigned(output, cast[u64](style.foreground.green))
+        append_byte(output, cast[u8](';'))
+        append_unsigned(output, cast[u64](style.foreground.blue))
+        append_byte(output, cast[u8]('m'))
     }
-    if style.background.indexed {
+    if style.background.kind == .indexed {
         append_text(output, "\x1b[48;5;")
         append_unsigned(output, cast[u64](style.background.index))
+        append_byte(output, cast[u8]('m'))
+    } else if style.background.kind == .rgb {
+        append_text(output, "\x1b[48;2;")
+        append_unsigned(output, cast[u64](style.background.red))
+        append_byte(output, cast[u8](';'))
+        append_unsigned(output, cast[u64](style.background.green))
+        append_byte(output, cast[u8](';'))
+        append_unsigned(output, cast[u64](style.background.blue))
         append_byte(output, cast[u8]('m'))
     }
 }

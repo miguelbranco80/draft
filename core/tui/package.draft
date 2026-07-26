@@ -10,7 +10,9 @@
 // live value. All coordinates are zero-based terminal-column coordinates. A
 // double-column glyph owns its leading cell and one explicit continuation cell;
 // replacing either half clears the complete old glyph before painting the new
-// value. The zero Style means terminal-default colors and attributes.
+// value. The zero Style means terminal-default colors and attributes. Explicit
+// colors retain either one ANSI palette index or exact sRGB components until
+// render.draft encodes the corresponding SGR sequence.
 //
 // This package is ordinary Draft library code. It depends only on core array,
 // formatting, I/O, memory, runtime allocation, terminal output, Unicode
@@ -30,16 +32,39 @@ import core/utf8
 // semantic package one visibly identical owning byte-buffer type.
 Byte_Array :: array.Dynamic[u8]
 
-// Color is either the terminal default or one ANSI 256-color palette index.
-// Its zero value is default. indexed_color is the only constructor needed for
-// the indexed state, so callers do not depend on the physical boolean layout.
-pub Color :: struct {
-    indexed: bool,
-    index: u8,
+// Color_Kind selects which payload in Color has display meaning. Its zero value
+// deliberately selects the terminal default so a zero Style remains useful.
+// indexed consumes only Color.index; rgb consumes red/green/blue. The unused
+// bytes are non-semantic and therefore ignored by renderer equality.
+pub Color_Kind :: enum u8 {
+    terminal_default,
+    indexed,
+    rgb,
 }
 
+// Color is the complete terminal color choice for one foreground or background.
+// It is a copyable value with no ownership. Callers construct non-default values
+// through indexed_color or rgb_color rather than depending on payload layout.
+pub Color :: struct {
+    kind: Color_Kind,
+    index: u8,
+    red: u8,
+    green: u8,
+    blue: u8,
+}
+
+// indexed_color retains one ANSI 256-color palette entry. Entries 0..15 remain
+// terminal-configurable; callers needing identical color across terminal
+// profiles should use rgb_color instead.
 pub indexed_color :: proc(index: u8) -> Color {
-    return Color{indexed = true, index = index}
+    return Color{kind = .indexed, index = index}
+}
+
+// rgb_color retains exact 8-bit sRGB components. Rendering uses the widely
+// supported ANSI truecolor form `38;2;r;g;b` or `48;2;r;g;b`; terminals lacking
+// truecolor support choose their own fallback interpretation.
+pub rgb_color :: proc(red, green, blue: u8) -> Color {
+    return Color{kind = .rgb, red = red, green = green, blue = blue}
 }
 
 // Style is the complete per-cell rendering state supported by this TUI layer.

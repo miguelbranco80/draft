@@ -151,11 +151,13 @@ operation uses the production Draft lexer, including its recovery tokens, but
 does not discover packages, refresh workspace configuration, type-check source,
 propagate effects, lower IR, or emit native code. It replaces only buffer-local
 syntax spans. The editor and surrounding UI author the classic 16-color palette
-with IBM PC indices and translate once to terminal ANSI indices when building
-cell styles; this keeps logical blue from rendering as ANSI red. Declaration
-coloring is a small token-context classification over that same stream, not a
-second lexer. Diagnostics and semantic inspection views remain the result of
-the latest explicit semantic operation while an edit is pending.
+with IBM PC indices and translate once to canonical EGA sRGB values when
+building cell styles. The renderer therefore emits truecolor rather than
+delegating blue and the other authored colors to each terminal profile's
+configurable ANSI palette. Declaration coloring is a small token-context
+classification over that same stream, not a second lexer. Diagnostics and
+semantic inspection views remain the result of the latest explicit semantic
+operation while an edit is pending.
 
 Check, Build, Run, Go to Definition, and Find Usages are explicit semantic
 operations. They submit the active buffer plus every other dirty buffer

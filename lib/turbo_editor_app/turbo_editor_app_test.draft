@@ -54,8 +54,8 @@ surface_contains :: proc(surface: ^tui.Surface, expected: string) -> bool {
 }
 
 // surface_has_black_shadow identifies the exact decoration emitted by the
-// classic Turbo UI shadow style: a light-shade glyph with indexed black on
-// indexed black. Disabled scrollbars use the same glyph but a different
+// classic Turbo UI shadow style: a light-shade glyph with RGB black on RGB
+// black. Disabled scrollbars use the same glyph but a different
 // foreground/background pair, so this check does not confuse ordinary control
 // content with a forbidden DraftIDE window, popup, or button shadow.
 surface_has_black_shadow :: proc(surface: ^tui.Surface) -> bool {
@@ -63,10 +63,14 @@ surface_has_black_shadow :: proc(surface: ^tui.Surface) -> bool {
         for column: usize = 0; column < surface.columns; column += 1 {
             (cell, valid) := tui.cell_at(surface, column, row)
             if valid && cell.value == '░' &&
-                cell.style.foreground.indexed &&
-                cell.style.foreground.index == 0 &&
-                cell.style.background.indexed &&
-                cell.style.background.index == 0 {
+                cell.style.foreground.kind == .rgb &&
+                cell.style.foreground.red == 0 &&
+                cell.style.foreground.green == 0 &&
+                cell.style.foreground.blue == 0 &&
+                cell.style.background.kind == .rgb &&
+                cell.style.background.red == 0 &&
+                cell.style.background.green == 0 &&
+                cell.style.background.blue == 0 {
                 return true
             }
         }
@@ -1687,7 +1691,11 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
     defer tui.surface_destroy(&surface)
     app_theme := draftide_theme()
     testing.expect(test, !app_theme.shadows)
-    testing.expect(test, app_theme.window.background.index == 4)
+    testing.expect(test,
+        app_theme.window.background.kind == .rgb &&
+        app_theme.window.background.red == 0x00 &&
+        app_theme.window.background.green == 0x00 &&
+        app_theme.window.background.blue == 0xaa)
     for ordinal: usize = 0; ordinal < len(dialogs); ordinal += 1 {
         index := dialogs[ordinal]
         turbo_ui.show_modal_window(

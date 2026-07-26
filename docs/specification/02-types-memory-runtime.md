@@ -1055,7 +1055,7 @@ The initial core set includes:
 | `core/format` | Allocation-free conversion of values into caller-owned byte buffers. |
 | `core/console` | Checked human-facing text and scalar output over standard process handles. |
 | `core/terminal` | Suspendable raw/screen sessions, timed reads, cell-size queries/watchers, and streaming key decoding. |
-| `core/tui` | Owned Unicode-grapheme cell surfaces and deterministic ANSI differential rendering. |
+| `core/tui` | Owned Unicode-grapheme cell surfaces and deterministic indexed/RGB ANSI differential rendering. |
 | `core/unicode` | Pinned grapheme segmentation and deterministic terminal display widths. |
 | `core/utf8` | Allocation-free strict UTF-8 validation, decoding, encoding, and scalar counting. |
 | `core/io` | Stream and input/output interfaces and utilities. |
@@ -1096,6 +1096,13 @@ while ambiguous-width characters occupy one. Controls and clusters with no
 printable base are rejected. This is a portable `core/tui` layout policy, not a
 locale-sensitive claim about every font or terminal, and it performs no
 normalization, shaping, bidi reordering, or line breaking.
+
+`core/tui.Color` distinguishes the terminal default, one ANSI 256-color palette
+index, and one explicit 24-bit sRGB value. Its zero value selects the terminal
+default. `indexed_color` retains the terminal-profile palette choice, while
+`rgb_color` retains exact red, green, and blue components for deterministic
+truecolor SGR rendering. This is presentation policy in ordinary core code and
+does not add a language-level color type.
 
 `core/random.fill` obtains bytes through the active `Context.random_generator`.
 The hosted default provider is operating-system-backed, but the Context may

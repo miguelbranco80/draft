@@ -31,7 +31,8 @@ test_surface_mutation :: proc(test: ^testing.Test) {
     testing.expect(test, initial.value == ' ')
     testing.expect(test, initial.columns == 1)
     testing.expect(test, !initial.continuation)
-    testing.expect(test, !initial.style.foreground.indexed)
+    testing.expect(test,
+        initial.style.foreground.kind == .terminal_default)
 
     accent := Style{foreground = indexed_color(51), bold = true}
     testing.expect(test, put(&grid, 1, 0, cast[u8]('X'), accent))
@@ -73,6 +74,7 @@ test_surface_mutation :: proc(test: ^testing.Test) {
     (accent_cell, accent_valid) := cell_at(&grid, 1, 0)
     testing.expect(test, accent_valid)
     testing.expect(test, accent_cell.value == 'X')
+    testing.expect(test, accent_cell.style.foreground.kind == .indexed)
     testing.expect(test, accent_cell.style.foreground.index == 51)
     testing.expect(test, accent_cell.style.bold)
     (outside, outside_valid) := cell_at(&grid, 5, 0)
@@ -195,6 +197,27 @@ test_renderer_diff :: proc(test: ^testing.Test) {
     testing.expect(test, bytes_equal_text(
         styled_change,
         "\x1b[?2026h\x1b[1;3H\x1b[0m\x1b[2m\x1b[38;5;51mY\x1b[0m\x1b[?2026l",
+    ))
+    commit_desired(&renderer)
+
+    // RGB colors retain exact components and use the foreground/background
+    // truecolor SGR forms rather than consulting the terminal's indexed
+    // palette. Both channels are fixed here so one partial implementation
+    // cannot pass by emitting only the foreground form.
+    truecolor := Style{
+        foreground = rgb_color(1, 23, 255),
+        background = rgb_color(254, 45, 6),
+    }
+    testing.expect(test, put(
+        surface(&renderer),
+        2,
+        0,
+        cast[u8]('Z'),
+        truecolor,
+    ))
+    testing.expect(test, bytes_equal_text(
+        build_render_bytes(&renderer),
+        "\x1b[?2026h\x1b[1;3H\x1b[0m\x1b[38;2;1;23;255m\x1b[48;2;254;45;6mZ\x1b[0m\x1b[?2026l",
     ))
     commit_desired(&renderer)
 

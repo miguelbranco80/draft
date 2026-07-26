@@ -723,6 +723,7 @@ rendering:
 ```draft
 tui.Color
 tui.indexed_color(index: u8) -> tui.Color
+tui.rgb_color(red, green, blue: u8) -> tui.Color
 tui.Style{foreground, background, bold, dim, underline, reverse}
 tui.Cell{value, columns, continuation, style}
 
@@ -770,10 +771,12 @@ Surface-owned storage, so caller text/bytes are never retained.
 A wide glyph owns one leading cell plus a continuation. Replacing either half
 clears the complete old glyph. `cell_at` exposes the first scalar, width, style,
 and continuation state but not the Surface's private grapheme bytes. The zero
-Style means terminal defaults; indexed colors cover ANSI palette entries
-0-255. Rendering emits maximal changed runs with absolute cursor positions,
-never splits a grapheme, resets style at the update boundary, and encloses each
-nonempty diff in one balanced synchronized update.
+Style means terminal defaults. `Color` explicitly distinguishes default,
+indexed, and RGB states: indexed colors cover ANSI palette entries 0-255, while
+RGB colors retain exact 8-bit sRGB components and render through the ANSI
+truecolor form. Rendering emits maximal changed runs with absolute cursor
+positions, never splits a grapheme, resets style at the update boundary, and
+encloses each nonempty diff in one balanced synchronized update.
 
 There are no widgets, layout engine, text wrapping, clipping regions, input
 dispatch, focus, event loop, mouse support, normalization, shaping, bidi,

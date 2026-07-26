@@ -476,9 +476,13 @@ test_editor_paint_and_syntax_style :: proc(test: ^testing.Test) {
     (keyword, keyword_valid) := tui.cell_at(&surface, 5, 0)
     (declaration, declaration_valid) := tui.cell_at(&surface, 9, 0)
     testing.expect(test, keyword_valid && keyword.value == 'p')
-    // Logical Turbo yellow is ANSI bright yellow, not bright cyan. This pins
-    // the shared PC-palette translation used by UI chrome and editor syntax.
-    testing.expect(test, keyword.style.foreground.index == 11)
+    // Logical Turbo yellow is canonical EGA #FFFF55. Pinning the exact RGB
+    // components ensures editor syntax does not drift with terminal profiles.
+    testing.expect(test,
+        keyword.style.foreground.kind == .rgb &&
+        keyword.style.foreground.red == 0xff &&
+        keyword.style.foreground.green == 0xff &&
+        keyword.style.foreground.blue == 0x55)
     testing.expect(test, declaration_valid && declaration.value == 'm')
     testing.expect(test, declaration.style.bold)
 }
