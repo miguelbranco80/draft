@@ -513,10 +513,15 @@ pub run_with_host :: proc(
     defer destroy_app(&app)
     app.host = host
     app.workspace_open = true
+    workspace_files_ready := initialize_workspace_files(&app)
     bind_active_buffer_to_host_root(&app)
     refresh_root_packages(&app)
     refresh_reachable_sources(&app)
-    app.status = "Turbo Draft compiler session attached"
+    if workspace_files_ready {
+        app.status = "Turbo Draft compiler session attached"
+    } else {
+        app.status = "Compiler attached; Workspace Files is unavailable"
+    }
     refresh_host(&app)
     return run_app_terminal(&app)
 }
@@ -538,15 +543,23 @@ pub run_with_host_bytes :: proc(
     defer destroy_app(&app)
     app.host = host
     app.workspace_open = true
+    workspace_files_ready := initialize_workspace_files(&app)
     bind_active_buffer_to_host_root(&app)
     refresh_root_packages(&app)
     refresh_reachable_sources(&app)
-    app.status = "Turbo Draft compiler session attached"
+    if workspace_files_ready {
+        app.status = "Turbo Draft compiler session attached"
+    } else {
+        app.status = "Compiler attached; Workspace Files is unavailable"
+    }
     refresh_host(&app)
     if has_smoke_argument() {
-        if app.diagnostic_count != 0 || app.syntax_span_count == 0 ||
+        workspace_files_ready = refresh_workspace_files(&app)
+        if !workspace_files_ready ||
+            app.diagnostic_count != 0 || app.syntax_span_count == 0 ||
             app.tooling_length[1] == 0 || app.tooling_length[2] == 0 ||
-            app.package_row_count == 0 {
+            app.package_row_count == 0 ||
+            app.workspace_file_entry_count == 0 {
             return 1
         }
         // The integration smoke exercises the same Build operation as F5,

@@ -547,6 +547,160 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
     }
 }
 
+// paint_workspace_files presents a persistent, workspace-rooted directory
+// snapshot. Unlike the modal file selector, its location is read-only and its
+// Up operation stops at the compiler-published Workspace boundary. Selecting a
+// row never changes the active root package: Enter navigates a directory or
+// opens the exact file as an ordinary document, which may remain editing-only.
+paint_workspace_files :: proc(app: ^App, content: turbo_ui.Rect) {
+    if content.width < 16 || content.height < 6 {
+        turbo_ui.write_clipped(
+            app.ui.surface,
+            content,
+            turbo_ui.Point{column = content.column, row = content.row},
+            "Workspace Files",
+            app.ui.theme.text,
+        )
+        return
+    }
+    if app.workspace_files_root_length == 0 {
+        turbo_ui.write_clipped(
+            app.ui.surface,
+            content,
+            turbo_ui.Point{column = content.column + 1, row = content.row + 1},
+            "No compiler Workspace is open",
+            app.ui.theme.text,
+        )
+        return
+    }
+
+    turbo_ui.write_clipped(
+        app.ui.surface,
+        content,
+        turbo_ui.Point{column = content.column + 1, row = content.row},
+        "Location:",
+        app.ui.theme.text,
+    )
+    location_bounds := turbo_ui.Rect{
+        column = content.column + 11,
+        row = content.row,
+        width = content.width - 12,
+        height = 1,
+    }
+    turbo_ui.write_clipped_bytes(
+        app.ui.surface,
+        turbo_ui.intersect(app.ui.clip, location_bounds),
+        turbo_ui.Point{
+            column = location_bounds.column,
+            row = location_bounds.row,
+        },
+        workspace_files_location_bytes(app),
+        app.ui.theme.text,
+    )
+
+    navigation := turbo_ui.layout_begin(
+        turbo_ui.Rect{
+            column = content.column + 1,
+            row = content.row + 2,
+            width = content.width - 2,
+            height = 2,
+        },
+        .horizontal,
+        0,
+        1,
+    )
+    if turbo_ui.button(
+        &app.ui,
+        852,
+        turbo_ui.layout_next(&navigation, turbo_ui.button_width("Up")),
+        "Up",
+        !workspace_files_at_root(app),
+        .normal,
+        cast[u8]('u'),
+    ) {
+        _ = workspace_files_go_up(app)
+    }
+    if turbo_ui.button(
+        &app.ui,
+        853,
+        turbo_ui.layout_next(&navigation, turbo_ui.button_width("Refresh")),
+        "Refresh",
+        true,
+        .normal,
+        cast[u8]('r'),
+    ) {
+        if refresh_workspace_files(app) {
+            app.status = "Workspace Files refreshed"
+        }
+    }
+
+    footer_height: usize
+    if app.workspace_files_truncated {
+        footer_height = 1
+    }
+    list_bounds := turbo_ui.Rect{
+        column = content.column + 1,
+        row = content.row + 4,
+        width = content.width - 2,
+        height = content.height - 4 - footer_height,
+    }
+    view := turbo_ui.list_view(
+        &app.ui,
+        850,
+        851,
+        list_bounds,
+        app.workspace_file_entry_count,
+        &app.workspace_files_list,
+        .enter_only,
+    )
+    for index := view.first; index < view.end; index += 1 {
+        row := turbo_ui.list_row_begin(&app.ui, view, index)
+        marker := "[?] "
+        if app.workspace_file_entry_kind[index] == .directory {
+            marker = "[D] "
+        } else if app.workspace_file_entry_kind[index] == .regular_file {
+            marker = "    "
+        }
+        turbo_ui.write_clipped(
+            app.ui.surface,
+            turbo_ui.intersect(app.ui.clip, row.bounds),
+            turbo_ui.Point{column = row.bounds.column, row = row.bounds.row},
+            marker,
+            row.style,
+        )
+        if row.bounds.width > 4 {
+            name_bounds := row.bounds
+            name_bounds.column += 4
+            name_bounds.width -= 4
+            turbo_ui.write_clipped_bytes(
+                app.ui.surface,
+                turbo_ui.intersect(app.ui.clip, name_bounds),
+                turbo_ui.Point{
+                    column = name_bounds.column,
+                    row = name_bounds.row,
+                },
+                workspace_file_entry_name(app, index),
+                row.style,
+            )
+        }
+    }
+    if view.activated && view.activated_index < app.workspace_file_entry_count {
+        _ = activate_workspace_file_entry(app, view.activated_index)
+    }
+    if app.workspace_files_truncated {
+        turbo_ui.write_clipped(
+            app.ui.surface,
+            content,
+            turbo_ui.Point{
+                column = content.column + 1,
+                row = content.row + content.height - 1,
+            },
+            "Directory truncated: 512-row limit",
+            app.ui.theme.text,
+        )
+    }
+}
+
 paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
     message := "Save or discard modified documents before continuing?"
     if app.confirming_scope_change {

@@ -1,5 +1,6 @@
 package turbo_editor_app
 
+import core/filesystem
 import core/memory
 import core/terminal
 import core/testing
@@ -809,6 +810,143 @@ test_open_file_dialog_resolves_and_reuses_workspace_path :: proc(
     testing.expect(test, app.buffer_count == 2)
 }
 
+// Workspace Files keeps its synthetic parent row fixed while sorting native
+// entries by the visible contract: directories first, then ordinary files,
+// then entries whose native kind is unknown; names are bytewise within a kind.
+// Exercising the shared operation directly makes the deterministic rule
+// independent of whatever order one host filesystem happens to enumerate.
+test_workspace_files_directory_order_is_deterministic :: proc(
+    test: ^testing.Test,
+) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-workspace-order.draft"))
+    defer destroy_app(&app)
+
+    memory.owned_string_copy(&app.workspace_file_entry_names[0], "..")
+    app.workspace_file_entry_kind[0] = .directory
+    memory.owned_string_copy(&app.workspace_file_entry_names[1], "zeta.draft")
+    app.workspace_file_entry_kind[1] = .regular_file
+    memory.owned_string_copy(&app.workspace_file_entry_names[2], "beta")
+    app.workspace_file_entry_kind[2] = .directory
+    memory.owned_string_copy(&app.workspace_file_entry_names[3], "alpha")
+    app.workspace_file_entry_kind[3] = .directory
+    memory.owned_string_copy(&app.workspace_file_entry_names[4], "link")
+    app.workspace_file_entry_kind[4] = .unknown
+    app.workspace_file_entry_count = 5
+
+    sort_directory_entries(
+        app.workspace_file_entry_names[:],
+        app.workspace_file_entry_kind[:],
+        app.workspace_file_entry_count,
+        1,
+    )
+
+    expected := [5]string{"..", "alpha", "beta", "zeta.draft", "link"}
+    expected_kinds := [5]filesystem.Entry_Kind{
+        .directory,
+        .directory,
+        .directory,
+        .regular_file,
+        .unknown,
+    }
+    for index: usize = 0; index < len(expected); index += 1 {
+        actual := memory.owned_string_bytes(
+            &app.workspace_file_entry_names[index],
+        )
+        testing.expect(test, len(actual) == len(expected[index]))
+        for byte_index: usize = 0;
+            byte_index < len(expected[index]);
+            byte_index += 1 {
+            testing.expect(
+                test,
+                actual[byte_index] == expected[index][byte_index],
+            )
+        }
+        testing.expect(
+            test,
+            app.workspace_file_entry_kind[index] == expected_kinds[index],
+        )
+    }
+}
+
+// The persistent tool paints its compiler-owned root, refuses to navigate
+// above that boundary, and sends a selected ordinary file through the normal
+// document-opening command. The file is deliberately absent from the active
+// root source table, proving that browsing the Workspace does not silently
+// replace compiler scope or enroll unrelated files in overlays.
+test_workspace_files_opens_an_editing_only_document :: proc(
+    test: ^testing.Test,
+) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-workspace-existing.draft"))
+    defer destroy_app(&app)
+    app.workspace_open = true
+    app.host.copy_workspace_path = fake_workspace_path
+
+    testing.expect(test, initialize_workspace_files(&app))
+    root_length := app.workspace_files_root_length
+    // Initialization publishes only the boundary. Hidden Workspace Files must
+    // not enumerate the filesystem during compiler-session startup.
+    testing.expect(test, root_length != 0)
+    testing.expect(test, app.workspace_file_entry_count == 0)
+    memory.owned_string_copy(
+        &app.workspace_file_entry_names[0],
+        "notes.draft",
+    )
+    app.workspace_file_entry_kind[0] = .regular_file
+    app.workspace_file_entry_count = 1
+    app.workspace_files_truncated = true
+
+    testing.expect(test, workspace_files_at_root(&app))
+    testing.expect(test, !workspace_files_go_up(&app))
+    testing.expect(test, app.workspace_files_location_length == root_length)
+    sibling := "/tmp/draft-open-workspace-other"
+    when target.os == .windows {
+        sibling = "C:\\draft-open-workspace-other"
+    }
+    sibling_owner: memory.Owned_String
+    memory.owned_string_copy(&sibling_owner, sibling)
+    defer memory.owned_string_destroy(&sibling_owner)
+    testing.expect(
+        test,
+        !path_is_at_or_below(
+            workspace_files_root_bytes(&app),
+            memory.owned_string_bytes(&sibling_owner),
+        ),
+    )
+
+    turbo_ui.show_window(
+        &app.ui,
+        app.windows[:],
+        app.windows[Window_Workspace_Files].id,
+    )
+    surface: tui.Surface
+    tui.surface_init(&surface, 100, 35)
+    defer tui.surface_destroy(&surface)
+    _ = paint_app(&app, &surface, turbo_ui.no_event())
+    testing.expect(test, surface_contains(&surface, "Workspace Files"))
+    testing.expect(test, surface_contains(&surface, "notes.draft"))
+    testing.expect(
+        test,
+        surface_contains(&surface, "Directory truncated: 512-row limit"),
+    )
+
+    testing.expect(test, activate_workspace_file_entry(&app, 0))
+    expected_path := "/tmp/draft-open-workspace/notes.draft"
+    when target.os == .windows {
+        expected_path = "C:\\draft-open-workspace\\notes.draft"
+    }
+    path := turbo_editor.path_bytes(active_buffer(&app))
+    testing.expect(test, len(path) == len(expected_path))
+    for index: usize = 0; index < len(expected_path); index += 1 {
+        testing.expect(test, path[index] == expected_path[index])
+    }
+    testing.expect(test, app.buffer_count == 2)
+    testing.expect(test, !app.buffer_has_root[app.active])
+}
+
 // Check and Build must see every open workspace buffer in one call, while syntax
 // spans still belong to the active row. This test fixes the Draft-owned pointer
 // table and compact active index independently of the native service test.
@@ -933,11 +1071,13 @@ test_editor_is_a_normal_tileable_window :: proc(test: ^testing.Test) {
 
     editor := &app.windows[Window_Editor]
     files := &app.windows[Window_Open_Documents]
+    workspace_files := &app.windows[Window_Workspace_Files]
     files_bounds := files.bounds
     testing.expect(test, editor.flags.tileable)
     testing.expect(test, editor.flags.zoomable)
     testing.expect(test, editor.zoomed)
     testing.expect(test, !files.flags.tileable)
+    testing.expect(test, !workspace_files.flags.tileable)
 
     desktop := turbo_ui.Rect{column = 0, row = 1, width = 80, height = 22}
     testing.expect(test, turbo_ui.tile_windows(app.windows[:], desktop) == 1)
@@ -1343,12 +1483,13 @@ test_complete_menu_vocabulary :: proc(test: ^testing.Test) {
     expect_surface_text(test, &surface, 34, 7, "Cascade")
     expect_surface_text(test, &surface, 34, 9, "Editor")
     expect_surface_text(test, &surface, 34, 10, "Open Documents")
-    expect_surface_text(test, &surface, 34, 11, "Packages and Imports")
-    expect_surface_text(test, &surface, 34, 12, "Declarations and Visibility")
-    expect_surface_text(test, &surface, 34, 13, "References and Calls")
-    expect_surface_text(test, &surface, 34, 14, "Effects")
-    expect_surface_text(test, &surface, 34, 15, "Denials")
-    expect_surface_text(test, &surface, 34, 16, "Diagnostics")
+    expect_surface_text(test, &surface, 34, 11, "Workspace Files")
+    expect_surface_text(test, &surface, 34, 12, "Packages and Imports")
+    expect_surface_text(test, &surface, 34, 13, "Declarations and Visibility")
+    expect_surface_text(test, &surface, 34, 14, "References and Calls")
+    expect_surface_text(test, &surface, 34, 15, "Effects")
+    expect_surface_text(test, &surface, 34, 16, "Denials")
+    expect_surface_text(test, &surface, 34, 17, "Diagnostics")
 
     open_menu_for_test(&app, &surface, cast[u8]('h'))
     expect_surface_text(test, &surface, 43, 2, "Keyboard Shortcuts...")

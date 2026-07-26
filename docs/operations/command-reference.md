@@ -182,8 +182,11 @@ selecting a named program applies its effective workspace/program target.
 IDE-local root/window selections are not stored in the workspace manifest.
 
 Turbo Draft opens ordinary files. File > Open File, Save As, and Open Workspace
-share a directory browser. A file inside the Workspace opens without changing
-the selected root; a path outside its compiler scope requires an explicit
+share a modal directory browser. Window > Workspace Files opens an independent
+persistent browser rooted at the active Workspace; Enter navigates or opens the
+selected row, and Up cannot leave that root. A file inside the Workspace opens
+without changing the selected root and remains editing-only when it is outside
+that root package. A path outside the active Workspace requires an explicit
 Switch and Open decision. Open Documents lists editor-owned files, while
 Packages and Imports shows the compiler-selected graph. The active file and
 every other dirty active-root file form one in-memory compiler transaction, and
@@ -200,7 +203,8 @@ the IDE. Provider-summary files are likewise reread at that foreground
 boundary; unchanged structural configuration keeps the retained checked graph.
 F1 opens the complete shortcut reference. F2 saves, Alt-0 opens Open Documents,
 F6 opens Compiler Options with root/target selection and effective build policy,
-and F8 opens Diagnostics. Run Configuration separately edits arguments,
+and F8 opens Diagnostics. Workspace Files has a Window-menu command but no
+dedicated global shortcut. Run Configuration separately edits arguments,
 environment, and working directory. Packages/imports and other compiler-derived
 semantic inspectors are explicitly available from Window.
 F12 goes to the exact semantic definition beneath the cursor, Shift-F12 opens

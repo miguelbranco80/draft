@@ -56,7 +56,8 @@ Window_Compiler_Options :: 15
 Window_Run_Configuration :: 16
 Window_Close_Document :: 17
 Window_About :: 18
-Window_Count :: 19
+Window_Workspace_Files :: 19
+Window_Count :: 20
 
 // File_Browser_Mode gives one reusable directory browser three exact commit
 // operations. The browser itself owns only path navigation and selection;
@@ -181,6 +182,24 @@ App :: struct {
     browser_entry_count: usize,
     browser_list: turbo_ui.List_State,
     browser_mode: File_Browser_Mode,
+    // Workspace Files owns a second directory snapshot so opening a modal
+    // Open/Save dialog cannot move or replace the persistent browser. root is
+    // the compiler-published workspace boundary; both lengths are zero without
+    // a compiler session, and location is otherwise kept lexically at or below
+    // root. Entry names are independent owners because native enumeration
+    // storage expires on the next filesystem.read call. truncated makes the
+    // bounded current-directory prefix explicit in both state and presentation.
+    workspace_files_root: [Host_Path_Capacity]u8,
+    workspace_files_root_length: usize,
+    workspace_files_location: [Host_Path_Capacity]u8,
+    workspace_files_location_length: usize,
+    workspace_file_entry_names:
+        [Maximum_Browser_Entries]memory.Owned_String,
+    workspace_file_entry_kind:
+        [Maximum_Browser_Entries]filesystem.Entry_Kind,
+    workspace_file_entry_count: usize,
+    workspace_files_truncated: bool,
+    workspace_files_list: turbo_ui.List_State,
     workspace_error: [512]u8,
     workspace_error_length: usize,
     pending_workspace_path: [Host_Path_Capacity]u8,
@@ -379,6 +398,11 @@ init_windows :: proc(app: ^App) {
         418,
         turbo_ui.Rect{column = 18, row = 7, width = 58, height = 11},
         20,
+    )
+    app.windows[Window_Workspace_Files] = turbo_ui.tool_window_init(
+        419,
+        turbo_ui.Rect{column = 2, row = 2, width = 40, height = 22},
+        850,
     )
     app.windows[Window_Open_Documents].visible = false
     app.windows[Window_Find].visible = false
@@ -622,6 +646,9 @@ destroy_workspace_documents :: proc(app: ^App) {
         memory.owned_string_destroy(&app.reachable_source_paths[index])
     }
     app.reachable_source_count = 0
+    clear_workspace_file_entries(app)
+    app.workspace_files_root_length = 0
+    app.workspace_files_location_length = 0
     for index: usize = 0; index < app.navigation_row_count; index += 1 {
         memory.owned_string_destroy(&app.navigation_rows[index].path)
     }

@@ -32,15 +32,18 @@ The six menus have conventional, non-overlapping responsibilities:
   navigation, and navigation history.
 - **Compile**: Compiler Options, Check, Build, and Build All Programs.
 - **Run**: Run and Run Configuration.
-- **Window**: desktop navigation/arrangement and document or last-successful
-  semantic windows.
+- **Window**: desktop navigation/arrangement, Workspace Files, and document or
+  last-successful semantic windows.
 - **Help**: the complete shortcut reference and About.
 
-Open File, Save As, and Open Workspace use one real directory browser. Opening
-a file inside the workspace does not switch root packages automatically; a file
-outside the compiler scope requires an explicit **Switch and Open** decision.
-Workspace replacement or closure never discards dirty documents without Save
-All/Discard/Cancel.
+Open File, Save As, and Open Workspace use one real modal directory browser.
+**Window > Workspace Files** opens an independent persistent browser rooted at
+the active Workspace. Enter navigates a directory or opens a file; Up stops at
+the Workspace root. A file inside that Workspace but outside the active root
+package opens as an editing-only document without changing compiler scope. A
+path outside the active Workspace requires an explicit **Switch and Open**
+decision. Workspace replacement or closure never discards dirty documents
+without Save All/Discard/Cancel.
 
 The principal shortcuts are also listed by **Help > Keyboard Shortcuts**:
 

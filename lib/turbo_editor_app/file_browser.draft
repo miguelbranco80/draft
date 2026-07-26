@@ -1,9 +1,9 @@
-// The file browser is DraftIDE's reusable filesystem-selection model. It owns
-// one current directory, a bounded sorted snapshot of copied entry names, and
-// one optional filename field. core/filesystem supplies native enumeration;
-// this module supplies deterministic display order and path navigation; views
-// supply widgets. No compiler or editor operation occurs until the user commits
-// the complete selection through command code.
+// The file browser module owns DraftIDE's two filesystem views: the modal
+// Open/Save/Open Workspace selector and the persistent Workspace Files tool.
+// Each owns one current directory and a bounded sorted snapshot of copied entry
+// names; only the modal selector additionally owns an editable filename field.
+// core/filesystem supplies native enumeration, this module supplies shared
+// deterministic snapshot and path operations, and views supply widgets.
 //
 // Directory snapshots are sorted with directories first and bytewise names
 // within each kind. This is UI ordering only, but making it explicit prevents
@@ -132,13 +132,29 @@ join_path :: proc(
     return (destination[:required], true)
 }
 
-clear_browser_entries :: proc(app: ^App) {
-    for index: usize = 0; index < app.browser_entry_count; index += 1 {
-        memory.owned_string_destroy(&app.browser_entry_names[index])
+// clear_directory_entries ends every copied-name lifetime in one snapshot and
+// returns its viewport to the first row. names and kinds are parallel arrays;
+// only indices below count own initialized names.
+clear_directory_entries :: proc(
+    names: []memory.Owned_String,
+    count: ^usize,
+    list: ^turbo_ui.List_State,
+) {
+    for index: usize = 0; index < count^; index += 1 {
+        memory.owned_string_destroy(&names[index])
     }
-    app.browser_entry_count = 0
-    app.browser_list.cursor = 0
-    app.browser_list.offset = 0
+    count^ = 0
+    list.cursor = 0
+    list.offset = 0
+}
+
+clear_workspace_file_entries :: proc(app: ^App) {
+    clear_directory_entries(
+        app.workspace_file_entry_names[:],
+        &app.workspace_file_entry_count,
+        &app.workspace_files_list,
+    )
+    app.workspace_files_truncated = false
 }
 
 browser_kind_rank :: proc(kind: filesystem.Entry_Kind) -> usize {
@@ -167,35 +183,63 @@ bytes_less :: proc(left, right: []u8) -> bool {
     return len(left) < len(right)
 }
 
-browser_entry_less :: proc(app: ^App, left, right: usize) -> bool {
-    left_rank := browser_kind_rank(app.browser_entry_kind[left])
-    right_rank := browser_kind_rank(app.browser_entry_kind[right])
+directory_entry_less :: proc(
+    names: []memory.Owned_String,
+    kinds: []filesystem.Entry_Kind,
+    left, right: usize,
+) -> bool {
+    left_rank := browser_kind_rank(kinds[left])
+    right_rank := browser_kind_rank(kinds[right])
     if left_rank != right_rank {
         return left_rank < right_rank
     }
     return bytes_less(
-        memory.owned_string_bytes(&app.browser_entry_names[left]),
-        memory.owned_string_bytes(&app.browser_entry_names[right]),
+        memory.owned_string_bytes(&names[left]),
+        memory.owned_string_bytes(&names[right]),
     )
 }
 
-// sort_browser_entries leaves row zero (`..`) fixed and insertion-sorts the
-// native rows. The browser bound is intentionally modest and directory sizes
-// are normally tiny; this direct stable algorithm keeps owned-string swaps and
-// kind coupling obvious. A future measured need can replace only this local
-// operation without changing the filesystem or view contracts.
-sort_browser_entries :: proc(app: ^App) {
-    for index: usize = 2; index < app.browser_entry_count; index += 1 {
+// directory_value_less compares one borrowed native entry with one copied row.
+// Keeping this spelling separate lets a full bounded snapshot retain the same
+// deterministic prefix regardless of filesystem enumeration order.
+directory_value_less :: proc(
+    left_kind: filesystem.Entry_Kind,
+    left_name: []u8,
+    right_kind: filesystem.Entry_Kind,
+    right_name: []u8,
+) -> bool {
+    left_rank := browser_kind_rank(left_kind)
+    right_rank := browser_kind_rank(right_kind)
+    if left_rank != right_rank {
+        return left_rank < right_rank
+    }
+    return bytes_less(left_name, right_name)
+}
+
+// sort_directory_entries insertion-sorts native rows after fixed_count leading
+// synthetic rows. The bounded directory snapshots are intentionally modest;
+// this direct stable algorithm keeps owned-string swaps and kind coupling
+// visible. A measured need can replace this operation without changing either
+// browser's filesystem or view contract.
+sort_directory_entries :: proc(
+    names: []memory.Owned_String,
+    kinds: []filesystem.Entry_Kind,
+    count, fixed_count: usize,
+) {
+    for index := fixed_count + 1; index < count; index += 1 {
         position := index
-        for position > 1 && browser_entry_less(app, position, position - 1) {
-            name := app.browser_entry_names[position]
-            app.browser_entry_names[position] =
-                app.browser_entry_names[position - 1]
-            app.browser_entry_names[position - 1] = name
-            kind := app.browser_entry_kind[position]
-            app.browser_entry_kind[position] =
-                app.browser_entry_kind[position - 1]
-            app.browser_entry_kind[position - 1] = kind
+        for position > fixed_count && directory_entry_less(
+            names,
+            kinds,
+            position,
+            position - 1,
+        ) {
+            name := names[position]
+            names[position] = names[position - 1]
+            names[position - 1] = name
+            kind := kinds[position]
+            kinds[position] = kinds[position - 1]
+            kinds[position - 1] = kind
             position -= 1
         }
     }
@@ -220,14 +264,32 @@ set_browser_location :: proc(app: ^App, path: []u8) -> bool {
     )
 }
 
-// refresh_file_browser owns the complete native handle lifetime and copies all
-// names before close. On failure it publishes an empty snapshot plus a direct
-// status; it never leaves rows from a different directory under the new path.
-refresh_file_browser :: proc(app: ^App) -> bool {
-    clear_browser_entries(app)
-    location := browser_location_bytes(app)
+// read_directory_snapshot owns the complete native handle lifetime and consumes
+// every name before close. It copies the deterministic retained prefix into the
+// destination. include_parent adds one fixed leading `..` row for a caller
+// which permits upward navigation; truncated_result, when non-nil, reports that
+// more native rows existed. On failure the destination remains empty, so rows
+// from a previous directory can never appear under a new path.
+read_directory_snapshot :: proc(
+    app: ^App,
+    location: []u8,
+    names: []memory.Owned_String,
+    kinds: []filesystem.Entry_Kind,
+    count: ^usize,
+    list: ^turbo_ui.List_State,
+    include_parent: bool,
+    truncated_result: ^bool,
+) -> bool {
+    assert(len(names) == len(kinds),
+        "directory snapshot names and kinds must have equal capacity")
+    assert(len(names) > 1,
+        "directory snapshot must hold a parent row and one native entry")
+    if truncated_result != nil {
+        truncated_result^ = false
+    }
+    clear_directory_entries(names, count, list)
     if len(location) == 0 {
-        app.status = "Browser location is empty"
+        app.status = "Directory location is empty"
         return false
     }
     location_owner: memory.Owned_String
@@ -242,17 +304,22 @@ refresh_file_browser :: proc(app: ^App) -> bool {
     }
     defer filesystem.close(&directory)
 
-    memory.owned_string_copy(&app.browser_entry_names[0], "..")
-    app.browser_entry_kind[0] = .directory
-    app.browser_entry_count = 1
+    fixed_count: usize
+    if include_parent {
+        memory.owned_string_copy(&names[0], "..")
+        kinds[0] = .directory
+        count^ = 1
+        fixed_count = 1
+    }
     storage: [Browser_Entry_Name_Capacity]u8
+    truncated := false
     for {
         (entry, error) := filesystem.read(&directory, storage[:])
         if error == .end_of_input {
             break
         }
         if error != .none {
-            clear_browser_entries(app)
+            clear_directory_entries(names, count, list)
             app.status = "Could not read the complete directory"
             return false
         }
@@ -262,17 +329,58 @@ refresh_file_browser :: proc(app: ^App) -> bool {
                 name[1] == cast[u8]('.')) {
             continue
         }
-        if app.browser_entry_count == Maximum_Browser_Entries {
-            app.status = "Directory has more entries than this browser can show"
-            break
+        if count^ < len(names) {
+            index := count^
+            memory.owned_string_copy_bytes(&names[index], name)
+            kinds[index] = entry.kind
+            count^ += 1
+            continue
         }
-        index := app.browser_entry_count
-        memory.owned_string_copy_bytes(&app.browser_entry_names[index], name)
-        app.browser_entry_kind[index] = entry.kind
-        app.browser_entry_count += 1
+        truncated = true
+        // The view is bounded, but the chosen prefix must not depend on native
+        // enumeration order. Find the greatest retained native row and replace
+        // it only when this entry belongs earlier in the authored ordering.
+        greatest := fixed_count
+        for index := fixed_count + 1; index < count^; index += 1 {
+            if directory_entry_less(names, kinds, greatest, index) {
+                greatest = index
+            }
+        }
+        if directory_value_less(
+            entry.kind,
+            name,
+            kinds[greatest],
+            memory.owned_string_bytes(&names[greatest]),
+        ) {
+            memory.owned_string_destroy(&names[greatest])
+            memory.owned_string_copy_bytes(&names[greatest], name)
+            kinds[greatest] = entry.kind
+        }
     }
-    sort_browser_entries(app)
+    sort_directory_entries(names, kinds, count^, fixed_count)
+    if truncated {
+        app.status = "Directory is truncated at the 512-row view limit"
+    }
+    if truncated_result != nil {
+        truncated_result^ = truncated
+    }
     return true
+}
+
+// refresh_file_browser is the editable modal browser specialization. It always
+// exposes `..` because Open/Save navigation is intentionally not restricted to
+// the active compiler workspace.
+refresh_file_browser :: proc(app: ^App) -> bool {
+    return read_directory_snapshot(
+        app,
+        browser_location_bytes(app),
+        app.browser_entry_names[:],
+        app.browser_entry_kind[:],
+        &app.browser_entry_count,
+        &app.browser_list,
+        true,
+        nil,
+    )
 }
 
 browser_entry_name :: proc(app: ^App, index: usize) -> []u8 {
@@ -345,24 +453,31 @@ enter_browser_directory :: proc(app: ^App, index: usize) -> bool {
     return true
 }
 
-// browser_entry_is_directory resolves the one intentionally imprecise native
+// directory_entry_is_directory resolves the one intentionally imprecise native
 // classification only when the user activates that row. Symlinked directories
 // commonly arrive as unknown; attempting a directory open gives them the same
 // navigation behavior without requiring every target API to expose stat.
-browser_entry_is_directory :: proc(app: ^App, index: usize) -> bool {
-    if index >= app.browser_entry_count {
+// parent_row says that index zero is the caller's synthetic `..` row.
+directory_entry_is_directory :: proc(
+    location: []u8,
+    names: []memory.Owned_String,
+    kinds: []filesystem.Entry_Kind,
+    count, index: usize,
+    parent_row: bool,
+) -> bool {
+    if index >= count {
         return false
     }
-    if index == 0 || app.browser_entry_kind[index] == .directory {
+    if (parent_row && index == 0) || kinds[index] == .directory {
         return true
     }
-    if app.browser_entry_kind[index] != .unknown {
+    if kinds[index] != .unknown {
         return false
     }
     storage: [Host_Path_Capacity]u8
     (path, valid) := join_path(
-        browser_location_bytes(app),
-        browser_entry_name(app, index),
+        location,
+        memory.owned_string_bytes(&names[index]),
         storage[:],
     )
     if !valid {
@@ -377,4 +492,216 @@ browser_entry_is_directory :: proc(app: ^App, index: usize) -> bool {
     }
     filesystem.close(&directory)
     return true
+}
+
+browser_entry_is_directory :: proc(app: ^App, index: usize) -> bool {
+    return directory_entry_is_directory(
+        browser_location_bytes(app),
+        app.browser_entry_names[:],
+        app.browser_entry_kind[:],
+        app.browser_entry_count,
+        index,
+        true,
+    )
+}
+
+workspace_files_root_bytes :: proc(app: ^App) -> []u8 {
+    return app.workspace_files_root[:app.workspace_files_root_length]
+}
+
+workspace_files_location_bytes :: proc(app: ^App) -> []u8 {
+    return app.workspace_files_location[:app.workspace_files_location_length]
+}
+
+// path_is_at_or_below compares complete path components. It is a lexical guard
+// over paths produced by joining native single-component entry names; the
+// compiler service remains the authority for the canonical Workspace path.
+path_is_at_or_below :: proc(root, path: []u8) -> bool {
+    if len(root) == 0 || len(path) < len(root) {
+        return false
+    }
+    for index: usize = 0; index < len(root); index += 1 {
+        if root[index] != path[index] {
+            return false
+        }
+    }
+    if len(path) == len(root) {
+        return true
+    }
+    return path_byte_is_separator(root[len(root) - 1]) ||
+        path_byte_is_separator(path[len(root)])
+}
+
+workspace_files_at_root :: proc(app: ^App) -> bool {
+    root := workspace_files_root_bytes(app)
+    location := workspace_files_location_bytes(app)
+    return len(root) == len(location) && path_is_at_or_below(root, location)
+}
+
+// refresh_workspace_files enumerates only the current location. Lazy directory
+// navigation keeps a large Workspace usable without recursively allocating or
+// imposing an arbitrary whole-tree limit. The `..` row exists only below the
+// root, so normal navigation cannot leave the active Workspace.
+refresh_workspace_files :: proc(app: ^App) -> bool {
+    root := workspace_files_root_bytes(app)
+    location := workspace_files_location_bytes(app)
+    if !path_is_at_or_below(root, location) {
+        clear_workspace_file_entries(app)
+        app.status = "Workspace Files location escaped its root invariant"
+        return false
+    }
+    return read_directory_snapshot(
+        app,
+        location,
+        app.workspace_file_entry_names[:],
+        app.workspace_file_entry_kind[:],
+        &app.workspace_file_entry_count,
+        &app.workspace_files_list,
+        !workspace_files_at_root(app),
+        &app.workspace_files_truncated,
+    )
+}
+
+// initialize_workspace_files copies the compiler-published canonical Workspace
+// path and resets the persistent browser to that root. It deliberately does not
+// enumerate while the pane is hidden: opening a compiler session must not pay
+// for filesystem UI which the user never requested. The Window command or a
+// visible-pane workspace replacement performs the first refresh.
+initialize_workspace_files :: proc(app: ^App) -> bool {
+    clear_workspace_file_entries(app)
+    app.workspace_files_root_length = 0
+    app.workspace_files_location_length = 0
+    if !app.workspace_open || app.host.copy_workspace_path == nil {
+        app.status = "No compiler Workspace is open"
+        return false
+    }
+    length := app.host.copy_workspace_path(
+        app.host.user,
+        cast[[^]u8](&app.workspace_files_root[0]),
+        len(app.workspace_files_root),
+    )
+    if length == 0 || length >= len(app.workspace_files_root) {
+        app.status = "Workspace path exceeds the Workspace Files limit"
+        return false
+    }
+    app.workspace_files_root_length = length
+    for index: usize = 0; index < length; index += 1 {
+        app.workspace_files_location[index] = app.workspace_files_root[index]
+    }
+    app.workspace_files_location_length = length
+    return true
+}
+
+workspace_file_entry_name :: proc(app: ^App, index: usize) -> []u8 {
+    assert(index < app.workspace_file_entry_count,
+        "Workspace Files row index is invalid")
+    return memory.owned_string_bytes(&app.workspace_file_entry_names[index])
+}
+
+workspace_file_entry_is_directory :: proc(
+    app: ^App,
+    index: usize,
+) -> bool {
+    return directory_entry_is_directory(
+        workspace_files_location_bytes(app),
+        app.workspace_file_entry_names[:],
+        app.workspace_file_entry_kind[:],
+        app.workspace_file_entry_count,
+        index,
+        !workspace_files_at_root(app),
+    )
+}
+
+// set_workspace_files_directory commits a candidate location only after a
+// complete snapshot succeeds. Failure restores the previous location and rows,
+// leaving the persistent tool usable while reporting the original error.
+set_workspace_files_directory :: proc(app: ^App, next: []u8) -> bool {
+    if !path_is_at_or_below(workspace_files_root_bytes(app), next) {
+        app.status = "Workspace Files cannot leave the active Workspace"
+        return false
+    }
+    if len(next) > len(app.workspace_files_location) {
+        app.status = "Workspace Files path exceeds its storage limit"
+        return false
+    }
+    previous: [Host_Path_Capacity]u8
+    previous_length := app.workspace_files_location_length
+    for index: usize = 0; index < previous_length; index += 1 {
+        previous[index] = app.workspace_files_location[index]
+    }
+    for index: usize = 0; index < len(next); index += 1 {
+        app.workspace_files_location[index] = next[index]
+    }
+    app.workspace_files_location_length = len(next)
+    if !refresh_workspace_files(app) {
+        failure := app.status
+        for index: usize = 0; index < previous_length; index += 1 {
+            app.workspace_files_location[index] = previous[index]
+        }
+        app.workspace_files_location_length = previous_length
+        _ = refresh_workspace_files(app)
+        app.status = failure
+        return false
+    }
+    app.ui.focused_id = 850
+    return true
+}
+
+enter_workspace_file_directory :: proc(app: ^App, index: usize) -> bool {
+    if index >= app.workspace_file_entry_count ||
+        !workspace_file_entry_is_directory(app, index) {
+        return false
+    }
+    next_storage: [Host_Path_Capacity]u8
+    next: []u8
+    valid := false
+    if !workspace_files_at_root(app) && index == 0 {
+        (next, valid) = path_parent(
+            workspace_files_location_bytes(app),
+            next_storage[:],
+        )
+    } else {
+        (next, valid) = join_path(
+            workspace_files_location_bytes(app),
+            workspace_file_entry_name(app, index),
+            next_storage[:],
+        )
+    }
+    if !valid {
+        app.status = "Workspace Files path exceeds its storage limit"
+        return false
+    }
+    return set_workspace_files_directory(app, next)
+}
+
+workspace_files_go_up :: proc(app: ^App) -> bool {
+    if workspace_files_at_root(app) {
+        app.status = "Workspace Files is already at the Workspace root"
+        return false
+    }
+    return enter_workspace_file_directory(app, 0)
+}
+
+// activate_workspace_file_entry navigates directories and opens ordinary files
+// through the same document command as File > Open File. A file outside the
+// selected root package remains an editing-only buffer, but because its path is
+// inside the current Workspace it never replaces the compiler session.
+activate_workspace_file_entry :: proc(app: ^App, index: usize) -> bool {
+    if index >= app.workspace_file_entry_count {
+        return false
+    }
+    if workspace_file_entry_is_directory(app, index) {
+        return enter_workspace_file_directory(app, index)
+    }
+    storage: [Host_Path_Capacity]u8
+    (path, valid) := join_path(
+        workspace_files_location_bytes(app),
+        workspace_file_entry_name(app, index),
+        storage[:],
+    )
+    if !valid || !path_is_at_or_below(workspace_files_root_bytes(app), path) {
+        app.status = "Workspace file path exceeds its root invariant"
+        return false
+    }
+    return open_document_path(app, path)
 }

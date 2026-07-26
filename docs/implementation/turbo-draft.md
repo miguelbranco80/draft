@@ -95,7 +95,10 @@ Source remains normal `.draft` files. After checking, the service publishes the
 target-selected files in the active root's reachable graph as deterministic
 Workspace-relative names plus canonical I/O paths. Packages and Imports exposes
 that semantic graph; Open Documents separately lists the ordinary documents
-currently open in memory.
+currently open in memory. Workspace Files is a third, deliberately different
+projection: it lazily enumerates the current filesystem directory beneath the
+compiler-published Workspace root, whether or not those entries participate in
+the active package graph.
 `turbo_editor.Buffer` owns each open file and its unsaved bytes. Switching roots
 reuses an already-open buffer by path or opens another ordinary buffer; every
 buffer records the compiler root that owns it. Reactivating an older buffer
@@ -105,16 +108,26 @@ writes the normal file, and polling reports an explicit conflict when disk and
 dirty memory diverge. There is no IDE source database, candidate workspace,
 revision history, or IDE state under `.draft/`.
 
-File > Open File, Save As, and Open Workspace share one deterministic directory
-browser. Location is a pathname field, entries are directories-first and
-bytewise sorted, and file operations have a distinct Name field. Open File does
-not change the active root for a path inside the Workspace; a file outside that
-compiler scope requires an explicit Switch and Open decision. Such a switch and
-Open Workspace construct and validate a complete replacement compiler session
-before swapping it behind the stable host handle. Dirty buffers require an
-explicit Save All, Discard, or Cancel choice; save never silently overwrites a
-disk conflict. Close Workspace follows the same dirty-document policy and
+File > Open File, Save As, and Open Workspace share one deterministic modal
+directory browser. Location is a pathname field, entries are directories-first
+and bytewise sorted, and file operations have a distinct Name field. Workspace
+Files owns a separate persistent snapshot so opening that dialog cannot move
+the tool pane. Its read-only location begins at the compiler-published Workspace
+path, Up is disabled at that root, and activating an ordinary file calls the same
+document-opening command as Open File. A path inside the Workspace but outside
+the active root package therefore remains editing-only; a path outside the
+active Workspace requires the explicit Switch and Open decision. Such a switch
+and Open Workspace construct and validate a complete replacement compiler
+session before swapping it behind the stable host handle. Dirty buffers require
+an explicit Save All, Discard, or Cancel choice; save never silently overwrites
+a disk conflict. Close Workspace follows the same dirty-document policy and
 leaves one ordinary unnamed editing buffer.
+
+Both browsers retain at most 512 rows for one directory. They consume the whole
+native enumeration and keep the first rows in the authored directories-first,
+bytewise order, so even a truncated directory is deterministic rather than a
+filesystem-order subset. Workspace Files enumerates only the current directory;
+it never recursively scans a large Workspace merely because the pane is open.
 
 The manifest is operator configuration, not a language or dependency manifest.
 The compiler service resolves workspace defaults followed by the matching
@@ -187,18 +200,18 @@ These are views, not another parser, indexer, or semantic engine. The Draft UI
 copies them into its own bounded storage and presents independent movable,
 resizable windows. The document editor uses that same ordinary window model:
 its content is the reusable `turbo_editor` view, while the application owns its
-close, zoom, z-order, and arrangement policy. Open Documents is an auxiliary
-non-tileable tool pane, so Tile/Cascade arrange the document together with
-visible semantic windows without moving that browser. The document window title
-uses the root package's Workspace-relative file label where available,
-not a generic title or a space-consuming canonical host path. Opening a file
-reopens and focuses the document window if it was closed.
+close, zoom, z-order, and arrangement policy. Open Documents and Workspace Files
+are auxiliary non-tileable tool panes, so Tile/Cascade arrange the document
+together with visible semantic windows without moving either browser. The
+document window title uses the root package's Workspace-relative file label
+where available, not a generic title or a space-consuming canonical host path.
+Opening a file reopens and focuses the document window if it was closed.
 
-Open Documents, executable roots, the package tree, the filesystem browser, and
-read-only semantic sections share `lib/turbo_ui`'s collection viewport policy. Applications retain
-cursor and offset only; the reusable layer owns keyboard movement, distinct
-activation, wheel scrolling, proportional scrollbar geometry, and visible-row
-mapping.
+Open Documents, executable roots, the package tree, both filesystem browsers,
+and read-only semantic sections share `lib/turbo_ui`'s collection viewport
+policy. Applications retain cursor and offset only; the reusable layer owns
+keyboard movement, distinct activation, wheel scrolling, proportional scrollbar
+geometry, and visible-row mapping.
 Rich rows paint markers and byte labels directly after `list_view`, so reuse
 does not require callbacks, label allocation, or a retained item model. The
 tree specialization consumes a caller-owned flat preorder table and scratch
@@ -240,7 +253,8 @@ explicit exit policy.
 
 F1 opens a modal, scrollable reference generated from the application's single
 authored shortcut table. F2 saves, Alt-0 opens Open Documents, F6 opens Compiler
-Options, and F8 opens Diagnostics. The top-level vocabulary is exactly File,
+Options, and F8 opens Diagnostics. The Window menu exposes Workspace Files
+without reserving another global key. The top-level vocabulary is exactly File,
 Edit, Compile, Run, Window, and Help; every menu row and global shortcut invokes
 the same named application operation. Packages and Imports is an explicitly
 requested structured semantic view; Click or Enter

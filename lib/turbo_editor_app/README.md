@@ -6,17 +6,18 @@ event loop, File/Edit/Compile/Run/Window/Help menus, dialogs, desktop windows,
 filesystem browsing, and optional compiler interaction.
 
 The editor is an ordinary closable, zoomable, tileable window. It starts alone
-and zoomed, with the active document path in its title. Open Documents is a
-non-tileable tool pane; semantic inspectors appear only when requested. Fixed
-dialogs are modal. `lib/turbo_editor` remains the smaller reusable document
-engine and editor view with no terminal, compiler, window, or event-loop
-ownership.
+and zoomed, with the active document path in its title. Open Documents and the
+workspace-rooted Workspace Files browser are non-tileable tool panes; semantic
+inspectors appear only when requested. Fixed dialogs are modal.
+`lib/turbo_editor` remains the smaller reusable document engine and editor view
+with no terminal, compiler, window, or event-loop ownership.
 
 The package is split by owned transition rather than widget type:
 
 - `package.draft` owns the long-lived `App` model and document/tooling tables;
 - `commands.draft` owns document, workspace, search, and shortcut actions;
-- `file_browser.draft` owns deterministic directory snapshots and path movement;
+- `file_browser.draft` owns the modal file selector and the independent,
+  persistent Workspace Files snapshot, including deterministic path movement;
 - `run_settings.draft` owns typed argument, environment, and working-directory
   configuration;
 - `views.draft` paints dialogs and compiler/document inspectors;

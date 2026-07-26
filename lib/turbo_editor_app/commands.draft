@@ -280,6 +280,10 @@ open_host_workspace :: proc(app: ^App, path: []u8, selected_file: []u8) -> bool 
     destroy_workspace_documents(app)
     reset_workspace_views(app)
     app.workspace_open = true
+    workspace_files_ready := initialize_workspace_files(app)
+    if workspace_files_ready && app.windows[Window_Workspace_Files].visible {
+        workspace_files_ready = refresh_workspace_files(app)
+    }
     refresh_root_packages(app)
     refresh_reachable_sources(app)
     opened_source := false
@@ -299,7 +303,11 @@ open_host_workspace :: proc(app: ^App, path: []u8, selected_file: []u8) -> bool 
         return true
     }
     _ = refresh_host(app)
-    app.status = "Workspace opened"
+    if workspace_files_ready {
+        app.status = "Workspace opened"
+    } else {
+        app.status = "Workspace opened; Workspace Files is unavailable"
+    }
     return true
 }
 

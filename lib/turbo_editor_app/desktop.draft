@@ -336,7 +336,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
 
     window_menu := turbo_ui.begin_menu(
         &app.ui, &app.menus, Menu_Window, Menu_Window_Popup,
-        turbo_ui.Rect{column = 31, row = 1, width = 43, height = 17},
+        turbo_ui.Rect{column = 31, row = 1, width = 43, height = 18},
     )
     if turbo_ui.menu_action(&app.ui, &app.menus, &window_menu,
         970, "Next", "Ctrl-F6", access_key = cast[u8]('n')) {
@@ -374,6 +374,15 @@ paint_app_menus :: proc(app: ^App) -> bool {
         "Editor", "", cast[u8]('e'))
     menu_window_toggle(app, &window_menu, 977, Window_Open_Documents,
         "Open Documents", "Alt-0", cast[u8]('o'))
+    workspace_files_was_visible :=
+        app.windows[Window_Workspace_Files].visible
+    menu_window_toggle(app, &window_menu, 984, Window_Workspace_Files,
+        "Workspace Files", "", cast[u8]('w'),
+        app.workspace_open && app.host.copy_workspace_path != nil)
+    if !workspace_files_was_visible &&
+        app.windows[Window_Workspace_Files].visible {
+        _ = refresh_workspace_files(app)
+    }
     menu_window_toggle(app, &window_menu, 978, Window_Packages,
         "Packages and Imports", "", cast[u8]('k'), compiler_ready)
     menu_window_toggle(app, &window_menu, 979, Window_Declarations,
@@ -480,6 +489,8 @@ paint_app :: proc(
             title = ""
         } else if index == Window_Open_Documents {
             title = "Open Documents (Alt-0)"
+        } else if index == Window_Workspace_Files {
+            title = "Workspace Files"
         } else if index == Window_Find {
             title = "Find"
         } else if index == Window_Quit {
@@ -565,6 +576,8 @@ paint_app :: proc(
                 }
             case Window_Open_Documents:
                 paint_open_documents(app, window_context.content)
+            case Window_Workspace_Files:
+                paint_workspace_files(app, window_context.content)
             case Window_Find:
                 paint_search(app, window_context.content)
             case Window_Quit:
