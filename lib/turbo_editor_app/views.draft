@@ -13,6 +13,29 @@ import core/memory
 import lib/turbo_editor
 import lib/turbo_ui
 
+// action_row creates the one-row, right-aligned footer used by modal actions.
+// total_width includes every button face and inter-button gap. If a transiently
+// narrow content rectangle cannot fit the authored row, layout_next returns
+// empty rectangles for the excess controls; their default/cancel keyboard roles
+// remain registered, so resizing never traps the user inside a modal.
+action_row :: proc(
+    content: turbo_ui.Rect,
+    row, total_width: usize,
+    gap: usize = 1,
+) -> turbo_ui.Layout {
+    bounds := turbo_ui.Rect{
+        column = content.column,
+        row = row,
+        width = content.width,
+        height = 1,
+    }
+    if total_width < bounds.width {
+        bounds.column += bounds.width - total_width
+        bounds.width = total_width
+    }
+    return turbo_ui.layout_begin(bounds, .horizontal, 0, gap)
+}
+
 paint_search :: proc(
     app: ^App,
     content: turbo_ui.Rect,
@@ -43,21 +66,18 @@ paint_search :: proc(
         find_next_requested = result.submitted
     }
     if content.height > 3 && content.width > 2 {
-        buttons := turbo_ui.layout_begin(
-            turbo_ui.Rect{
-                column = content.column + 1,
-                row = content.row + 3,
-                width = content.width - 2,
-                height = 2,
-            },
-            .horizontal,
-            0,
-            1,
+        next_width := turbo_ui.compact_button_width("Next")
+        previous_width := turbo_ui.compact_button_width("Previous")
+        cancel_width := turbo_ui.compact_button_width("Cancel")
+        buttons := action_row(
+            content,
+            content.row + 3,
+            next_width + previous_width + cancel_width + 2,
         )
         find_next_requested = find_next_requested || turbo_ui.button(
             &app.ui,
             501,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Next")),
+            turbo_ui.layout_next(&buttons, next_width),
             "Next",
             true,
             .default_action,
@@ -66,7 +86,7 @@ paint_search :: proc(
         find_previous_requested = turbo_ui.button(
             &app.ui,
             503,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Previous")),
+            turbo_ui.layout_next(&buttons, previous_width),
             "Previous",
             true,
             .normal,
@@ -75,7 +95,7 @@ paint_search :: proc(
         if turbo_ui.button(
             &app.ui,
             502,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
+            turbo_ui.layout_next(&buttons, cancel_width),
             "Cancel",
             true,
             .cancel_action,
@@ -161,22 +181,20 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
 
     replace_all_requested := false
     find_next_requested := false
-    if content.width > 2 && content.height > 6 {
-        buttons := turbo_ui.layout_begin(
-            turbo_ui.Rect{
-                column = content.column + 1,
-                row = content.row + 5,
-                width = content.width - 2,
-                height = 2,
-            },
-            .horizontal,
-            0,
-            1,
+    if content.width > 2 && content.height > 5 {
+        replace_width := turbo_ui.compact_button_width("Replace")
+        all_width := turbo_ui.compact_button_width("Replace All")
+        next_width := turbo_ui.compact_button_width("Find Next")
+        cancel_width := turbo_ui.compact_button_width("Cancel")
+        buttons := action_row(
+            content,
+            content.row + 5,
+            replace_width + all_width + next_width + cancel_width + 3,
         )
         replace_requested = replace_requested || turbo_ui.button(
             &app.ui,
             582,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Replace")),
+            turbo_ui.layout_next(&buttons, replace_width),
             "Replace",
             true,
             .default_action,
@@ -185,7 +203,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
         replace_all_requested = turbo_ui.button(
             &app.ui,
             583,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Replace All")),
+            turbo_ui.layout_next(&buttons, all_width),
             "Replace All",
             true,
             .normal,
@@ -194,7 +212,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
         find_next_requested = turbo_ui.button(
             &app.ui,
             584,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Find Next")),
+            turbo_ui.layout_next(&buttons, next_width),
             "Find Next",
             true,
             .normal,
@@ -203,7 +221,7 @@ paint_replace :: proc(app: ^App, content: turbo_ui.Rect) {
         if turbo_ui.button(
             &app.ui,
             585,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
+            turbo_ui.layout_next(&buttons, cancel_width),
             "Cancel",
             true,
             .cancel_action,
@@ -266,22 +284,18 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
         )
         submitted = result.submitted
     }
-    if content.width > 2 && content.height > 3 {
-        buttons := turbo_ui.layout_begin(
-            turbo_ui.Rect{
-                column = content.column + 1,
-                row = content.row + 2,
-                width = content.width - 2,
-                height = 2,
-            },
-            .horizontal,
-            0,
-            1,
+    if content.width > 2 && content.height > 2 {
+        go_width := turbo_ui.compact_button_width("Go To")
+        cancel_width := turbo_ui.compact_button_width("Cancel")
+        buttons := action_row(
+            content,
+            content.row + 2,
+            go_width + cancel_width + 1,
         )
         submitted = submitted || turbo_ui.button(
             &app.ui,
             591,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Go To")),
+            turbo_ui.layout_next(&buttons, go_width),
             "Go To",
             true,
             .default_action,
@@ -290,7 +304,7 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
         if turbo_ui.button(
             &app.ui,
             592,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
+            turbo_ui.layout_next(&buttons, cancel_width),
             "Cancel",
             true,
             .cancel_action,
@@ -315,19 +329,23 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
 
 // paint_file_browser composes ordinary reusable controls over the browser
 // model. Location is a pathname field, entries are a selection list, Name is a
-// filename field only in file modes, and every visible button has a complete
-// face-plus-shadow footprint. Enter on a directory navigates; Enter on a file
-// commits the same operation as the default button.
+// filename field only in file modes. Its toolbar and footer use exact one-row
+// faces, directories use compact disclosure markers, and unneeded scrollbars
+// remain visually absent. Enter or a true double click on a directory navigates;
+// the same activation on a file commits the default operation.
 paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
     if content.width < 20 || content.height < 10 {
-        _ = turbo_ui.button(
+        if turbo_ui.button(
             &app.ui,
             839,
             turbo_ui.Rect{},
             "Cancel",
             true,
             .cancel_action,
-        )
+        ) {
+            close_file_browser(app)
+            app.status = "File operation cancelled"
+        }
         return
     }
     turbo_ui.write_clipped(
@@ -355,9 +373,9 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
     navigation := turbo_ui.layout_begin(
         turbo_ui.Rect{
             column = content.column + 1,
-            row = content.row + 2,
+            row = content.row + 1,
             width = content.width - 2,
-            height = 2,
+            height = 1,
         },
         .horizontal,
         0,
@@ -366,7 +384,7 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
     if turbo_ui.button(
         &app.ui,
         833,
-        turbo_ui.layout_next(&navigation, turbo_ui.button_width("Up")),
+        turbo_ui.layout_next(&navigation, turbo_ui.compact_button_width("Up")),
         "Up",
         true,
         .normal,
@@ -377,7 +395,10 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
     if turbo_ui.button(
         &app.ui,
         834,
-        turbo_ui.layout_next(&navigation, turbo_ui.button_width("Refresh")),
+        turbo_ui.layout_next(
+            &navigation,
+            turbo_ui.compact_button_width("Refresh"),
+        ),
         "Refresh",
         true,
         .normal,
@@ -386,15 +407,15 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
         _ = refresh_file_browser(app)
     }
 
-    bottom_rows: usize = 4
+    bottom_rows: usize = 2
     if app.browser_mode != .open_workspace {
-        bottom_rows = 6
+        bottom_rows = 3
     }
     list_bounds := turbo_ui.Rect{
         column = content.column + 1,
-        row = content.row + 4,
+        row = content.row + 3,
         width = content.width - 2,
-        height = content.height - bottom_rows - 4,
+        height = content.height - bottom_rows - 3,
     }
     view := turbo_ui.list_view(
         &app.ui,
@@ -403,15 +424,16 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
         list_bounds,
         app.browser_entry_count,
         &app.browser_list,
-        .enter_only,
+        .double_click_and_enter,
+        .when_needed,
     )
     for index := view.first; index < view.end; index += 1 {
         row := turbo_ui.list_row_begin(&app.ui, view, index)
-        marker := "[?] "
+        marker := "? "
         if app.browser_entry_kind[index] == .directory {
-            marker = "[D] "
+            marker = "▸ "
         } else if app.browser_entry_kind[index] == .regular_file {
-            marker = "    "
+            marker = "  "
         }
         turbo_ui.write_clipped(
             app.ui.surface,
@@ -420,10 +442,10 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
             marker,
             row.style,
         )
-        if row.bounds.width > 4 {
+        if row.bounds.width > 2 {
             name_bounds := row.bounds
-            name_bounds.column += 4
-            name_bounds.width -= 4
+            name_bounds.column += 2
+            name_bounds.width -= 2
             turbo_ui.write_clipped_bytes(
                 app.ui.surface,
                 turbo_ui.intersect(app.ui.clip, name_bounds),
@@ -465,14 +487,14 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
         }
     }
 
-    button_row := content.row + content.height - 2
+    button_row := content.row + content.height - 1
     if app.browser_mode != .open_workspace {
         turbo_ui.write_clipped(
             app.ui.surface,
             content,
             turbo_ui.Point{
                 column = content.column + 1,
-                row = content.row + content.height - 5,
+                row = content.row + content.height - 3,
             },
             "Name:",
             app.ui.theme.text,
@@ -482,7 +504,7 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
             835,
             turbo_ui.Rect{
                 column = content.column + 8,
-                row = content.row + content.height - 5,
+                row = content.row + content.height - 3,
                 width = content.width - 9,
                 height = 1,
             },
@@ -507,21 +529,17 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
     action_enabled := app.browser_mode == .open_workspace ||
         (app.browser_mode == .open_file && selected_directory) ||
         len(browser_name_bytes(app)) != 0
-    buttons := turbo_ui.layout_begin(
-        turbo_ui.Rect{
-            column = content.column + 1,
-            row = button_row,
-            width = content.width - 2,
-            height = 2,
-        },
-        .horizontal,
-        0,
-        1,
+    action_width := turbo_ui.compact_button_width(action_label)
+    cancel_width := turbo_ui.compact_button_width("Cancel")
+    buttons := action_row(
+        content,
+        button_row,
+        action_width + cancel_width + 1,
     )
     if turbo_ui.button(
         &app.ui,
         838,
-        turbo_ui.layout_next(&buttons, turbo_ui.button_width(action_label)),
+        turbo_ui.layout_next(&buttons, action_width),
         action_label,
         action_enabled,
         .default_action,
@@ -536,7 +554,7 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
     if turbo_ui.button(
         &app.ui,
         839,
-        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
+        turbo_ui.layout_next(&buttons, cancel_width),
         "Cancel",
         true,
         .cancel_action,
@@ -723,80 +741,90 @@ paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
         message,
         app.ui.theme.text,
     )
-    if content.width <= 2 || content.height < 5 {
-        return
-    }
-    buttons := turbo_ui.layout_begin(
-        turbo_ui.Rect{
-            column = content.column + 1,
-            row = content.row + 3,
-            width = content.width - 2,
-            height = 2,
-        },
-        .horizontal,
-        0,
-        1,
-    )
-    if app.confirming_scope_change {
-        if turbo_ui.button(
-            &app.ui,
-            573,
-            turbo_ui.layout_next(
-                &buttons,
-                turbo_ui.button_width("Switch and Open"),
-            ),
-            "Switch and Open",
-            true,
-            .default_action,
-            cast[u8]('s'),
-        ) {
-            if has_dirty_buffers(app) {
-                show_workspace_dirty_confirmation(app)
-            } else {
-                _ = perform_workspace_transition(app)
-            }
-        }
+    cancel_requested := false
+    if content.width <= 2 || content.height < 4 {
+        cancel_requested = turbo_ui.button(
+            &app.ui, 575, turbo_ui.Rect{}, "Cancel", true, .cancel_action,
+        )
     } else {
-        if turbo_ui.button(
-            &app.ui,
-            573,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Save All")),
-            "Save All",
-            true,
-            .default_action,
-            cast[u8]('s'),
-        ) {
-            turbo_ui.hide_window(
+        cancel_width := turbo_ui.compact_button_width("Cancel")
+        buttons_width := cancel_width
+        if app.confirming_scope_change {
+            buttons_width +=
+                turbo_ui.compact_button_width("Switch and Open") + 1
+        } else {
+            buttons_width += turbo_ui.compact_button_width("Save All") +
+                turbo_ui.compact_button_width("Discard") + 2
+        }
+        buttons := action_row(content, content.row + 3, buttons_width)
+        if app.confirming_scope_change {
+            if turbo_ui.button(
                 &app.ui,
-                app.windows[:],
-                app.windows[Window_Workspace_Confirm].id,
-            )
-            save_all_documents(app)
-            if !has_dirty_buffers(app) {
+                573,
+                turbo_ui.layout_next(
+                    &buttons,
+                    turbo_ui.compact_button_width("Switch and Open"),
+                ),
+                "Switch and Open",
+                true,
+                .default_action,
+                cast[u8]('s'),
+            ) {
+                if has_dirty_buffers(app) {
+                    show_workspace_dirty_confirmation(app)
+                } else {
+                    _ = perform_workspace_transition(app)
+                }
+            }
+        } else {
+            if turbo_ui.button(
+                &app.ui,
+                573,
+                turbo_ui.layout_next(
+                    &buttons,
+                    turbo_ui.compact_button_width("Save All"),
+                ),
+                "Save All",
+                true,
+                .default_action,
+                cast[u8]('s'),
+            ) {
+                turbo_ui.hide_window(
+                    &app.ui,
+                    app.windows[:],
+                    app.windows[Window_Workspace_Confirm].id,
+                )
+                save_all_documents(app)
+                if !has_dirty_buffers(app) {
+                    _ = perform_workspace_transition(app)
+                }
+            }
+            if turbo_ui.button(
+                &app.ui,
+                574,
+                turbo_ui.layout_next(
+                    &buttons,
+                    turbo_ui.compact_button_width("Discard"),
+                ),
+                "Discard",
+                true,
+                .normal,
+                cast[u8]('d'),
+            ) {
                 _ = perform_workspace_transition(app)
             }
         }
-        if turbo_ui.button(
+        cancel_requested = turbo_ui.button(
             &app.ui,
-            574,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Discard")),
-            "Discard",
+            575,
+            turbo_ui.layout_next(&buttons, cancel_width),
+            "Cancel",
             true,
-            .normal,
-            cast[u8]('d'),
-        ) {
-            _ = perform_workspace_transition(app)
-        }
+            .cancel_action,
+            cast[u8]('c'),
+        )
     }
-    if turbo_ui.button(
-        &app.ui,
-        575,
-        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
-        "Cancel",
-        true,
-        .cancel_action,
-        cast[u8]('c'),
-    ) {
+    if cancel_requested {
         close_workspace_dialogs(app)
         app.pending_workspace_transition = .none
         app.confirming_scope_change = false
@@ -808,18 +836,18 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
     buffer := active_buffer(app)
     message := "The active document has unsaved changes."
     save_label := "Save + exit"
-    save_width := turbo_ui.button_width(save_label)
+    save_width := turbo_ui.compact_button_width(save_label)
     save_access := cast[u8]('s')
     unnamed := turbo_editor.is_unnamed(buffer)
     if unnamed {
         message = "Choose a path before saving this document."
         save_label = "Save As"
-        save_width = turbo_ui.button_width(save_label)
+        save_width = turbo_ui.compact_button_width(save_label)
         save_access = cast[u8]('a')
     } else if buffer.disk_conflict {
         message = "Disk also changed. Choose whether to overwrite it."
         save_label = "Overwrite + exit"
-        save_width = turbo_ui.button_width(save_label)
+        save_width = turbo_ui.compact_button_width(save_label)
         save_access = cast[u8]('o')
     }
     turbo_ui.write_clipped(
@@ -827,9 +855,9 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row + 1},
         message,
-        turbo_ui.turbo_theme().text,
+        app.ui.theme.text,
     )
-    if content.height < 5 || content.width <= 2 {
+    if content.height < 4 || content.width <= 2 {
         if turbo_ui.button(
             &app.ui,
             512,
@@ -842,16 +870,12 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
         }
         return false
     }
-    buttons := turbo_ui.layout_begin(
-        turbo_ui.Rect{
-            column = content.column + 1,
-            row = content.row + 3,
-            width = content.width - 2,
-            height = 2,
-        },
-        .horizontal,
-        0,
-        1,
+    discard_width := turbo_ui.compact_button_width("Discard")
+    cancel_width := turbo_ui.compact_button_width("Cancel")
+    buttons := action_row(
+        content,
+        content.row + 3,
+        save_width + discard_width + cancel_width + 2,
     )
     if turbo_ui.button(
         &app.ui,
@@ -880,7 +904,7 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
     if turbo_ui.button(
         &app.ui,
         511,
-        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Discard")),
+        turbo_ui.layout_next(&buttons, discard_width),
         "Discard",
         true,
         .normal,
@@ -892,7 +916,7 @@ paint_quit :: proc(app: ^App, content: turbo_ui.Rect) -> bool {
     if turbo_ui.button(
         &app.ui,
         512,
-        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
+        turbo_ui.layout_next(&buttons, cancel_width),
         "Cancel",
         true,
         .cancel_action,
@@ -931,12 +955,12 @@ paint_shortcut_help :: proc(app: ^App, content: turbo_ui.Rect) {
         )
     }
 
-    if content.width > 2 && content.height > 4 {
+    if content.width > 2 && content.height > 3 {
         list_bounds := turbo_ui.Rect{
             column = content.column + 1,
             row = content.row + 1,
             width = content.width - 2,
-            height = content.height - 4,
+            height = content.height - 3,
         }
         view := turbo_ui.list_view(
             &app.ui,
@@ -945,6 +969,8 @@ paint_shortcut_help :: proc(app: ^App, content: turbo_ui.Rect) {
             list_bounds,
             Shortcut_Row_Count,
             &app.shortcut_list,
+            .enter_only,
+            .when_needed,
         )
         for index := view.first; index < view.end; index += 1 {
             row := turbo_ui.list_row_begin(&app.ui, view, index)
@@ -986,14 +1012,15 @@ paint_shortcut_help :: proc(app: ^App, content: turbo_ui.Rect) {
         }
     }
 
+    close_width := turbo_ui.compact_button_width("Close")
     close_bounds: turbo_ui.Rect
-    if content.width > 13 && content.height >= 2 {
-        close_bounds = turbo_ui.Rect{
-            column = content.column + (content.width - 12) / 2,
-            row = content.row + content.height - 2,
-            width = 12,
-            height = 2,
-        }
+    if content.width >= close_width && content.height != 0 {
+        close_row := action_row(
+            content,
+            content.row + content.height - 1,
+            close_width,
+        )
+        close_bounds = turbo_ui.layout_next(&close_row, close_width)
     }
     if turbo_ui.button(
         &app.ui,
@@ -1046,6 +1073,7 @@ paint_open_documents :: proc(app: ^App, content: turbo_ui.Rect) {
         count,
         &app.open_documents,
         .click_and_enter,
+        .when_needed,
     )
     for index := view.first; index < view.end; index += 1 {
         row := turbo_ui.list_row_begin(&app.ui, view, index)
@@ -1109,6 +1137,7 @@ paint_navigation_usages :: proc(app: ^App, content: turbo_ui.Rect) {
         app.navigation_row_count,
         &app.navigation_list,
         .click_and_enter,
+        .when_needed,
     )
     for index := view.first; index < view.end; index += 1 {
         row := turbo_ui.list_row_begin(&app.ui, view, index)
@@ -1203,6 +1232,7 @@ paint_root_package_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
         app.root_package_count,
         &app.root_packages,
         .click_and_enter,
+        .when_needed,
     )
     active := app.root_package_count
     if app.host.selected_root != nil {
@@ -1265,6 +1295,7 @@ paint_text_view :: proc(
         content,
         bytes,
         &app.tooling_views[text_index],
+        .when_needed,
     )
 }
 
@@ -1285,6 +1316,7 @@ paint_package_tree :: proc(app: ^App, content: turbo_ui.Rect) {
         visibility[:],
         &app.package_tree,
         .click_and_enter,
+        .when_needed,
     )
     if view.toggled {
         info := app.package_rows[view.toggled_node].info
@@ -1348,6 +1380,7 @@ paint_compiler_configuration :: proc(app: ^App, bounds: turbo_ui.Rect) {
         bounds,
         bytes,
         &app.compiler_configuration_view,
+        .when_needed,
     )
 }
 
@@ -1497,6 +1530,8 @@ paint_run_argument_list :: proc(app: ^App, bounds: turbo_ui.Rect) {
         bounds,
         app.run_argument_count,
         &app.run_arguments,
+        .enter_only,
+        .when_needed,
     )
     for index := view.first; index < view.end; index += 1 {
         bytes := run_argument_bytes(app, index)
@@ -1519,6 +1554,8 @@ paint_run_environment_list :: proc(app: ^App, bounds: turbo_ui.Rect) {
         bounds,
         app.run_environment_count,
         &app.run_environment,
+        .enter_only,
+        .when_needed,
     )
     for index := view.first; index < view.end; index += 1 {
         turbo_ui.list_row_bytes(
@@ -1534,15 +1571,17 @@ paint_run_environment_list :: proc(app: ^App, bounds: turbo_ui.Rect) {
 }
 
 paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
-    if content.width < 60 || content.height < 20 {
-        _ = turbo_ui.button(
+    if content.width < 60 || content.height < 18 {
+        if turbo_ui.button(
             &app.ui,
             899,
             turbo_ui.Rect{},
             "Done",
             true,
             .cancel_action,
-        )
+        ) {
+            close_run_configuration(app)
+        }
         return
     }
     half := (content.width - 1) / 2
@@ -1561,9 +1600,9 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
     turbo_ui.label(&app.ui, arguments, "Arguments (one exact argv row)")
     turbo_ui.label(&app.ui, environment, "Environment (NAME=value)")
     arguments.row += 2
-    arguments.height = 7
+    arguments.height = 6
     environment.row += 2
-    environment.height = 7
+    environment.height = 6
     paint_run_argument_list(app, arguments)
     paint_run_environment_list(app, environment)
 
@@ -1602,7 +1641,7 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
             column = arguments.column,
             row = arguments.row + arguments.height + 3,
             width = arguments.width,
-            height = 2,
+            height = 1,
         },
         .horizontal,
         0,
@@ -1610,7 +1649,10 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
     )
     if turbo_ui.button(
         &app.ui, 883,
-        turbo_ui.layout_next(&argument_buttons, turbo_ui.button_width("Add")),
+        turbo_ui.layout_next(
+            &argument_buttons,
+            turbo_ui.compact_button_width("Add"),
+        ),
         "Add", app.run_argument_count < Maximum_Run_Arguments,
         .normal, cast[u8]('a'),
     ) {
@@ -1618,7 +1660,10 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
     }
     if turbo_ui.button(
         &app.ui, 884,
-        turbo_ui.layout_next(&argument_buttons, turbo_ui.button_width("Replace")),
+        turbo_ui.layout_next(
+            &argument_buttons,
+            turbo_ui.compact_button_width("Replace"),
+        ),
         "Replace", app.run_argument_count != 0,
         .normal, cast[u8]('r'),
     ) {
@@ -1626,7 +1671,10 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
     }
     if turbo_ui.button(
         &app.ui, 885,
-        turbo_ui.layout_next(&argument_buttons, turbo_ui.button_width("Remove")),
+        turbo_ui.layout_next(
+            &argument_buttons,
+            turbo_ui.compact_button_width("Remove"),
+        ),
         "Remove", app.run_argument_count != 0, .normal, cast[u8]('m'),
     ) {
         remove_run_argument(app)
@@ -1636,7 +1684,7 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
             column = environment.column,
             row = environment.row + environment.height + 3,
             width = environment.width,
-            height = 2,
+            height = 1,
         },
         .horizontal,
         0,
@@ -1649,7 +1697,10 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
     environment_valid := environment_row_valid(environment_bytes)
     if turbo_ui.button(
         &app.ui, 893,
-        turbo_ui.layout_next(&environment_buttons, turbo_ui.button_width("Add")),
+        turbo_ui.layout_next(
+            &environment_buttons,
+            turbo_ui.compact_button_width("Add"),
+        ),
         "Add", environment_valid &&
             app.run_environment_count < Maximum_Run_Environment,
         .normal, cast[u8]('d'),
@@ -1658,7 +1709,10 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
     }
     if turbo_ui.button(
         &app.ui, 894,
-        turbo_ui.layout_next(&environment_buttons, turbo_ui.button_width("Replace")),
+        turbo_ui.layout_next(
+            &environment_buttons,
+            turbo_ui.compact_button_width("Replace"),
+        ),
         "Replace", environment_valid && app.run_environment_count != 0,
         .normal, cast[u8]('p'),
     ) {
@@ -1666,13 +1720,16 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
     }
     if turbo_ui.button(
         &app.ui, 895,
-        turbo_ui.layout_next(&environment_buttons, turbo_ui.button_width("Remove")),
+        turbo_ui.layout_next(
+            &environment_buttons,
+            turbo_ui.compact_button_width("Remove"),
+        ),
         "Remove", app.run_environment_count != 0, .normal, cast[u8]('v'),
     ) {
         remove_run_environment(app)
     }
 
-    working_row := content.row + 16
+    working_row := content.row + 13
     turbo_ui.label(
         &app.ui,
         turbo_ui.Rect{
@@ -1698,22 +1755,19 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
     if working.changed {
         mark_run_working_directory_changed(app)
     }
-    footer := turbo_ui.layout_begin(
-        turbo_ui.Rect{
-            column = content.column,
-            row = content.row + content.height - 2,
-            width = content.width,
-            height = 2,
-        },
-        .horizontal,
-        0,
+    defaults_width := turbo_ui.compact_button_width("Use Workspace Defaults")
+    done_width := turbo_ui.compact_button_width("Done")
+    footer := action_row(
+        content,
+        content.row + content.height - 1,
+        defaults_width + done_width + 2,
         2,
     )
     if turbo_ui.button(
         &app.ui, 898,
         turbo_ui.layout_next(
             &footer,
-            turbo_ui.button_width("Use Workspace Defaults"),
+            defaults_width,
         ),
         "Use Workspace Defaults", true, .normal, cast[u8]('w'),
     ) {
@@ -1721,7 +1775,7 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
     }
     if turbo_ui.button(
         &app.ui, 899,
-        turbo_ui.layout_next(&footer, turbo_ui.button_width("Done")),
+        turbo_ui.layout_next(&footer, done_width),
         "Done", true, .cancel_action, cast[u8]('o'),
     ) {
         close_run_configuration(app)
@@ -1731,47 +1785,49 @@ paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
 paint_close_document :: proc(app: ^App, content: turbo_ui.Rect) {
     turbo_ui.label(
         &app.ui,
-        turbo_ui.Rect{
-            column = content.column + 1,
-            row = content.row + 1,
-            width = content.width - 2,
-            height = 1,
-        },
+        content,
         "The active document has unsaved changes.",
     )
-    if content.width < 30 || content.height < 5 {
-        return
+    cancel_requested := false
+    if content.width < 30 || content.height < 4 {
+        cancel_requested = turbo_ui.button(
+            &app.ui,
+            862,
+            turbo_ui.Rect{},
+            "Cancel",
+            true,
+            .cancel_action,
+        )
+    } else {
+        save_width := turbo_ui.compact_button_width("Save")
+        discard_width := turbo_ui.compact_button_width("Discard")
+        cancel_width := turbo_ui.compact_button_width("Cancel")
+        buttons := action_row(
+            content,
+            content.row + 3,
+            save_width + discard_width + cancel_width + 2,
+        )
+        if turbo_ui.button(
+            &app.ui, 860,
+            turbo_ui.layout_next(&buttons, save_width),
+            "Save", true, .default_action, cast[u8]('s'),
+        ) {
+            save_and_close_document(app)
+        }
+        if turbo_ui.button(
+            &app.ui, 861,
+            turbo_ui.layout_next(&buttons, discard_width),
+            "Discard", true, .normal, cast[u8]('d'),
+        ) {
+            discard_and_close_document(app)
+        }
+        cancel_requested = turbo_ui.button(
+            &app.ui, 862,
+            turbo_ui.layout_next(&buttons, cancel_width),
+            "Cancel", true, .cancel_action, cast[u8]('c'),
+        )
     }
-    buttons := turbo_ui.layout_begin(
-        turbo_ui.Rect{
-            column = content.column + 1,
-            row = content.row + 3,
-            width = content.width - 2,
-            height = 2,
-        },
-        .horizontal,
-        0,
-        1,
-    )
-    if turbo_ui.button(
-        &app.ui, 860,
-        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Save")),
-        "Save", true, .default_action, cast[u8]('s'),
-    ) {
-        save_and_close_document(app)
-    }
-    if turbo_ui.button(
-        &app.ui, 861,
-        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Discard")),
-        "Discard", true, .normal, cast[u8]('d'),
-    ) {
-        discard_and_close_document(app)
-    }
-    if turbo_ui.button(
-        &app.ui, 862,
-        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
-        "Cancel", true, .cancel_action, cast[u8]('c'),
-    ) {
+    if cancel_requested {
         turbo_ui.hide_window(
             &app.ui,
             app.windows[:],
@@ -1785,30 +1841,49 @@ paint_about :: proc(app: ^App, content: turbo_ui.Rect) {
     lines := [4]string{
         "Turbo Draft",
         "A terminal-native Draft development environment",
-        "C++ compiler service; Draft editor and reusable Turbo UI",
-        "Ordinary files and draft.workspace remain the source of truth",
+        "C++ compiler service; Draft editor and Turbo UI",
+        "Files and draft.workspace are the source of truth",
     }
     for index: usize = 0; index < len(lines); index += 1 {
         turbo_ui.label(
             &app.ui,
             turbo_ui.Rect{
-                column = content.column + 1,
+                column = content.column,
                 row = content.row + index,
-                width = content.width - 2,
+                width = content.width,
                 height = 1,
             },
             lines[index],
         )
     }
-    close := turbo_ui.Rect{
-        column = content.column + (content.width - 12) / 2,
-        row = content.row + content.height - 2,
-        width = 12,
-        height = 2,
+    close_requested := false
+    if content.height < 5 {
+        close_requested = turbo_ui.button(
+            &app.ui,
+            9100,
+            turbo_ui.Rect{},
+            "Close",
+            true,
+            .cancel_action,
+        )
+    } else {
+        close_width := turbo_ui.compact_button_width("Close")
+        close := action_row(
+            content,
+            content.row + content.height - 1,
+            close_width,
+        )
+        close_requested = turbo_ui.button(
+            &app.ui,
+            9100,
+            turbo_ui.layout_next(&close, close_width),
+            "Close",
+            true,
+            .cancel_action,
+            cast[u8]('c'),
+        )
     }
-    if turbo_ui.button(
-        &app.ui, 9100, close, "Close", true, .cancel_action, cast[u8]('c'),
-    ) {
+    if close_requested {
         turbo_ui.hide_window(
             &app.ui,
             app.windows[:],

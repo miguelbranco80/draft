@@ -56,7 +56,7 @@ paint_app_menu_bar :: proc(app: ^App, surface: ^tui.Surface) {
         Menu_Window, Menu_Window_Popup,
         turbo_ui.Rect{column = 31, width = 9, height = 1},
         "Window", cast[u8]('w'),
-        turbo_ui.Rect{column = 31, row = 1, width = 43, height = 17},
+        turbo_ui.Rect{column = 31, row = 1, width = 43, height = 18},
     )
     turbo_ui.menu_title(
         &app.ui, &app.menus,
@@ -417,6 +417,17 @@ paint_app_menus :: proc(app: ^App) -> bool {
     return should_quit
 }
 
+// draftide_theme selects the application's visual policy without weakening the
+// reusable Turbo UI default. The library retains its classic shadow-capable
+// presentation for standalone clients, while DraftIDE uses flat windows,
+// popups, and buttons so every terminal cell contributes useful content and a
+// compact tool window does not acquire an accidental black second outline.
+draftide_theme :: proc() -> turbo_ui.Theme {
+    theme := turbo_ui.turbo_theme()
+    theme.shadows = false
+    return theme
+}
+
 // paint_app performs one full desktop traversal and returns true only when an
 // explicit clean/discard/save-and-quit path has completed.
 paint_app :: proc(
@@ -435,7 +446,7 @@ paint_app :: proc(
     if quit {
         return true
     }
-    theme := turbo_ui.turbo_theme()
+    theme := draftide_theme()
     editor_theme := turbo_editor.turbo_editor_theme()
     tui.clear(surface, theme.desktop)
     desktop := turbo_ui.Rect{row = 1, width = surface.columns}

@@ -45,6 +45,11 @@ without changing compiler scope. A path outside the active Workspace requires
 an explicit **Switch and Open** decision. Workspace replacement or closure
 never discards dirty documents without Save All/Discard/Cancel.
 
+All DraftIDE chrome is flat: windows, menu popups, and compact one-row buttons
+do not spend terminal cells on black drop shadows. Dialog actions align at the
+right edge, file-browser toolbars align at the left, and collection scrollbars
+appear only when the current content exceeds the visible rows.
+
 The principal shortcuts are also listed by **Help > Keyboard Shortcuts**:
 
 - Ctrl-N/O/W/S and F2: new, open, close document, and save.

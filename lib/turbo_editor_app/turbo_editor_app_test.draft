@@ -53,6 +53,27 @@ surface_contains :: proc(surface: ^tui.Surface, expected: string) -> bool {
     return false
 }
 
+// surface_has_black_shadow identifies the exact decoration emitted by the
+// classic Turbo UI shadow style: a light-shade glyph with indexed black on
+// indexed black. Disabled scrollbars use the same glyph but a different
+// foreground/background pair, so this check does not confuse ordinary control
+// content with a forbidden DraftIDE window, popup, or button shadow.
+surface_has_black_shadow :: proc(surface: ^tui.Surface) -> bool {
+    for row: usize = 0; row < surface.rows; row += 1 {
+        for column: usize = 0; column < surface.columns; column += 1 {
+            (cell, valid) := tui.cell_at(surface, column, row)
+            if valid && cell.value == '░' &&
+                cell.style.foreground.indexed &&
+                cell.style.foreground.index == 0 &&
+                cell.style.background.indexed &&
+                cell.style.background.index == 0 {
+                return true
+            }
+        }
+    }
+    return false
+}
+
 open_menu_for_test :: proc(
     app: ^App,
     surface: ^tui.Surface,
@@ -770,17 +791,11 @@ test_open_file_dialog_resolves_and_reuses_workspace_path :: proc(
     tui.surface_init(&surface, 100, 30)
     defer tui.surface_destroy(&surface)
     _ = paint_app(&app, &surface, turbo_ui.no_event())
-    dialog := app.windows[Window_File_Browser].bounds
-    // The action button occupies the final two content rows. Its complete
-    // footprint includes the one-cell shade at the lower-right corner; compute
-    // that cell from window geometry so resizing the dialog does not turn this
-    // reusable-control assertion into a magic coordinate.
-    (shadow, shadow_valid) := tui.cell_at(
-        &surface,
-        dialog.column + turbo_ui.button_width("Open"),
-        dialog.row + dialog.height - 2,
-    )
-    testing.expect(test, shadow_valid && shadow.value == '░')
+    // DraftIDE's application theme is deliberately flat: the browser keeps a
+    // complete compact action face without paying a second row or right-hand
+    // column for classic shade decoration.
+    testing.expect(test, surface_contains(&surface, "Open"))
+    testing.expect(test, !surface_has_black_shadow(&surface))
     testing.expect(test, turbo_ui.text_box_set_text(
         &app.browser_name_box,
         app.browser_name[:],
@@ -1534,6 +1549,7 @@ test_complete_menu_vocabulary :: proc(test: ^testing.Test) {
     expect_surface_text(test, &surface, 4, 10, "Save As...")
     expect_surface_text(test, &surface, 4, 11, "Save All")
     expect_surface_text(test, &surface, 4, 13, "Exit")
+    testing.expect(test, !surface_has_black_shadow(&surface))
 
     open_menu_for_test(&app, &surface, cast[u8]('e'))
     expect_surface_text(test, &surface, 11, 2, "Undo")
@@ -1554,16 +1570,19 @@ test_complete_menu_vocabulary :: proc(test: ^testing.Test) {
     expect_surface_text(test, &surface, 11, 20, "Find Usages")
     expect_surface_text(test, &surface, 11, 21, "Back")
     expect_surface_text(test, &surface, 11, 22, "Forward")
+    testing.expect(test, !surface_has_black_shadow(&surface))
 
     open_menu_for_test(&app, &surface, cast[u8]('c'))
     expect_surface_text(test, &surface, 18, 2, "Compiler Options...")
     expect_surface_text(test, &surface, 18, 4, "Check")
     expect_surface_text(test, &surface, 18, 5, "Build")
     expect_surface_text(test, &surface, 18, 6, "Build All Programs")
+    testing.expect(test, !surface_has_black_shadow(&surface))
 
     open_menu_for_test(&app, &surface, cast[u8]('r'))
     expect_surface_text(test, &surface, 28, 2, "Run")
     expect_surface_text(test, &surface, 28, 3, "Run Configuration...")
+    testing.expect(test, !surface_has_black_shadow(&surface))
 
     open_menu_for_test(&app, &surface, cast[u8]('w'))
     expect_surface_text(test, &surface, 34, 2, "Next")
@@ -1581,16 +1600,18 @@ test_complete_menu_vocabulary :: proc(test: ^testing.Test) {
     expect_surface_text(test, &surface, 34, 15, "Effects")
     expect_surface_text(test, &surface, 34, 16, "Denials")
     expect_surface_text(test, &surface, 34, 17, "Diagnostics")
+    testing.expect(test, !surface_has_black_shadow(&surface))
 
     open_menu_for_test(&app, &surface, cast[u8]('h'))
     expect_surface_text(test, &surface, 43, 2, "Keyboard Shortcuts...")
     expect_surface_text(test, &surface, 43, 3, "About Turbo Draft...")
+    testing.expect(test, !surface_has_black_shadow(&surface))
 }
 
-// Every modal owns enough authored rows for its fields and complete two-row
-// button footprints at the 100x35 design size. Dialogs remain movable and
-// closable but cannot accidentally enter resize/zoom/tile code; Compiler
-// Options is intentionally the contrasting ordinary inspector window.
+// Every modal owns enough authored rows for its fields and compact one-row
+// action faces at the 100x35 design size. Dialogs remain movable and closable
+// but cannot accidentally enter resize/zoom/tile code; Compiler Options is
+// intentionally the contrasting ordinary inspector window.
 test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
     app: App
     init_windows(&app)
@@ -1625,7 +1646,7 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
     testing.expect(test, compiler.flags.zoomable)
     testing.expect(test, compiler.flags.tileable)
     testing.expect(test,
-        app.windows[Window_Run_Configuration].bounds.height == 22)
+        app.windows[Window_Run_Configuration].bounds.height == 20)
     testing.expect(test,
         app.windows[Window_Quit].bounds.width >=
             len("Disk also changed. Choose whether to overwrite it.") + 2)
@@ -1649,9 +1670,24 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
         "The active document has unsaved changes.",
         "A terminal-native Draft development environment",
     }
+    expected_actions := [10]string{
+        "Next",
+        "Save + exit",
+        "Open",
+        "Save All",
+        "Replace All",
+        "Go To",
+        "Close",
+        "Done",
+        "Save",
+        "Close",
+    }
     surface: tui.Surface
     tui.surface_init(&surface, 80, 24)
     defer tui.surface_destroy(&surface)
+    app_theme := draftide_theme()
+    testing.expect(test, !app_theme.shadows)
+    testing.expect(test, app_theme.window.background.index == 4)
     for ordinal: usize = 0; ordinal < len(dialogs); ordinal += 1 {
         index := dialogs[ordinal]
         turbo_ui.show_modal_window(
@@ -1664,7 +1700,55 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
         testing.expect(test, bounds.row >= 1)
         testing.expect(test, turbo_ui.rect_right(bounds) <= 80)
         testing.expect(test, turbo_ui.rect_bottom(bounds) <= 23)
-        testing.expect(test, surface_contains(&surface, expected_fields[ordinal]))
+        has_field := surface_contains(&surface, expected_fields[ordinal])
+        has_action := surface_contains(&surface, expected_actions[ordinal])
+        testing.expect(test, has_field)
+        testing.expect(test, has_action)
+        testing.expect(test, !surface_has_black_shadow(&surface))
+        turbo_ui.hide_window(&app.ui, app.windows[:], app.windows[index].id)
+    }
+
+    // Render each non-modal application window as the active window as well.
+    // This covers every Window_State entry exactly once across the two loops,
+    // including tool panes, semantic inspectors, the editor, and Compiler
+    // Options. Checking the visible title and clamped rectangle catches both a
+    // missing content pass and chrome that spills outside the conventional
+    // terminal, while the style scan enforces one visual policy everywhere.
+    desktop_windows := [10]usize{
+        Window_Editor,
+        Window_Open_Documents,
+        Window_Workspace_Files,
+        Window_Diagnostics,
+        Window_Packages,
+        Window_Declarations,
+        Window_References,
+        Window_Effects,
+        Window_Denials,
+        Window_Compiler_Options,
+    }
+    expected_titles := [10]string{
+        "turbo-dialog-layout.draft",
+        "Open Documents (Alt-0)",
+        "Workspace Files",
+        "Diagnostics (F8)",
+        "Packages and Imports",
+        "Declarations and Visibility",
+        "References and Calls",
+        "Effects",
+        "Denials",
+        "Compiler Options (F6)",
+    }
+    for ordinal: usize = 0; ordinal < len(desktop_windows); ordinal += 1 {
+        index := desktop_windows[ordinal]
+        turbo_ui.show_window(&app.ui, app.windows[:], app.windows[index].id)
+        _ = paint_app(&app, &surface, turbo_ui.no_event())
+        bounds := app.windows[index].bounds
+        testing.expect(test, bounds.row >= 1)
+        testing.expect(test, turbo_ui.rect_right(bounds) <= 80)
+        testing.expect(test, turbo_ui.rect_bottom(bounds) <= 23)
+        has_title := surface_contains(&surface, expected_titles[ordinal])
+        testing.expect(test, has_title)
+        testing.expect(test, !surface_has_black_shadow(&surface))
         turbo_ui.hide_window(&app.ui, app.windows[:], app.windows[index].id)
     }
 
@@ -1678,6 +1762,29 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
     testing.expect(test, surface_contains(&surface, "Target Platform"))
     testing.expect(test,
         surface_contains(&surface, "Effective Build Configuration"))
+
+    // A resize can transiently leave only frame cells. Every modal still
+    // registers its cancel role against an empty paint rectangle, so Escape
+    // must dismiss all ten without relying on a visible button or performing
+    // unsigned geometry below zero.
+    tiny: tui.Surface
+    tui.surface_init(&tiny, 12, 5)
+    defer tui.surface_destroy(&tiny)
+    for index in dialogs {
+        turbo_ui.show_modal_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[index].id,
+        )
+        _ = paint_app(&app, &tiny, turbo_ui.no_event())
+        _ = paint_app(
+            &app,
+            &tiny,
+            turbo_ui.key_event(turbo_ui.Key_Event{code = .escape}),
+        )
+        hidden := !app.windows[index].visible
+        testing.expect(test, hidden)
+    }
 }
 
 // Terminal protocols report presses and releases but no click count. The event

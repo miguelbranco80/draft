@@ -150,10 +150,12 @@ Ordinary editing synchronously lexes only the active complete buffer. This
 operation uses the production Draft lexer, including its recovery tokens, but
 does not discover packages, refresh workspace configuration, type-check source,
 propagate effects, lower IR, or emit native code. It replaces only buffer-local
-syntax spans. Declaration coloring is a small token-context classification over
-that same stream, not a second lexer. Diagnostics and semantic inspection views
-remain the result of the latest explicit semantic operation while an edit is
-pending.
+syntax spans. The editor and surrounding UI author the classic 16-color palette
+with IBM PC indices and translate once to terminal ANSI indices when building
+cell styles; this keeps logical blue from rendering as ANSI red. Declaration
+coloring is a small token-context classification over that same stream, not a
+second lexer. Diagnostics and semantic inspection views remain the result of
+the latest explicit semantic operation while an edit is pending.
 
 Check, Build, Run, Go to Definition, and Find Usages are explicit semantic
 operations. They submit the active buffer plus every other dirty buffer
@@ -212,9 +214,12 @@ Opening a file reopens and focuses the document window if it was closed.
 
 Open Documents, executable roots, the package tree, both filesystem browsers,
 and read-only semantic sections share `lib/turbo_ui`'s collection viewport
-policy. Applications retain cursor and offset only; the reusable layer owns
-keyboard movement, distinct activation, wheel scrolling, proportional scrollbar
-geometry, and visible-row mapping.
+policy. Applications retain cursor, offset, and the file browsers' bounded
+same-row double-click arm only; the reusable layer owns keyboard movement,
+distinct activation, wheel scrolling, proportional scrollbar geometry, and
+visible-row mapping. Lists, trees, and read-only text views reserve a stable
+final column but may leave it as ordinary window background until scrolling is
+possible, preventing both horizontal jitter and a full-height disabled track.
 Rich rows paint markers and byte labels directly after `list_view`, so reuse
 does not require callbacks, label allocation, or a retained item model. The
 tree specialization consumes a caller-owned flat preorder table and scratch
@@ -228,17 +233,21 @@ returned to Draft application policy; modal dialogs exclusively route mouse,
 keyboard, and focus; drop-down menus and combo lists share one popup capture.
 Window chrome uses the same pinned Unicode column widths as `core/tui`: the
 text-default zoom arrow occupies one cell before the upper-right corner, while
-the emoji-presentation form would occupy two. Shadows use explicit one-column
-shade cells so differential erasure changes glyph content as well as style.
+the emoji-presentation form would occupy two. The shared theme selects whether
+buttons, windows, and popups paint explicit one-column shade cells; the reusable
+default is classic and shadowed, while DraftIDE supplies one flat policy to all
+three forms of chrome. Flat hit testing ends at the frame, matching the cells
+actually painted.
 Menu titles and rows derive both their visible underlined mnemonic and their
 activation from one access-key value. Right-aligned command shortcuts remain
 application policy, so Turbo Draft handles them before focused controls and
 invokes the same direct operation as the corresponding menu branch.
 Disabled menu rows neither acquire the pointer highlight nor discard the last
 enabled selection; crossing separators or leaving/re-entering a popup likewise
-preserves that selection. Buttons expose one measured minimum footprint which
-includes brackets and the shadow column, preventing application-authored labels
-from being clipped by layout guesses.
+preserves that selection. Buttons expose separate measured widths for a classic
+shadow-capable footprint and an exact compact face; DraftIDE uses one-row faces,
+right-aligns dialog actions, and keeps toolbar actions at their leading edge.
+Both widths measure terminal columns rather than UTF-8 byte length.
 No retained widget tree, callback table, or editor pointer crosses that layer.
 
 The event loop drains immediately queued terminal reads before one renderer

@@ -312,14 +312,14 @@ init_windows :: proc(app: ^App) {
     )
     app.windows[Window_Find] = turbo_ui.dialog_window_init(
         402,
-        turbo_ui.Rect{column = 20, row = 7, width = 44, height = 7},
+        turbo_ui.Rect{column = 20, row = 7, width = 44, height = 6},
         10,
     )
     app.windows[Window_Quit] = turbo_ui.dialog_window_init(
         403,
         // The conflict-specific overwrite question is wider than the ordinary
         // dirty-document prompt and must remain complete at 80 columns.
-        turbo_ui.Rect{column = 13, row = 7, width = 54, height = 8},
+        turbo_ui.Rect{column = 13, row = 7, width = 54, height = 6},
         11,
     )
     app.windows[Window_Diagnostics] = turbo_ui.window_init(
@@ -354,7 +354,7 @@ init_windows :: proc(app: ^App) {
     )
     app.windows[Window_File_Browser] = turbo_ui.dialog_window_init(
         410,
-        turbo_ui.Rect{column = 6, row = 3, width = 82, height = 24},
+        turbo_ui.Rect{column = 6, row = 2, width = 82, height = 22},
         12,
     )
     app.windows[Window_Workspace_Confirm] = turbo_ui.dialog_window_init(
@@ -362,22 +362,22 @@ init_windows :: proc(app: ^App) {
         // The scope-change question is the longest confirmation sentence.
         // Seventy inner columns preserve it verbatim on the conventional
         // 80-column terminal instead of hiding the actual choice at the edge.
-        turbo_ui.Rect{column = 4, row = 7, width = 72, height = 8},
+        turbo_ui.Rect{column = 4, row = 7, width = 72, height = 6},
         13,
     )
     app.windows[Window_Replace] = turbo_ui.dialog_window_init(
         412,
-        turbo_ui.Rect{column = 14, row = 5, width = 60, height = 11},
+        turbo_ui.Rect{column = 14, row = 5, width = 60, height = 8},
         14,
     )
     app.windows[Window_Go_To_Line] = turbo_ui.dialog_window_init(
         413,
-        turbo_ui.Rect{column = 22, row = 8, width = 38, height = 7},
+        turbo_ui.Rect{column = 22, row = 8, width = 38, height = 6},
         15,
     )
     app.windows[Window_Shortcut_Help] = turbo_ui.dialog_window_init(
         414,
-        turbo_ui.Rect{column = 10, row = 3, width = 70, height = 25},
+        turbo_ui.Rect{column = 10, row = 1, width = 70, height = 22},
         16,
     )
     app.windows[Window_Compiler_Options] = turbo_ui.window_init(
@@ -387,17 +387,17 @@ init_windows :: proc(app: ^App) {
     )
     app.windows[Window_Run_Configuration] = turbo_ui.dialog_window_init(
         416,
-        turbo_ui.Rect{column = 5, row = 2, width = 86, height = 22},
+        turbo_ui.Rect{column = 5, row = 2, width = 86, height = 20},
         18,
     )
     app.windows[Window_Close_Document] = turbo_ui.dialog_window_init(
         417,
-        turbo_ui.Rect{column = 20, row = 8, width = 52, height = 8},
+        turbo_ui.Rect{column = 20, row = 8, width = 52, height = 6},
         19,
     )
     app.windows[Window_About] = turbo_ui.dialog_window_init(
         418,
-        turbo_ui.Rect{column = 18, row = 7, width = 58, height = 11},
+        turbo_ui.Rect{column = 18, row = 7, width = 58, height = 8},
         20,
     )
     app.windows[Window_Workspace_Files] = turbo_ui.tool_window_init(
