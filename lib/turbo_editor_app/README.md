@@ -35,9 +35,9 @@ The package is split by owned transition rather than widget type:
 - `desktop.draft` authors the complete menu vocabulary, window routing, and
   status bar;
 - `comment_expansion_job.draft` owns the one worker, immutable request
-  snapshots, and atomic completion publication for the `//?` prototype;
+  snapshots, and atomic completion publication for the `//?`/`//!` prototype;
 - `host_integration.draft` copies compiler-service products and performs
-  provider-free Check/Build/Run, unsaved `//?` expansion, explicit
+  provider-free Check/Build/Run, unsaved agent-comment rewriting, explicit
   Resolve/Judge, structured diagnostic activation, persistent result recording,
   and semantic navigation; and
 - `terminal_runtime.draft` alone owns the terminal session and event loop.
@@ -45,8 +45,8 @@ The package is split by owned transition rather than widget type:
 An optional `draft_compiler_api.Host_Api` is a borrowed synchronous procedure
 table rather than a compiler dependency. A zero table produces the standalone
 editor; DraftIDE supplies the compiler service; tests supply direct fakes. The
-`//?` callback remains synchronous at this boundary but is invoked by one
-App-owned Draft worker while the terminal thread makes no other host call.
+agent-comment callback remains synchronous at this boundary but is invoked by
+one App-owned Draft worker while the terminal thread makes no other host call.
 Typing invokes only the host's production-lexer color operation. Check, Build,
 Run, Resolve, Judge, Definition, and Usages explicitly enter package semantics.
 Comment expansion, Resolve, and Judge occupy distinct optional callbacks, so an
@@ -71,23 +71,30 @@ loop presents the pending status before beginning potentially long provider
 work.
 
 The prototype comment command is intentionally smaller. Put the cursor on any
-line in a maximal contiguous block whose first non-whitespace bytes are `//?`,
-then press Ctrl-E or choose **Compile > Expand //? Prompt**. Text after the
-markers is joined with newlines and sent with the exact marker range, active
-logical path, and a private read-only snapshot of reachable workspace-owned
-Draft sources. Active and dirty open buffers override disk, so Codex sees the
-same unsaved workspace state as Check; compiler/dependency sources and unrelated
-workspace files are absent.
+line in a maximal contiguous same-marker `//?` or `//!` block, then press Ctrl-E
+or choose **Compile > Expand Agent Comment**. Text after the selected markers
+is joined with newlines and sent with the marker kind, exact range, complete
+active source, active logical path, and a private read-only snapshot of
+reachable workspace-owned Draft sources. Active and dirty open buffers override
+disk, so Codex sees the same unsaved workspace state as Check; compiler/
+dependency sources and unrelated workspace files are absent. Other annotations
+in the active source are context, while the exact selected block is the
+immediate request.
 
-Codex returns separate optional import, package-declaration, and local strings.
-The compiler supplies the legal package-header and post-marker offsets, and the
-editor inserts all nonempty strings verbatim as one unsaved history transaction.
-Every `//?` line remains, no file is created or saved, and one ordinary Ctrl-Z
-removes the complete edit. Failure updates Build Output without replacing
-semantic Diagnostics. While Codex runs, the status bar animates and terminal
-input is consumed without dispatch; disk polling and every other compiler-
-session call resume after the worker joins. Returned bytes are not compiler-
-validated by this prototype.
+Codex returns one complete replacement for the active file and cannot edit or
+create any other file. Its dedicated instructions permit imports, declarations,
+and local changes, require unrelated behavior to be preserved, and explain how
+to leave an honest TODO, minimal compiling seam/no-op, or retained annotation
+when the requested work needs a change outside this single-file boundary.
+`//?` is intended to remain as persistent intent; Codex may remove, retain, or
+turn `//!` into an ordinary comment. The app deliberately does not interpret or
+enforce those choices. It replaces the active document verbatim as one unsaved
+history transaction, so one ordinary Ctrl-Z restores the exact prior bytes. A
+byte-identical result is a successful no-op. Failure updates Build Output
+without replacing semantic Diagnostics. While Codex runs, the status bar
+animates and terminal input is consumed without dispatch; disk polling and
+every other compiler-session call resume after the worker joins. Returned bytes
+are not compiler-validated by this prototype.
 
 Menu commands and global shortcuts call the same named operations. Disabled
 commands remain visible but inert, separators and blank popup space preserve

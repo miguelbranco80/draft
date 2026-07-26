@@ -31,8 +31,8 @@ The six menus have conventional, non-overlapping responsibilities:
 - **Edit**: undo/redo, clipboard commands, find/replace, line and semantic
   navigation, and navigation history.
 - **Compile**: Compiler Options, provider-free Check/Build/Build All Programs,
-  unsaved `//?` prompt expansion, explicit Resolve Synthesis, and explicit
-  Judge Claims.
+  unsaved `//?`/`//!` agent-comment rewriting, explicit Resolve Synthesis, and
+  explicit Judge Claims.
 - **Run**: Run and Run Configuration.
 - **Window**: desktop navigation/arrangement, Workspace Files, Diagnostics,
   persistent Build Output, and document or last-successful semantic windows.
@@ -58,7 +58,7 @@ The principal shortcuts are also listed by **Help > Keyboard Shortcuts**:
 - Ctrl-X/C/V/A, Delete, Ctrl-Z/Y: selection and editing commands.
 - Ctrl-F, F3/Shift-F3, Ctrl-R, F4, Ctrl-G: find, replace, and line navigation.
 - F12/Shift-F12 and Alt-Left/Alt-Right: definition, usages, and history.
-- Ctrl-E: expand the contiguous `//?` prompt block under the cursor.
+- Ctrl-E: rewrite the active file from the selected `//?` or `//!` block.
 - Alt-F9, F9, F5: Check, Build, and Run.
 - F6 and F8: Compiler Options and Diagnostics.
 - Ctrl-F6/Ctrl-Shift-F6, Alt-F3, Ctrl-F5: desktop window commands.
@@ -97,25 +97,36 @@ Output for the verdict. Build and F5 never invoke either command: an unresolved
 site fails normally and asks for Resolve. A successful Resolve still requires a
 separate Build or F5.
 
-**Compile > Expand //? Prompt** (Ctrl-E) is an intentionally ephemeral
-active-file prototype. A maximal contiguous group such as
+**Compile > Expand Agent Comment** (Ctrl-E) is an intentionally ephemeral
+active-file prototype. Put the cursor on any line of a maximal contiguous
+same-marker group, such as
 
 ```draft
 //? create a parser for the following command syntax
 //? and return structured errors rather than asserting
 ```
 
-is concatenated and sent with its exact range, active logical path, and a
+The text after those markers is concatenated and sent with the complete active
+file, its exact selected range and marker kind, active logical path, and a
 private read-only tree of reachable workspace-owned Draft sources. Unsaved
-active/dirty buffers replace disk bytes. Codex may return file imports, package
-declarations, and local source; DraftIDE inserts all nonempty strings at
-compiler-calculated legal offsets without saving. The status bar animates while
-one worker owns the compiler callback; input and disk polling pause until it
-rejoins. The `//?` lines stay in the file. There is no proposal state,
-accept/reject command, other-file edit, or compiler validation: Ctrl-Z removes
-the complete verbatim multi-slot edit as one transaction. It does not create
-files or write resolution pins; Check remains the explicit way to validate the
-new visible bytes.
+active/dirty buffers replace disk bytes. Other scattered annotations remain in
+the file context, but the selected group is the immediate request. Codex may
+rewrite anywhere in the active file, including imports and package declarations,
+and returns exactly one complete replacement file. It cannot edit or create
+other files. Its instructions ask it to preserve unrelated behavior and to
+represent a required cross-file seam honestly with a precise TODO, minimal
+compiling scaffold/no-op, or retained annotation rather than inventing an API.
+
+`//?` records persistent intent and is meant to remain in the returned file.
+`//!` is a transient work annotation which Codex may remove, retain, or turn
+into an ordinary comment when appropriate. DraftIDE does not enforce either
+policy: it applies the returned bytes verbatim without saving. The status bar
+animates while one worker owns the compiler callback; input and disk polling
+pause until it rejoins. There is no proposal state, accept/reject command,
+other-file edit, or compiler validation. The complete replacement is one
+ordinary history transaction, so Ctrl-Z restores the exact previous file. The
+operation creates no file or resolution pin; Check remains the explicit way to
+validate the new visible bytes.
 
 Typing runs only the production lexer for syntax color. Package semantics run
 on explicit Check/Build/Run or semantic navigation. Local terminals enable

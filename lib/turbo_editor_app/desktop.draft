@@ -307,7 +307,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
     }
     turbo_ui.menu_separator(&app.ui, &compile_menu)
     if turbo_ui.menu_action(&app.ui, &app.menus, &compile_menu,
-        956, "Expand //? Prompt", "Ctrl-E",
+        956, "Expand Agent Comment", "Ctrl-E",
         compiler_ready && app.host.expand_comment != nil,
         access_key = cast[u8]('x')) {
         request_comment_expansion(app)

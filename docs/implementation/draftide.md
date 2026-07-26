@@ -183,11 +183,15 @@ operation refreshes the retained semantic graph and Build Output transcript;
 compiler/provider diagnostics raise Diagnostics, while a completed negative
 judgment with no compiler error raises Build Output to show its verdict.
 
-The `//?` editor experiment is intentionally outside those semantic
-transactions. Ctrl-E finds the maximal contiguous marker group containing the
-cursor, joins the text following its markers, and records its exact half-open
-byte range. The App snapshots the active buffer plus every dirty reachable
-buffer before invoking the otherwise synchronous callback on one Draft thread.
+The `//?`/`//!` editor experiment is intentionally outside those semantic
+transactions. Ctrl-E finds the maximal contiguous same-marker group containing
+the cursor, joins the text following its markers, and records its kind and exact
+half-open byte range. A different marker, blank line, or ordinary source line
+ends the selected group. Other scattered annotations remain ordinary bytes in
+the complete active source and therefore remain available as context, while the
+selected range identifies the immediate request. The App snapshots the active
+buffer plus every dirty reachable buffer before invoking the otherwise
+synchronous callback on one Draft thread.
 The compiler service resolves those paths through its workspace-owned source
 table, then builds one deterministic private `workspace/` tree: supplied
 overlays take precedence over disk and clean unopened reachable Draft sources
@@ -196,15 +200,20 @@ editing-only files, `.draft` products, and arbitrary workspace files are never
 enumerated into this snapshot. The separate compact factual Draft reference
 bundle remains the source of language/core contracts.
 
-The service parses the active source only to locate the end of its legal
-package/docs/import header. Parser diagnostics are discarded because this is
-not a Check. Codex receives the active logical path, exact marker bytes and
-one-based line, the package-header insertion offset, the local offset after the
-marker group, and the read-only source tree. Its dedicated developer
-instructions request three exact strings: file imports, package declarations,
-and local source. Imports and declarations share the header offset and are
-ordered imports-first; the local fragment stays at the marker end. No physical
-workspace path is exposed.
+The service deliberately does not parse or check the active source. Codex
+receives the complete active file, active logical path, exact selected marker
+kind and bytes, one-based line, and the read-only source tree. Its dedicated
+developer instructions make the selected block the immediate request while
+allowing a rewrite anywhere in the active file, including imports and package
+declarations. They require exactly one complete replacement for the active
+file, forbid edits or creation outside it, and ask the model to preserve
+unrelated behavior. If the request needs a cross-file interface, the model is
+told to use an honest precise TODO, minimal compiling scaffold/no-op, retained
+annotation, or preserved behavior rather than inventing an external API. `//?`
+is intended to remain as durable design intent; `//!` may be removed, retained,
+or converted into an ordinary comment at the model's discretion. No physical
+workspace path is exposed, and the adapter does not enforce these semantic
+instructions after the model returns.
 
 DraftIDE copies the complete overlay/prompt inputs into one App-owned job. The terminal thread
 continues repainting a small activity marker, but deliberately discards input,
@@ -212,13 +221,14 @@ pauses disk polling, and makes no other `Host_Api` call until acquire-observing
 completion and joining the worker. This quiescent interval keeps the borrowed
 compiler session single-caller and keeps all snapshotted offsets exact.
 It creates no `AgentObligation`, pin, evidence, checked graph, or workspace
-write. It retains three returned edit strings plus one error string for C-ABI
-copying after join. Draft-owned editor code applies every nonempty string at its
-unchanged-source offset through a descending multi-insertion transaction. The
-history records are chained, so Ctrl-Z removes all three slots together and
-redo restores them together. The marker comments remain ordinary unsaved
-source. A failed request replaces Build Output while preserving the last
-semantic Diagnostics. This deliberately small prototype has no proposal state,
+write. It retains one complete returned source plus one error string for C-ABI
+copying after join. Draft-owned editor code replaces the complete active
+document verbatim through one bounded old-plus-new history transaction; Ctrl-Z
+therefore restores the exact previous source and cursor, and redo restores the
+returned file. A byte-identical result is a successful no-op. The one-MiB
+combined history bound is checked on both sides of the ABI before replacement.
+A failed request replaces Build Output while preserving the last semantic
+Diagnostics. This deliberately small prototype has no proposal state,
 accept/reject UI, edits to other files, automatic trigger, or compiler
 validation of returned source.
 

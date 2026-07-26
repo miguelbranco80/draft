@@ -128,14 +128,27 @@ Resolve success still requires a later Build/F5.
 Results always replace Build Output; compiler/provider errors raise Diagnostics,
 while a completed negative judgment raises Build Output for its verdict.
 
-**Compile > Expand //? Prompt** (Ctrl-E) is a separate unsaved editor
-experiment, not `...` resolution. It snapshots reachable workspace-owned Draft
-sources with current active/dirty overlays, gives Codex the exact marker range
-and compiler-calculated import/declaration/local insertion slots, and applies
-the returned nonempty strings to the active file as one ordinary undo
-transaction. It leaves every `//?` line in place, writes no file or pin, edits
-no other file, and performs no automatic compiler validation; Check remains
-explicit.
+**Compile > Expand Agent Comment** (Ctrl-E) is a separate unsaved editor
+experiment, not `...` resolution. The cursor selects the maximal contiguous
+same-marker `//?` or `//!` block containing its line. Snapshot reachable
+workspace-owned Draft sources with current active/dirty overlays and send the
+model the complete active file plus the selected kind, exact range, text, and
+line. Treat other scattered annotations as context while making the selected
+block the immediate request.
+
+Rewrite only the active file and return exactly one complete replacement. A
+rewrite may add imports, package declarations, and local or top-level code, but
+must preserve unrelated behavior unless the selected annotation asks otherwise.
+Do not edit or create another file or invent an external API. When a required
+cross-file interface is unavailable, leave an honest precise TODO, minimal
+compiling scaffold/no-op, retained annotation, or preserve existing behavior as
+the local context warrants. Treat `//?` as persistent intent which is meant to
+stay in the returned file. A `//!` annotation is transient: remove it, keep it,
+or turn it into an ordinary comment according to whether the requested work is
+complete. DraftIDE intentionally does not enforce these policies, parse the
+result, or run Check. It applies the complete returned file verbatim as one
+unsaved undo transaction, writes no file or pin, and edits no other file; Check
+remains explicit.
 
 F5 launches executables directly without a shell. Arguments remain literal and
 ordered. Environment rows are `NAME=value` overrides on the inherited

@@ -47,14 +47,26 @@ Prepared_Run :: struct {
     has_artifact_path: bool,
 }
 
-// Comment_Prompt is the exact authored source anchor for one contiguous `//?`
-// group. start/end form a half-open byte range in the active buffer; end is also
-// the local insertion slot immediately after the final line terminator. found
-// distinguishes an absent group from a valid group whose concatenated text is
-// empty. The value owns no source or prompt bytes.
+// Comment_Annotation_Kind distinguishes the two authoring policies without
+// assigning them different edit authority. persistent is `//?`, whose intent is
+// meant to remain in the model's returned file; transient is `//!`, which the
+// model may remove, retain, or turn into an ordinary comment according to
+// whether its work is complete. none is the recognition sentinel only.
+Comment_Annotation_Kind :: enum u8 {
+    none,
+    persistent,
+    transient,
+}
+
+// Comment_Prompt is the exact authored source anchor for one contiguous group
+// of one annotation kind. start/end form a half-open byte range in the active
+// buffer including the final line terminator when present. found distinguishes
+// an absent group from a valid group whose concatenated text is empty. The value
+// owns no source or prompt bytes.
 Comment_Prompt :: struct {
     start: usize,
     end: usize,
+    kind: Comment_Annotation_Kind,
     found: bool,
 }
 
@@ -83,13 +95,13 @@ comment_prompt_line_end :: proc(bytes: []u8, start: usize) -> usize {
 }
 
 // comment_prompt_content recognizes a line whose first non-horizontal-space
-// bytes are `//?`. On success content_start points immediately after the
-// marker and at most one conventional following space. The source indentation
-// and marker remain ordinary immutable editor bytes.
+// bytes are `//?` or `//!`. On success content_start points immediately after
+// the marker and at most one conventional following space. The source
+// indentation and marker remain ordinary immutable editor bytes.
 comment_prompt_content :: proc(
     bytes: []u8,
     start, end: usize,
-) -> (usize, bool) {
+) -> (usize, Comment_Annotation_Kind) {
     marker := start
     for marker < end &&
         (bytes[marker] == cast[u8](' ') ||
@@ -98,23 +110,31 @@ comment_prompt_content :: proc(
     }
     if marker + 3 > end ||
         bytes[marker] != cast[u8]('/') ||
-        bytes[marker + 1] != cast[u8]('/') ||
-        bytes[marker + 2] != cast[u8]('?') {
-        return (0, false)
+        bytes[marker + 1] != cast[u8]('/') {
+        return (0, .none)
+    }
+    kind: Comment_Annotation_Kind
+    if bytes[marker + 2] == cast[u8]('?') {
+        kind = .persistent
+    } else if bytes[marker + 2] == cast[u8]('!') {
+        kind = .transient
+    } else {
+        return (0, .none)
     }
     content := marker + 3
     if content < end && bytes[content] == cast[u8](' ') {
         content += 1
     }
-    return (content, true)
+    return (content, kind)
 }
 
-// collect_comment_prompt finds the maximal contiguous `//?` line group which
-// contains the current editor line. It concatenates only the text after each
-// marker with LF separators and returns the zero-width insertion offset after
-// the final marker line. A blank or ordinary comment breaks the group. CR from
-// a CRLF terminator is excluded from the prompt while the exact source bytes
-// remain untouched.
+// collect_comment_prompt finds the maximal contiguous same-marker `//?` or
+// `//!` line group which contains the current editor line. It concatenates only
+// the text after each marker with LF separators. A different marker, blank, or
+// ordinary comment breaks the group, so selecting one annotation never merges
+// a neighboring instruction with a different retention policy. CR from a CRLF
+// terminator is excluded from the prompt while exact source bytes remain
+// untouched.
 collect_comment_prompt :: proc(
     buffer: ^turbo_editor.Buffer,
     prompt: ^array.Dynamic[u8],
@@ -123,12 +143,12 @@ collect_comment_prompt :: proc(
     bytes := turbo_editor.content(buffer)
     line_start := comment_prompt_line_start(bytes, buffer.cursor)
     line_end := comment_prompt_line_end(bytes, line_start)
-    (_, current_is_prompt) := comment_prompt_content(
+    (_, kind) := comment_prompt_content(
         bytes,
         line_start,
         line_end,
     )
-    if !current_is_prompt {
+    if kind == .none {
         return Comment_Prompt{}
     }
 
@@ -136,12 +156,12 @@ collect_comment_prompt :: proc(
     for first != 0 {
         previous_end := first - 1
         previous_start := comment_prompt_line_start(bytes, previous_end)
-        (_, previous_is_prompt) := comment_prompt_content(
+        (_, previous_kind) := comment_prompt_content(
             bytes,
             previous_start,
             previous_end,
         )
-        if !previous_is_prompt {
+        if previous_kind != kind {
             break
         }
         first = previous_start
@@ -151,12 +171,12 @@ collect_comment_prompt :: proc(
     for last_end < len(bytes) {
         next_start := last_end + 1
         next_end := comment_prompt_line_end(bytes, next_start)
-        (_, next_is_prompt) := comment_prompt_content(
+        (_, next_kind) := comment_prompt_content(
             bytes,
             next_start,
             next_end,
         )
-        if !next_is_prompt {
+        if next_kind != kind {
             break
         }
         last_end = next_end
@@ -170,8 +190,9 @@ collect_comment_prompt :: proc(
     first_prompt_line := true
     for source < insertion {
         end := comment_prompt_line_end(bytes, source)
-        (content, valid) := comment_prompt_content(bytes, source, end)
-        assert(valid, "collected comment prompt line lost its marker")
+        (content, line_kind) := comment_prompt_content(bytes, source, end)
+        assert(line_kind == kind,
+            "collected comment prompt line lost its marker kind")
         prompt_end := end
         if prompt_end > content && bytes[prompt_end - 1] == cast[u8]('\r') {
             prompt_end -= 1
@@ -188,7 +209,28 @@ collect_comment_prompt :: proc(
         }
         source = end + 1
     }
-    return Comment_Prompt{start = first, end = insertion, found = true}
+    return Comment_Prompt{
+        start = first,
+        end = insertion,
+        kind = kind,
+        found = true,
+    }
+}
+
+// source_bytes_equal compares current editor storage with one independently
+// owned provider result before replacement. The provider bytes may be destroyed
+// immediately after finish_comment_expansion, so this operation returns only a
+// value and retains no view.
+source_bytes_equal :: proc(left, right: []u8) -> bool {
+    if len(left) != len(right) {
+        return false
+    }
+    for index: usize = 0; index < len(left); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
 }
 
 // run_configuration_init establishes all four Dynamic owners before any
@@ -1456,19 +1498,20 @@ request_agent_action :: proc(app: ^App, action: Agent_Action) {
     }
 }
 
-// request_comment_expansion is the only automatic trigger for the prototype:
-// an explicit command while the cursor is on one line of a contiguous `//?`
-// block. Unlike Resolve/Judge it deliberately does not save anything. The
+// request_comment_expansion is the only trigger for the prototype: an explicit
+// command while the cursor is on one line of a contiguous `//?` or `//!` block.
+// Unlike Resolve/Judge it deliberately does not save anything. The
 // pending event lets the terminal present progress before starting the worker;
 // the block is collected again immediately before snapshots are made so no
 // borrowed prompt bytes survive a frame boundary.
 request_comment_expansion :: proc(app: ^App) {
     if !app.workspace_open || app.host.expand_comment == nil ||
-        app.host.copy_comment_expansion_imports == nil ||
-        app.host.copy_comment_expansion_declarations == nil ||
-        app.host.copy_comment_expansion_local == nil ||
+        app.host.copy_comment_expansion_source == nil ||
         app.host.copy_comment_expansion_error == nil {
-        set_plain_status(app, "Open a Draft compiler workspace to expand //?")
+        set_plain_status(
+            app,
+            "Open a Draft compiler workspace to expand //? or //!",
+        )
         return
     }
     buffer := active_buffer(app)
@@ -1482,15 +1525,18 @@ request_comment_expansion :: proc(app: ^App) {
     prompt_length := prompt.length
     array.destroy(&prompt)
     if !collected.found {
-        set_plain_status(app, "Place the cursor on a //? prompt line")
+        set_plain_status(app, "Place the cursor on a //? or //! line")
         return
     }
     if prompt_length == 0 {
-        set_plain_status(app, "The contiguous //? prompt is empty")
+        set_plain_status(app, "The selected agent annotation is empty")
         return
     }
     app.pending_agent_action = .expand_comment
-    set_plain_status(app, "Codex is generating Draft source; please wait...")
+    set_plain_status(
+        app,
+        "Codex is rewriting the active Draft file; please wait...",
+    )
 }
 
 // start_comment_expansion snapshots the current path, source, and concatenated
@@ -1505,7 +1551,10 @@ start_comment_expansion :: proc(app: ^App) {
     defer array.destroy(&prompt)
     collected := collect_comment_prompt(buffer, &prompt)
     if !collected.found || prompt.length == 0 {
-        set_plain_status(app, "The //? prompt changed before expansion began")
+        set_plain_status(
+            app,
+            "The agent annotation changed before expansion began",
+        )
         return
     }
 
@@ -1525,9 +1574,7 @@ start_comment_expansion :: proc(app: ^App) {
         job,
         app.host.user,
         app.host.expand_comment,
-        app.host.copy_comment_expansion_imports,
-        app.host.copy_comment_expansion_declarations,
-        app.host.copy_comment_expansion_local,
+        app.host.copy_comment_expansion_source,
         app.host.copy_comment_expansion_error,
         overlays[:overlay_count],
         active_overlay,
@@ -1559,22 +1606,23 @@ comment_expansion_ready :: proc(app: ^App) -> bool {
 // traversing compiler-backed windows while the worker owns Host_Api access.
 advance_comment_expansion_status :: proc(app: ^App) {
     statuses := [4]string{
-        "Codex is generating Draft source [|]",
-        "Codex is generating Draft source [/]",
-        "Codex is generating Draft source [-]",
-        "Codex is generating Draft source [\\]",
+        "Codex is rewriting the active Draft file [|]",
+        "Codex is rewriting the active Draft file [/]",
+        "Codex is rewriting the active Draft file [-]",
+        "Codex is rewriting the active Draft file [\\]",
     }
     job := &app.comment_expansion_job
     set_plain_status(app, statuses[job.spinner_index])
     job.spinner_index = (job.spinner_index + 1) % len(statuses)
 }
 
-// finish_comment_expansion joins a published worker and applies its exact three
-// slots on the main thread. Success copies provider bytes into one bounded
-// editor transaction; Ctrl-Z therefore removes imports, package declarations,
-// and local code together while leaving every `//?` line in place. Provider
-// failure replaces Build Output but does not overwrite semantic Diagnostics or
-// editor history. false means the worker is still running and no state changed.
+// finish_comment_expansion joins a published worker and applies its complete
+// active-file result on the main thread. Success copies provider bytes into one
+// bounded editor replacement; Ctrl-Z therefore restores the exact prior file
+// regardless of which imports, declarations, code, or annotations the model
+// changed. Provider failure replaces Build Output but does not overwrite
+// semantic Diagnostics or editor history. false means the worker is still
+// running and no state changed.
 finish_comment_expansion :: proc(app: ^App) -> bool {
     if !comment_expansion_ready(app) {
         return false
@@ -1585,7 +1633,7 @@ finish_comment_expansion :: proc(app: ^App) -> bool {
     result := job.result
     begin_result_output(
         app,
-        "Expand //? Prompt",
+        "Expand Agent Comment",
         result.success != 0,
         result.elapsed_nanoseconds,
     )
@@ -1613,7 +1661,7 @@ finish_comment_expansion :: proc(app: ^App) -> bool {
         }
         set_timed_status(
             app,
-            "Expand //? failed in ",
+            "Agent comment expansion failed in ",
             result.elapsed_nanoseconds,
             "; see Build Output",
         )
@@ -1625,84 +1673,56 @@ finish_comment_expansion :: proc(app: ^App) -> bool {
         return true
     }
 
-    imports: memory.Owned_String
-    declarations: memory.Owned_String
-    local: memory.Owned_String
-    defer memory.owned_string_destroy(&local)
-    defer memory.owned_string_destroy(&declarations)
-    defer memory.owned_string_destroy(&imports)
+    source: memory.Owned_String
+    defer memory.owned_string_destroy(&source)
     if !copy_host_text(
         job.host_user,
-        job.copy_imports,
-        &imports,
-    ) || !copy_host_text(
-        job.host_user,
-        job.copy_declarations,
-        &declarations,
-    ) || !copy_host_text(
-        job.host_user,
-        job.copy_local,
-        &local,
+        job.copy_source,
+        &source,
     ) {
-        set_plain_status(app, "Could not copy the generated Draft edit")
+        set_plain_status(app, "Could not copy the rewritten Draft file")
         return true
     }
-    import_bytes := memory.owned_string_bytes(&imports)
-    declaration_bytes := memory.owned_string_bytes(&declarations)
-    local_bytes := memory.owned_string_bytes(&local)
-    copied_lengths_match := len(import_bytes) == result.import_length &&
-        len(declaration_bytes) == result.declaration_length &&
-        len(local_bytes) == result.local_length
-
-    insertions := [3]turbo_editor.Insertion{
-        turbo_editor.Insertion{
-            at = result.import_offset,
-            source = import_bytes,
-        },
-        turbo_editor.Insertion{
-            at = result.declaration_offset,
-            source = declaration_bytes,
-        },
-        turbo_editor.Insertion{
-            at = result.local_offset,
-            source = local_bytes,
-        },
+    source_bytes := memory.owned_string_bytes(&source)
+    if len(source_bytes) != result.source_length {
+        set_plain_status(app, "The rewritten Draft file was copied incompletely")
+        return true
     }
-    cursor_after := result.local_offset
-    cursor_valid := true
-    for index: usize = 0; index < len(insertions); index += 1 {
-        insertion := insertions[index]
-        if insertion.at <= result.local_offset {
-            if len(insertion.source) > ~cast[usize](0) - cursor_after {
-                cursor_valid = false
-                break
-            }
-            cursor_after += len(insertion.source)
-        }
+    buffer := active_buffer(app)
+    changed := !source_bytes_equal(turbo_editor.content(buffer), source_bytes)
+    cursor_after := job.prompt_start
+    if cursor_after > len(source_bytes) {
+        cursor_after = len(source_bytes)
     }
-    inserted := copied_lengths_match && cursor_valid &&
-        turbo_editor.insert_at_many(
-            active_buffer(app),
-            insertions[:],
-            cursor_after,
-        )
-    if !inserted {
+    replaced := turbo_editor.replace_document(
+        buffer,
+        source_bytes,
+        cursor_after,
+    )
+    if !replaced {
         set_plain_status(
             app,
-            "Generated source exceeds the bounded atomic undo operation",
+            "Rewritten file exceeds the bounded atomic undo operation",
         )
         return true
     }
 
+    append_result_unsigned(app, "Returned file bytes: ", result.source_length)
+    if !changed {
+        set_timed_status(
+            app,
+            "Codex returned the current file in ",
+            result.elapsed_nanoseconds,
+            "",
+        )
+        return true
+    }
     source_changed(app)
-    inserted_bytes := result.import_length + result.declaration_length +
-        result.local_length
-    append_result_unsigned(app, "Inserted bytes: ", inserted_bytes)
     set_timed_status(
         app,
-        "Expanded //? in ",
+        "Rewrote the active file in ",
         result.elapsed_nanoseconds,
-        "; Ctrl-Z removes the insertion",
+        "; Ctrl-Z restores it",
     )
     return true
 }

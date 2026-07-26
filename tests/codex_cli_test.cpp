@@ -104,21 +104,22 @@ struct TemporaryFixture {
         "test ! -e \"$work/draft-reference/core\" || exit 47\n"
         "test ! -e \"$work/draft-skill\" || exit 48\n"
         "prompt=$(cat)\n"
-        "case \"$prompt\" in *DRAFT_SYNTHESIS_PROVIDER_INSTRUCTIONS_V2*|*DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V3*) exit 51 ;; esac\n"
+        "case \"$prompt\" in *DRAFT_SYNTHESIS_PROVIDER_INSTRUCTIONS_V2*|*DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V4*) exit 51 ;; esac\n"
         "case \"$developer\" in *make-answer*|*write-answer*) exit 52 ;; esac\n"
         "case \"$prompt\" in\n"
-        "  *DRAFT_EDITOR_COMMENT_EXPANSION_REQUEST_V2*REQUEST_FORMAT*draft-editor-comment-expansion-v2*ACTIVE_SOURCE_PATH*workspace/app/package.draft*AUTHOR_PROMPT*write-answer*PROMPT_START_BYTE*PROMPT_END_BYTE*PROMPT_START_LINE*IMPORT_INSERTION_BYTE*DECLARATION_INSERTION_BYTE*LOCAL_INSERTION_BYTE*WORKSPACE_FILE_COUNT*WORKSPACE_FILE_PATH*workspace/app/helper.draft*WORKSPACE_FILE_PATH*workspace/app/package.draft*)\n"
-        "    case \"$developer\" in *DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V3*) ;; *) exit 49 ;; esac\n"
+        "  *DRAFT_EDITOR_FILE_REWRITE_REQUEST_V1*REQUEST_FORMAT*draft-editor-file-rewrite-v1*ACTIVE_SOURCE_PATH*workspace/app/package.draft*SELECTED_ANNOTATION_MARKER*//?*AUTHOR_PROMPT*write-answer*PROMPT_START_BYTE*PROMPT_END_BYTE*PROMPT_START_LINE*WORKSPACE_FILE_COUNT*WORKSPACE_FILE_PATH*workspace/app/helper.draft*WORKSPACE_FILE_PATH*workspace/app/package.draft*)\n"
+        "    case \"$developer\" in *DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V4*) ;; *) exit 49 ;; esac\n"
         "    case \"$developer\" in *Draft*) ;; *) exit 67 ;; esac\n"
-        "    case \"$developer\" in *fill-in-the-middle*) ;; *) exit 56 ;; esac\n"
+        "    case \"$developer\" in *single-file*) ;; *) exit 56 ;; esac\n"
         "    case \"$developer\" in *workspace/*) ;; *) exit 57 ;; esac\n"
-        "    case \"$developer\" in *three*insertion*) ;; *) exit 58 ;; esac\n"
-        "    case \"$developer\" in *multi-slot*) ;; *) exit 59 ;; esac\n"
+        "    case \"$developer\" in *complete*active*file*) ;; *) exit 58 ;; esac\n"
+        "    case \"$developer\" in *other*annotations*) ;; *) exit 59 ;; esac\n"
         "    case \"$developer\" in *Rust*) ;; *) exit 60 ;; esac\n"
         "    case \"$developer\" in *verbatim*) ;; *) exit 61 ;; esac\n"
-        "    test \"$(cat \"$work/workspace/app/package.draft\")\" = 'package app\n//? write-answer\nmain :: proc() -> int { return answer }' || exit 39\n"
+        "    case \"$developer\" in *TODO*no-op*) ;; *) exit 68 ;; esac\n"
+        "    test \"$(cat \"$work/workspace/app/package.draft\")\" = 'package app\n//! unrelated follow-up\n//? write-answer\n//! remove after implementation\nmain :: proc() -> int { return answer }' || exit 39\n"
         "    test \"$(cat \"$work/workspace/app/helper.draft\")\" = 'package app\nhelper :: 40' || exit 40\n"
-        "    printf '%s' '{\"local\":\"// generated local\\n\",\"imports\":\"import core/console\\n\",\"declarations\":\"answer :: helper + 2\\n\"}' > \"$output\"\n"
+        "    printf '%s' '{\"source\":\"package app\\nimport core/console\\n//! unrelated follow-up\\n//? write-answer\\nanswer :: helper + 2\\nmain :: proc() -> int { return answer }\\n\"}' > \"$output\"\n"
         "    exit 0 ;;\n"
         "esac\n"
         "test -f \"$work/attachment-00000000.bin\" || exit 26\n"
@@ -361,17 +362,18 @@ draft::SynthesisRequest make_request() {
 }
 
 // The editor experiment shares process hardening and the factual language
-// references with synthesis while retaining a separate FIM contract. This test
-// proves that exact active/sibling snapshots enter the request, that prompt and
-// slot offsets remain explicit, and that property order does not affect the
-// three returned fragments.
+// references with synthesis while retaining a separate single-file contract.
+// This test proves that exact active/sibling snapshots and other annotations
+// enter the request, the selected marker/range remains explicit, and Codex
+// returns one complete active file rather than an inferred patch.
 void test_editor_comment_expansion(TestState &state) {
   TemporaryFixture fixture;
   draft::CodexCliProviderOptions options;
   options.executable = fixture.executable;
   options.model = "fixture-model";
   const std::string active =
-      "package app\n//? write-answer\n"
+      "package app\n//! unrelated follow-up\n//? write-answer\n"
+      "//! remove after implementation\n"
       "main :: proc() -> int { return answer }\n";
   const std::string helper = "package app\nhelper :: 40\n";
   const std::array<draft::CodexEditorWorkspaceFile, 2> workspace{{
@@ -379,25 +381,26 @@ void test_editor_comment_expansion(TestState &state) {
       {"app/package.draft", active},
   }};
   const std::size_t prompt_start = active.find("//?");
-  const std::size_t prompt_end = active.find("main");
+  const std::size_t prompt_end = active.find("//!", prompt_start + 3);
   const draft::CodexEditorExpansionRequest request{
       "app/package.draft",
       workspace,
       prompt_start,
       prompt_end,
-      2,
-      std::string_view("package app\n").size(),
-      std::string_view("package app\n").size(),
-      prompt_end,
+      3,
       "write-answer",
   };
   draft::DiagnosticSink diagnostics;
   draft::CodexEditorExpansion expansion;
   EXPECT(state, draft::expand_editor_comment_with_codex(options, request,
                                                         expansion, diagnostics));
-  EXPECT(state, expansion.imports == "import core/console\n");
-  EXPECT(state, expansion.declarations == "answer :: helper + 2\n");
-  EXPECT(state, expansion.local == "// generated local\n");
+  EXPECT(state, expansion.source ==
+      "package app\n"
+      "import core/console\n"
+      "//! unrelated follow-up\n"
+      "//? write-answer\n"
+      "answer :: helper + 2\n"
+      "main :: proc() -> int { return answer }\n");
   EXPECT(state, !diagnostics.has_errors());
 }
 

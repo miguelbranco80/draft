@@ -213,20 +213,28 @@ ordered usage locations, and Alt-Left/Alt-Right move through navigation
 history. Definitions in compiler-distributed core or dependency sources open
 as read-only buffers.
 
-Ctrl-E, also available as **Compile > Expand //? Prompt**, invokes the
-experimental active-file Codex expansion. The cursor must be on one line in a
-maximal contiguous group whose first non-whitespace bytes are `//?`. Text after
-all markers is joined with line breaks and their exact byte range and line are
-identified in the active source. Codex may inspect a private read-only tree of
-reachable workspace-owned Draft sources; unsaved active/dirty overlays replace
-disk bytes, while compiler core, dependency roots, build state, and unrelated
+Ctrl-E, also available as **Compile > Expand Agent Comment**, invokes the
+experimental active-file Codex rewrite. The cursor must be on one line in a
+maximal contiguous same-marker group whose first non-whitespace bytes are `//?`
+or `//!`; a different marker or non-annotation line ends the selected group.
+Text after the selected markers is joined with line breaks, and its kind, exact
+byte range, and line are identified in the complete active source. Other
+scattered annotations remain visible as context, but the selected group is the
+immediate request. Codex may inspect a private read-only tree of reachable
+workspace-owned Draft sources; unsaved active/dirty overlays replace disk
+bytes, while compiler core, dependency roots, build state, and unrelated
 workspace files are absent. The operation never exposes the physical workspace
 path.
 
-Codex returns optional import, package-declaration, and local strings. The
-compiler supplies legal package-header and post-marker offsets; DraftIDE inserts
-all nonempty strings verbatim without saving or compiling. Every marker line
-remains, and ordinary Ctrl-Z removes the complete multi-slot edit as one
+Codex returns exactly one complete replacement for the active file. It may
+change imports, package declarations, or local code, but cannot edit or create
+another file. Its instructions require preservation of unrelated behavior and
+an honest TODO, minimal compiling scaffold/no-op, retained annotation, or
+unchanged behavior when a cross-file dependency prevents a complete single-file
+implementation. `//?` is intended to remain as persistent intent. Codex may
+remove, retain, or convert `//!` into an ordinary comment; DraftIDE does not
+enforce either policy. It applies the returned bytes verbatim without saving or
+compiling, and ordinary Ctrl-Z restores the exact prior document as one
 transaction. This operation creates no workspace file or resolution pin and
 does not replace semantic Diagnostics on failure. The status bar animates while
 the synchronous Codex invocation runs on one Draft-owned worker. During that

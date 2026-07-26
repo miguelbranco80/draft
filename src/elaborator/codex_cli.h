@@ -5,7 +5,7 @@
 // writes one JSON Schema and the bounded attachment set into a private temporary
 // directory, supplies the canonical textual request on stdin, requests a
 // schema-validated final JSON message, and returns only the caller-specific
-// source string or editor slot strings.
+// source string.
 // Codex runs with a read-only sandbox, no persisted rollout, no project/user
 // rules, and no workspace as its current directory.
 //
@@ -38,13 +38,13 @@ struct CodexEditorWorkspaceFile {
 };
 
 // CodexEditorExpansionRequest is the deliberately narrow, ephemeral editor
-// counterpart to a typed SynthesisRequest. It identifies one contiguous `//?`
-// block in one exact active source and three compiler-calculated insertion
-// slots: file imports, package declarations, and the local gap after the
-// comment. The read-only workspace source snapshot lets Codex inspect related
-// names and implementations without receiving the physical workspace path.
-// Prompt offsets are half-open bytes in the active file and prompt_line is
-// one-based display metadata.
+// counterpart to a typed SynthesisRequest. It identifies one selected
+// contiguous `//?` or `//!` block in one exact active source. The read-only
+// workspace source snapshot lets Codex inspect related names, implementations,
+// and other annotations without receiving the physical workspace path. Codex
+// may reconsider the complete active file but no sibling file; prompt offsets
+// are half-open bytes in that file and prompt_line is one-based display
+// metadata.
 //
 // This request is an IDE experiment, not Draft language semantics. In
 // particular it creates no AgentObligation, performs no semantic checking, and
@@ -56,20 +56,16 @@ struct CodexEditorExpansionRequest {
   std::size_t prompt_start = 0;
   std::size_t prompt_end = 0;
   std::size_t prompt_line = 0;
-  std::size_t import_insertion_offset = 0;
-  std::size_t declaration_insertion_offset = 0;
-  std::size_t local_insertion_offset = 0;
   std::string_view prompt;
 };
 
-// CodexEditorExpansion is the complete unsaved edit proposed for one request.
-// Empty fields mean that slot is unnecessary. The adapter bounds their combined
-// bytes and rejects NUL, but deliberately does not parse or type-check them;
-// normal editor undo is the prototype's only acceptance mechanism.
+// CodexEditorExpansion is one complete proposed replacement for the active
+// source. The adapter bounds the old-plus-new bytes to the Draft editor's
+// atomic history policy and rejects empty or NUL-containing output, but
+// deliberately does not parse, type-check, diff, or interpret marker changes.
+// Normal editor undo is the prototype's only acceptance mechanism.
 struct CodexEditorExpansion {
-  std::string imports;
-  std::string declarations;
-  std::string local;
+  std::string source;
 };
 
 // Validates the adapter configuration, initializes state, and
@@ -80,12 +76,11 @@ struct CodexEditorExpansion {
     CodexCliProviderState &state,
     DiagnosticSink &diagnostics);
 
-// Asks Codex for zero or more exact ordinary Draft fragments in the three legal
-// slots. The embedded factual Draft references and hardened read-only CLI
-// runtime are reused, but the result is neither compiled nor persisted here. On
-// success at least one field is nonempty and the combined NUL-free result fits
-// the editor's atomic undo policy. Failure clears every field and reports a
-// provider-owned diagnostic.
+// Asks Codex for one complete replacement of the active Draft file. The
+// embedded factual Draft references and hardened read-only CLI runtime are
+// reused, but the result is neither compiled nor persisted here. On success the
+// NUL-free old-plus-new source fits the editor's atomic undo policy. Failure
+// clears the source and reports a provider-owned diagnostic.
 [[nodiscard]] bool expand_editor_comment_with_codex(
     const CodexCliProviderOptions &options,
     const CodexEditorExpansionRequest &request,

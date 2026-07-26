@@ -566,7 +566,10 @@ shortcut_row :: proc(index: usize) -> (string, string) {
     case 49:
         return ("Drag title / border", "Move or resize an ordinary window")
     case 50:
-        return ("Ctrl-E", "Expand the contiguous //? prompt under the cursor")
+        return (
+            "Ctrl-E",
+            "Rewrite this file from the selected //? or //! annotation",
+        )
     case:
         assert(false, "shortcut help row index is outside the authored table")
         return ("", "")

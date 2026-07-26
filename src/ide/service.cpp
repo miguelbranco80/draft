@@ -48,7 +48,7 @@ static_assert(alignof(DraftCompilerServiceResolveResult) ==
 static_assert(sizeof(DraftCompilerServiceJudgeResult) == 48);
 static_assert(alignof(DraftCompilerServiceJudgeResult) ==
               alignof(std::size_t));
-static_assert(sizeof(DraftCompilerServiceCommentExpansionResult) == 64);
+static_assert(sizeof(DraftCompilerServiceCommentExpansionResult) == 24);
 static_assert(alignof(DraftCompilerServiceCommentExpansionResult) ==
               alignof(std::size_t));
 static_assert(sizeof(DraftCompilerServiceSyntaxResult) == 16);
@@ -582,36 +582,16 @@ void draft_compiler_session_expand_comment(
       borrowed_text(prompt_data, prompt_length));
   *result = {
       static_cast<std::uint8_t>(expanded.ok ? 1 : 0),
-      expanded.import_offset,
-      session->comment_expansion_imports().size(),
-      expanded.declaration_offset,
-      session->comment_expansion_declarations().size(),
-      expanded.local_offset,
-      session->comment_expansion_local().size(),
+      session->comment_expansion_source().size(),
       elapsed_nanoseconds(started),
   };
 }
 
-std::size_t draft_compiler_session_copy_comment_expansion_imports(
+std::size_t draft_compiler_session_copy_comment_expansion_source(
     void *opaque_session, std::uint8_t *destination, std::size_t capacity) {
   draft::ide::CompilerSession *session = compiler_session(opaque_session);
   if (session == nullptr) return copy_text({}, destination, capacity);
-  return copy_text(session->comment_expansion_imports(), destination, capacity);
-}
-
-std::size_t draft_compiler_session_copy_comment_expansion_declarations(
-    void *opaque_session, std::uint8_t *destination, std::size_t capacity) {
-  draft::ide::CompilerSession *session = compiler_session(opaque_session);
-  if (session == nullptr) return copy_text({}, destination, capacity);
-  return copy_text(
-      session->comment_expansion_declarations(), destination, capacity);
-}
-
-std::size_t draft_compiler_session_copy_comment_expansion_local(
-    void *opaque_session, std::uint8_t *destination, std::size_t capacity) {
-  draft::ide::CompilerSession *session = compiler_session(opaque_session);
-  if (session == nullptr) return copy_text({}, destination, capacity);
-  return copy_text(session->comment_expansion_local(), destination, capacity);
+  return copy_text(session->comment_expansion_source(), destination, capacity);
 }
 
 std::size_t draft_compiler_session_copy_comment_expansion_error(

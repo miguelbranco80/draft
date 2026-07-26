@@ -1,5 +1,6 @@
 package turbo_editor_app
 
+import core/array
 import core/atomic
 import core/filesystem
 import core/memory
@@ -156,6 +157,10 @@ Fake_Expansion_State :: struct {
     overlays_valid: u8,
 }
 
+Fake_Expansion_Original :: "package sample\n//! preserve another task\n//? persistent design intent\n//! create answer\n    //! using two lines\n\n//! later unrelated task\nmain :: proc() -> int { return answer }\n"
+
+Fake_Expansion_Source :: "package sample\nimport core/console\n//! preserve another task\n//? persistent design intent\n// Implemented the selected transient annotation.\nanswer :: 42\n//! later unrelated task\nmain :: proc() -> int { return answer }\n"
+
 fake_expand_comment :: c proc(
     user: rawptr,
     overlays: ^draft_compiler_api.Overlay,
@@ -186,9 +191,11 @@ fake_expand_comment :: c proc(
             }
         }
     }
-    expected_prompt_start := len("package sample\n")
+    expected_prompt_start := len(
+        "package sample\n//! preserve another task\n//? persistent design intent\n",
+    )
     expected_prompt_end := len(
-        "package sample\n//? create answer\n    //? using two lines\n",
+        "package sample\n//! preserve another task\n//? persistent design intent\n//! create answer\n    //! using two lines\n",
     )
     state.range_valid = 1 if prompt_start == expected_prompt_start &&
         prompt_end == expected_prompt_end else 0
@@ -196,56 +203,20 @@ fake_expand_comment :: c proc(
         active_overlay == 0 && overlays.source_length != 0 else 0
     result^ = draft_compiler_api.Comment_Expansion_Result{
         success = 1,
-        import_offset = len("package sample\n"),
-        import_length = len("import core/console\n"),
-        declaration_offset = len("package sample\n"),
-        declaration_length = len("answer :: 40\n"),
-        local_offset = expected_prompt_end,
-        local_length = len("answer_local :: 2\n"),
+        source_length = len(Fake_Expansion_Source),
         elapsed_nanoseconds = 50_000_000,
     }
 }
 
-fake_copy_comment_expansion_imports :: c proc(
+fake_copy_comment_expansion_source :: c proc(
     user: rawptr,
     destination: [^]u8,
     capacity: usize,
 ) -> usize {
     _ = user
-    source := "import core/console\n"
     return fake_copy_bytes(
-        cast[rawptr](raw_data(source)),
-        len(source),
-        destination,
-        capacity,
-    )
-}
-
-fake_copy_comment_expansion_declarations :: c proc(
-    user: rawptr,
-    destination: [^]u8,
-    capacity: usize,
-) -> usize {
-    _ = user
-    source := "answer :: 40\n"
-    return fake_copy_bytes(
-        cast[rawptr](raw_data(source)),
-        len(source),
-        destination,
-        capacity,
-    )
-}
-
-fake_copy_comment_expansion_local :: c proc(
-    user: rawptr,
-    destination: [^]u8,
-    capacity: usize,
-) -> usize {
-    _ = user
-    source := "answer_local :: 2\n"
-    return fake_copy_bytes(
-        cast[rawptr](raw_data(source)),
-        len(source),
+        cast[rawptr](raw_data(Fake_Expansion_Source)),
+        len(Fake_Expansion_Source),
         destination,
         capacity,
     )
@@ -1056,22 +1027,24 @@ test_agent_commands_are_explicit_and_separate_from_build :: proc(
     testing.expect(test, app.diagnostic_count == 0)
 }
 
-// The editor prototype treats contiguous marker lines as one FIM request and
-// keeps those lines as normal source. Ctrl-E queues the provider only while the
-// cursor is on the block. The gated fake proves execute_agent_action returns
-// while Codex is still running; completion then inserts one unsaved history
-// transaction across the import, declaration, and local slots, and ordinary
-// undo restores the exact original file.
-test_comment_prompt_expands_as_one_undoable_insertion :: proc(
+// The editor prototype treats contiguous lines of the selected marker kind as
+// one request while leaving every other scattered annotation in the complete
+// source context. Ctrl-E queues the provider only while the cursor is on one
+// block. The gated fake proves execute_agent_action returns while Codex is
+// still running; completion then replaces the active file as one unsaved
+// history transaction, and ordinary undo restores its exact original bytes.
+test_agent_comment_rewrites_one_file_as_one_undo_transaction :: proc(
     test: ^testing.Test,
 ) {
     app: App
     init_windows(&app)
     testing.expect(test, init_one_buffer(&app, "turbo-expand-comment.draft"))
     defer destroy_app(&app)
-    original := "package sample\n//? create answer\n    //? using two lines\nmain :: proc() -> int { return answer }\n"
+    original := Fake_Expansion_Original
     turbo_editor.insert_text(active_buffer(&app), original)
-    active_buffer(&app).cursor = len("package sample\n//? create")
+    active_buffer(&app).cursor = len(
+        "package sample\n//! preserve another task\n//? persistent design intent\n//! create answer\n    //! using",
+    )
 
     state: Fake_Expansion_State
     // The zeroed local is still exclusively owned here. Its atomic fields are
@@ -1080,11 +1053,8 @@ test_comment_prompt_expands_as_one_undoable_insertion :: proc(
     app.workspace_open = true
     app.host.user = cast[rawptr](&state)
     app.host.expand_comment = fake_expand_comment
-    app.host.copy_comment_expansion_imports =
-        fake_copy_comment_expansion_imports
-    app.host.copy_comment_expansion_declarations =
-        fake_copy_comment_expansion_declarations
-    app.host.copy_comment_expansion_local = fake_copy_comment_expansion_local
+    app.host.copy_comment_expansion_source =
+        fake_copy_comment_expansion_source
     app.host.copy_comment_expansion_error =
         fake_copy_comment_expansion_error
 
@@ -1100,7 +1070,7 @@ test_comment_prompt_expands_as_one_undoable_insertion :: proc(
     testing.expect(test, app.pending_agent_action == .expand_comment)
     testing.expect(test, text_equal(
         app.status,
-        "Codex is generating Draft source; please wait...",
+        "Codex is rewriting the active Draft file; please wait...",
     ))
     action := app.pending_agent_action
     app.pending_agent_action = .none
@@ -1121,7 +1091,7 @@ test_comment_prompt_expands_as_one_undoable_insertion :: proc(
     advance_comment_expansion_status(&app)
     testing.expect(test, text_equal(
         app.status,
-        "Codex is generating Draft source [|]",
+        "Codex is rewriting the active Draft file [|]",
     ))
 
     // Release even if the preceding expectation failed so deferred App
@@ -1141,7 +1111,7 @@ test_comment_prompt_expands_as_one_undoable_insertion :: proc(
     testing.expect(test, state.overlays_valid != 0)
     testing.expect(test, bytes_equal_string(
         turbo_editor.content(active_buffer(&app)),
-        "package sample\nimport core/console\nanswer :: 40\n//? create answer\n    //? using two lines\nanswer_local :: 2\nmain :: proc() -> int { return answer }\n",
+        Fake_Expansion_Source,
     ))
     testing.expect(test, active_buffer(&app).dirty)
     undo_active(&app)
@@ -1149,6 +1119,25 @@ test_comment_prompt_expands_as_one_undoable_insertion :: proc(
         turbo_editor.content(active_buffer(&app)),
         original,
     ))
+
+    // A persistent annotation is selectable by the same command, but the
+    // neighboring transient blocks do not merge into its authored prompt.
+    active_buffer(&app).cursor = len(
+        "package sample\n//! preserve another task\n//? persistent",
+    )
+    persistent_prompt: array.Dynamic[u8]
+    array.init(&persistent_prompt)
+    persistent := collect_comment_prompt(
+        active_buffer(&app),
+        &persistent_prompt,
+    )
+    testing.expect(test, persistent.found)
+    testing.expect(test, persistent.kind == .persistent)
+    testing.expect(test, bytes_equal_string(
+        array.view(&persistent_prompt),
+        "persistent design intent",
+    ))
+    array.destroy(&persistent_prompt)
 
     // Moving onto an ordinary source line removes the only explicit trigger.
     // The same shortcut must not infer a nearby prompt or call the provider.
@@ -2359,7 +2348,7 @@ test_complete_menu_vocabulary :: proc(test: ^testing.Test) {
     expect_surface_text(test, &surface, 18, 4, "Check")
     expect_surface_text(test, &surface, 18, 5, "Build")
     expect_surface_text(test, &surface, 18, 6, "Build All Programs")
-    expect_surface_text(test, &surface, 18, 8, "Expand //? Prompt")
+    expect_surface_text(test, &surface, 18, 8, "Expand Agent Comment")
     expect_surface_text(test, &surface, 18, 9, "Resolve Synthesis")
     expect_surface_text(test, &surface, 18, 10, "Judge Claims")
     testing.expect(test, !surface_has_black_shadow(&surface))

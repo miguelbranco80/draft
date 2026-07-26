@@ -224,6 +224,52 @@ test_multi_slot_insertion_is_one_history_transaction :: proc(
     testing.expect(test, buffer.cursor == final_cursor)
 }
 
+// A complete externally generated file is one replacement transaction rather
+// than a sequence of inferred edits. The independently owned replacement may
+// change bytes anywhere, while undo and redo restore both exact documents and
+// their authored cursor positions.
+test_complete_document_replacement_is_one_history_transaction :: proc(
+    test: ^testing.Test,
+) {
+    buffer: Buffer
+    buffer_init(&buffer, Test_Path)
+    defer buffer_destroy(&buffer)
+
+    original := "package sample\n//! change this\nAnswer :: 1\n"
+    replacement := "package sample\n// implemented\nAnswer :: 42\n"
+    insert_text(&buffer, original)
+    buffer.cursor = len("package sample\n//! change")
+
+    owner: memory.Owned_String
+    memory.owned_string_copy(&owner, replacement)
+    defer memory.owned_string_destroy(&owner)
+    replacement_bytes := memory.owned_string_bytes(&owner)
+    testing.expect(test, replace_document(
+        &buffer,
+        replacement_bytes,
+        len("package sample\n"),
+    ))
+    testing.expect(test, buffer_equals_text(&buffer, replacement))
+    testing.expect(test, buffer.cursor == len("package sample\n"))
+    testing.expect(test, undo(&buffer))
+    testing.expect(test, buffer_equals_text(&buffer, original))
+    testing.expect(test, buffer.cursor == len("package sample\n//! change"))
+    testing.expect(test, redo(&buffer))
+    testing.expect(test, buffer_equals_text(&buffer, replacement))
+    testing.expect(test, buffer.cursor == len("package sample\n"))
+
+    // Returning the current file is a successful no-op and does not consume a
+    // second history transaction.
+    history_count := buffer.history.length
+    testing.expect(test, replace_document(
+        &buffer,
+        replacement_bytes,
+        0,
+    ))
+    testing.expect(test, buffer.history.length == history_count)
+    testing.expect(test, buffer.cursor == 0)
+}
+
 // New documents carry a display label but no accidental save pathname. A
 // successful Save As installs the first real path, preserves exact bytes, and
 // turns the ordinary Save operation into the expected subsequent behavior.

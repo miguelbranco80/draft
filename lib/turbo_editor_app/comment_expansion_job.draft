@@ -1,9 +1,9 @@
 // Comment expansion jobs are the cross-thread ownership boundary for the
-// DraftIDE `//?` prototype. The main thread supplies exact reachable-overlay and
-// prompt snapshots plus borrowed synchronous compiler callbacks; one child
-// thread writes the fixed result and publishes completion. The main thread alone
-// owns UI state, joins the child, copies the compiler session's three returned
-// slots, and releases the snapshots.
+// DraftIDE `//?`/`//!` prototype. The main thread supplies exact reachable-
+// overlay and selected-prompt snapshots plus borrowed synchronous compiler
+// callbacks; one child thread writes the fixed result and publishes completion.
+// The main thread alone owns UI state, joins the child, copies the compiler
+// session's complete returned source, and releases the snapshots.
 //
 // This module owns no editor buffer, window, terminal, or compiler session. Its
 // job record must remain at a stable address from spawn through join. Release/
@@ -18,7 +18,8 @@ import core/memory
 import core/thread
 import lib/draft_compiler_api
 
-// Comment_Expansion_Job is the single in-flight `//?` request owned by App.
+// Comment_Expansion_Job is the single in-flight selected annotation request
+// owned by App.
 // paths/sources and prompt are independent snapshots because the compiler
 // callback runs after the command frame has returned. Overlay rows preserve the
 // active-plus-dirty order used by foreground compiler operations. The worker
@@ -30,9 +31,7 @@ Comment_Expansion_Job :: struct {
     phase: atomic.Value[u8],
     host_user: rawptr,
     expand: draft_compiler_api.Expand_Comment_Proc,
-    copy_imports: draft_compiler_api.Copy_Text_Proc,
-    copy_declarations: draft_compiler_api.Copy_Text_Proc,
-    copy_local: draft_compiler_api.Copy_Text_Proc,
+    copy_source: draft_compiler_api.Copy_Text_Proc,
     copy_error: draft_compiler_api.Copy_Text_Proc,
     paths: [Maximum_Buffers]memory.Owned_String,
     sources: [Maximum_Buffers]memory.Owned_String,
@@ -69,9 +68,7 @@ release_comment_expansion_job :: proc(job: ^Comment_Expansion_Job) {
     job.worker = empty_thread
     job.host_user = nil
     job.expand = nil
-    job.copy_imports = nil
-    job.copy_declarations = nil
-    job.copy_local = nil
+    job.copy_source = nil
     job.copy_error = nil
     job.result = draft_compiler_api.Comment_Expansion_Result{}
     job.overlay_count = 0
@@ -149,7 +146,7 @@ comment_expansion_job_start :: proc(
     job: ^Comment_Expansion_Job,
     host_user: rawptr,
     expand: draft_compiler_api.Expand_Comment_Proc,
-    copy_imports, copy_declarations, copy_local, copy_error:
+    copy_source, copy_error:
         draft_compiler_api.Copy_Text_Proc,
     overlays: []draft_compiler_api.Overlay,
     active_overlay, prompt_start, prompt_end: usize,
@@ -157,10 +154,7 @@ comment_expansion_job_start :: proc(
 ) -> bool {
     assert(!job.active, "a second comment expansion was started")
     assert(expand != nil, "comment expansion procedure is nil")
-    assert(copy_imports != nil, "comment import copy procedure is nil")
-    assert(copy_declarations != nil,
-        "comment declaration copy procedure is nil")
-    assert(copy_local != nil, "comment local copy procedure is nil")
+    assert(copy_source != nil, "comment source copy procedure is nil")
     assert(copy_error != nil, "comment expansion error procedure is nil")
     assert(len(overlays) != 0 && len(overlays) <= Maximum_Buffers,
         "comment expansion overlay count is invalid")
@@ -189,9 +183,7 @@ comment_expansion_job_start :: proc(
     memory.owned_string_copy_bytes(&job.prompt, prompt)
     job.host_user = host_user
     job.expand = expand
-    job.copy_imports = copy_imports
-    job.copy_declarations = copy_declarations
-    job.copy_local = copy_local
+    job.copy_source = copy_source
     job.copy_error = copy_error
     job.active_overlay = active_overlay
     job.prompt_start = prompt_start

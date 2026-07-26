@@ -849,6 +849,54 @@ pub insert_at_many :: proc(
     return true
 }
 
+// replace_document installs one externally produced complete file as one
+// bounded undo transaction. source is borrowed only for this call and must not
+// alias Buffer storage because the operation deletes the old bytes before it
+// inserts the replacement. The old-plus-new payload must fit the common history
+// byte policy; false leaves content, cursor, selection, dirty state, redo, and
+// prior history unchanged. An identical source is a successful no-op which
+// updates only the transient cursor/selection presentation and creates no
+// history record.
+pub replace_document :: proc(
+    buffer: ^Buffer,
+    source: []u8,
+    cursor_after: usize,
+) -> bool {
+    if buffer.read_only || cursor_after > len(source) {
+        return false
+    }
+    old := array.view(&buffer.bytes)
+    if bytes_equal(old, source) {
+        buffer.cursor = cursor_after
+        clear_selection(buffer)
+        buffer.preferred_column_valid = false
+        buffer.reveal_cursor = true
+        return true
+    }
+    before_cursor := buffer.cursor
+    if !record_replace(
+        buffer,
+        0,
+        old,
+        source,
+        before_cursor,
+        cursor_after,
+    ) {
+        return false
+    }
+    old_length := buffer.bytes.length
+    delete_raw(buffer, 0, old_length)
+    if len(source) != 0 {
+        insert_raw(buffer, 0, source)
+    }
+    buffer.cursor = cursor_after
+    clear_selection(buffer)
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
+    buffer.dirty = true
+    return true
+}
+
 // insert_text is the immutable-string adapter for paste/IME events. The
 // temporary array exists only because Draft 1 intentionally has no implicit
 // string-to-mutable-byte view; insert still owns the one history/mutation rule.

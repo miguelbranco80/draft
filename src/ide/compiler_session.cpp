@@ -1565,9 +1565,7 @@ CommentExpansionResult CompilerSession::expand_comment(
     std::size_t prompt_start,
     std::size_t prompt_end,
     std::string_view prompt) {
-  comment_expansion_imports_.clear();
-  comment_expansion_declarations_.clear();
-  comment_expansion_local_.clear();
+  comment_expansion_source_.clear();
   comment_expansion_error_.clear();
   DiagnosticSink diagnostics;
 
@@ -1666,51 +1664,17 @@ CommentExpansionResult CompilerSession::expand_comment(
     }
   }
 
-  // Parse only to locate the grammar-owned end of package/docs/import header.
-  // Parser diagnostics are intentionally private: this editor convenience
-  // neither validates the authored buffer nor publishes a semantic Check
-  // result. Both package-wide slots use the first byte after the header line.
-  // This keeps imports ahead of every declaration even when the `//?` group is
-  // itself a top-level comment before the first authored declaration. Applying
-  // the import fragment before the declaration fragment preserves grammar order
-  // when their offsets coincide.
-  std::size_t header_insertion_offset = 0;
+  // The request needs a display line but no syntax-derived edit boundary: the
+  // model receives and returns the complete active file. Avoiding a parse here
+  // is intentional. Existing invalid source remains valid authoring input, and
+  // no parser recovery artifact can constrain where Codex may rewrite it.
   std::size_t prompt_line = 0;
   if (!diagnostics.has_errors()) {
-    SourceManager syntax_sources;
-    const FileId file = syntax_sources.add_source(
+    SourceManager display_sources;
+    const FileId file = display_sources.add_source(
         selected_source->display_name, std::string(active->contents));
-    DiagnosticSink ignored_parser_diagnostics;
-    const SyntaxTree syntax =
-        parse_source_file(syntax_sources, file, ignored_parser_diagnostics);
-    const SyntaxNode &root = syntax.node(syntax.root());
-    const SyntaxNode *last_header = nullptr;
-    for (const NodeId child : root.children) {
-      const SyntaxNode &node = syntax.node(child);
-      if (node.kind == NodeKind::DeclarationList) break;
-      if (node.range.is_valid()) last_header = &node;
-    }
-    if (last_header == nullptr || last_header->token_end == 0) {
-      diagnostics.error(
-          SourceRange::invalid(),
-          "Draft editor expansion could not locate the package header "
-          "boundary");
-    } else {
-      header_insertion_offset = last_header->range.end.offset;
-      const Token &terminator = syntax.token(last_header->token_end - 1);
-      if (terminator.kind == TokenKind::Semicolon && terminator.inserted &&
-          header_insertion_offset < active->contents.size() &&
-          active->contents[header_insertion_offset] == '\r') {
-        ++header_insertion_offset;
-      }
-      if (terminator.kind == TokenKind::Semicolon && terminator.inserted &&
-          header_insertion_offset < active->contents.size() &&
-          active->contents[header_insertion_offset] == '\n') {
-        ++header_insertion_offset;
-      }
-      prompt_line = syntax_sources.line_column({
-          file, static_cast<std::uint32_t>(prompt_start)}).line;
-    }
+    prompt_line = display_sources.line_column({
+        file, static_cast<std::uint32_t>(prompt_start)}).line;
   }
 
   bool expanded = false;
@@ -1721,26 +1685,19 @@ CommentExpansionResult CompilerSession::expand_comment(
         prompt_start,
         prompt_end,
         prompt_line,
-        header_insertion_offset,
-        header_insertion_offset,
-        prompt_end,
         prompt,
     };
     CodexEditorExpansion expansion;
     expanded = expand_editor_comment_with_codex(
         CodexCliProviderOptions{}, request, expansion, diagnostics);
     if (expanded) {
-      comment_expansion_imports_ = std::move(expansion.imports);
-      comment_expansion_declarations_ = std::move(expansion.declarations);
-      comment_expansion_local_ = std::move(expansion.local);
+      comment_expansion_source_ = std::move(expansion.source);
     }
   }
 
   if (!expanded || diagnostics.has_errors()) {
     SourceManager no_sources;
-    comment_expansion_imports_.clear();
-    comment_expansion_declarations_.clear();
-    comment_expansion_local_.clear();
+    comment_expansion_source_.clear();
     comment_expansion_error_ = render_diagnostics(no_sources, diagnostics);
     if (comment_expansion_error_.empty()) {
       comment_expansion_error_ =
@@ -1748,12 +1705,7 @@ CommentExpansionResult CompilerSession::expand_comment(
     }
     return {};
   }
-  return {
-      true,
-      header_insertion_offset,
-      header_insertion_offset,
-      prompt_end,
-  };
+  return {true};
 }
 
 const std::vector<SyntaxSpan> &CompilerSession::syntax_spans() const {
@@ -1764,16 +1716,8 @@ std::string_view CompilerSession::diagnostics_text() const {
   return diagnostics_text_;
 }
 
-std::string_view CompilerSession::comment_expansion_imports() const {
-  return comment_expansion_imports_;
-}
-
-std::string_view CompilerSession::comment_expansion_declarations() const {
-  return comment_expansion_declarations_;
-}
-
-std::string_view CompilerSession::comment_expansion_local() const {
-  return comment_expansion_local_;
+std::string_view CompilerSession::comment_expansion_source() const {
+  return comment_expansion_source_;
 }
 
 std::string_view CompilerSession::comment_expansion_error() const {
