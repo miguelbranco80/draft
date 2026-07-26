@@ -331,6 +331,12 @@ public:
   [[nodiscard]] TypeId pointer(TypeId element);
   [[nodiscard]] TypeId multi_pointer(TypeId element);
   [[nodiscard]] TypeId slice(TypeId element);
+
+  // Interns one concrete fixed-size sequence type. Draft 1 requires both
+  // counts to be nonzero; source-facing resolvers must diagnose a zero or
+  // unrepresentable count before reaching this invariant boundary. Symbolic
+  // and owner-evaluated counts use the separate constructors below, so zero
+  // cannot be used here as a sentinel for an unresolved count.
   [[nodiscard]] TypeId array(TypeId element, std::uint64_t count);
   [[nodiscard]] TypeId simd(
       TypeId element,

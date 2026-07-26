@@ -2595,8 +2595,81 @@ private:
         semantic_.types.builtins().bool_type);
   }
 
+  // Carries the diagnostic policy through a recursive structural type read.
+  // Type-hint discovery passes no state and remains non-diagnosing. Required
+  // expression evaluation supplies a state and observes reported afterward so
+  // it can preserve the precise inner diagnostic without adding a generic one.
+  struct TypeValueDiagnosticState {
+    bool required = false;
+    bool reported = false;
+  };
+
+  // Evaluates and validates the concrete count of an array or SIMD type. This
+  // is the constant evaluator's counterpart to TypeResolver's structural type
+  // checks: untyped integer constants are contextual, an explicitly typed
+  // count must be exactly usize, and Draft 1 rejects zero (Specification
+  // section 5, "Arrays, slices, and strings"). Pending discovery remains
+  // silent; required failures mark diagnostic_state.
+  [[nodiscard]] std::optional<std::uint64_t> fixed_sequence_count(
+      const SyntaxTree &tree,
+      NodeId count_id,
+      ScopeId scope,
+      TypeKind sequence_kind,
+      TypeValueDiagnosticState *diagnostic_state) {
+    assert(sequence_kind == TypeKind::Array || sequence_kind == TypeKind::Simd);
+    const bool required =
+        diagnostic_state != nullptr && diagnostic_state->required;
+    const EvalResult evaluated =
+        evaluate_expression(tree, count_id, scope, required);
+    if (evaluated.status != EvalStatus::Ready) {
+      if (evaluated.status == EvalStatus::Error &&
+          diagnostic_state != nullptr) {
+        diagnostic_state->reported = true;
+      }
+      return std::nullopt;
+    }
+
+    const TypeKind count_kind = evaluated.type.is_valid()
+        ? semantic_.types.type(evaluated.type).kind
+        : TypeKind::Invalid;
+    if (evaluated.value.kind != ConstantKind::Integer ||
+        (evaluated.type != semantic_.types.builtins().usize_type &&
+         count_kind != TypeKind::UntypedInteger)) {
+      if (required) {
+        diagnostics_.error(
+            tree.node(count_id).range,
+            sequence_kind == TypeKind::Array
+                ? "array length must have type 'usize'"
+                : "SIMD lane count must have type 'usize'");
+        diagnostic_state->reported = true;
+      }
+      return std::nullopt;
+    }
+
+    const std::optional<std::uint64_t> count =
+        evaluated.value.integer.to_u64();
+    if (!count.has_value() || *count == 0) {
+      if (required) {
+        diagnostics_.error(
+            tree.node(count_id).range,
+            sequence_kind == TypeKind::Array
+                ? "array length must be a nonzero compile-time usize"
+                : "SIMD lane count must be a nonzero compile-time usize");
+        diagnostic_state->reported = true;
+      }
+      return std::nullopt;
+    }
+    return count;
+  }
+
+  // Reads the exact structural TypeId denoted by type syntax during constant
+  // execution. The optional diagnostic state is shared by recursive members so
+  // a nested invalid sequence count is reported once at its count expression.
   [[nodiscard]] std::optional<TypeId> type_value(
-      const SyntaxTree &tree, NodeId expression_id, ScopeId scope) {
+      const SyntaxTree &tree,
+      NodeId expression_id,
+      ScopeId scope,
+      TypeValueDiagnosticState *diagnostic_state = nullptr) {
     const SyntaxNode &expression = tree.node(expression_id);
     if (is_type_syntax(expression.kind)) {
       if (expression.kind == NodeKind::NamedType) {
@@ -2605,7 +2678,8 @@ private:
       if (expression.kind == NodeKind::PointerType &&
           !expression.children.empty()) {
         const std::optional<TypeId> element =
-            type_value(tree, expression.children.back(), scope);
+            type_value(
+                tree, expression.children.back(), scope, diagnostic_state);
         return element.has_value()
             ? std::optional<TypeId>(semantic_.types.pointer(*element))
             : std::nullopt;
@@ -2613,7 +2687,8 @@ private:
       if (expression.kind == NodeKind::MultiPointerType &&
           !expression.children.empty()) {
         const std::optional<TypeId> element =
-            type_value(tree, expression.children.back(), scope);
+            type_value(
+                tree, expression.children.back(), scope, diagnostic_state);
         return element.has_value()
             ? std::optional<TypeId>(semantic_.types.multi_pointer(*element))
             : std::nullopt;
@@ -2621,38 +2696,39 @@ private:
       if (expression.kind == NodeKind::SliceType &&
           !expression.children.empty()) {
         const std::optional<TypeId> element =
-            type_value(tree, expression.children.back(), scope);
+            type_value(
+                tree, expression.children.back(), scope, diagnostic_state);
         return element.has_value()
             ? std::optional<TypeId>(semantic_.types.slice(*element))
             : std::nullopt;
       }
       if (expression.kind == NodeKind::ArrayType &&
           expression.children.size() == 2) {
-        const EvalResult count = evaluate_expression(
-            tree, expression.children.front(), scope, true);
+        const std::optional<std::uint64_t> count = fixed_sequence_count(
+            tree,
+            expression.children.front(),
+            scope,
+            TypeKind::Array,
+            diagnostic_state);
         const std::optional<TypeId> element =
-            type_value(tree, expression.children.back(), scope);
-        if (count.status != EvalStatus::Ready ||
-            count.value.kind != ConstantKind::Integer || !element.has_value()) {
-          return std::nullopt;
-        }
-        const std::optional<std::uint64_t> length = count.value.integer.to_u64();
-        return length.has_value()
-            ? std::optional<TypeId>(semantic_.types.array(*element, *length))
+            type_value(
+                tree, expression.children.back(), scope, diagnostic_state);
+        return count.has_value() && element.has_value()
+            ? std::optional<TypeId>(semantic_.types.array(*element, *count))
             : std::nullopt;
       }
       if (expression.kind == NodeKind::SimdType &&
           expression.children.size() == 2) {
-        const EvalResult count = evaluate_expression(
-            tree, expression.children.front(), scope, true);
+        const std::optional<std::uint64_t> lanes = fixed_sequence_count(
+            tree,
+            expression.children.front(),
+            scope,
+            TypeKind::Simd,
+            diagnostic_state);
         const std::optional<TypeId> element =
-            type_value(tree, expression.children.back(), scope);
-        if (count.status != EvalStatus::Ready ||
-            count.value.kind != ConstantKind::Integer || !element.has_value()) {
-          return std::nullopt;
-        }
-        const std::optional<std::uint64_t> lanes = count.value.integer.to_u64();
-        return lanes.has_value() && *lanes != 0
+            type_value(
+                tree, expression.children.back(), scope, diagnostic_state);
+        return lanes.has_value() && element.has_value()
             ? std::optional<TypeId>(
                   semantic_.types.simd(*element, *lanes, expression.range))
             : std::nullopt;
@@ -2660,7 +2736,8 @@ private:
       if (expression.kind == NodeKind::TupleType) {
         std::vector<TypeId> members;
         for (NodeId child : expression.children) {
-          const std::optional<TypeId> member = type_value(tree, child, scope);
+          const std::optional<TypeId> member =
+              type_value(tree, child, scope, diagnostic_state);
           if (!member.has_value()) return std::nullopt;
           members.push_back(*member);
         }
@@ -2703,7 +2780,8 @@ private:
                 return std::nullopt;
               }
               const std::optional<TypeId> resolved =
-                  type_value(tree, parameter_type_id, scope);
+                  type_value(
+                      tree, parameter_type_id, scope, diagnostic_state);
               if (!resolved.has_value()) return std::nullopt;
               const SyntaxNode &name_list =
                   tree.node(parameter.children.front());
@@ -2717,7 +2795,11 @@ private:
           } else if (child.kind == NodeKind::ResultClause &&
                      !child.children.empty()) {
             const std::optional<TypeId> resolved =
-                type_value(tree, child.children.front(), scope);
+                type_value(
+                    tree,
+                    child.children.front(),
+                    scope,
+                    diagnostic_state);
             if (!resolved.has_value()) return std::nullopt;
             result = *resolved;
           }
@@ -2735,7 +2817,8 @@ private:
       }
       if (expression.kind == NodeKind::DistinctType &&
           !expression.children.empty()) {
-        return type_value(tree, expression.children.back(), scope);
+        return type_value(
+            tree, expression.children.back(), scope, diagnostic_state);
       }
       return std::nullopt;
     }
@@ -2975,8 +3058,10 @@ private:
           required);
     }
 
+    TypeValueDiagnosticState type_diagnostics{required};
     std::optional<TypeId> queried = type_value(
-        tree, call.children[1], scope);
+        tree, call.children[1], scope, &type_diagnostics);
+    if (type_diagnostics.reported) return error_result();
     if (!queried.has_value()) {
       const EvalResult value = evaluate_expression(
           tree,
@@ -3044,8 +3129,11 @@ private:
     if (!name.has_value() || (*name != "size_of" && *name != "align_of")) {
       return pending();
     }
+    TypeValueDiagnosticState type_diagnostics{required};
     const std::optional<TypeId> queried =
-        type_value(tree, call.children[1], scope);
+        type_value(
+            tree, call.children[1], scope, &type_diagnostics);
+    if (type_diagnostics.reported) return error_result();
     if (!queried.has_value()) {
       return fail(
           tree.node(call.children[1]).range,
@@ -3420,8 +3508,13 @@ private:
               "cast[T] requires one type and one compile-time value",
               required);
         }
-        const std::optional<TypeId> target =
-            type_value(tree, callee.children[1], scope);
+        TypeValueDiagnosticState type_diagnostics{required};
+        const std::optional<TypeId> target = type_value(
+            tree,
+            callee.children[1],
+            scope,
+            &type_diagnostics);
+        if (type_diagnostics.reported) return error_result();
         if (!target.has_value()) {
           return fail(
               tree.node(callee.children[1]).range,
@@ -3698,8 +3791,13 @@ private:
       const Symbol &parameter_symbol =
           semantic_.symbols.symbol(parameter.parameter);
       if (parameter_symbol.kind == SymbolKind::TypeParameter) {
+        TypeValueDiagnosticState type_diagnostics{required};
         const std::optional<TypeId> supplied = type_value(
-            tree, compile_time_arguments[index], scope);
+            tree,
+            compile_time_arguments[index],
+            scope,
+            &type_diagnostics);
+        if (type_diagnostics.reported) return error_result();
         if (!supplied.has_value()) {
           return fail(
               tree.node(compile_time_arguments[index]).range,
@@ -4099,8 +4197,13 @@ private:
     ConstantValue value;
     TypeId local_type;
     if (declared_type.has_value()) {
-      local_type = type_value(tree, *declared_type, scope).value_or(
+      TypeValueDiagnosticState type_diagnostics{required};
+      local_type = type_value(
+          tree, *declared_type, scope, &type_diagnostics).value_or(
           semantic_.types.builtins().invalid);
+      if (type_diagnostics.reported) {
+        return failed_execution(EvalStatus::Error);
+      }
     }
     const bool explicitly_uninitialized = initializer.has_value() &&
         tree.node(*initializer).kind == NodeKind::UninitializedExpression;
@@ -5495,7 +5598,10 @@ private:
         node.kind == NodeKind::TupleType ||
         node.kind == NodeKind::ProcedureType;
     if (exact_structural_type_value) {
-      const std::optional<TypeId> type = type_value(tree, expression_id, scope);
+      TypeValueDiagnosticState type_diagnostics{required};
+      const std::optional<TypeId> type = type_value(
+          tree, expression_id, scope, &type_diagnostics);
+      if (type_diagnostics.reported) return error_result();
       if (type.has_value()) {
         return ready(
             ConstantValue::make_type(type->value),
@@ -5854,8 +5960,13 @@ private:
 
     case NodeKind::CompositeExpression: {
       if (node.children.empty()) return pending();
-      std::optional<TypeId> composite_type =
-          type_value(tree, node.children.front(), scope);
+      TypeValueDiagnosticState type_diagnostics{required};
+      std::optional<TypeId> composite_type = type_value(
+          tree,
+          node.children.front(),
+          scope,
+          &type_diagnostics);
+      if (type_diagnostics.reported) return error_result();
       // Parametric applications have already been resolved in an explicitly
       // typed global declaration, but this evaluator's small type-expression
       // reader does not recreate applications. The declared expected type is

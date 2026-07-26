@@ -201,6 +201,11 @@ main :: proc() {
         }
     }
     assert(selected_total == 42)
+    empty_iterations: usize
+    for (_, _), _ in pairs[:0] {
+        empty_iterations += 1
+    }
+    assert(empty_iterations == 0)
     outcome := summarize(readings[:])
     switch outcome {
     case .ok(summary):

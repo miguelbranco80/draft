@@ -1624,20 +1624,10 @@ sum_pairs :: proc() -> usize {
     return result
 }
 
-sum_empty_pairs :: proc() -> usize {
-    pairs := [0](usize, bool){}
-    result: usize
-    for (value, _), index in pairs {
-        result += value + index
-    }
-    return result
-}
-
 From_Procedure :: select_middle()
 Byte_Sum :: sum_bytes("A\0\u{e9}")
 Empty_Byte_Sum :: sum_bytes("")
 Tuple_Iteration_Sum :: sum_pairs()
-Empty_Tuple_Iteration_Sum :: sum_empty_pairs()
 )draft");
   if (valid.diagnostics.has_errors()) {
     std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
@@ -1698,7 +1688,6 @@ Empty_Tuple_Iteration_Sum :: sum_empty_pairs()
   expect_integer("Byte_Sum", "435");
   expect_integer("Empty_Byte_Sum", "0");
   expect_integer("Tuple_Iteration_Sum", "31");
-  expect_integer("Empty_Tuple_Iteration_Sum", "0");
 
   const std::optional<draft::SymbolId> wrapped_tail =
       find_symbol(valid.analysis.package, "Wrapped_Tail");
@@ -1741,6 +1730,95 @@ Bad_Negative :: "draft"[-1:]
   EXPECT(state, rendered.find(
                     "constant slice bound is negative or excessive") !=
                     std::string::npos);
+}
+
+// Structural type syntax can be evaluated inside a required compile-time
+// procedure without first passing through the ordinary declaration type
+// resolver. That evaluator path must enforce the same Draft 1 fixed-sequence
+// count rules and retain the count expression as the diagnostic range.
+void test_compile_time_structural_sequence_counts(TestState &state) {
+  AnalyzedSource invalid(R"draft(
+package conditions
+
+zero_array :: proc() -> bool {
+    return [0]u8 == [1]u8
+}
+
+typed_array_count :: proc() -> bool {
+    return [cast[u64](2)]u8 == [2]u8
+}
+
+negative_array_count :: proc() -> bool {
+    return [-1]u8 == [1]u8
+}
+
+zero_simd :: proc() -> bool {
+    return simd[0]u32 == simd[4]u32
+}
+
+typed_simd_count :: proc() -> bool {
+    return simd[cast[u64](4)]u32 == simd[4]u32
+}
+
+negative_simd_count :: proc() -> bool {
+    return simd[-1]u32 == simd[4]u32
+}
+
+Zero_Array :: zero_array()
+Typed_Array_Count :: typed_array_count()
+Negative_Array_Count :: negative_array_count()
+Zero_SIMD :: zero_simd()
+Typed_SIMD_Count :: typed_simd_count()
+Negative_SIMD_Count :: negative_simd_count()
+)draft");
+  EXPECT(state, !invalid.analysis.ok);
+
+  bool saw_zero_array = false;
+  bool saw_typed_array = false;
+  bool saw_negative_array = false;
+  bool saw_zero_simd = false;
+  bool saw_typed_simd = false;
+  bool saw_negative_simd = false;
+  for (const draft::Diagnostic &diagnostic :
+       invalid.diagnostics.diagnostics()) {
+    const std::string_view spelling =
+        invalid.sources.text(diagnostic.range);
+    saw_zero_array = saw_zero_array ||
+        (diagnostic.message ==
+             "array length must be a nonzero compile-time usize" &&
+         spelling == "0");
+    saw_typed_array = saw_typed_array ||
+        (diagnostic.message == "array length must have type 'usize'" &&
+         spelling == "cast[u64](2)");
+    saw_negative_array = saw_negative_array ||
+        (diagnostic.message ==
+             "array length must be a nonzero compile-time usize" &&
+         spelling == "-1");
+    saw_zero_simd = saw_zero_simd ||
+        (diagnostic.message ==
+             "SIMD lane count must be a nonzero compile-time usize" &&
+         spelling == "0");
+    saw_typed_simd = saw_typed_simd ||
+        (diagnostic.message == "SIMD lane count must have type 'usize'" &&
+         spelling == "cast[u64](4)");
+    saw_negative_simd = saw_negative_simd ||
+        (diagnostic.message ==
+             "SIMD lane count must be a nonzero compile-time usize" &&
+         spelling == "-1");
+  }
+  EXPECT(state, saw_zero_array);
+  EXPECT(state, saw_typed_array);
+  EXPECT(state, saw_negative_array);
+  EXPECT(state, saw_zero_simd);
+  EXPECT(state, saw_typed_simd);
+  EXPECT(state, saw_negative_simd);
+  EXPECT(state, invalid.diagnostics.error_count() == 6);
+  if (!saw_zero_array || !saw_typed_array || !saw_negative_array ||
+      !saw_zero_simd || !saw_typed_simd || !saw_negative_simd ||
+      invalid.diagnostics.error_count() != 6) {
+    std::cerr << draft::render_diagnostics(
+        invalid.sources, invalid.diagnostics);
+  }
 }
 
 void test_operator_type_boundaries(TestState &state) {
@@ -2820,6 +2898,7 @@ int main() {
   test_compile_time_callee_expressions(state);
   test_procedural_layout_constants(state);
   test_compile_time_string_views(state);
+  test_compile_time_structural_sequence_counts(state);
   test_operator_type_boundaries(state);
   test_global_initializers(state);
   test_global_type_value_storage_is_rejected(state);

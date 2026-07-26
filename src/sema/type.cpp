@@ -465,6 +465,11 @@ TypeId TypeStore::slice(TypeId element) {
 }
 
 TypeId TypeStore::array(TypeId element, std::uint64_t count) {
+  // Zero is invalid Draft source, not an incomplete concrete type. Every
+  // source-facing construction path owns its exact diagnostic before this
+  // structural interning boundary (Specification section 5, "Arrays, slices,
+  // and strings").
+  assert(count != 0);
   for (std::uint32_t index = 0; index < size(); ++index) {
     const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::Array && candidate.element == element &&
@@ -479,7 +484,7 @@ TypeId TypeStore::array(TypeId element, std::uint64_t count) {
   result.element = element;
   result.element_count = count;
   const TypeLayout element_layout = type(element).layout;
-  if (element_layout.known && count != 0 &&
+  if (element_layout.known &&
       element_layout.size <= std::numeric_limits<std::uint64_t>::max() / count) {
     result.layout = {true, element_layout.size * count, element_layout.alignment};
   }
@@ -520,6 +525,9 @@ TypeId TypeStore::simd(
     TypeId element,
     std::uint64_t lanes,
     SourceRange declaration) {
+  // As for arrays, symbolic SIMD widths have their own representation. A
+  // concrete row always carries a positive Draft lane count.
+  assert(lanes != 0);
   for (std::uint32_t index = 0; index < size(); ++index) {
     const Type &candidate = type(TypeId{index});
     if (candidate.kind == TypeKind::Simd && candidate.element == element &&
@@ -542,7 +550,7 @@ TypeId TypeStore::simd(
   result.element_count = lanes;
   result.declaration = declaration;
   const TypeLayout element_layout = type(element).layout;
-  if (element_layout.known && lanes != 0 &&
+  if (element_layout.known &&
       element_layout.size <= std::numeric_limits<std::uint64_t>::max() / lanes) {
     const std::uint64_t size = element_layout.size * lanes;
     // Target validation later rejects unsupported lane/type combinations. The
