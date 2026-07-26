@@ -102,7 +102,7 @@ paint_search :: proc(
             turbo_ui.hide_window(
                 &app.ui,
                 app.windows[:],
-                app.windows[Window_Search].id,
+                app.windows[Window_Find].id,
             )
         }
     }
@@ -261,6 +261,8 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
             },
             &app.go_line_box,
             app.go_line[:],
+            true,
+            .unsigned_integer,
         )
         submitted = result.submitted
     }
@@ -311,179 +313,250 @@ paint_go_to_line :: proc(app: ^App, content: turbo_ui.Rect) {
     }
 }
 
-paint_switch_workspace :: proc(app: ^App, content: turbo_ui.Rect) {
-    turbo_ui.write_clipped(
-        app.ui.surface,
-        content,
-        turbo_ui.Point{column = content.column + 1, row = content.row},
-        "Workspace directory:",
-        app.ui.theme.text,
-    )
-    submitted := false
-    if content.width > 2 && content.height > 2 {
-        result := turbo_ui.text_box(
+// paint_file_browser composes ordinary reusable controls over the browser
+// model. Location is a pathname field, entries are a selection list, Name is a
+// filename field only in file modes, and every visible button has a complete
+// face-plus-shadow footprint. Enter on a directory navigates; Enter on a file
+// commits the same operation as the default button.
+paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
+    if content.width < 20 || content.height < 10 {
+        _ = turbo_ui.button(
             &app.ui,
-            570,
-            turbo_ui.Rect{
-                column = content.column + 1,
-                row = content.row + 2,
-                width = content.width - 2,
-                height = 2,
-            },
-            &app.workspace_box,
-            app.workspace_path[:],
-        )
-        submitted = result.submitted
-    }
-    if app.workspace_error_length != 0 && content.height > 3 {
-        turbo_ui.write_clipped_bytes(
-            app.ui.surface,
-            content,
-            turbo_ui.Point{column = content.column + 1, row = content.row + 3},
-            app.workspace_error[:app.workspace_error_length],
-            app.ui.theme.hot,
-        )
-    }
-    if content.width > 2 && content.height > 6 {
-        buttons := turbo_ui.layout_begin(
-            turbo_ui.Rect{
-                column = content.column + 1,
-                row = content.row + 5,
-                width = content.width - 2,
-                height = 2,
-            },
-            .horizontal,
-            0,
-            1,
-        )
-        submitted = submitted || turbo_ui.button(
-            &app.ui,
-            571,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Switch")),
-            "Switch",
-            true,
-            .default_action,
-            cast[u8]('s'),
-        )
-        if turbo_ui.button(
-            &app.ui,
-            572,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
+            839,
+            turbo_ui.Rect{},
             "Cancel",
             true,
             .cancel_action,
-            cast[u8]('c'),
-        ) {
-            close_workspace_dialogs(app)
-            app.status = "Workspace switch cancelled"
-        }
-    } else if turbo_ui.button(
-        &app.ui,
-        572,
-        turbo_ui.Rect{},
-        "Cancel",
-        true,
-        .cancel_action,
-    ) {
-        close_workspace_dialogs(app)
-        app.status = "Workspace switch cancelled"
-    }
-    if submitted {
-        submit_switch_workspace(app)
-    }
-}
-
-paint_open_file :: proc(app: ^App, content: turbo_ui.Rect) {
-    prompt := "Open path (relative paths start at the Workspace):"
-    action_label := "Open"
-    action_key := cast[u8]('o')
-    if app.file_dialog_action == .save_as {
-        prompt = "Save path (relative paths start at the Workspace):"
-        action_label = "Save"
-        action_key = cast[u8]('s')
+        )
+        return
     }
     turbo_ui.write_clipped(
         app.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row},
-        prompt,
+        "Location:",
         app.ui.theme.text,
     )
-    submitted := false
-    if content.width > 2 && content.height > 2 {
-        result := turbo_ui.text_box(
-            &app.ui,
-            830,
-            turbo_ui.Rect{
-                column = content.column + 1,
-                row = content.row + 2,
-                width = content.width - 2,
-                height = 2,
-            },
-            &app.file_box,
-            app.file_path[:],
-        )
-        submitted = result.submitted
-    }
-    if content.width > 2 && content.height > 6 {
-        buttons := turbo_ui.layout_begin(
-            turbo_ui.Rect{
-                column = content.column + 1,
-                row = content.row + 5,
-                width = content.width - 2,
-                height = 2,
-            },
-            .horizontal,
-            0,
-            1,
-        )
-        submitted = submitted || turbo_ui.button(
-            &app.ui,
-            831,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width(action_label)),
-            action_label,
-            true,
-            .default_action,
-            action_key,
-        )
-        if turbo_ui.button(
-            &app.ui,
-            832,
-            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
-            "Cancel",
-            true,
-            .cancel_action,
-            cast[u8]('c'),
-        ) {
-            close_open_file(app)
-            app.status = "File operation cancelled"
-        }
-    } else if turbo_ui.button(
+    location_result := turbo_ui.text_box(
         &app.ui,
         832,
-        turbo_ui.Rect{},
+        turbo_ui.Rect{
+            column = content.column + 11,
+            row = content.row,
+            width = content.width - 12,
+            height = 1,
+        },
+        &app.browser_location_box,
+        app.browser_location[:],
+    )
+    if location_result.submitted {
+        _ = refresh_file_browser(app)
+    }
+    navigation := turbo_ui.layout_begin(
+        turbo_ui.Rect{
+            column = content.column + 1,
+            row = content.row + 2,
+            width = content.width - 2,
+            height = 2,
+        },
+        .horizontal,
+        0,
+        1,
+    )
+    if turbo_ui.button(
+        &app.ui,
+        833,
+        turbo_ui.layout_next(&navigation, turbo_ui.button_width("Up")),
+        "Up",
+        true,
+        .normal,
+        cast[u8]('u'),
+    ) {
+        _ = enter_browser_directory(app, 0)
+    }
+    if turbo_ui.button(
+        &app.ui,
+        834,
+        turbo_ui.layout_next(&navigation, turbo_ui.button_width("Refresh")),
+        "Refresh",
+        true,
+        .normal,
+        cast[u8]('r'),
+    ) {
+        _ = refresh_file_browser(app)
+    }
+
+    bottom_rows: usize = 4
+    if app.browser_mode != .open_workspace {
+        bottom_rows = 6
+    }
+    list_bounds := turbo_ui.Rect{
+        column = content.column + 1,
+        row = content.row + 4,
+        width = content.width - 2,
+        height = content.height - bottom_rows - 4,
+    }
+    view := turbo_ui.list_view(
+        &app.ui,
+        830,
+        831,
+        list_bounds,
+        app.browser_entry_count,
+        &app.browser_list,
+        .enter_only,
+    )
+    for index := view.first; index < view.end; index += 1 {
+        row := turbo_ui.list_row_begin(&app.ui, view, index)
+        marker := "[?] "
+        if app.browser_entry_kind[index] == .directory {
+            marker = "[D] "
+        } else if app.browser_entry_kind[index] == .regular_file {
+            marker = "    "
+        }
+        turbo_ui.write_clipped(
+            app.ui.surface,
+            turbo_ui.intersect(app.ui.clip, row.bounds),
+            turbo_ui.Point{column = row.bounds.column, row = row.bounds.row},
+            marker,
+            row.style,
+        )
+        if row.bounds.width > 4 {
+            name_bounds := row.bounds
+            name_bounds.column += 4
+            name_bounds.width -= 4
+            turbo_ui.write_clipped_bytes(
+                app.ui.surface,
+                turbo_ui.intersect(app.ui.clip, name_bounds),
+                turbo_ui.Point{column = name_bounds.column, row = name_bounds.row},
+                browser_entry_name(app, index),
+                row.style,
+            )
+        }
+    }
+    if view.selection_changed && view.cursor < app.browser_entry_count &&
+        app.browser_mode != .open_workspace {
+        if browser_entry_is_directory(app, view.cursor) {
+            _ = turbo_ui.text_box_set_text(
+                &app.browser_name_box,
+                app.browser_name[:],
+                "",
+            )
+        } else {
+            _ = turbo_ui.text_box_set(
+                &app.browser_name_box,
+                app.browser_name[:],
+                browser_entry_name(app, view.cursor),
+            )
+        }
+    }
+    if view.activated && view.activated_index < app.browser_entry_count {
+        index := view.activated_index
+        if browser_entry_is_directory(app, index) {
+            _ = enter_browser_directory(app, index)
+        } else if app.browser_mode == .open_workspace {
+            app.status = "Choose a directory for the workspace"
+        } else {
+            _ = turbo_ui.text_box_set(
+                &app.browser_name_box,
+                app.browser_name[:],
+                browser_entry_name(app, index),
+            )
+            commit_file_browser(app)
+        }
+    }
+
+    button_row := content.row + content.height - 2
+    if app.browser_mode != .open_workspace {
+        turbo_ui.write_clipped(
+            app.ui.surface,
+            content,
+            turbo_ui.Point{
+                column = content.column + 1,
+                row = content.row + content.height - 5,
+            },
+            "Name:",
+            app.ui.theme.text,
+        )
+        name_result := turbo_ui.text_box(
+            &app.ui,
+            835,
+            turbo_ui.Rect{
+                column = content.column + 8,
+                row = content.row + content.height - 5,
+                width = content.width - 9,
+                height = 1,
+            },
+            &app.browser_name_box,
+            app.browser_name[:],
+        )
+        if name_result.submitted {
+            commit_file_browser(app)
+        }
+    }
+    action_label := "Open"
+    action_key := cast[u8]('o')
+    if app.browser_mode == .save_as {
+        action_label = "Save"
+        action_key = cast[u8]('s')
+    } else if app.browser_mode == .open_workspace {
+        action_label = "Select Workspace"
+        action_key = cast[u8]('w')
+    }
+    selected_directory := app.browser_list.cursor < app.browser_entry_count &&
+        browser_entry_is_directory(app, app.browser_list.cursor)
+    action_enabled := app.browser_mode == .open_workspace ||
+        (app.browser_mode == .open_file && selected_directory) ||
+        len(browser_name_bytes(app)) != 0
+    buttons := turbo_ui.layout_begin(
+        turbo_ui.Rect{
+            column = content.column + 1,
+            row = button_row,
+            width = content.width - 2,
+            height = 2,
+        },
+        .horizontal,
+        0,
+        1,
+    )
+    if turbo_ui.button(
+        &app.ui,
+        838,
+        turbo_ui.layout_next(&buttons, turbo_ui.button_width(action_label)),
+        action_label,
+        action_enabled,
+        .default_action,
+        action_key,
+    ) {
+        if app.browser_mode == .open_file && selected_directory {
+            _ = enter_browser_directory(app, app.browser_list.cursor)
+        } else {
+            commit_file_browser(app)
+        }
+    }
+    if turbo_ui.button(
+        &app.ui,
+        839,
+        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
         "Cancel",
         true,
         .cancel_action,
+        cast[u8]('c'),
     ) {
-        close_open_file(app)
+        close_file_browser(app)
         app.status = "File operation cancelled"
-    }
-    if submitted {
-        if app.file_dialog_action == .save_as {
-            submit_save_as(app)
-        } else {
-            submit_open_file(app)
-        }
     }
 }
 
 paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
+    message := "Save or discard modified documents before continuing?"
+    if app.confirming_scope_change {
+        message = "This file belongs to another compiler scope. Switch and open it?"
+    }
     turbo_ui.write_clipped(
         app.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row + 1},
-        "Open another workspace with unsaved documents?",
+        message,
         app.ui.theme.text,
     )
     if content.width <= 2 || content.height < 5 {
@@ -500,37 +573,56 @@ paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
         0,
         1,
     )
-    if turbo_ui.button(
-        &app.ui,
-        573,
-        turbo_ui.layout_next(
-            &buttons,
-            turbo_ui.button_width("Save all + switch"),
-        ),
-        "Save all + switch",
-        true,
-        .default_action,
-        cast[u8]('s'),
-    ) {
-        if save_all_dirty_buffers(app) {
-            _ = switch_workspace_now(app)
-        } else {
-            app.status = "Save all failed; disk conflicts are not overwritten"
+    if app.confirming_scope_change {
+        if turbo_ui.button(
+            &app.ui,
+            573,
+            turbo_ui.layout_next(
+                &buttons,
+                turbo_ui.button_width("Switch and Open"),
+            ),
+            "Switch and Open",
+            true,
+            .default_action,
+            cast[u8]('s'),
+        ) {
+            if has_dirty_buffers(app) {
+                show_workspace_dirty_confirmation(app)
+            } else {
+                _ = perform_workspace_transition(app)
+            }
         }
-    }
-    if turbo_ui.button(
-        &app.ui,
-        574,
-        turbo_ui.layout_next(
-            &buttons,
-            turbo_ui.button_width("Discard + switch"),
-        ),
-        "Discard + switch",
-        true,
-        .normal,
-        cast[u8]('d'),
-    ) {
-        _ = switch_workspace_now(app)
+    } else {
+        if turbo_ui.button(
+            &app.ui,
+            573,
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Save All")),
+            "Save All",
+            true,
+            .default_action,
+            cast[u8]('s'),
+        ) {
+            turbo_ui.hide_window(
+                &app.ui,
+                app.windows[:],
+                app.windows[Window_Workspace_Confirm].id,
+            )
+            save_all_documents(app)
+            if !has_dirty_buffers(app) {
+                _ = perform_workspace_transition(app)
+            }
+        }
+        if turbo_ui.button(
+            &app.ui,
+            574,
+            turbo_ui.layout_next(&buttons, turbo_ui.button_width("Discard")),
+            "Discard",
+            true,
+            .normal,
+            cast[u8]('d'),
+        ) {
+            _ = perform_workspace_transition(app)
+        }
     }
     if turbo_ui.button(
         &app.ui,
@@ -542,7 +634,9 @@ paint_workspace_confirm :: proc(app: ^App, content: turbo_ui.Rect) {
         cast[u8]('c'),
     ) {
         close_workspace_dialogs(app)
-        app.status = "Workspace switch cancelled"
+        app.pending_workspace_transition = .none
+        app.confirming_scope_change = false
+        app.status = "Workspace operation cancelled"
     }
 }
 
@@ -750,107 +844,54 @@ paint_shortcut_help :: proc(app: ^App, content: turbo_ui.Rect) {
     }
 }
 
-Path_List_Kind :: enum {
-    program_files,
-    open_files,
-}
-
-path_list_count :: proc(app: ^App, kind: Path_List_Kind) -> usize {
-    if kind == .program_files && app.host.source_count != nil {
-        return app.program_file_count
-    }
-    return app.buffer_count
-}
-
-path_list_text :: proc(
-    app: ^App,
-    kind: Path_List_Kind,
-    index: usize,
-) -> []u8 {
-    if kind == .program_files && app.host.source_count != nil {
-        return memory.owned_string_bytes(&app.program_file_names[index])
-    }
-    return turbo_editor.path_bytes(&app.buffers[index])
-}
-
-// editor_title_bytes prefers the Workspace-relative label already published
-// for a file in the active Program. The Buffer retains its canonical path for
+// editor_title_bytes prefers the workspace-relative label already published
+// for a file in the active root. The Buffer retains its canonical path for
 // I/O and conflict detection, but exposing that entire host path in the title
 // wastes the scarce terminal columns which distinguish nearby source files.
 // Editing-only, read-only dependency, and unnamed documents fall back to their
-// own stored labels because they have no active-Program row.
+// own stored labels because they have no active-root row.
 editor_title_bytes :: proc(app: ^App) -> []u8 {
     path := turbo_editor.path_bytes(active_buffer(app))
-    for index: usize = 0; index < app.program_file_count; index += 1 {
+    for index: usize = 0; index < app.reachable_source_count; index += 1 {
         source_path := memory.owned_string_bytes(
-            &app.program_file_paths[index],
+            &app.reachable_source_paths[index],
         )
         if byte_views_equal(path, source_path) {
             return memory.owned_string_bytes(
-                &app.program_file_names[index],
+                &app.reachable_source_names[index],
             )
         }
     }
     return path
 }
 
-activate_path_row :: proc(
-    app: ^App,
-    kind: Path_List_Kind,
-    index: usize,
-) -> bool {
-    if kind == .program_files && app.host.source_count != nil {
-        return open_program_file(app, index)
-    }
-    return activate_buffer(app, index)
-}
-
-// paint_path_list is the application-specific byte-label list shared by
-// Program Files and Open Files. Arrow navigation moves only the list cursor;
-// Enter or one primary click opens the selected row. This separation prevents
-// browsing from continuously replacing the editor document. Program Files
-// uses compiler-owned Workspace-relative labels, while Open Files shows the
-// ordinary pathname stored by each document owner.
-paint_path_list :: proc(
-    app: ^App,
-    content: turbo_ui.Rect,
-    id: turbo_ui.Widget_Id,
-    kind: Path_List_Kind,
-) {
-    count := path_list_count(app, kind)
+// paint_open_documents shows only buffers the editor currently owns. Filesystem
+// discovery belongs to Open File; semantic package discovery belongs to the
+// Packages and Imports view. Keeping those concepts separate makes every row's
+// activation predictable.
+paint_open_documents :: proc(app: ^App, content: turbo_ui.Rect) {
+    count := app.buffer_count
     if content.width == 0 || content.height == 0 {
         return
     }
-    model := &app.program_files
-    if kind == .open_files {
-        model = &app.buffers_list
-    }
     view := turbo_ui.list_view(
         &app.ui,
-        id,
-        id + 1,
+        532,
+        533,
         content,
         count,
-        model,
+        &app.open_documents,
         .click_and_enter,
     )
-    active_path := turbo_editor.path_bytes(active_buffer(app))
     for index := view.first; index < view.end; index += 1 {
         row := turbo_ui.list_row_begin(&app.ui, view, index)
         marker := "  "
-        if kind == .open_files {
-            if app.buffers[index].dirty {
-                marker = "* "
-            } else if turbo_editor.is_read_only(&app.buffers[index]) {
-                marker = "R "
-            }
-        } else if kind == .program_files && app.host.source_count != nil {
-            source_path := memory.owned_string_bytes(
-                &app.program_file_paths[index],
-            )
-            if byte_views_equal(source_path, active_path) {
-                marker = "> "
-            }
+        if app.buffers[index].dirty {
+            marker = "* "
+        } else if turbo_editor.is_read_only(&app.buffers[index]) {
+            marker = "R "
+        } else if index == app.active {
+            marker = "> "
         }
         turbo_ui.write_clipped(
             app.ui.surface,
@@ -873,20 +914,16 @@ paint_path_list :: proc(
                     column = label_bounds.column,
                     row = label_bounds.row,
                 },
-                path_list_text(app, kind, index),
+                turbo_editor.path_bytes(&app.buffers[index]),
                 row.style,
             )
         }
     }
     if view.activated && view.activated_index < count {
-        if activate_path_row(app, kind, view.activated_index) {
-            if kind == .program_files && app.host.source_count != nil {
-                app.status = "Program file opened"
-            } else {
-                app.status = "Open file activated"
-            }
+        if activate_buffer(app, view.activated_index) {
+            app.status = "Open document activated"
         } else {
-            app.status = "Could not open the selected source"
+            app.status = "Could not activate the selected document"
         }
     }
 }
@@ -980,17 +1017,17 @@ paint_navigation_usages :: proc(app: ^App, content: turbo_ui.Rect) {
     }
 }
 
-program_root_name :: proc(app: ^App, index: usize) -> []u8 {
-    assert(index < app.program_root_count, "program root label is invalid")
-    return app.program_root_names[index][:app.program_root_length[index]]
+root_package_name :: proc(app: ^App, index: usize) -> []u8 {
+    assert(index < app.root_package_count, "root-package label is invalid")
+    return app.root_package_names[index][:app.root_package_length[index]]
 }
 
-// paint_program_root_picker makes the run-root choice visible and directly
+// paint_root_package_picker makes the compiler root choice visible and directly
 // selectable instead of hiding it behind a menu-only cycle. Arrow keys move the
 // cursor, Enter commits it, and a primary click commits one visible row. The
-// compiler service remains authoritative; select_program_root performs the
+// compiler service remains authoritative; select_root_package performs the
 // atomic service/editor transition and restores the old root on failure.
-paint_program_root_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
+paint_root_package_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
     if bounds.width == 0 || bounds.height == 0 {
         return
     }
@@ -999,11 +1036,11 @@ paint_program_root_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
         760,
         761,
         bounds,
-        app.program_root_count,
-        &app.program_roots,
+        app.root_package_count,
+        &app.root_packages,
         .click_and_enter,
     )
-    active := app.program_root_count
+    active := app.root_package_count
     if app.host.selected_root != nil {
         active = app.host.selected_root(app.host.user)
     }
@@ -1031,16 +1068,16 @@ paint_program_root_picker :: proc(app: ^App, bounds: turbo_ui.Rect) {
                 app.ui.surface,
                 turbo_ui.intersect(app.ui.clip, label_bounds),
                 turbo_ui.Point{column = label_bounds.column, row = label_bounds.row},
-                program_root_name(app, index),
+                root_package_name(app, index),
                 row.style,
             )
         }
     }
     if view.activated {
-        if select_program_root(app, view.activated_index) {
-            app.status = "Active Program changed"
+        if select_root_package(app, view.activated_index) {
+            app.status = "Active root package changed"
         } else {
-            app.status = "Could not activate the selected Program"
+            app.status = "Could not activate the selected root package"
         }
     }
 }
@@ -1136,9 +1173,9 @@ paint_package_tree :: proc(app: ^App, content: turbo_ui.Rect) {
     }
 }
 
-paint_program_configuration :: proc(app: ^App, bounds: turbo_ui.Rect) {
-    bytes := app.program_configuration[
-        :app.program_configuration_length
+paint_compiler_configuration :: proc(app: ^App, bounds: turbo_ui.Rect) {
+    bytes := app.compiler_configuration[
+        :app.compiler_configuration_length
     ]
     turbo_ui.text_view_bytes(
         &app.ui,
@@ -1146,50 +1183,107 @@ paint_program_configuration :: proc(app: ^App, bounds: turbo_ui.Rect) {
         781,
         bounds,
         bytes,
-        &app.program_configuration_view,
+        &app.compiler_configuration_view,
     )
 }
 
-// paint_program_settings presents the two things a Run command needs: which
-// executable root is active and the complete resolved build/run policy for
-// that root. Package topology is a separate inspector window; combining it
-// here made a routine Program choice look like an internal compiler graph.
-paint_program_settings :: proc(app: ^App, content: turbo_ui.Rect) {
-    if content.height < 5 {
-        paint_program_configuration(app, content)
+target_name :: proc(index: usize) -> string {
+    switch index {
+    case 0:
+        return "AArch64 macOS"
+    case 1:
+        return "AArch64 Linux"
+    case 2:
+        return "x86-64 Linux"
+    case 3:
+        return "x86-64 Windows"
+    case:
+        return "Unknown target"
+    }
+}
+
+// paint_compiler_options separates active compiler selection from read-only
+// effective policy. Root package is a list, target platform is a radio group,
+// and optimization/artifact/output/assertion/provider facts remain an exact
+// projection of draft.workspace below them. Run-only arguments, environment,
+// and working directory belong to the separate Run Configuration dialog.
+paint_compiler_options :: proc(app: ^App, content: turbo_ui.Rect) {
+    if content.height < 12 || content.width < 50 {
+        paint_compiler_configuration(app, content)
         return
     }
-    header := turbo_ui.Rect{
+    split := content.width / 2
+    roots_header := turbo_ui.Rect{
         column = content.column,
         row = content.row,
-        width = content.width,
+        width = split - 1,
         height = 1,
     }
     turbo_ui.fill_rect(
         app.ui.surface,
         app.ui.clip,
-        header,
+        roots_header,
         ' ',
         app.ui.theme.border,
     )
     turbo_ui.write_clipped(
         app.ui.surface,
-        turbo_ui.intersect(app.ui.clip, header),
-        turbo_ui.Point{column = header.column, row = header.row},
-        "Programs (* active; Enter selects)",
+        turbo_ui.intersect(app.ui.clip, roots_header),
+        turbo_ui.Point{column = roots_header.column, row = roots_header.row},
+        "Root Package (* active)",
         app.ui.theme.border,
     )
-    picker_height: usize = 4
-    if content.height < 12 {
-        picker_height = 2
+    target_header := turbo_ui.Rect{
+        column = content.column + split,
+        row = content.row,
+        width = content.width - split,
+        height = 1,
     }
+    turbo_ui.fill_rect(
+        app.ui.surface,
+        app.ui.clip,
+        target_header,
+        ' ',
+        app.ui.theme.border,
+    )
+    turbo_ui.write_clipped(
+        app.ui.surface,
+        turbo_ui.intersect(app.ui.clip, target_header),
+        turbo_ui.Point{column = target_header.column, row = target_header.row},
+        "Target Platform",
+        app.ui.theme.border,
+    )
+    picker_height: usize = 6
     picker := turbo_ui.Rect{
         column = content.column,
         row = content.row + 1,
-        width = content.width,
+        width = split - 1,
         height = picker_height,
     }
-    paint_program_root_picker(app, picker)
+    paint_root_package_picker(app, picker)
+    for target_index: usize = 0; target_index < 4; target_index += 1 {
+        selected := app.selected_target
+        if turbo_ui.radio_button(
+            &app.ui,
+            cast[turbo_ui.Widget_Id](790 + target_index),
+            turbo_ui.Rect{
+                column = content.column + split,
+                row = content.row + 1 + target_index,
+                width = content.width - split,
+                height = 1,
+            },
+            target_name(target_index),
+            &selected,
+            target_index,
+            app.workspace_open && app.host.select_target != nil,
+        ) {
+            if select_build_target(app, selected) {
+                app.status = "Compiler target changed"
+            } else {
+                app.status = "Could not select that compiler target"
+            }
+        }
+    }
     separator_row := picker.row + picker.height
     turbo_ui.fill_rect(
         app.ui.surface,
@@ -1215,7 +1309,7 @@ paint_program_settings :: proc(app: ^App, content: turbo_ui.Rect) {
             },
         ),
         turbo_ui.Point{column = content.column, row = separator_row},
-        "Effective Build / Run Configuration",
+        "Effective Build Configuration (from draft.workspace)",
         app.ui.theme.border,
     )
     configuration_height := content.height - picker_height - 2
@@ -1225,7 +1319,339 @@ paint_program_settings :: proc(app: ^App, content: turbo_ui.Rect) {
         width = content.width,
         height = configuration_height,
     }
-    paint_program_configuration(app, configuration)
+    paint_compiler_configuration(app, configuration)
+}
+
+// paint_run_row_list paints exact argument/environment rows and copies a newly
+// selected row into its edit field. Empty arguments remain valid and are shown
+// explicitly; an empty environment row is never accepted by command code.
+paint_run_argument_list :: proc(app: ^App, bounds: turbo_ui.Rect) {
+    view := turbo_ui.list_view(
+        &app.ui,
+        880,
+        881,
+        bounds,
+        app.run_argument_count,
+        &app.run_arguments,
+    )
+    for index := view.first; index < view.end; index += 1 {
+        bytes := run_argument_bytes(app, index)
+        if len(bytes) == 0 {
+            turbo_ui.list_row_text(&app.ui, view, index, "<empty>")
+        } else {
+            turbo_ui.list_row_bytes(&app.ui, view, index, bytes)
+        }
+    }
+    if view.selection_changed {
+        select_run_argument_for_edit(app)
+    }
+}
+
+paint_run_environment_list :: proc(app: ^App, bounds: turbo_ui.Rect) {
+    view := turbo_ui.list_view(
+        &app.ui,
+        890,
+        891,
+        bounds,
+        app.run_environment_count,
+        &app.run_environment,
+    )
+    for index := view.first; index < view.end; index += 1 {
+        turbo_ui.list_row_bytes(
+            &app.ui,
+            view,
+            index,
+            run_environment_bytes(app, index),
+        )
+    }
+    if view.selection_changed {
+        select_run_environment_for_edit(app)
+    }
+}
+
+paint_run_configuration :: proc(app: ^App, content: turbo_ui.Rect) {
+    if content.width < 60 || content.height < 20 {
+        _ = turbo_ui.button(
+            &app.ui,
+            899,
+            turbo_ui.Rect{},
+            "Done",
+            true,
+            .cancel_action,
+        )
+        return
+    }
+    half := (content.width - 1) / 2
+    arguments := turbo_ui.Rect{
+        column = content.column,
+        row = content.row,
+        width = half,
+        height = 1,
+    }
+    environment := turbo_ui.Rect{
+        column = content.column + half + 1,
+        row = content.row,
+        width = content.width - half - 1,
+        height = 1,
+    }
+    turbo_ui.label(&app.ui, arguments, "Arguments (one exact argv row)")
+    turbo_ui.label(&app.ui, environment, "Environment (NAME=value)")
+    arguments.row += 2
+    arguments.height = 7
+    environment.row += 2
+    environment.height = 7
+    paint_run_argument_list(app, arguments)
+    paint_run_environment_list(app, environment)
+
+    argument_edit := turbo_ui.text_box(
+        &app.ui,
+        882,
+        turbo_ui.Rect{
+            column = arguments.column,
+            row = arguments.row + arguments.height + 1,
+            width = arguments.width,
+            height = 1,
+        },
+        &app.run_argument_box,
+        app.run_argument_edit[:],
+    )
+    if argument_edit.submitted {
+        replace_run_argument(app)
+    }
+    environment_edit := turbo_ui.text_box(
+        &app.ui,
+        892,
+        turbo_ui.Rect{
+            column = environment.column,
+            row = environment.row + environment.height + 1,
+            width = environment.width,
+            height = 1,
+        },
+        &app.run_environment_box,
+        app.run_environment_edit[:],
+    )
+    if environment_edit.submitted {
+        replace_run_environment(app)
+    }
+    argument_buttons := turbo_ui.layout_begin(
+        turbo_ui.Rect{
+            column = arguments.column,
+            row = arguments.row + arguments.height + 3,
+            width = arguments.width,
+            height = 2,
+        },
+        .horizontal,
+        0,
+        1,
+    )
+    if turbo_ui.button(
+        &app.ui, 883,
+        turbo_ui.layout_next(&argument_buttons, turbo_ui.button_width("Add")),
+        "Add", app.run_argument_count < Maximum_Run_Arguments,
+        .normal, cast[u8]('a'),
+    ) {
+        add_run_argument(app)
+    }
+    if turbo_ui.button(
+        &app.ui, 884,
+        turbo_ui.layout_next(&argument_buttons, turbo_ui.button_width("Replace")),
+        "Replace", app.run_argument_count != 0,
+        .normal, cast[u8]('r'),
+    ) {
+        replace_run_argument(app)
+    }
+    if turbo_ui.button(
+        &app.ui, 885,
+        turbo_ui.layout_next(&argument_buttons, turbo_ui.button_width("Remove")),
+        "Remove", app.run_argument_count != 0, .normal, cast[u8]('m'),
+    ) {
+        remove_run_argument(app)
+    }
+    environment_buttons := turbo_ui.layout_begin(
+        turbo_ui.Rect{
+            column = environment.column,
+            row = environment.row + environment.height + 3,
+            width = environment.width,
+            height = 2,
+        },
+        .horizontal,
+        0,
+        1,
+    )
+    environment_bytes := turbo_ui.text_box_bytes(
+        &app.run_environment_box,
+        app.run_environment_edit[:],
+    )
+    environment_valid := environment_row_valid(environment_bytes)
+    if turbo_ui.button(
+        &app.ui, 893,
+        turbo_ui.layout_next(&environment_buttons, turbo_ui.button_width("Add")),
+        "Add", environment_valid &&
+            app.run_environment_count < Maximum_Run_Environment,
+        .normal, cast[u8]('d'),
+    ) {
+        add_run_environment(app)
+    }
+    if turbo_ui.button(
+        &app.ui, 894,
+        turbo_ui.layout_next(&environment_buttons, turbo_ui.button_width("Replace")),
+        "Replace", environment_valid && app.run_environment_count != 0,
+        .normal, cast[u8]('p'),
+    ) {
+        replace_run_environment(app)
+    }
+    if turbo_ui.button(
+        &app.ui, 895,
+        turbo_ui.layout_next(&environment_buttons, turbo_ui.button_width("Remove")),
+        "Remove", app.run_environment_count != 0, .normal, cast[u8]('v'),
+    ) {
+        remove_run_environment(app)
+    }
+
+    working_row := content.row + 16
+    turbo_ui.label(
+        &app.ui,
+        turbo_ui.Rect{
+            column = content.column,
+            row = working_row,
+            width = 20,
+            height = 1,
+        },
+        "Working directory:",
+    )
+    working := turbo_ui.text_box(
+        &app.ui,
+        896,
+        turbo_ui.Rect{
+            column = content.column + 20,
+            row = working_row,
+            width = content.width - 20,
+            height = 1,
+        },
+        &app.run_working_directory_box,
+        app.run_working_directory[:],
+    )
+    if working.changed {
+        mark_run_working_directory_changed(app)
+    }
+    footer := turbo_ui.layout_begin(
+        turbo_ui.Rect{
+            column = content.column,
+            row = content.row + content.height - 2,
+            width = content.width,
+            height = 2,
+        },
+        .horizontal,
+        0,
+        2,
+    )
+    if turbo_ui.button(
+        &app.ui, 898,
+        turbo_ui.layout_next(
+            &footer,
+            turbo_ui.button_width("Use Workspace Defaults"),
+        ),
+        "Use Workspace Defaults", true, .normal, cast[u8]('w'),
+    ) {
+        reset_run_configuration(app)
+    }
+    if turbo_ui.button(
+        &app.ui, 899,
+        turbo_ui.layout_next(&footer, turbo_ui.button_width("Done")),
+        "Done", true, .cancel_action, cast[u8]('o'),
+    ) {
+        close_run_configuration(app)
+    }
+}
+
+paint_close_document :: proc(app: ^App, content: turbo_ui.Rect) {
+    turbo_ui.label(
+        &app.ui,
+        turbo_ui.Rect{
+            column = content.column + 1,
+            row = content.row + 1,
+            width = content.width - 2,
+            height = 1,
+        },
+        "The active document has unsaved changes.",
+    )
+    if content.width < 30 || content.height < 5 {
+        return
+    }
+    buttons := turbo_ui.layout_begin(
+        turbo_ui.Rect{
+            column = content.column + 1,
+            row = content.row + 3,
+            width = content.width - 2,
+            height = 2,
+        },
+        .horizontal,
+        0,
+        1,
+    )
+    if turbo_ui.button(
+        &app.ui, 860,
+        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Save")),
+        "Save", true, .default_action, cast[u8]('s'),
+    ) {
+        save_and_close_document(app)
+    }
+    if turbo_ui.button(
+        &app.ui, 861,
+        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Discard")),
+        "Discard", true, .normal, cast[u8]('d'),
+    ) {
+        discard_and_close_document(app)
+    }
+    if turbo_ui.button(
+        &app.ui, 862,
+        turbo_ui.layout_next(&buttons, turbo_ui.button_width("Cancel")),
+        "Cancel", true, .cancel_action, cast[u8]('c'),
+    ) {
+        turbo_ui.hide_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Close_Document].id,
+        )
+        app.status = "Close document cancelled"
+    }
+}
+
+paint_about :: proc(app: ^App, content: turbo_ui.Rect) {
+    lines := [4]string{
+        "Turbo Draft",
+        "A terminal-native Draft development environment",
+        "C++ compiler service; Draft editor and reusable Turbo UI",
+        "Ordinary files and draft.workspace remain the source of truth",
+    }
+    for index: usize = 0; index < len(lines); index += 1 {
+        turbo_ui.label(
+            &app.ui,
+            turbo_ui.Rect{
+                column = content.column + 1,
+                row = content.row + index,
+                width = content.width - 2,
+                height = 1,
+            },
+            lines[index],
+        )
+    }
+    close := turbo_ui.Rect{
+        column = content.column + (content.width - 12) / 2,
+        row = content.row + content.height - 2,
+        width = 12,
+        height = 2,
+    }
+    if turbo_ui.button(
+        &app.ui, 9100, close, "Close", true, .cancel_action, cast[u8]('c'),
+    ) {
+        turbo_ui.hide_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_About].id,
+        )
+        app.status = "About closed"
+    }
 }
 
 // paint_packages_view exposes the checked semantic package/import graph only
@@ -1267,6 +1693,6 @@ paint_packages_view :: proc(app: ^App, content: turbo_ui.Rect) {
     if graph.height != 0 && app.package_row_count != 0 {
         paint_package_tree(app, graph)
     } else if graph.height != 0 {
-        paint_text_view(app, Window_Programs, graph)
+        paint_text_view(app, Window_Packages, graph)
     }
 }

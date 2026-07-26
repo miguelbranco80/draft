@@ -1,7 +1,7 @@
 // Host integration contains the optional compiler-facing state transitions for
 // Turbo Draft. It copies variable-length service results into Draft ownership,
 // maintains stable semantic navigation destinations, restores each document's
-// Program before a compiler action, and translates Build/Run results into one
+// root package before a compiler action, and translates Build/Run results into one
 // explicit child-process request.
 //
 // The Host_Api remains a borrowed synchronous procedure table. No compiler or
@@ -533,6 +533,46 @@ load_run_rows :: proc(
     return true
 }
 
+// copy_run_working_directory_override gives an IDE-entered relative path the
+// same meaning as a relative `draft.workspace` value: both are anchored at the
+// active Workspace, never at whichever shell directory launched DraftIDE. An
+// absolute spelling remains exact. The complete path is formed before an owner
+// is installed, so overflow or a missing Workspace coordinate cannot launch a
+// child in an accidental directory.
+copy_run_working_directory_override :: proc(
+    app: ^App,
+    working: []u8,
+    destination: ^memory.Owned_String,
+) -> bool {
+    if path_is_absolute(working) {
+        memory.owned_string_copy_bytes(destination, working)
+        return true
+    }
+    if !app.workspace_open || app.host.copy_workspace_path == nil {
+        return false
+    }
+    workspace_storage: [Host_Path_Capacity]u8
+    workspace_length := app.host.copy_workspace_path(
+        app.host.user,
+        cast[[^]u8](&workspace_storage[0]),
+        len(workspace_storage),
+    )
+    if workspace_length == 0 || workspace_length >= len(workspace_storage) {
+        return false
+    }
+    resolved_storage: [Host_Path_Capacity]u8
+    (resolved, valid) := join_path(
+        workspace_storage[:workspace_length],
+        working,
+        resolved_storage[:],
+    )
+    if !valid {
+        return false
+    }
+    memory.owned_string_copy_bytes(destination, resolved)
+    return true
+}
+
 // load_run_configuration snapshots the selected root's complete run tail after
 // a successful build. It performs no launch and leaves one destroyable owner
 // even when a callback fails midway.
@@ -541,6 +581,71 @@ load_run_configuration :: proc(
     configuration: ^Run_Configuration,
 ) -> bool {
     run_configuration_init(configuration)
+    if app.run_configuration_loaded && app.run_configuration_overridden &&
+        app.host.selected_root != nil &&
+        app.run_configuration_root == app.host.selected_root(app.host.user) {
+        for index: usize = 0; index < app.run_argument_count; index += 1 {
+            owned: memory.Owned_String
+            memory.owned_string_copy_bytes(
+                &owned,
+                run_argument_bytes(app, index),
+            )
+            array.append(&configuration.argument_owners, owned)
+        }
+        array.reserve(
+            &configuration.arguments,
+            configuration.argument_owners.length,
+        )
+        for index: usize = 0;
+            index < configuration.argument_owners.length;
+            index += 1 {
+            array.append(
+                &configuration.arguments,
+                memory.owned_string_cstring(
+                    &configuration.argument_owners.data[index],
+                ),
+            )
+        }
+        for index: usize = 0; index < app.run_environment_count; index += 1 {
+            row := run_environment_bytes(app, index)
+            if !environment_row_valid(row) {
+                return false
+            }
+            owned: memory.Owned_String
+            memory.owned_string_copy_bytes(&owned, row)
+            array.append(&configuration.environment_owners, owned)
+        }
+        array.reserve(
+            &configuration.environment,
+            configuration.environment_owners.length,
+        )
+        for index: usize = 0;
+            index < configuration.environment_owners.length;
+            index += 1 {
+            array.append(
+                &configuration.environment,
+                memory.owned_string_cstring(
+                    &configuration.environment_owners.data[index],
+                ),
+            )
+        }
+        working := turbo_ui.text_box_bytes(
+            &app.run_working_directory_box,
+            app.run_working_directory[:],
+        )
+        if len(working) != 0 {
+            if !copy_run_working_directory_override(
+                app,
+                working,
+                &configuration.working_directory,
+            ) {
+                app.status = "Run working directory is not a valid Workspace path"
+                return false
+            }
+            configuration.has_working_directory = true
+        }
+        return true
+    }
     if !load_run_rows(
         app.host.user,
         app.host.run_argument_count,
@@ -580,11 +685,11 @@ load_run_configuration :: proc(
 // only a successfully published executable. F5 snapshots run settings after
 // the build so artifact path, arguments, environment, and directory all belong
 // to the same selected root/configuration.
-execute_host_action :: proc(app: ^App, run: bool) {
+execute_host_action :: proc(app: ^App, run: bool) -> bool {
     procedure := app.host.build
     if procedure == nil {
         app.status = "No compiler host is attached"
-        return
+        return false
     }
     overlays: [Maximum_Buffers]draft_compiler_api.Overlay
     (overlay_count, active_overlay, valid_overlays) := collect_host_overlays(
@@ -592,8 +697,8 @@ execute_host_action :: proc(app: ^App, run: bool) {
         overlays[:],
     )
     if !valid_overlays {
-        app.status = "Active file is not part of the active Program"
-        return
+        app.status = "Active file is not part of the active root package"
+        return false
     }
     result: draft_compiler_api.Result
     procedure(
@@ -638,7 +743,7 @@ execute_host_action :: proc(app: ^App, run: bool) {
                         run_configuration_destroy(&run_configuration)
                         memory.owned_string_destroy(&owned_path)
                         refresh_tooling_text(app)
-                        return
+                        return false
                     }
                     working_directory: cstring
                     if run_configuration.has_working_directory {
@@ -677,6 +782,7 @@ execute_host_action :: proc(app: ^App, run: bool) {
         app.status = "Build/Run failed; see diagnostics"
     }
     refresh_tooling_text(app)
+    return result.success != 0
 }
 
 host_action :: proc(app: ^App, run: bool) {
@@ -689,7 +795,43 @@ host_action :: proc(app: ^App, run: bool) {
         app.status = "Run requested"
         return
     }
-    execute_host_action(app, false)
+    _ = execute_host_action(app, false)
+}
+
+// build_all_programs builds each compiler-discovered executable root exactly
+// once in the service's deterministic order. Root selection remains the one
+// transactional operation used everywhere else, so each build sees only the
+// overlays associated with that root. The user's original root and document
+// are restored even when an intermediate root fails.
+build_all_programs :: proc(app: ^App) {
+    if app.host.root_count == nil || app.host.selected_root == nil ||
+        app.host.select_root == nil || app.host.build == nil {
+        app.status = "No compiler workspace is attached"
+        return
+    }
+    count := app.host.root_count(app.host.user)
+    if count == 0 {
+        app.status = "Workspace contains no buildable programs"
+        return
+    }
+    original_root := app.host.selected_root(app.host.user)
+    original_document := app.active
+    completed: usize
+    for index: usize = 0; index < count; index += 1 {
+        if !select_root_package(app, index) || !execute_host_action(app, false) {
+            break
+        }
+        completed += 1
+    }
+    _ = select_root_package(app, original_root)
+    if original_document < app.buffer_count {
+        _ = activate_buffer(app, original_document)
+    }
+    if completed == count {
+        app.status = "Built all workspace programs"
+    } else {
+        app.status = "Build All stopped at the first failed program"
+    }
 }
 
 byte_views_equal :: proc(left, right: []u8) -> bool {
@@ -704,40 +846,16 @@ byte_views_equal :: proc(left, right: []u8) -> bool {
     return true
 }
 
-program_file_index :: proc(app: ^App, path: []u8) -> usize {
-    for index: usize = 0; index < app.program_file_count; index += 1 {
+reachable_source_index :: proc(app: ^App, path: []u8) -> usize {
+    for index: usize = 0; index < app.reachable_source_count; index += 1 {
         if byte_views_equal(
             path,
-            memory.owned_string_bytes(&app.program_file_paths[index]),
+            memory.owned_string_bytes(&app.reachable_source_paths[index]),
         ) {
             return index
         }
     }
-    return app.program_file_count
-}
-
-// open_program_file turns one compiler-discovered Program Files row into an
-// ordinary editor buffer. Reopening a path reuses its unsaved owner; a first
-// open reads the normal file and binds that buffer to the active run root.
-open_program_file :: proc(app: ^App, source_index: usize) -> bool {
-    if source_index >= app.program_file_count {
-        return false
-    }
-    path := memory.owned_string_bytes(&app.program_file_paths[source_index])
-    for index: usize = 0; index < app.buffer_count; index += 1 {
-        if byte_views_equal(turbo_editor.path_bytes(&app.buffers[index]), path) {
-            app.program_files.cursor = source_index
-            return activate_buffer(app, index)
-        }
-    }
-    if !init_one_buffer_bytes(app, path) {
-        return false
-    }
-    app.active = app.buffer_count - 1
-    app.buffers_list.cursor = app.active
-    app.program_files.cursor = source_index
-    bind_active_buffer_to_host_root(app)
-    return activate_buffer(app, app.active)
+    return app.reachable_source_count
 }
 
 // open_selected_host_source synchronizes the editor's active buffer with the
@@ -761,10 +879,6 @@ open_selected_host_source :: proc(app: ^App) -> bool {
     selected_root := app.host.selected_root(app.host.user)
     for index: usize = 0; index < app.buffer_count; index += 1 {
         if byte_views_equal(turbo_editor.path_bytes(&app.buffers[index]), path) {
-            source_index := program_file_index(app, path)
-            if source_index < app.program_file_count {
-                app.program_files.cursor = source_index
-            }
             app.buffer_root[index] = selected_root
             app.buffer_has_root[index] = true
             return activate_buffer(app, index)
@@ -774,21 +888,17 @@ open_selected_host_source :: proc(app: ^App) -> bool {
         return false
     }
     app.active = app.buffer_count - 1
-    app.buffers_list.cursor = app.active
-    source_index := program_file_index(app, path)
-    if source_index < app.program_file_count {
-        app.program_files.cursor = source_index
-    }
+    app.open_documents.cursor = app.active
     app.buffer_root[app.active] = selected_root
     app.buffer_has_root[app.active] = true
     return activate_buffer(app, app.active)
 }
 
-// select_program_root is the single UI transition for Program and Run Settings.
+// select_root_package is the single UI transition for Compiler Options.
 // The compiler service changes first; the editor then opens or reselects the
 // exact source path published for that root. Failure restores the previous
 // service root before any editor buffer can be compiled under it.
-select_program_root :: proc(app: ^App, selected: usize) -> bool {
+select_root_package :: proc(app: ^App, selected: usize) -> bool {
     if app.host.root_count == nil || app.host.selected_root == nil ||
         app.host.select_root == nil || selected >= app.host.root_count(app.host.user) {
         return false
@@ -797,68 +907,57 @@ select_program_root :: proc(app: ^App, selected: usize) -> bool {
     if selected != previous && app.host.select_root(app.host.user, selected) == 0 {
         return false
     }
-    refresh_program_roots(app)
-    refresh_program_files(app)
+    refresh_root_packages(app)
+    refresh_reachable_sources(app)
     if open_selected_host_source(app) {
         app.semantic_dirty = true
+        app.run_configuration_loaded = false
+        app.run_configuration_overridden = false
         refresh_tooling_text(app)
-        if selected < app.program_root_count {
-            app.program_roots.cursor = selected
+        if selected < app.root_package_count {
+            app.root_packages.cursor = selected
         }
         return true
     }
     if selected != previous {
         app.host.select_root(app.host.user, previous)
     }
-    refresh_program_roots(app)
-    refresh_program_files(app)
+    refresh_root_packages(app)
+    refresh_reachable_sources(app)
     return false
 }
 
-cycle_program_root :: proc(app: ^App) {
-    if app.host.root_count == nil || app.host.selected_root == nil ||
-        app.host.select_root == nil {
-        app.status = "No Program selector is attached"
-        return
-    }
-    count := app.host.root_count(app.host.user)
-    if count <= 1 {
-        app.status = "Workspace has one selectable Program"
-        return
-    }
-    next := (app.host.selected_root(app.host.user) + 1) % count
-    if !select_program_root(app, next) {
-        app.status = "Selected Program could not be opened; selection restored"
-        return
-    }
-    app.status = "Active Program changed"
-}
-
-cycle_build_target :: proc(app: ^App) {
-    if app.host.target == nil || app.host.select_target == nil {
-        app.status = "No compiler target selector is attached"
-        return
+// select_build_target is the exact Compiler Options transition. It performs
+// the same transactional restore as root selection: the service changes first,
+// then Draft-owned root/source tables and the selected source are refreshed;
+// failure puts the previous target and UI rows back before returning.
+select_build_target :: proc(app: ^App, selected: usize) -> bool {
+    if app.host.target == nil || app.host.select_target == nil || selected >= 4 {
+        return false
     }
     previous := app.host.target(app.host.user)
     if previous >= 4 {
-        app.status = "Compiler service returned an unknown target"
-        return
+        return false
     }
-    next := (previous + 1) % 4
-    if app.host.select_target(app.host.user, cast[u8](next)) == 0 {
-        app.status = "Could not select the next Draft target"
-        return
+    if selected != cast[usize](previous) &&
+        app.host.select_target(app.host.user, cast[u8](selected)) == 0 {
+        return false
     }
-    refresh_program_roots(app)
-    refresh_program_files(app)
-    if !open_selected_host_source(app) {
+    refresh_root_packages(app)
+    refresh_reachable_sources(app)
+    if open_selected_host_source(app) {
+        app.selected_target = selected
+        app.semantic_dirty = true
+        app.run_configuration_loaded = false
+        app.run_configuration_overridden = false
+        refresh_tooling_text(app)
+        return true
+    }
+    if selected != cast[usize](previous) {
         app.host.select_target(app.host.user, previous)
-        refresh_program_roots(app)
-        refresh_program_files(app)
-        app.status = "Selected target could not be opened; selection restored"
-        return
     }
-    app.semantic_dirty = true
-    refresh_tooling_text(app)
-    app.status = "Target changed; Check, Build, or Run refreshes semantics"
+    refresh_root_packages(app)
+    refresh_reachable_sources(app)
+    app.selected_target = cast[usize](previous)
+    return false
 }

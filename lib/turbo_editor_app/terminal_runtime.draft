@@ -512,9 +512,10 @@ pub run_with_host :: proc(
     }
     defer destroy_app(&app)
     app.host = host
+    app.workspace_open = true
     bind_active_buffer_to_host_root(&app)
-    refresh_program_roots(&app)
-    refresh_program_files(&app)
+    refresh_root_packages(&app)
+    refresh_reachable_sources(&app)
     app.status = "Turbo Draft compiler session attached"
     refresh_host(&app)
     return run_app_terminal(&app)
@@ -536,9 +537,10 @@ pub run_with_host_bytes :: proc(
     }
     defer destroy_app(&app)
     app.host = host
+    app.workspace_open = true
     bind_active_buffer_to_host_root(&app)
-    refresh_program_roots(&app)
-    refresh_program_files(&app)
+    refresh_root_packages(&app)
+    refresh_reachable_sources(&app)
     app.status = "Turbo Draft compiler session attached"
     refresh_host(&app)
     if has_smoke_argument() {
@@ -551,7 +553,7 @@ pub run_with_host_bytes :: proc(
         // including continuation of the manifest-selected root through native
         // publication. Merely painting compiler text would not prove that the
         // durable root-package selection is sufficient to build the program.
-        execute_host_action(&app, false)
+        _ = execute_host_action(&app, false)
         artifact: [Host_Path_Capacity]u8
         if app.host.copy_artifact_path == nil ||
             app.host.copy_artifact_path(
@@ -561,7 +563,7 @@ pub run_with_host_bytes :: proc(
             ) == 0 {
             return 1
         }
-        app.windows[Window_Programs].visible = true
+        app.windows[Window_Packages].visible = true
         surface: tui.Surface
         tui.surface_init(&surface, 100, 30)
         defer tui.surface_destroy(&surface)

@@ -101,8 +101,9 @@ downloads dependencies, or changes language semantics. Turbo Draft uses the
 same upward boundary discovery and may use the named default; `--source`
 optionally chooses the initial direct-child file. Without it, the compiler uses
 the first target-selected source in bytewise filename order; `package.draft`
-remains only a convention. F5 always checks/builds/runs the Program associated
-with the active editor buffer and honors its effective target, optimization,
+remains only a convention. F5 checks/builds/runs the Program associated with an
+active root-owned buffer and rejects an editing-only file outside that graph. It
+honors the Program's effective target, optimization,
 artifact/output, debug/assertion,
 provider/asset, argument, environment, and working-directory settings. An
 explicit IDE target replaces manifest targets, and non-executable artifacts are
@@ -122,16 +123,18 @@ environment with the last occurrence winning. Relative working directories are
 workspace-relative; an absent one inherits DraftIDE's working directory. The
 child inherits the restored primary terminal, and DraftIDE waits for Enter
 after completion so program output remains readable before the TUI resumes.
-Files in Active Program is populated from the compiler's target-selected
-reachable graph, while Open Files lists editor-owned documents. Typing runs only
+Packages and Imports is populated from the compiler's target-selected reachable
+graph, while Open Documents lists editor-owned documents. Typing runs only
 the production lexer over the active complete file; it does not check packages
 or refresh semantic views. Check and F5 submit the active file plus every other
 dirty file
 belonging to that graph as one transactional source-override set. F12 and
 Shift-F12 first check pending edits before requesting exact semantic ranges.
-F6 presents the selected Program and its effective Build/Run configuration;
-Packages and Imports is a separate expandable structured tree, and Window owns
-the other read-only semantic reports. F12 uses the current successful
+F6 presents Compiler Options: the selected root package and target plus the
+effective build configuration. Run Configuration separately edits exact argv,
+environment, and working-directory values. Packages and Imports is an
+expandable structured tree, and Window owns the other read-only semantic
+reports. F12 uses the current successful
 compiler graph to select an exact definition, Shift-F12 opens ordered usages,
 and Alt-Left/Alt-Right traverse app-owned navigation history. A failed latest
 check disables semantic jumps even though last-good summary reports remain

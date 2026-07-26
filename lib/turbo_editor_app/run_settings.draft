@@ -1,0 +1,373 @@
+// Run settings own DraftIDE's structured, shell-free launch overrides. The
+// compiler service publishes workspace defaults as exact argument rows,
+// NAME=value environment rows, and one working-directory pathname. This module
+// copies them into bounded Draft-owned fields, lets the dialog edit those same
+// typed rows, validates environment names, and tells the launch path whether
+// it should use the workspace defaults or the explicit IDE override.
+//
+// Changes committed with Add/Replace/Remove or in the working-directory field
+// apply to the next Run immediately; the dialog therefore has Done rather than
+// a misleading Cancel button. `Use Workspace Defaults` performs an explicit
+// reload and clears the override bit. No row is parsed as shell syntax and no
+// quoting convention exists at this layer.
+package turbo_editor_app
+
+import lib/turbo_ui
+
+copy_run_argument_from_host :: proc(
+    app: ^App,
+    index: usize,
+    destination: []u8,
+) -> (usize, bool) {
+    if app.host.copy_run_argument == nil {
+        return (0, false)
+    }
+    required := app.host.copy_run_argument(
+        app.host.user,
+        index,
+        cast[[^]u8](&destination[0]),
+        len(destination),
+    )
+    return (required, required < len(destination))
+}
+
+copy_run_environment_from_host :: proc(
+    app: ^App,
+    index: usize,
+    destination: []u8,
+) -> (usize, bool) {
+    if app.host.copy_run_environment == nil {
+        return (0, false)
+    }
+    required := app.host.copy_run_environment(
+        app.host.user,
+        index,
+        cast[[^]u8](&destination[0]),
+        len(destination),
+    )
+    return (required, required < len(destination))
+}
+
+// load_workspace_run_configuration replaces the complete UI model only after
+// every service row fits its declared bound. A partial copy never becomes an
+// executable configuration. The selected-root ordinal pairs the snapshot with
+// the root whose manifest policy produced it.
+load_workspace_run_configuration :: proc(app: ^App) -> bool {
+    if app.host.run_argument_count == nil ||
+        app.host.run_environment_count == nil ||
+        app.host.copy_run_working_directory == nil {
+        return false
+    }
+    argument_count := app.host.run_argument_count(app.host.user)
+    environment_count := app.host.run_environment_count(app.host.user)
+    if argument_count > Maximum_Run_Arguments ||
+        environment_count > Maximum_Run_Environment {
+        app.status = "Workspace run configuration exceeds the IDE row limit"
+        return false
+    }
+    for index: usize = 0; index < argument_count; index += 1 {
+        (length, copied) := copy_run_argument_from_host(
+            app,
+            index,
+            app.run_argument_storage[index][:],
+        )
+        if !copied {
+            app.status = "A workspace argument exceeds the IDE field limit"
+            return false
+        }
+        app.run_argument_length[index] = length
+    }
+    for index: usize = 0; index < environment_count; index += 1 {
+        (length, copied) := copy_run_environment_from_host(
+            app,
+            index,
+            app.run_environment_storage[index][:],
+        )
+        if !copied {
+            app.status = "A workspace environment row exceeds the IDE field limit"
+            return false
+        }
+        app.run_environment_length[index] = length
+    }
+    working_length := app.host.copy_run_working_directory(
+        app.host.user,
+        cast[[^]u8](&app.run_working_directory[0]),
+        len(app.run_working_directory),
+    )
+    if working_length >= len(app.run_working_directory) ||
+        !turbo_ui.text_box_set(
+            &app.run_working_directory_box,
+            app.run_working_directory[:],
+            app.run_working_directory[:working_length],
+        ) {
+        app.status = "Workspace working directory exceeds the IDE path limit"
+        return false
+    }
+    app.run_argument_count = argument_count
+    app.run_environment_count = environment_count
+    app.run_arguments.cursor = 0
+    app.run_arguments.offset = 0
+    app.run_environment.cursor = 0
+    app.run_environment.offset = 0
+    _ = turbo_ui.text_box_set_text(
+        &app.run_argument_box,
+        app.run_argument_edit[:],
+        "",
+    )
+    _ = turbo_ui.text_box_set_text(
+        &app.run_environment_box,
+        app.run_environment_edit[:],
+        "",
+    )
+    app.run_configuration_root = 0
+    if app.host.selected_root != nil {
+        app.run_configuration_root = app.host.selected_root(app.host.user)
+    }
+    app.run_configuration_loaded = true
+    app.run_configuration_overridden = false
+    return true
+}
+
+request_run_configuration :: proc(app: ^App) {
+    if !app.workspace_open || app.host.selected_root == nil {
+        app.status = "Open a compiler workspace before configuring Run"
+        return
+    }
+    selected := app.host.selected_root(app.host.user)
+    if !app.run_configuration_loaded ||
+        app.run_configuration_root != selected {
+        if !load_workspace_run_configuration(app) {
+            return
+        }
+    }
+    turbo_ui.show_modal_window(
+        &app.ui,
+        app.windows[:],
+        app.windows[Window_Run_Configuration].id,
+    )
+    app.ui.focused_id = 880
+    app.status = "Run arguments and environment are exact rows, not shell text"
+}
+
+close_run_configuration :: proc(app: ^App) {
+    turbo_ui.hide_window(
+        &app.ui,
+        app.windows[:],
+        app.windows[Window_Run_Configuration].id,
+    )
+    app.status = "Run configuration ready"
+}
+
+reset_run_configuration :: proc(app: ^App) {
+    if load_workspace_run_configuration(app) {
+        app.status = "Workspace run defaults restored"
+    }
+}
+
+run_argument_bytes :: proc(app: ^App, index: usize) -> []u8 {
+    assert(index < app.run_argument_count, "run argument index is invalid")
+    return app.run_argument_storage[index][:app.run_argument_length[index]]
+}
+
+run_environment_bytes :: proc(app: ^App, index: usize) -> []u8 {
+    assert(index < app.run_environment_count, "run environment index is invalid")
+    return app.run_environment_storage[index][:app.run_environment_length[index]]
+}
+
+copy_run_value :: proc(destination: []u8, source: []u8) -> bool {
+    if len(source) > len(destination) {
+        return false
+    }
+    for index: usize = 0; index < len(source); index += 1 {
+        destination[index] = source[index]
+    }
+    return true
+}
+
+select_run_argument_for_edit :: proc(app: ^App) {
+    if app.run_argument_count == 0 {
+        _ = turbo_ui.text_box_set_text(
+            &app.run_argument_box,
+            app.run_argument_edit[:],
+            "",
+        )
+        return
+    }
+    _ = turbo_ui.text_box_set(
+        &app.run_argument_box,
+        app.run_argument_edit[:],
+        run_argument_bytes(app, app.run_arguments.cursor),
+    )
+}
+
+select_run_environment_for_edit :: proc(app: ^App) {
+    if app.run_environment_count == 0 {
+        _ = turbo_ui.text_box_set_text(
+            &app.run_environment_box,
+            app.run_environment_edit[:],
+            "",
+        )
+        return
+    }
+    _ = turbo_ui.text_box_set(
+        &app.run_environment_box,
+        app.run_environment_edit[:],
+        run_environment_bytes(app, app.run_environment.cursor),
+    )
+}
+
+add_run_argument :: proc(app: ^App) {
+    if app.run_argument_count == Maximum_Run_Arguments {
+        app.status = "Run argument limit reached"
+        return
+    }
+    source := turbo_ui.text_box_bytes(
+        &app.run_argument_box,
+        app.run_argument_edit[:],
+    )
+    index := app.run_argument_count
+    _ = copy_run_value(app.run_argument_storage[index][:], source)
+    app.run_argument_length[index] = len(source)
+    app.run_argument_count += 1
+    app.run_arguments.cursor = index
+    app.run_configuration_overridden = true
+    app.status = "Run argument added"
+}
+
+replace_run_argument :: proc(app: ^App) {
+    if app.run_argument_count == 0 {
+        add_run_argument(app)
+        return
+    }
+    source := turbo_ui.text_box_bytes(
+        &app.run_argument_box,
+        app.run_argument_edit[:],
+    )
+    index := app.run_arguments.cursor
+    _ = copy_run_value(app.run_argument_storage[index][:], source)
+    app.run_argument_length[index] = len(source)
+    app.run_configuration_overridden = true
+    app.status = "Run argument replaced"
+}
+
+remove_run_argument :: proc(app: ^App) {
+    if app.run_argument_count == 0 {
+        app.status = "No run argument is selected"
+        return
+    }
+    removed := app.run_arguments.cursor
+    for index := removed; index + 1 < app.run_argument_count; index += 1 {
+        length := app.run_argument_length[index + 1]
+        _ = copy_run_value(
+            app.run_argument_storage[index][:],
+            app.run_argument_storage[index + 1][:length],
+        )
+        app.run_argument_length[index] = length
+    }
+    app.run_argument_count -= 1
+    if app.run_arguments.cursor >= app.run_argument_count &&
+        app.run_argument_count != 0 {
+        app.run_arguments.cursor = app.run_argument_count - 1
+    }
+    select_run_argument_for_edit(app)
+    app.run_configuration_overridden = true
+    app.status = "Run argument removed"
+}
+
+environment_row_valid :: proc(row: []u8) -> bool {
+    equals := len(row)
+    for index: usize = 0; index < len(row); index += 1 {
+        if row[index] == cast[u8]('=') {
+            equals = index
+            break
+        }
+    }
+    // The process layer accepts a nonempty byte name followed by `=`; values
+    // may be empty or contain more `=` bytes. Windows' current deterministic
+    // environment sorter additionally requires an ASCII name, while POSIX
+    // keeps its native byte-sensitive contract. Match that exact boundary here
+    // so the dialog neither rejects a launchable row nor accepts one that F5
+    // will later reject.
+    if equals == 0 || equals == len(row) {
+        return false
+    }
+    when target.os == .windows {
+        for index: usize = 0; index < equals; index += 1 {
+            if row[index] >= 0x80 {
+                return false
+            }
+        }
+    }
+    return true
+}
+
+add_run_environment :: proc(app: ^App) {
+    source := turbo_ui.text_box_bytes(
+        &app.run_environment_box,
+        app.run_environment_edit[:],
+    )
+    if !environment_row_valid(source) {
+        app.status = "Environment rows require a nonempty NAME followed by ="
+        return
+    }
+    if app.run_environment_count == Maximum_Run_Environment {
+        app.status = "Run environment limit reached"
+        return
+    }
+    index := app.run_environment_count
+    _ = copy_run_value(app.run_environment_storage[index][:], source)
+    app.run_environment_length[index] = len(source)
+    app.run_environment_count += 1
+    app.run_environment.cursor = index
+    app.run_configuration_overridden = true
+    app.status = "Environment override added"
+}
+
+replace_run_environment :: proc(app: ^App) {
+    if app.run_environment_count == 0 {
+        add_run_environment(app)
+        return
+    }
+    source := turbo_ui.text_box_bytes(
+        &app.run_environment_box,
+        app.run_environment_edit[:],
+    )
+    if !environment_row_valid(source) {
+        app.status = "Environment rows require a nonempty NAME followed by ="
+        return
+    }
+    index := app.run_environment.cursor
+    _ = copy_run_value(app.run_environment_storage[index][:], source)
+    app.run_environment_length[index] = len(source)
+    app.run_configuration_overridden = true
+    app.status = "Environment override replaced"
+}
+
+remove_run_environment :: proc(app: ^App) {
+    if app.run_environment_count == 0 {
+        app.status = "No environment override is selected"
+        return
+    }
+    removed := app.run_environment.cursor
+    for index := removed; index + 1 < app.run_environment_count; index += 1 {
+        length := app.run_environment_length[index + 1]
+        _ = copy_run_value(
+            app.run_environment_storage[index][:],
+            app.run_environment_storage[index + 1][:length],
+        )
+        app.run_environment_length[index] = length
+    }
+    app.run_environment_count -= 1
+    if app.run_environment.cursor >= app.run_environment_count &&
+        app.run_environment_count != 0 {
+        app.run_environment.cursor = app.run_environment_count - 1
+    }
+    select_run_environment_for_edit(app)
+    app.run_configuration_overridden = true
+    app.status = "Environment override removed"
+}
+
+mark_run_working_directory_changed :: proc(app: ^App) {
+    app.run_configuration_overridden = true
+    app.status = "Run working directory changed"
+}

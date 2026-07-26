@@ -9,9 +9,71 @@ import lib/turbo_editor
 import lib/turbo_ui
 import lib/turbo_ui_terminal
 
+expect_surface_text :: proc(
+    test: ^testing.Test,
+    surface: ^tui.Surface,
+    column, row: usize,
+    expected: string,
+) {
+    for index: usize = 0; index < len(expected); index += 1 {
+        (cell, valid) := tui.cell_at(surface, column + index, row)
+        testing.expect(
+            test,
+            valid && cell.value == cast[rune](expected[index]),
+        )
+    }
+}
+
+// surface_contains scans rendered ASCII labels without depending on a dialog's
+// clamped origin. Dialog placement changes at the 80x24 compatibility boundary,
+// but a field disappearing entirely is always a contract failure.
+surface_contains :: proc(surface: ^tui.Surface, expected: string) -> bool {
+    if len(expected) == 0 || len(expected) > surface.columns {
+        return false
+    }
+    for row: usize = 0; row < surface.rows; row += 1 {
+        for column: usize = 0;
+            column + len(expected) <= surface.columns;
+            column += 1 {
+            matches := true
+            for index: usize = 0; index < len(expected); index += 1 {
+                (cell, valid) := tui.cell_at(surface, column + index, row)
+                if !valid || cell.value != cast[rune](expected[index]) {
+                    matches = false
+                    break
+                }
+            }
+            if matches {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+open_menu_for_test :: proc(
+    app: ^App,
+    surface: ^tui.Surface,
+    access_key: u8,
+) {
+    _ = paint_app(
+        app,
+        surface,
+        turbo_ui.key_event(turbo_ui.Key_Event{
+            code = .character,
+            byte_value = access_key,
+            alt = true,
+        }),
+    )
+}
+
 Fake_Root_State :: c struct {
     selected: usize,
     fail_selection: u8,
+    target: u8,
+    build_count: usize,
+    source_path: rawptr,
+    source_length: usize,
 }
 
 Fake_Navigation_State :: c struct {
@@ -67,6 +129,57 @@ fake_select_root :: c proc(user: rawptr, index: usize) -> u8 {
         return 0
     }
     state.selected = index
+    return 1
+}
+
+fake_root_count :: c proc(user: rawptr) -> usize {
+    _ = user
+    return 2
+}
+
+fake_root_name :: c proc(
+    user: rawptr,
+    index: usize,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    name := "apps/one"
+    if index == 1 {
+        name = "apps/two"
+    }
+    return fake_copy_bytes(
+        cast[rawptr](raw_data(name)),
+        len(name),
+        destination,
+        capacity,
+    )
+}
+
+fake_root_source_path :: c proc(
+    user: rawptr,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    state := cast[^Fake_Root_State](user)
+    return fake_copy_bytes(
+        state.source_path,
+        state.source_length,
+        destination,
+        capacity,
+    )
+}
+
+fake_target :: c proc(user: rawptr) -> u8 {
+    return cast[^Fake_Root_State](user).target
+}
+
+fake_select_target :: c proc(user: rawptr, target_value: u8) -> u8 {
+    state := cast[^Fake_Root_State](user)
+    if state.fail_selection != 0 {
+        return 0
+    }
+    state.target = target_value
     return 1
 }
 
@@ -168,7 +281,9 @@ fake_build :: c proc(
     active_overlay: usize,
     result: ^draft_compiler_api.Result,
 ) {
-    _ = user
+    if user != nil {
+        cast[^Fake_Root_State](user).build_count += 1
+    }
     _ = overlays
     _ = overlay_count
     _ = active_overlay
@@ -219,17 +334,17 @@ fake_copy_bytes :: c proc(
     return length
 }
 
-// fake_program_configuration supplies the already-resolved operator policy
+// fake_build_configuration supplies the already-resolved compiler policy
 // through the same bounded copy contract as the native compiler service. The
 // application must retain this text independently of later host calls because
 // painting never borrows storage across the C boundary.
-fake_program_configuration :: c proc(
+fake_build_configuration :: c proc(
     user: rawptr,
     destination: [^]u8,
     capacity: usize,
 ) -> usize {
     _ = user
-    text := "program: examples/editor\ntarget: aarch64-macos\noptimization: O2\n"
+    text := "root package: examples/editor\ntarget: aarch64-macos\noptimization: O2\n"
     return fake_copy_bytes(
         cast[rawptr](raw_data(text)),
         len(text),
@@ -371,6 +486,105 @@ test_draft_owned_run :: proc(test: ^testing.Test) {
     }
 }
 
+// Run Configuration keeps argv, environment, and working directory as three
+// distinct field types. Values containing spaces remain one argument, invalid
+// environment names never enter the row table, and the explicit workspace-
+// default action replaces every local override together.
+test_structured_run_configuration_editing :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    defer destroy_app(&app)
+    roots: Fake_Root_State
+    app.host.user = cast[rawptr](&roots)
+    app.host.selected_root = fake_selected_root
+    app.host.run_argument_count = fake_run_argument_count
+    app.host.copy_run_argument = fake_run_argument
+    app.host.run_environment_count = fake_run_environment_count
+    app.host.copy_run_environment = fake_run_environment
+    app.host.copy_run_working_directory = fake_run_working_directory
+    testing.expect(test, load_workspace_run_configuration(&app))
+    original_arguments := app.run_argument_count
+    original_environment := app.run_environment_count
+
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.run_argument_box,
+        app.run_argument_edit[:],
+        "one argument with spaces",
+    ))
+    add_run_argument(&app)
+    testing.expect(test, app.run_argument_count == original_arguments + 1)
+    testing.expect(test,
+        len(run_argument_bytes(&app, app.run_argument_count - 1)) ==
+            len("one argument with spaces"))
+
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.run_environment_box,
+        app.run_environment_edit[:],
+        "NOT VALID",
+    ))
+    add_run_environment(&app)
+    testing.expect(test, app.run_environment_count == original_environment)
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.run_environment_box,
+        app.run_environment_edit[:],
+        "DRAFT_MODE=interactive",
+    ))
+    add_run_environment(&app)
+    testing.expect(test, app.run_environment_count == original_environment + 1)
+    testing.expect(test, app.run_configuration_overridden)
+
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.run_environment_box,
+        app.run_environment_edit[:],
+        "EMPTY_VALUE=",
+    ))
+    add_run_environment(&app)
+    testing.expect(test, app.run_environment_count == original_environment + 2)
+
+    reset_run_configuration(&app)
+    testing.expect(test, app.run_argument_count == original_arguments)
+    testing.expect(test, app.run_environment_count == original_environment)
+    testing.expect(test, !app.run_configuration_overridden)
+}
+
+// A relative working-directory override has the same stable coordinate as a
+// relative manifest value. It must not inherit the shell directory from which
+// DraftIDE happened to start, because that would make one saved workspace run
+// differently across terminals and shortcuts.
+test_run_override_working_directory_is_workspace_relative :: proc(
+    test: ^testing.Test,
+) {
+    app: App
+    init_windows(&app)
+    defer destroy_app(&app)
+    roots: Fake_Root_State
+    app.host.user = cast[rawptr](&roots)
+    app.host.selected_root = fake_selected_root
+    app.host.copy_workspace_path = fake_workspace_path
+    app.workspace_open = true
+    app.run_configuration_loaded = true
+    app.run_configuration_overridden = true
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.run_working_directory_box,
+        app.run_working_directory[:],
+        "assets",
+    ))
+
+    configuration: Run_Configuration
+    testing.expect(test, load_run_configuration(&app, &configuration))
+    defer run_configuration_destroy(&configuration)
+    testing.expect(test, configuration.has_working_directory)
+    expected := "/tmp/draft-open-workspace/assets"
+    when target.os == .windows {
+        expected = "C:\\draft-open-workspace\\assets"
+    }
+    actual := memory.owned_string_bytes(&configuration.working_directory)
+    testing.expect(test, len(actual) == len(expected))
+    for index: usize = 0; index < len(expected); index += 1 {
+        testing.expect(test, actual[index] == expected[index])
+    }
+}
+
 // Quit is a workspace-wide operation even though the dialog shows one buffer
 // at a time. Provisional discard bits let the user cancel a later prompt
 // without mutating the earlier dirty buffers or silently losing their state.
@@ -424,8 +638,8 @@ test_unnamed_quit_routes_to_save_as :: proc(test: ^testing.Test) {
     )
     testing.expect(test, !should_quit)
     testing.expect(test, !app.windows[Window_Quit].visible)
-    testing.expect(test, app.windows[Window_Open_File].visible)
-    testing.expect(test, app.file_dialog_action == .save_as)
+    testing.expect(test, app.windows[Window_File_Browser].visible)
+    testing.expect(test, app.browser_mode == .save_as)
 }
 
 // Every compiler-backed buffer is tied to the root which published its source
@@ -457,21 +671,80 @@ test_buffer_activation_restores_compiler_root :: proc(test: ^testing.Test) {
     testing.expect(test, roots.selected == 1)
 }
 
-// Program and Run Settings displays effective configuration copied from the host;
+// Build All is a real workspace operation rather than a decorative menu row.
+// It visits every deterministic root once and restores both the original root
+// and document after the final build.
+test_build_all_programs_restores_selection :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-build-all.draft"))
+    defer destroy_app(&app)
+    source_path := turbo_editor.path_bytes(active_buffer(&app))
+    roots := Fake_Root_State{
+        selected = 0,
+        source_path = cast[rawptr](&source_path[0]),
+        source_length = len(source_path),
+    }
+    app.host.user = cast[rawptr](&roots)
+    app.host.root_count = fake_root_count
+    app.host.selected_root = fake_selected_root
+    app.host.select_root = fake_select_root
+    app.host.copy_root_name = fake_root_name
+    app.host.copy_source_path = fake_root_source_path
+    app.host.build = fake_build
+
+    build_all_programs(&app)
+
+    testing.expect(test, roots.build_count == 2)
+    testing.expect(test, roots.selected == 0)
+    testing.expect(test, app.active == 0)
+    testing.expect(test, text_equal(app.status, "Built all workspace programs"))
+}
+
+// Compiler Options owns exact root and target selectors. A target transition
+// refreshes the same source/root products as the real service and restores the
+// old value when the service rejects a later choice.
+test_compiler_target_selection_is_transactional :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-target-select.draft"))
+    defer destroy_app(&app)
+    source_path := turbo_editor.path_bytes(active_buffer(&app))
+    roots := Fake_Root_State{
+        source_path = cast[rawptr](&source_path[0]),
+        source_length = len(source_path),
+    }
+    app.host.user = cast[rawptr](&roots)
+    app.host.root_count = fake_root_count
+    app.host.selected_root = fake_selected_root
+    app.host.select_root = fake_select_root
+    app.host.copy_root_name = fake_root_name
+    app.host.copy_source_path = fake_root_source_path
+    app.host.target = fake_target
+    app.host.select_target = fake_select_target
+
+    testing.expect(test, select_build_target(&app, 2))
+    testing.expect(test, roots.target == 2 && app.selected_target == 2)
+    roots.fail_selection = 1
+    testing.expect(test, !select_build_target(&app, 3))
+    testing.expect(test, roots.target == 2 && app.selected_target == 2)
+}
+
+// Compiler Options displays effective build configuration copied from the host;
 // it does not reinterpret draft.workspace fields in Draft. This regression
 // fixes that ownership boundary and the complete-copy length contract.
-test_refreshes_effective_program_configuration :: proc(test: ^testing.Test) {
+test_refreshes_effective_build_configuration :: proc(test: ^testing.Test) {
     app: App
     init_windows(&app)
     defer destroy_app(&app)
-    app.host.copy_program_configuration = fake_program_configuration
+    app.host.copy_build_configuration = fake_build_configuration
 
     refresh_tooling_text(&app)
 
-    expected := "program: examples/editor\ntarget: aarch64-macos\noptimization: O2\n"
-    testing.expect(test, app.program_configuration_length == len(expected))
+    expected := "root package: examples/editor\ntarget: aarch64-macos\noptimization: O2\n"
+    testing.expect(test, app.compiler_configuration_length == len(expected))
     for index: usize = 0; index < len(expected); index += 1 {
-        testing.expect(test, app.program_configuration[index] == expected[index])
+        testing.expect(test, app.compiler_configuration[index] == expected[index])
     }
 }
 
@@ -486,37 +759,39 @@ test_open_file_dialog_resolves_and_reuses_workspace_path :: proc(
     testing.expect(test, init_one_buffer(&app, "turbo-open-existing.draft"))
     defer destroy_app(&app)
     app.host.copy_workspace_path = fake_workspace_path
+    app.workspace_open = true
 
     request_open_file(&app)
-    testing.expect(test, app.windows[Window_Open_File].visible)
+    testing.expect(test, app.windows[Window_File_Browser].visible)
     testing.expect(test, app.ui.focused_id == 830)
     surface: tui.Surface
     tui.surface_init(&surface, 100, 30)
     defer tui.surface_destroy(&surface)
     _ = paint_app(&app, &surface, turbo_ui.no_event())
-    dialog := app.windows[Window_Open_File].bounds
-    // The Open button begins one cell inside dialog content at content row 5.
-    // Its two-row footprint paints the shadow one cell down and right from the
-    // face; this locks the application geometry to the reusable button chrome.
+    dialog := app.windows[Window_File_Browser].bounds
+    // The action button occupies the final two content rows. Its complete
+    // footprint includes the one-cell shade at the lower-right corner; compute
+    // that cell from window geometry so resizing the dialog does not turn this
+    // reusable-control assertion into a magic coordinate.
     (shadow, shadow_valid) := tui.cell_at(
         &surface,
-        dialog.column + 3,
-        dialog.row + 7,
+        dialog.column + turbo_ui.button_width("Open"),
+        dialog.row + dialog.height - 2,
     )
     testing.expect(test, shadow_valid && shadow.value == '░')
     testing.expect(test, turbo_ui.text_box_set_text(
-        &app.file_box,
-        app.file_path[:],
+        &app.browser_name_box,
+        app.browser_name[:],
         "notes.draft",
     ))
-    submit_open_file(&app)
+    commit_file_browser(&app)
 
     expected := "/tmp/draft-open-workspace/notes.draft"
     when target.os == .windows {
         expected = "C:\\draft-open-workspace\\notes.draft"
     }
     testing.expect(test, app.buffer_count == 2)
-    testing.expect(test, !app.windows[Window_Open_File].visible)
+    testing.expect(test, !app.windows[Window_File_Browser].visible)
     path := turbo_editor.path_bytes(active_buffer(&app))
     testing.expect(test, len(path) == len(expected))
     for index: usize = 0; index < len(expected); index += 1 {
@@ -525,7 +800,12 @@ test_open_file_dialog_resolves_and_reuses_workspace_path :: proc(
     testing.expect(test, !app.buffer_has_root[app.active])
 
     request_open_file(&app)
-    submit_open_file(&app)
+    testing.expect(test, turbo_ui.text_box_set_text(
+        &app.browser_name_box,
+        app.browser_name[:],
+        "notes.draft",
+    ))
+    commit_file_browser(&app)
     testing.expect(test, app.buffer_count == 2)
 }
 
@@ -540,17 +820,17 @@ test_collects_all_open_workspace_overlays :: proc(test: ^testing.Test) {
     defer destroy_app(&app)
 
     app.host.source_count = fake_source_count
-    app.program_file_count = 2
+    app.reachable_source_count = 2
     memory.owned_string_copy_bytes(
-        &app.program_file_paths[0],
+        &app.reachable_source_paths[0],
         turbo_editor.path_bytes(&app.buffers[0]),
     )
     memory.owned_string_copy_bytes(
-        &app.program_file_paths[1],
+        &app.reachable_source_paths[1],
         turbo_editor.path_bytes(&app.buffers[1]),
     )
-    memory.owned_string_copy(&app.program_file_names[0], "first.draft")
-    memory.owned_string_copy(&app.program_file_names[1], "second.draft")
+    memory.owned_string_copy(&app.reachable_source_names[0], "first.draft")
+    memory.owned_string_copy(&app.reachable_source_names[1], "second.draft")
     app.buffers[0].dirty = true
     app.buffers[1].dirty = true
     app.active = 1
@@ -596,7 +876,7 @@ test_typing_only_runs_foreground_lexing :: proc(test: ^testing.Test) {
     testing.expect(test, !app.semantic_dirty)
 }
 
-// Switch Workspace never discards dirty document owners directly. Submission
+// Open Workspace never discards dirty document owners directly. Submission
 // first enters the explicit Save all / Discard / Cancel modal, preserving the
 // candidate pathname while the user decides.
 test_open_workspace_requires_dirty_buffer_choice :: proc(test: ^testing.Test) {
@@ -606,9 +886,15 @@ test_open_workspace_requires_dirty_buffer_choice :: proc(test: ^testing.Test) {
     defer destroy_app(&app)
     app.buffers[0].dirty = true
 
-    submit_switch_workspace(&app)
+    destination: memory.Owned_String
+    memory.owned_string_copy(&destination, "/tmp/next-draft-workspace")
+    defer memory.owned_string_destroy(&destination)
+    begin_workspace_transition(
+        &app,
+        .open_workspace,
+        memory.owned_string_bytes(&destination),
+    )
     testing.expect(test, app.windows[Window_Workspace_Confirm].visible)
-    testing.expect(test, !app.windows[Window_Switch_Workspace].visible)
     testing.expect(
         test,
         app.ui.active_window == app.windows[Window_Workspace_Confirm].id,
@@ -646,7 +932,7 @@ test_editor_is_a_normal_tileable_window :: proc(test: ^testing.Test) {
     defer destroy_app(&app)
 
     editor := &app.windows[Window_Editor]
-    files := &app.windows[Window_Program_Files]
+    files := &app.windows[Window_Open_Documents]
     files_bounds := files.bounds
     testing.expect(test, editor.flags.tileable)
     testing.expect(test, editor.flags.zoomable)
@@ -685,32 +971,16 @@ test_editor_is_a_normal_tileable_window :: proc(test: ^testing.Test) {
 }
 
 // Menu shortcut commands belong to the application rather than the currently
-// focused control. This regression starts outside the editor, proves that F2
-// opens instead of toggling Program Files closed, and proves Ctrl-F reaches
-// Find even while that file list owns keyboard focus.
+// focused control. This regression starts outside the editor and proves the
+// final Open Documents, Find, Compiler Options, Escape, and Exit contracts.
 test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
     app: App
     init_windows(&app)
     testing.expect(test, init_one_buffer(&app, "turbo-shortcut-test.draft"))
     defer destroy_app(&app)
+    turbo_editor.insert_text(active_buffer(&app), "draft")
 
-    turbo_ui.hide_window(
-        &app.ui,
-        app.windows[:],
-        app.windows[Window_Program_Files].id,
-    )
     (remaining, quit) := handle_global_key(&app, turbo_ui.key_event(
-        turbo_ui.Key_Event{code = .f2},
-    ))
-    testing.expect(test, !quit && remaining.kind == .none)
-    testing.expect(test, app.windows[Window_Program_Files].visible)
-    testing.expect(
-        test,
-        app.ui.active_window == app.windows[Window_Program_Files].id,
-    )
-    testing.expect(test, app.ui.focused_id == 530)
-
-    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
         turbo_ui.Key_Event{
             code = .character,
             byte_value = cast[u8]('0'),
@@ -718,10 +988,10 @@ test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
         },
     ))
     testing.expect(test, !quit && remaining.kind == .none)
-    testing.expect(test, app.windows[Window_Open_Files].visible)
+    testing.expect(test, app.windows[Window_Open_Documents].visible)
     testing.expect(
         test,
-        app.ui.active_window == app.windows[Window_Open_Files].id,
+        app.ui.active_window == app.windows[Window_Open_Documents].id,
     )
     testing.expect(test, app.ui.focused_id == 532)
 
@@ -733,24 +1003,31 @@ test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
         },
     ))
     testing.expect(test, !quit && remaining.kind == .none)
-    testing.expect(test, app.windows[Window_Search].visible)
-    testing.expect(test, app.ui.active_window == app.windows[Window_Search].id)
+    testing.expect(test, app.windows[Window_Find].visible)
+    testing.expect(test, app.ui.active_window == app.windows[Window_Find].id)
     testing.expect(test, app.ui.focused_id == 500)
 
     // Escape cancels local UI only; it never acts as the application exit
     // command. Once the modal is closed, a bare Escape is consumed harmlessly,
-    // while the advertised Ctrl-Q completes a clean workspace exit using one
-    // exact C0 byte which the raw terminal can report on every host.
+    // while the advertised Alt-X completes a clean workspace exit.
     close_search(&app)
+    app.workspace_open = true
+    app.host.check = fake_check
     (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
         turbo_ui.Key_Event{code = .escape},
     ))
     testing.expect(test, !quit && remaining.kind == .none)
     (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
+        turbo_ui.Key_Event{code = .f6},
+    ))
+    testing.expect(test, !quit && remaining.kind == .none)
+    testing.expect(test, app.windows[Window_Compiler_Options].visible)
+    active_buffer(&app).dirty = false
+    (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
         turbo_ui.Key_Event{
             code = .character,
-            byte_value = 17,
-            control = true,
+            byte_value = cast[u8]('x'),
+            alt = true,
         },
     ))
     testing.expect(test, quit && remaining.kind == .none)
@@ -758,7 +1035,7 @@ test_advertised_shortcuts_are_application_wide :: proc(test: ^testing.Test) {
 
 // Editing accelerators are application commands even when a tool window owns
 // focus. This test proves the exact C0 spellings, persistent forward/reverse
-// search, atomic replace, and the Ctrl-H terminal distinction without relying
+// search and atomic replace without relying
 // on a real terminal decoder or menu traversal.
 test_editing_shortcuts_apply_the_advertised_commands :: proc(test: ^testing.Test) {
     app: App
@@ -822,11 +1099,7 @@ test_editing_shortcuts_apply_the_advertised_commands :: proc(test: ^testing.Test
     )
 
     (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
-        turbo_ui.Key_Event{
-            code = .character,
-            byte_value = 18,
-            control = true,
-        },
+        turbo_ui.Key_Event{code = .f4},
     ))
     testing.expect(test, !quit && remaining.kind == .none)
     testing.expect(test, buffer.bytes.data[0] == cast[u8]('O'))
@@ -835,8 +1108,8 @@ test_editing_shortcuts_apply_the_advertised_commands :: proc(test: ^testing.Test
 
     (remaining, quit) = handle_global_key(&app, turbo_ui.key_event(
         turbo_ui.Key_Event{
-            code = .backspace,
-            byte_value = 8,
+            code = .character,
+            byte_value = 18,
             control = true,
         },
     ))
@@ -924,7 +1197,7 @@ test_semantic_navigation_shortcuts_and_history :: proc(test: ^testing.Test) {
     turbo_editor.insert_text(&app.buffers[0], "use first")
     turbo_editor.insert_text(&app.buffers[1], "pub answer")
     app.active = 0
-    app.buffers_list.cursor = 0
+    app.open_documents.cursor = 0
     app.buffers[0].cursor = 2
 
     first := turbo_editor.path_bytes(&app.buffers[0])
@@ -1007,6 +1280,174 @@ test_navigation_history_bound_preserves_back_entry :: proc(test: ^testing.Test) 
     )
 }
 
+// The rendered menu is the user-visible command contract. This exhaustive
+// table fixes every final label, grouping row, and top-level location so a
+// future refactor cannot silently resurrect the old Project/Workspace/Search
+// concepts or leave an implemented command unreachable.
+test_complete_menu_vocabulary :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-menu-contract.draft"))
+    defer destroy_app(&app)
+    surface: tui.Surface
+    tui.surface_init(&surface, 100, 35)
+    defer tui.surface_destroy(&surface)
+
+    open_menu_for_test(&app, &surface, cast[u8]('f'))
+    expect_surface_text(test, &surface, 4, 2, "New File")
+    expect_surface_text(test, &surface, 4, 3, "Open File...")
+    expect_surface_text(test, &surface, 4, 4, "Open Workspace...")
+    expect_surface_text(test, &surface, 4, 6, "Close Document")
+    expect_surface_text(test, &surface, 4, 7, "Close Workspace")
+    expect_surface_text(test, &surface, 4, 9, "Save")
+    expect_surface_text(test, &surface, 4, 10, "Save As...")
+    expect_surface_text(test, &surface, 4, 11, "Save All")
+    expect_surface_text(test, &surface, 4, 13, "Exit")
+
+    open_menu_for_test(&app, &surface, cast[u8]('e'))
+    expect_surface_text(test, &surface, 11, 2, "Undo")
+    expect_surface_text(test, &surface, 11, 3, "Redo")
+    expect_surface_text(test, &surface, 11, 5, "Cut")
+    expect_surface_text(test, &surface, 11, 6, "Copy")
+    expect_surface_text(test, &surface, 11, 7, "Paste")
+    expect_surface_text(test, &surface, 11, 8, "Delete")
+    expect_surface_text(test, &surface, 11, 9, "Select All")
+    expect_surface_text(test, &surface, 11, 11, "Find...")
+    expect_surface_text(test, &surface, 11, 12, "Find Next")
+    expect_surface_text(test, &surface, 11, 13, "Find Previous")
+    expect_surface_text(test, &surface, 11, 14, "Replace...")
+    expect_surface_text(test, &surface, 11, 15, "Replace Next")
+    expect_surface_text(test, &surface, 11, 16, "Replace All")
+    expect_surface_text(test, &surface, 11, 18, "Go to Line...")
+    expect_surface_text(test, &surface, 11, 19, "Go to Definition")
+    expect_surface_text(test, &surface, 11, 20, "Find Usages")
+    expect_surface_text(test, &surface, 11, 21, "Back")
+    expect_surface_text(test, &surface, 11, 22, "Forward")
+
+    open_menu_for_test(&app, &surface, cast[u8]('c'))
+    expect_surface_text(test, &surface, 18, 2, "Compiler Options...")
+    expect_surface_text(test, &surface, 18, 4, "Check")
+    expect_surface_text(test, &surface, 18, 5, "Build")
+    expect_surface_text(test, &surface, 18, 6, "Build All Programs")
+
+    open_menu_for_test(&app, &surface, cast[u8]('r'))
+    expect_surface_text(test, &surface, 28, 2, "Run")
+    expect_surface_text(test, &surface, 28, 3, "Run Configuration...")
+
+    open_menu_for_test(&app, &surface, cast[u8]('w'))
+    expect_surface_text(test, &surface, 34, 2, "Next")
+    expect_surface_text(test, &surface, 34, 3, "Previous")
+    expect_surface_text(test, &surface, 34, 4, "Close")
+    expect_surface_text(test, &surface, 34, 5, "Zoom / Restore")
+    expect_surface_text(test, &surface, 34, 6, "Tile")
+    expect_surface_text(test, &surface, 34, 7, "Cascade")
+    expect_surface_text(test, &surface, 34, 9, "Editor")
+    expect_surface_text(test, &surface, 34, 10, "Open Documents")
+    expect_surface_text(test, &surface, 34, 11, "Packages and Imports")
+    expect_surface_text(test, &surface, 34, 12, "Declarations and Visibility")
+    expect_surface_text(test, &surface, 34, 13, "References and Calls")
+    expect_surface_text(test, &surface, 34, 14, "Effects")
+    expect_surface_text(test, &surface, 34, 15, "Denials")
+    expect_surface_text(test, &surface, 34, 16, "Diagnostics")
+
+    open_menu_for_test(&app, &surface, cast[u8]('h'))
+    expect_surface_text(test, &surface, 43, 2, "Keyboard Shortcuts...")
+    expect_surface_text(test, &surface, 43, 3, "About Turbo Draft...")
+}
+
+// Every modal owns enough authored rows for its fields and complete two-row
+// button footprints at the 100x35 design size. Dialogs remain movable and
+// closable but cannot accidentally enter resize/zoom/tile code; Compiler
+// Options is intentionally the contrasting ordinary inspector window.
+test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-dialog-layout.draft"))
+    defer destroy_app(&app)
+    dialogs := [10]usize{
+        Window_Find,
+        Window_Quit,
+        Window_File_Browser,
+        Window_Workspace_Confirm,
+        Window_Replace,
+        Window_Go_To_Line,
+        Window_Shortcut_Help,
+        Window_Run_Configuration,
+        Window_Close_Document,
+        Window_About,
+    }
+    for index in dialogs {
+        window := app.windows[index]
+        testing.expect(test, window.flags.movable)
+        testing.expect(test, window.flags.closable)
+        testing.expect(test, !window.flags.resizable)
+        testing.expect(test, !window.flags.zoomable)
+        testing.expect(test, !window.flags.tileable)
+        testing.expect(test, window.bounds.width >= window.minimum_width)
+        testing.expect(test, window.bounds.height >= window.minimum_height)
+        testing.expect(test, turbo_ui.rect_right(window.bounds) <= 100)
+        testing.expect(test, turbo_ui.rect_bottom(window.bounds) <= 35)
+    }
+    compiler := app.windows[Window_Compiler_Options]
+    testing.expect(test, compiler.flags.resizable)
+    testing.expect(test, compiler.flags.zoomable)
+    testing.expect(test, compiler.flags.tileable)
+    testing.expect(test,
+        app.windows[Window_Run_Configuration].bounds.height == 22)
+    testing.expect(test,
+        app.windows[Window_Quit].bounds.width >=
+            len("Disk also changed. Choose whether to overwrite it.") + 2)
+    testing.expect(test,
+        app.windows[Window_Workspace_Confirm].bounds.width >=
+            len("This file belongs to another compiler scope. Switch and open it?") + 2)
+
+    // 80x24 is the smallest conventional full-screen terminal we promise to
+    // make useful. Render every dialog through the real application pass so
+    // begin_window's clamping, dialog content insets, fields, and button rows
+    // are exercised together rather than inferred from initial rectangles.
+    expected_fields := [10]string{
+        "Find literal bytes:",
+        "The active document has unsaved changes.",
+        "Location:",
+        "Save or discard modified documents before continuing?",
+        "Replace:",
+        "Line number:",
+        "Key                  Command",
+        "Arguments (one exact argv row)",
+        "The active document has unsaved changes.",
+        "A terminal-native Draft development environment",
+    }
+    surface: tui.Surface
+    tui.surface_init(&surface, 80, 24)
+    defer tui.surface_destroy(&surface)
+    for ordinal: usize = 0; ordinal < len(dialogs); ordinal += 1 {
+        index := dialogs[ordinal]
+        turbo_ui.show_modal_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[index].id,
+        )
+        _ = paint_app(&app, &surface, turbo_ui.no_event())
+        bounds := app.windows[index].bounds
+        testing.expect(test, bounds.row >= 1)
+        testing.expect(test, turbo_ui.rect_right(bounds) <= 80)
+        testing.expect(test, turbo_ui.rect_bottom(bounds) <= 23)
+        testing.expect(test, surface_contains(&surface, expected_fields[ordinal]))
+        turbo_ui.hide_window(&app.ui, app.windows[:], app.windows[index].id)
+    }
+
+    turbo_ui.show_window(
+        &app.ui,
+        app.windows[:],
+        app.windows[Window_Compiler_Options].id,
+    )
+    _ = paint_app(&app, &surface, turbo_ui.no_event())
+    testing.expect(test, surface_contains(&surface, "Root Package (* active)"))
+    testing.expect(test, surface_contains(&surface, "Target Platform"))
+    testing.expect(test,
+        surface_contains(&surface, "Effective Build Configuration"))
+}
+
 // Help is both a discoverable menu and the authoritative in-application
 // shortcut reference. This test walks every authored row, opens Help through
 // its underlined menu title, activates Keyboard Shortcuts with Enter, and then
@@ -1022,10 +1463,11 @@ test_help_menu_lists_and_closes_all_shortcuts :: proc(test: ^testing.Test) {
         testing.expect(test, len(key) != 0)
         testing.expect(test, len(command) != 0)
     }
-    (definition_key, definition_command) := shortcut_row(12)
-    testing.expect(test, text_equal(definition_key, "F12"))
-    testing.expect(test, text_equal(definition_command, "Go to definition"))
-    (cancel_key, cancel_command) := shortcut_row(48)
+    (definition_key, definition_command) := shortcut_row(17)
+    testing.expect(test, text_equal(definition_key, "F12 / Shift-F12"))
+    testing.expect(test,
+        text_equal(definition_command, "Go to definition / find usages"))
+    (cancel_key, cancel_command) := shortcut_row(42)
     testing.expect(test, text_equal(cancel_key, "Esc"))
     testing.expect(
         test,
@@ -1042,7 +1484,7 @@ test_help_menu_lists_and_closes_all_shortcuts :: proc(test: ^testing.Test) {
         turbo_ui.Key_Event{code = .f1},
     ))
     testing.expect(test, !quit && remaining.kind == .none)
-    testing.expect(test, app.windows[Window_Help].visible)
+    testing.expect(test, app.windows[Window_Shortcut_Help].visible)
     close_shortcut_help(&app)
 
     _ = paint_app(
@@ -1061,8 +1503,9 @@ test_help_menu_lists_and_closes_all_shortcuts :: proc(test: ^testing.Test) {
         &surface,
         turbo_ui.key_event(turbo_ui.Key_Event{code = .enter}),
     )
-    testing.expect(test, app.windows[Window_Help].visible)
-    testing.expect(test, app.ui.modal_window == app.windows[Window_Help].id)
+    testing.expect(test, app.windows[Window_Shortcut_Help].visible)
+    testing.expect(test,
+        app.ui.modal_window == app.windows[Window_Shortcut_Help].id)
     testing.expect(test, app.ui.focused_id == 800)
 
     should_quit := paint_app(
@@ -1071,7 +1514,7 @@ test_help_menu_lists_and_closes_all_shortcuts :: proc(test: ^testing.Test) {
         turbo_ui.key_event(turbo_ui.Key_Event{code = .escape}),
     )
     testing.expect(test, !should_quit)
-    testing.expect(test, !app.windows[Window_Help].visible)
+    testing.expect(test, !app.windows[Window_Shortcut_Help].visible)
 }
 
 // test_raw_mouse_quit crosses the boundary that the earlier menu and command
@@ -1093,7 +1536,7 @@ test_raw_mouse_quit :: proc(test: ^testing.Test) {
     should_quit := false
 
     // SGR coordinates are one based. Column 4, row 1 is the File title;
-    // column 4, row 12 is the Exit row in the bordered File popup.
+    // column 4, terminal row 14 is the Exit row in the bordered File popup.
     title_click := "\x1b[<0;4;1M\x1b[<0;4;1m"
     for index: usize = 0; index < len(title_click); index += 1 {
         event := turbo_ui_terminal.decode(&decoder, title_click[index])
@@ -1104,7 +1547,7 @@ test_raw_mouse_quit :: proc(test: ^testing.Test) {
     testing.expect(test, !should_quit)
     testing.expect(test, app.menus.open_title == Menu_File)
 
-    quit_click := "\x1b[<0;4;12M\x1b[<0;4;12m"
+    quit_click := "\x1b[<0;4;14M\x1b[<0;4;14m"
     for index: usize = 0; index < len(quit_click); index += 1 {
         event := turbo_ui_terminal.decode(&decoder, quit_click[index])
         if event.kind != .none {

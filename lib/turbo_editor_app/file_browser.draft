@@ -1,0 +1,380 @@
+// The file browser is DraftIDE's reusable filesystem-selection model. It owns
+// one current directory, a bounded sorted snapshot of copied entry names, and
+// one optional filename field. core/filesystem supplies native enumeration;
+// this module supplies deterministic display order and path navigation; views
+// supply widgets. No compiler or editor operation occurs until the user commits
+// the complete selection through command code.
+//
+// Directory snapshots are sorted with directories first and bytewise names
+// within each kind. This is UI ordering only, but making it explicit prevents
+// host enumeration order from producing a visibly unstable browser. Entry name
+// owners remain pointer-stable until the next refresh and are destroyed before
+// replacement. Draft specification sections 3 and 7 govern UTF-8 path bytes
+// and explicit ownership; native path interpretation belongs to the target.
+package turbo_editor_app
+
+import core/filesystem
+import core/io
+import core/memory
+import lib/turbo_ui
+
+path_separator :: proc() -> u8 {
+    when target.os == .windows {
+        return cast[u8]('\\')
+    } else {
+        return cast[u8]('/')
+    }
+}
+
+path_byte_is_separator :: proc(byte: u8) -> bool {
+    when target.os == .windows {
+        return byte == cast[u8]('/') || byte == cast[u8]('\\')
+    } else {
+        return byte == cast[u8]('/')
+    }
+}
+
+// path_leaf_start returns the first byte of the final nonempty component. A
+// trailing separator is ignored. Root paths have no leaf and return their byte
+// length, which naturally yields an empty slice.
+path_leaf_start :: proc(path: []u8) -> usize {
+    end := len(path)
+    for end > 0 && path_byte_is_separator(path[end - 1]) {
+        end -= 1
+    }
+    begin := end
+    for begin > 0 && !path_byte_is_separator(path[begin - 1]) {
+        begin -= 1
+    }
+    return begin
+}
+
+path_leaf :: proc(path: []u8) -> []u8 {
+    begin := path_leaf_start(path)
+    end := len(path)
+    for end > begin && path_byte_is_separator(path[end - 1]) {
+        end -= 1
+    }
+    return path[begin:end]
+}
+
+// path_parent writes a lexical parent without consulting the filesystem. The
+// browser starts from a real enumerated directory, so removing one component
+// preserves the same physical coordinate. Relative one-component paths become
+// `.`, while POSIX `/` and Windows drive roots remain fixed points.
+path_parent :: proc(path: []u8, destination: []u8) -> ([]u8, bool) {
+    if len(path) == 0 {
+        return (destination[:0], false)
+    }
+    end := len(path)
+    for end > 1 && path_byte_is_separator(path[end - 1]) {
+        end -= 1
+    }
+    begin := end
+    for begin > 0 && !path_byte_is_separator(path[begin - 1]) {
+        begin -= 1
+    }
+    parent_end := begin
+    for parent_end > 1 && path_byte_is_separator(path[parent_end - 1]) {
+        parent_end -= 1
+    }
+    when target.os == .windows {
+        if parent_end == 2 && len(path) >= 3 && path[1] == cast[u8](':') {
+            parent_end = 3
+        }
+    }
+    if parent_end == 0 {
+        if len(destination) == 0 {
+            return (destination[:0], false)
+        }
+        destination[0] = cast[u8]('.')
+        return (destination[:1], true)
+    }
+    if parent_end > len(destination) {
+        return (destination[:0], false)
+    }
+    for index: usize = 0; index < parent_end; index += 1 {
+        destination[index] = path[index]
+    }
+    return (destination[:parent_end], true)
+}
+
+// join_path appends one directory entry to a browser location. Entry names are
+// copied directly from native enumeration and therefore cannot contain a path
+// separator. No truncation is allowed because a prefix could name a different
+// file.
+join_path :: proc(
+    directory, name: []u8,
+    destination: []u8,
+) -> ([]u8, bool) {
+    if len(directory) == 0 || len(name) == 0 {
+        return (destination[:0], false)
+    }
+    separator := !path_byte_is_separator(directory[len(directory) - 1])
+    required := len(directory) + len(name)
+    if separator {
+        required += 1
+    }
+    if required > len(destination) {
+        return (destination[:0], false)
+    }
+    for index: usize = 0; index < len(directory); index += 1 {
+        destination[index] = directory[index]
+    }
+    write_at := len(directory)
+    if separator {
+        destination[write_at] = path_separator()
+        write_at += 1
+    }
+    for index: usize = 0; index < len(name); index += 1 {
+        destination[write_at + index] = name[index]
+    }
+    return (destination[:required], true)
+}
+
+clear_browser_entries :: proc(app: ^App) {
+    for index: usize = 0; index < app.browser_entry_count; index += 1 {
+        memory.owned_string_destroy(&app.browser_entry_names[index])
+    }
+    app.browser_entry_count = 0
+    app.browser_list.cursor = 0
+    app.browser_list.offset = 0
+}
+
+browser_kind_rank :: proc(kind: filesystem.Entry_Kind) -> usize {
+    if kind == .directory {
+        return 0
+    }
+    if kind == .regular_file {
+        return 1
+    }
+    return 2
+}
+
+bytes_less :: proc(left, right: []u8) -> bool {
+    count := len(left)
+    if len(right) < count {
+        count = len(right)
+    }
+    for index: usize = 0; index < count; index += 1 {
+        if left[index] < right[index] {
+            return true
+        }
+        if left[index] > right[index] {
+            return false
+        }
+    }
+    return len(left) < len(right)
+}
+
+browser_entry_less :: proc(app: ^App, left, right: usize) -> bool {
+    left_rank := browser_kind_rank(app.browser_entry_kind[left])
+    right_rank := browser_kind_rank(app.browser_entry_kind[right])
+    if left_rank != right_rank {
+        return left_rank < right_rank
+    }
+    return bytes_less(
+        memory.owned_string_bytes(&app.browser_entry_names[left]),
+        memory.owned_string_bytes(&app.browser_entry_names[right]),
+    )
+}
+
+// sort_browser_entries leaves row zero (`..`) fixed and insertion-sorts the
+// native rows. The browser bound is intentionally modest and directory sizes
+// are normally tiny; this direct stable algorithm keeps owned-string swaps and
+// kind coupling obvious. A future measured need can replace only this local
+// operation without changing the filesystem or view contracts.
+sort_browser_entries :: proc(app: ^App) {
+    for index: usize = 2; index < app.browser_entry_count; index += 1 {
+        position := index
+        for position > 1 && browser_entry_less(app, position, position - 1) {
+            name := app.browser_entry_names[position]
+            app.browser_entry_names[position] =
+                app.browser_entry_names[position - 1]
+            app.browser_entry_names[position - 1] = name
+            kind := app.browser_entry_kind[position]
+            app.browser_entry_kind[position] =
+                app.browser_entry_kind[position - 1]
+            app.browser_entry_kind[position - 1] = kind
+            position -= 1
+        }
+    }
+}
+
+browser_location_bytes :: proc(app: ^App) -> []u8 {
+    return turbo_ui.text_box_bytes(
+        &app.browser_location_box,
+        app.browser_location[:],
+    )
+}
+
+browser_name_bytes :: proc(app: ^App) -> []u8 {
+    return turbo_ui.text_box_bytes(&app.browser_name_box, app.browser_name[:])
+}
+
+set_browser_location :: proc(app: ^App, path: []u8) -> bool {
+    return turbo_ui.text_box_set(
+        &app.browser_location_box,
+        app.browser_location[:],
+        path,
+    )
+}
+
+// refresh_file_browser owns the complete native handle lifetime and copies all
+// names before close. On failure it publishes an empty snapshot plus a direct
+// status; it never leaves rows from a different directory under the new path.
+refresh_file_browser :: proc(app: ^App) -> bool {
+    clear_browser_entries(app)
+    location := browser_location_bytes(app)
+    if len(location) == 0 {
+        app.status = "Browser location is empty"
+        return false
+    }
+    location_owner: memory.Owned_String
+    memory.owned_string_copy_bytes(&location_owner, location)
+    defer memory.owned_string_destroy(&location_owner)
+    (directory, open_error) := filesystem.open(
+        memory.owned_string_cstring(&location_owner),
+    )
+    if open_error != .none {
+        app.status = "Could not open that directory"
+        return false
+    }
+    defer filesystem.close(&directory)
+
+    memory.owned_string_copy(&app.browser_entry_names[0], "..")
+    app.browser_entry_kind[0] = .directory
+    app.browser_entry_count = 1
+    storage: [Browser_Entry_Name_Capacity]u8
+    for {
+        (entry, error) := filesystem.read(&directory, storage[:])
+        if error == .end_of_input {
+            break
+        }
+        if error != .none {
+            clear_browser_entries(app)
+            app.status = "Could not read the complete directory"
+            return false
+        }
+        name := storage[:entry.name_length]
+        if (len(name) == 1 && name[0] == cast[u8]('.')) ||
+            (len(name) == 2 && name[0] == cast[u8]('.') &&
+                name[1] == cast[u8]('.')) {
+            continue
+        }
+        if app.browser_entry_count == Maximum_Browser_Entries {
+            app.status = "Directory has more entries than this browser can show"
+            break
+        }
+        index := app.browser_entry_count
+        memory.owned_string_copy_bytes(&app.browser_entry_names[index], name)
+        app.browser_entry_kind[index] = entry.kind
+        app.browser_entry_count += 1
+    }
+    sort_browser_entries(app)
+    return true
+}
+
+browser_entry_name :: proc(app: ^App, index: usize) -> []u8 {
+    assert(index < app.browser_entry_count, "browser row index is invalid")
+    return memory.owned_string_bytes(&app.browser_entry_names[index])
+}
+
+browser_selected_path :: proc(
+    app: ^App,
+    destination: []u8,
+) -> ([]u8, bool) {
+    if app.browser_mode == .open_workspace {
+        location := browser_location_bytes(app)
+        if len(location) > len(destination) {
+            return (destination[:0], false)
+        }
+        for index: usize = 0; index < len(location); index += 1 {
+            destination[index] = location[index]
+        }
+        return (destination[:len(location)], true)
+    }
+    return join_path(
+        browser_location_bytes(app),
+        browser_name_bytes(app),
+        destination,
+    )
+}
+
+enter_browser_directory :: proc(app: ^App, index: usize) -> bool {
+    if index >= app.browser_entry_count {
+        return false
+    }
+    storage: [Host_Path_Capacity]u8
+    next: []u8
+    valid := false
+    if index == 0 {
+        (next, valid) = path_parent(
+            browser_location_bytes(app),
+            storage[:],
+        )
+    } else {
+        (next, valid) = join_path(
+            browser_location_bytes(app),
+            browser_entry_name(app, index),
+            storage[:],
+        )
+    }
+    previous_storage: [Host_Path_Capacity]u8
+    previous := browser_location_bytes(app)
+    if len(previous) > len(previous_storage) {
+        app.status = "Browser location exceeds its storage invariant"
+        return false
+    }
+    for byte_index: usize = 0; byte_index < len(previous); byte_index += 1 {
+        previous_storage[byte_index] = previous[byte_index]
+    }
+    previous_length := len(previous)
+    if !valid || !set_browser_location(app, next) {
+        app.status = "Directory path exceeds the browser limit"
+        return false
+    }
+    if !refresh_file_browser(app) {
+        failure := app.status
+        _ = set_browser_location(app, previous_storage[:previous_length])
+        _ = refresh_file_browser(app)
+        app.status = failure
+        return false
+    }
+    app.ui.focused_id = 830
+    return true
+}
+
+// browser_entry_is_directory resolves the one intentionally imprecise native
+// classification only when the user activates that row. Symlinked directories
+// commonly arrive as unknown; attempting a directory open gives them the same
+// navigation behavior without requiring every target API to expose stat.
+browser_entry_is_directory :: proc(app: ^App, index: usize) -> bool {
+    if index >= app.browser_entry_count {
+        return false
+    }
+    if index == 0 || app.browser_entry_kind[index] == .directory {
+        return true
+    }
+    if app.browser_entry_kind[index] != .unknown {
+        return false
+    }
+    storage: [Host_Path_Capacity]u8
+    (path, valid) := join_path(
+        browser_location_bytes(app),
+        browser_entry_name(app, index),
+        storage[:],
+    )
+    if !valid {
+        return false
+    }
+    owner: memory.Owned_String
+    memory.owned_string_copy_bytes(&owner, path)
+    defer memory.owned_string_destroy(&owner)
+    (directory, error) := filesystem.open(memory.owned_string_cstring(&owner))
+    if error != .none {
+        return false
+    }
+    filesystem.close(&directory)
+    return true
+}

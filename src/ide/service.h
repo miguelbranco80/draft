@@ -149,9 +149,10 @@ draft_compiler_session_build(void *session,
 // syntax spans. It performs no filesystem discovery, package checking, tooling
 // rebuild, or native work. The caller must still check changed bytes before
 // relying on semantic navigation or diagnostics.
-DRAFT_COMPILER_SERVICE_API void draft_compiler_session_colorize(
-    void *session, const DraftCompilerServiceOverlay *source,
-    DraftCompilerServiceSyntaxResult *result);
+DRAFT_COMPILER_SERVICE_API void
+draft_compiler_session_colorize(void *session,
+                                const DraftCompilerServiceOverlay *source,
+                                DraftCompilerServiceSyntaxResult *result);
 
 // span inspects the latest check/build/colorize operation, while diagnostics
 // inspect the latest semantic check/build attempt. Out-of-range span access
@@ -195,14 +196,11 @@ DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_package_row_text(
 // a zero record. Source path/text calls use the ordinary complete-size copy
 // contract. editable returns one only for an ordinary workspace-owned file;
 // compiler-distributed core and dependency sources are intentionally read-only.
-DRAFT_COMPILER_SERVICE_API uint8_t
-draft_compiler_session_prepare_navigation(void *session,
-                                          const void *path_data,
-                                          size_t path_length,
-                                          size_t byte_offset);
+DRAFT_COMPILER_SERVICE_API uint8_t draft_compiler_session_prepare_navigation(
+    void *session, const void *path_data, size_t path_length,
+    size_t byte_offset);
 
-DRAFT_COMPILER_SERVICE_API void
-draft_compiler_session_navigation_definition(
+DRAFT_COMPILER_SERVICE_API void draft_compiler_session_navigation_definition(
     void *session, DraftCompilerServiceNavigationLocation *result);
 
 DRAFT_COMPILER_SERVICE_API size_t
@@ -213,16 +211,17 @@ DRAFT_COMPILER_SERVICE_API void draft_compiler_session_navigation_usage(
     DraftCompilerServiceNavigationLocation *result);
 
 DRAFT_COMPILER_SERVICE_API size_t
-draft_compiler_session_copy_navigation_source_path(
-    void *session, size_t source, uint8_t *destination, size_t capacity);
+draft_compiler_session_copy_navigation_source_path(void *session, size_t source,
+                                                   uint8_t *destination,
+                                                   size_t capacity);
 
 DRAFT_COMPILER_SERVICE_API size_t
-draft_compiler_session_copy_navigation_source_text(
-    void *session, size_t source, uint8_t *destination, size_t capacity);
+draft_compiler_session_copy_navigation_source_text(void *session, size_t source,
+                                                   uint8_t *destination,
+                                                   size_t capacity);
 
 DRAFT_COMPILER_SERVICE_API uint8_t
-draft_compiler_session_navigation_source_editable(void *session,
-                                                  size_t source);
+draft_compiler_session_navigation_source_editable(void *session, size_t source);
 
 // source_path identifies the active ordinary file. artifact_path is empty until
 // one successful build and is cleared by any later failed build or selection
@@ -272,14 +271,19 @@ draft_compiler_session_copy_run_working_directory(void *session,
                                                   uint8_t *destination,
                                                   size_t capacity);
 
-// Copies the selected program's complete effective Build/Run configuration as
-// deterministic labeled lines for direct IDE presentation. This projection is
-// refreshed by the same foreground operation that rereads draft.workspace; it
-// is not parsed back into compiler state.
+// Copies the selected root's effective compiler policy as deterministic
+// labeled lines for direct IDE presentation. Run arguments, environment, and
+// working directory use the typed operations above and are not repeated here.
 DRAFT_COMPILER_SERVICE_API size_t
-draft_compiler_session_copy_program_configuration(void *session,
-                                                  uint8_t *destination,
-                                                  size_t capacity);
+draft_compiler_session_copy_build_configuration(void *session,
+                                                uint8_t *destination,
+                                                size_t capacity);
+
+// Copies a compact Workspace/Root/Target/Optimization identity for a status
+// line. The returned text is presentation-only and follows the standard
+// complete-size copy contract.
+DRAFT_COMPILER_SERVICE_API size_t draft_compiler_session_copy_session_summary(
+    void *session, uint8_t *destination, size_t capacity);
 
 // Root rows are deterministic workspace-relative package names for the current
 // target. Selection is synchronous, returns one on success, and invalidates the

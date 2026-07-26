@@ -31,7 +31,8 @@ DRAFT_COMPILER_SERVICE_0 {
     draft_compiler_session_run_environment_count;
     draft_compiler_session_copy_run_environment;
     draft_compiler_session_copy_run_working_directory;
-    draft_compiler_session_copy_program_configuration;
+    draft_compiler_session_copy_build_configuration;
+    draft_compiler_session_copy_session_summary;
     draft_compiler_session_root_count;
     draft_compiler_session_selected_root;
     draft_compiler_session_copy_root_name;

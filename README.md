@@ -130,8 +130,8 @@ The repository's `draft.workspace` establishes the import/state boundary and
 selects `examples/turbo-editor` as the initial program. Without a marker, the
 opened directory is a standalone workspace and executable roots are discovered
 there. DraftIDE starts with one syntax-colored document; F5 checks, builds, and
-runs the active Program, F6 opens Program and Run Settings, and compiler
-inspectors remain separate opt-in windows. The CMake target builds DraftIDE
+runs the active Program, F6 opens Compiler Options for root/target selection,
+and compiler inspectors remain separate opt-in windows. The CMake target builds DraftIDE
 itself at O2.
 
 The ordinary compiler commands take package paths directly. A marker found by

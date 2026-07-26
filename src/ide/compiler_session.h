@@ -173,7 +173,7 @@ struct EffectiveProgramConfiguration {
 // SourceOption is one editable, target-selected workspace Draft file reachable
 // from the current checked root. physical_path is exposed only for file I/O;
 // identity and relative_name are the semantic override key. display_name is a
-// stable workspace-relative label sorted for Files in Active Program.
+// stable workspace-relative label used by editor and semantic navigation.
 struct SourceOption {
   std::string display_name;
   std::filesystem::path physical_path;
@@ -268,10 +268,15 @@ public:
   run_working_directory() const;
 
   // Returns a deterministic human-readable projection of the selected root's
-  // complete effective Build/Run policy. This is operator-facing text, not a
-  // semantic dump or an input to compilation. It is rebuilt on demand so a
-  // foreground manifest refresh is immediately visible to DraftIDE.
-  [[nodiscard]] std::string program_configuration_text() const;
+  // effective compiler policy. Run arguments, environment, and working
+  // directory have typed service operations of their own and are intentionally
+  // absent: DraftIDE must not present runtime policy as a compiler option.
+  [[nodiscard]] std::string build_configuration_text() const;
+
+  // Returns the compact, deterministic identity shown on DraftIDE's status
+  // line. It contains only current session facts and is never parsed back into
+  // compiler state.
+  [[nodiscard]] std::string session_summary_text() const;
 
   // Resolves the semantic symbol at one exact current editor byte offset and
   // publishes its definition plus deterministic reference rows. Navigation is
@@ -279,8 +284,8 @@ public:
   // is intentionally invisible following a rejected edit. path may name an
   // editable workspace file or a read-only compiler/dependency source returned
   // by navigation_source_path.
-  [[nodiscard]] NavigationStatus
-  prepare_navigation(std::string_view path, std::size_t byte_offset);
+  [[nodiscard]] NavigationStatus prepare_navigation(std::string_view path,
+                                                    std::size_t byte_offset);
   [[nodiscard]] const std::optional<NavigationLocation> &
   navigation_definition() const;
   [[nodiscard]] std::span<const NavigationLocation> navigation_usages() const;
@@ -309,7 +314,8 @@ private:
   // Reads and resolves operator policy at foreground-operation boundaries.
   // Root refresh publishes a complete replacement only after discovery and all
   // configurations succeed. Resolution shares draftc's backend input parsers,
-  // so the IDE never gains a parallel provider, asset, or artifact-kind grammar.
+  // so the IDE never gains a parallel provider, asset, or artifact-kind
+  // grammar.
   [[nodiscard]] bool read_workspace_manifest(WorkspaceManifest &manifest,
                                              DiagnosticSink &diagnostics) const;
   [[nodiscard]] bool refresh_root_options(const WorkspaceManifest &manifest,

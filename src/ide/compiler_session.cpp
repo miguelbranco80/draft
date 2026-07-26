@@ -121,8 +121,8 @@ reference_name_range(const LoadedPackage &loaded,
           return candidate.range.end.offset <= offset;
         });
     SourceRange final_identifier = SourceRange::invalid();
-    for (; token != tokens.end() && token->range.begin.offset <
-                                      expression.range.end.offset;
+    for (; token != tokens.end() &&
+           token->range.begin.offset < expression.range.end.offset;
          ++token) {
       if (token->kind == TokenKind::Identifier &&
           token->range.begin.offset >= expression.range.begin.offset &&
@@ -163,8 +163,7 @@ canonical_symbol(const CompileWorkspaceResult &compiled,
   if (!symbol.is_valid() || symbol.value >= semantic.symbols.symbol_count())
     return std::nullopt;
 
-  for (const ImportedSymbol &imported :
-       semantic.imported_symbols_for_read()) {
+  for (const ImportedSymbol &imported : semantic.imported_symbols_for_read()) {
     if (imported.proxy != symbol)
       continue;
     const PackageIdentity owner{
@@ -179,10 +178,10 @@ canonical_symbol(const CompileWorkspaceResult &compiled,
     }
     const SymbolTable &owner_symbols =
         compiled.packages[*owner_index]->bodies.package.symbols;
-    for (std::size_t candidate = 0;
-         candidate < owner_symbols.symbol_count(); ++candidate) {
-      const Symbol &definition = owner_symbols.symbol(
-          SymbolId{static_cast<std::uint32_t>(candidate)});
+    for (std::size_t candidate = 0; candidate < owner_symbols.symbol_count();
+         ++candidate) {
+      const Symbol &definition =
+          owner_symbols.symbol(SymbolId{static_cast<std::uint32_t>(candidate)});
       if (definition.name == imported.public_name ||
           (!definition.linkage_name.empty() &&
            definition.linkage_name == imported.public_name)) {
@@ -199,13 +198,12 @@ canonical_symbol(const CompileWorkspaceResult &compiled,
 
 [[nodiscard]] bool same_foreign_effect(const ForeignAuditEffect &left,
                                        const ForeignAuditEffect &right) {
-  return left.kind == right.kind &&
-      left.root_identity == right.root_identity &&
-      left.root_relative_path == right.root_relative_path &&
-      left.declaration == right.declaration && left.detail == right.detail &&
-      left.flow_parameter == right.flow_parameter &&
-      left.flow_path == right.flow_path &&
-      left.flow_context == right.flow_context;
+  return left.kind == right.kind && left.root_identity == right.root_identity &&
+         left.root_relative_path == right.root_relative_path &&
+         left.declaration == right.declaration && left.detail == right.detail &&
+         left.flow_parameter == right.flow_parameter &&
+         left.flow_path == right.flow_path &&
+         left.flow_context == right.flow_context;
 }
 
 [[nodiscard]] bool same_foreign_audit(const ForeignProviderAudit &left,
@@ -221,7 +219,8 @@ canonical_symbol(const CompileWorkspaceResult &compiled,
         left_symbol.effects.size() != right_symbol.effects.size()) {
       return false;
     }
-    for (std::size_t effect = 0; effect < left_symbol.effects.size(); ++effect) {
+    for (std::size_t effect = 0; effect < left_symbol.effects.size();
+         ++effect) {
       if (!same_foreign_effect(left_symbol.effects[effect],
                                right_symbol.effects[effect])) {
         return false;
@@ -231,9 +230,9 @@ canonical_symbol(const CompileWorkspaceResult &compiled,
   return true;
 }
 
-[[nodiscard]] bool same_program_policy(
-    const EffectiveProgramConfiguration &left,
-    const EffectiveProgramConfiguration &right) {
+[[nodiscard]] bool
+same_program_policy(const EffectiveProgramConfiguration &left,
+                    const EffectiveProgramConfiguration &right) {
   if (left.build.target.facts.identity != right.build.target.facts.identity ||
       left.build.artifact_kind != right.build.artifact_kind ||
       left.build.optimization != right.build.optimization ||
@@ -315,10 +314,9 @@ bool CompilerSession::resolve_program_configuration(
                       "program '" + std::string(root) + "': " + reason);
     return false;
   }
-  if (!load_foreign_provider_summaries(resolved.build.provider_summaries,
-                                       resolved.build.foreign_providers,
-                                       resolved.foreign_provider_audits,
-                                       diagnostics)) {
+  if (!load_foreign_provider_summaries(
+          resolved.build.provider_summaries, resolved.build.foreign_providers,
+          resolved.foreign_provider_audits, diagnostics)) {
     return false;
   }
 
@@ -354,8 +352,7 @@ bool CompilerSession::resolve_program_configuration(
 }
 
 bool CompilerSession::read_workspace_manifest(
-    WorkspaceManifest &manifest,
-    DiagnosticSink &diagnostics) const {
+    WorkspaceManifest &manifest, DiagnosticSink &diagnostics) const {
   std::string manifest_error;
   const std::filesystem::path manifest_path =
       configuration_.workspace_directory / WorkspaceManifestName;
@@ -403,9 +400,8 @@ bool CompilerSession::refresh_root_options(const WorkspaceManifest &manifest,
   // compiler session proper had begun.
   workspace_options.package_options.work_executor = work_executor_.get();
   std::vector<std::filesystem::path> excluded;
-  if (!resolve_workspace_exclusions(
-          configuration_.workspace_directory, manifest.excludes, excluded,
-          diagnostics))
+  if (!resolve_workspace_exclusions(configuration_.workspace_directory,
+                                    manifest.excludes, excluded, diagnostics))
     return false;
 
   // Resolve and select every named program before fallback discovery. Their
@@ -647,8 +643,8 @@ bool CompilerSession::refresh_configuration(DiagnosticSink &diagnostics) {
   // ordinary build/run policy remain unchanged.
   EffectiveProgramConfiguration resolved;
   if (!resolve_program_configuration(
-          manifest, root_options_[selected_root_].root_relative_path,
-          resolved, diagnostics)) {
+          manifest, root_options_[selected_root_].root_relative_path, resolved,
+          diagnostics)) {
     return false;
   }
   if (!same_program_policy(root_options_[selected_root_].program, resolved)) {
@@ -725,13 +721,13 @@ std::filesystem::path CompilerSession::default_output_path() const {
   const EffectiveProgramConfiguration &program = active_program();
   switch (program.build.artifact_kind) {
   case NativeArtifactKind::Executable:
-    return build_directory_ / (program.build.target.facts.object_format == "coff"
-                                   ? "program.exe"
-                                   : "program");
+    return build_directory_ /
+           (program.build.target.facts.object_format == "coff" ? "program.exe"
+                                                               : "program");
   case NativeArtifactKind::Object:
-    return build_directory_ / (program.build.target.facts.object_format == "coff"
-                                   ? "program.obj"
-                                   : "program.o");
+    return build_directory_ /
+           (program.build.target.facts.object_format == "coff" ? "program.obj"
+                                                               : "program.o");
   case NativeArtifactKind::StaticLibrary:
     return program.build.target.facts.object_format == "coff"
                ? build_directory_ / "program.lib"
@@ -758,8 +754,8 @@ void CompilerSession::rebuild_source_options() {
   std::vector<SourceOption> sources;
   for (const WorkspacePackage &package : last_good_->graph.packages) {
     // Core and pinned dependency files are inspectable compiler inputs but are
-    // not editable members of this workspace. Files in Active Program exposes
-    // only source paths whose semantic root is the user's open workspace.
+    // not editable members of this workspace. The editor source projection
+    // exposes only paths whose semantic root is the user's open workspace.
     if (package.identity.root_identity != "workspace")
       continue;
     for (const LoadedPackageFile &file : package.loaded.files) {
@@ -889,8 +885,8 @@ CompileWorkspaceOptions CompilerSession::compile_options() const {
   options.workspace.core_files = embedded_core_files();
   options.workspace.core_content_identity = embedded_core_content_identity();
   options.configuration.runtime_assertions = program.build.runtime_assertions
-      ? RuntimeAssertionMode::On
-      : RuntimeAssertionMode::Off;
+                                                 ? RuntimeAssertionMode::On
+                                                 : RuntimeAssertionMode::Off;
   options.emit_program_entry =
       program.build.artifact_kind == NativeArtifactKind::Executable;
   options.foreign_provider_audits = program.foreign_provider_audits;
@@ -1323,8 +1319,8 @@ CheckResult CompilerSession::build_checked() {
   native.foreign_providers = program.build.foreign_providers;
   native.runtime_assets = program.build.runtime_assets;
   native.work_executor = options.work_executor;
-  const NativeBuildResult built =
-      build_native_artifact(program.build.target, compiled, native, diagnostics);
+  const NativeBuildResult built = build_native_artifact(
+      program.build.target, compiled, native, diagnostics);
   if (!built.ok) {
     publish_diagnostics(sources, diagnostics);
     return {false, diagnostic_count_};
@@ -1383,7 +1379,7 @@ CompilerSession::run_working_directory() const {
   return active_program().working_directory;
 }
 
-std::string CompilerSession::program_configuration_text() const {
+std::string CompilerSession::build_configuration_text() const {
   const EffectiveProgramConfiguration &program = active_program();
   const ResolvedBuildPolicy &build = program.build;
   std::string text;
@@ -1393,7 +1389,7 @@ std::string CompilerSession::program_configuration_text() const {
     text += value;
     text += '\n';
   };
-  line("program", root_options_[selected_root_].root_relative_path);
+  line("root package", root_options_[selected_root_].root_relative_path);
   line("target", build.target.facts.file_tag);
   line("optimization", native_optimization_level_name(build.optimization));
   line("artifact", native_artifact_kind_name(build.artifact_kind));
@@ -1427,27 +1423,27 @@ std::string CompilerSession::program_configuration_text() const {
     value += asset.path.string();
     line("runtime asset", value);
   }
-  if (program.arguments.empty()) {
-    line("arguments", "none");
-  } else {
-    for (const std::string &argument : program.arguments)
-      line("argument", argument);
-  }
-  if (program.environment.empty()) {
-    line("environment", "inherited");
-  } else {
-    for (const std::string &environment : program.environment)
-      line("environment", environment);
-  }
-  line("working directory",
-       program.working_directory.has_value()
-           ? program.working_directory->string()
-           : "inherited from DraftIDE");
   return text;
 }
 
-std::string
-CompilerSession::navigation_source_path(std::size_t source) const {
+std::string CompilerSession::session_summary_text() const {
+  const ResolvedBuildPolicy &build = active_program().build;
+  std::string workspace_name =
+      configuration_.workspace_directory.filename().string();
+  if (workspace_name.empty())
+    workspace_name = configuration_.workspace_directory.string();
+  std::string text = "Workspace: ";
+  text += workspace_name;
+  text += "  Root: ";
+  text += root_options_[selected_root_].root_relative_path;
+  text += "  ";
+  text += build.target.facts.file_tag;
+  text += "  ";
+  text += native_optimization_level_name(build.optimization);
+  return text;
+}
+
+std::string CompilerSession::navigation_source_path(std::size_t source) const {
   if (!last_good_.has_value() ||
       source > std::numeric_limits<std::uint32_t>::max()) {
     return {};
@@ -1486,8 +1482,7 @@ CompilerSession::navigation_source_text(std::size_t source) const {
       source > std::numeric_limits<std::uint32_t>::max()) {
     return {};
   }
-  return last_good_sources_.text(
-      FileId{static_cast<std::uint32_t>(source)});
+  return last_good_sources_.text(FileId{static_cast<std::uint32_t>(source)});
 }
 
 bool CompilerSession::navigation_source_editable(std::size_t source) const {
@@ -1510,13 +1505,12 @@ CompilerSession::navigation_definition() const {
   return navigation_definition_;
 }
 
-std::span<const NavigationLocation>
-CompilerSession::navigation_usages() const {
+std::span<const NavigationLocation> CompilerSession::navigation_usages() const {
   return navigation_usages_;
 }
 
-NavigationStatus CompilerSession::prepare_navigation(
-    std::string_view path, std::size_t byte_offset) {
+NavigationStatus CompilerSession::prepare_navigation(std::string_view path,
+                                                     std::size_t byte_offset) {
   navigation_definition_.reset();
   navigation_usages_.clear();
   if (!last_good_.has_value())
@@ -1535,7 +1529,8 @@ NavigationStatus CompilerSession::prepare_navigation(
                                         requested_error);
   for (std::size_t package_index = 0;
        package_index < compiled.graph.packages.size() &&
-       !source_package.has_value(); ++package_index) {
+       !source_package.has_value();
+       ++package_index) {
     const WorkspacePackage &package = compiled.graph.packages[package_index];
     for (const LoadedPackageFile &file : package.loaded.files) {
       if (file.kind != PackageFileKind::DraftSource)
@@ -1547,8 +1542,8 @@ NavigationStatus CompilerSession::prepare_navigation(
         std::error_code candidate_error;
         const std::filesystem::path candidate_canonical =
             std::filesystem::weakly_canonical(candidate, candidate_error);
-        matches = !candidate_error &&
-                  candidate_canonical == requested_canonical;
+        matches =
+            !candidate_error && candidate_canonical == requested_canonical;
       }
       if (matches) {
         source_package = package_index;
@@ -1567,8 +1562,7 @@ NavigationStatus CompilerSession::prepare_navigation(
     return NavigationStatus::SourceNotFound;
   }
 
-  const CompiledPackage &source_compiled =
-      *compiled.packages[*source_package];
+  const CompiledPackage &source_compiled = *compiled.packages[*source_package];
   const SemanticPackage &source_semantic = source_compiled.bodies.package;
   struct CursorCandidate {
     bool found = false;
@@ -1581,8 +1575,8 @@ NavigationStatus CompilerSession::prepare_navigation(
         !symbol.is_valid() || range.end.offset < range.begin.offset) {
       return;
     }
-    const bool interior = byte_offset >= range.begin.offset &&
-                          byte_offset < range.end.offset;
+    const bool interior =
+        byte_offset >= range.begin.offset && byte_offset < range.end.offset;
     const bool trailing_boundary = byte_offset == range.end.offset &&
                                    range.end.offset != range.begin.offset;
     if (!interior && !trailing_boundary)
@@ -1596,8 +1590,8 @@ NavigationStatus CompilerSession::prepare_navigation(
 
   // Symbol name ranges cover declarations, parameters, locals, fields, and
   // imported proxy names already published into the canonical package table.
-  for (std::size_t index = 0;
-       index < source_semantic.symbols.symbol_count(); ++index) {
+  for (std::size_t index = 0; index < source_semantic.symbols.symbol_count();
+       ++index) {
     const SymbolId symbol{static_cast<std::uint32_t>(index)};
     consider(source_semantic.symbols.symbol(symbol).name_range, symbol);
   }
@@ -1618,16 +1612,15 @@ NavigationStatus CompilerSession::prepare_navigation(
       if (!expression.symbol.is_valid())
         continue;
       consider(reference_name_range(
-                   compiled.graph.packages[*source_package].loaded,
-                   expression),
+                   compiled.graph.packages[*source_package].loaded, expression),
                expression.symbol);
     }
   }
   if (!candidate.found)
     return NavigationStatus::NoSymbol;
 
-  const std::optional<SemanticSymbol> selected = canonical_symbol(
-      compiled, *source_package, candidate.symbol);
+  const std::optional<SemanticSymbol> selected =
+      canonical_symbol(compiled, *source_package, candidate.symbol);
   if (!selected.has_value() || selected->package >= compiled.packages.size() ||
       !compiled.packages[selected->package].has_value()) {
     return NavigationStatus::NoDefinition;
@@ -1645,14 +1638,10 @@ NavigationStatus CompilerSession::prepare_navigation(
     return NavigationStatus::NoDefinition;
   }
   const auto location = [this](SourceRange range) {
-    const LineColumn coordinate =
-        last_good_sources_.line_column(range.begin);
+    const LineColumn coordinate = last_good_sources_.line_column(range.begin);
     return NavigationLocation{
-        range.begin.file.value,
-        range.begin.offset,
-        range.end.offset,
-        coordinate.line,
-        coordinate.column,
+        range.begin.file.value, range.begin.offset, range.end.offset,
+        coordinate.line,        coordinate.column,
     };
   };
   navigation_definition_ = location(definition_range);
@@ -1661,15 +1650,16 @@ NavigationStatus CompilerSession::prepare_navigation(
   // Duplicate HIR expressions can represent one surface token (for example a
   // direct call plus its callee); exact range deduplication keeps one visible
   // row without introducing a second semantic identity system.
-  for (std::size_t package_index = 0;
-       package_index < compiled.packages.size(); ++package_index) {
+  for (std::size_t package_index = 0; package_index < compiled.packages.size();
+       ++package_index) {
     if (!compiled.packages[package_index].has_value())
       continue;
     const CompiledPackage &package = *compiled.packages[package_index];
     for (std::size_t work_index : package.selected_procedure_work) {
       if (work_index >= package.bodies.procedures.size())
         continue;
-      const ProcedureBodyHirResult &body = package.bodies.procedures[work_index];
+      const ProcedureBodyHirResult &body =
+          package.bodies.procedures[work_index];
       for (std::size_t expression_index = 0;
            expression_index < body.program.expression_count();
            ++expression_index) {
@@ -1700,8 +1690,7 @@ NavigationStatus CompilerSession::prepare_navigation(
   navigation_usages_.erase(
       std::unique(
           navigation_usages_.begin(), navigation_usages_.end(),
-          [](const NavigationLocation &left,
-             const NavigationLocation &right) {
+          [](const NavigationLocation &left, const NavigationLocation &right) {
             return left.source == right.source && left.start == right.start &&
                    left.end == right.end;
           }),

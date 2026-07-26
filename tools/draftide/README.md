@@ -1,64 +1,70 @@
 # Turbo Draft
 
-Turbo Draft is the full-screen terminal IDE written in Draft. The only C++
-component is the bootstrap compiler service behind an opaque C ABI; ordinary
-files, documents, menus, terminal/UI state, compiler commands, and `main` are
-Draft code.
+Turbo Draft is the full-screen terminal IDE written in Draft. The bootstrap
+compiler service is the only C++ component; ordinary files, editor state,
+menus, dialogs, terminal/UI policy, compiler commands, and `main` are Draft.
 
-Build and open a Workspace or any package inside it:
+Build it and open a workspace directory or any package inside one:
 
 ```sh
 cmake --build build --target draftide --parallel
 build/draftide examples/raylib-asteroids
 ```
 
-DraftIDE searches upward for the nearest `draft.workspace`. That file may set a
-default Program and Build/Run settings, but it does not enumerate source files.
-Without a marker, the opened directory is a standalone Workspace. The compiler
-discovers packages and executable Programs normally; `--source <file>` is only
-an optional initial-file override.
+DraftIDE uses the same model as `draftc`:
 
-The UI uses four deliberately separate concepts:
+- **Workspace** is the filesystem/import boundary established by the nearest
+  optional `draft.workspace`, or by the opened directory when no marker exists.
+- **Root package** is the exact package operated on by Check and Build. A root
+  containing `main` is a runnable Program.
+- **Document** is one open file or unnamed buffer. A file may be edited without
+  belonging to the active root package.
+- **Compiler Options** selects the root package and target and shows the
+  effective build configuration.
+- **Run Configuration** edits exact argument rows, `NAME=value` environment
+  rows, and the working directory separately from compiler policy.
 
-- **Workspace**: filesystem/import boundary and optional `draft.workspace`.
-- **Program**: active root package; it is runnable when it contains `main`.
-- **Document**: one open file or unsaved `Untitled N` buffer.
-- **Program and Run Settings**: effective target, optimization, artifact,
-  providers, arguments, environment, and working directory used by Build/F5.
+The six menus have conventional, non-overlapping responsibilities:
 
-DraftIDE starts with one editor window whose title is the active file's
-Workspace-relative path. File contains ordinary document actions: New, Open,
-Files in Active Program, Open Files, Save, Save As, Save All, and Exit. Open and
-Save As accept an absolute path or one relative to the Workspace. A file outside
-the active Program remains editing-only. Workspace contains Switch Workspace,
-Program and Run Settings, and Packages and Imports. Compiler inspection windows
-live under Window rather than obscuring startup.
+- **File**: New/Open File/Open Workspace, close document/workspace, Save/Save
+  As/Save All, and Exit.
+- **Edit**: undo/redo, clipboard commands, find/replace, line and semantic
+  navigation, and navigation history.
+- **Compile**: Compiler Options, Check, Build, and Build All Programs.
+- **Run**: Run and Run Configuration.
+- **Window**: desktop navigation/arrangement and document or last-successful
+  semantic windows.
+- **Help**: the complete shortcut reference and About.
 
-The main shortcuts are visible in Help > Keyboard Shortcuts:
+Open File, Save As, and Open Workspace use one real directory browser. Opening
+a file inside the workspace does not switch root packages automatically; a file
+outside the compiler scope requires an explicit **Switch and Open** decision.
+Workspace replacement or closure never discards dirty documents without Save
+All/Discard/Cancel.
 
-- Ctrl-N/O/S and Ctrl-X/C/V/A: document and selection commands.
-- Ctrl-F, F3/Shift-F3, Ctrl-H, Ctrl-R, Ctrl-G: find/replace/navigation.
-- Alt-F9, F9, F5: Check, Build, Build and Run.
-- F2, Alt-0, F6, F8: Program Files, Open Files, Program settings, Diagnostics.
-- F12/Shift-F12 and Alt-Left/Alt-Right: semantic definition/usages/history.
+The principal shortcuts are also listed by **Help > Keyboard Shortcuts**:
+
+- Ctrl-N/O/W/S and F2: new, open, close document, and save.
+- Ctrl-X/C/V/A, Delete, Ctrl-Z/Y: selection and editing commands.
+- Ctrl-F, F3/Shift-F3, Ctrl-R, F4, Ctrl-G: find, replace, and line navigation.
+- F12/Shift-F12 and Alt-Left/Alt-Right: definition, usages, and history.
+- Alt-F9, F9, F5: Check, Build, and Run.
+- F6 and F8: Compiler Options and Diagnostics.
 - Ctrl-F6/Ctrl-Shift-F6, Alt-F3, Ctrl-F5: desktop window commands.
-- Alt-X or Ctrl-Q: Exit. Escape only cancels the current menu/dialog/operation.
+- Alt-F/E/C/R/W/H: open the six menus; Alt-X exits; Escape only cancels the
+  current menu, dialog, or window operation.
 
-Alt-F/E/S/R/K/W/H opens File, Edit, Search, Run, Workspace, Window, or Help;
-an open menu accepts its underlined command letter directly. Conventional
-terminals cannot distinguish Ctrl-Shift-S from Ctrl-S, so Save As and Replace
-All use their visible menu access paths instead of advertising fake shortcuts.
+F5 checks the exact visible edits, builds using the selected root's effective
+workspace configuration, restores the primary terminal, runs the executable
+with the structured Run Configuration, and waits for Enter before resuming the
+IDE. Relative working-directory overrides are Workspace-relative. An
+editing-only file outside the active root is rejected, and an invalid current
+edit is never replaced by an older executable.
 
-F5 checks the exact visible edits, builds with the active Program's effective
-Workspace configuration, restores the primary terminal, runs the executable
-with its configured arguments/environment/working directory, and waits for
-Enter before resuming the IDE. An invalid current edit is never replaced by an
-older retained executable.
-
-Typing runs only the production lexer for syntax color; package semantics run
+Typing runs only the production lexer for syntax color. Package semantics run
 on explicit Check/Build/Run or semantic navigation. Local terminals enable
-hover motion. When an OpenSSH environment is detected, DraftIDE requests only
-click/drag/wheel reports so pointer movement does not flood the remote PTY.
+hover motion; OpenSSH sessions request click/drag/wheel input without flooding
+the remote PTY with unpressed movement.
 
 For a noninteractive compiler/UI composition proof:
 
@@ -67,4 +73,4 @@ build/draftide . --smoke
 ```
 
 See [the implementation boundary](../../docs/implementation/turbo-draft.md)
-for ownership, compiler transaction, rendering, and verification details.
+for ownership, compiler transactions, rendering, and verification details.

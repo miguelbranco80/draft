@@ -88,10 +88,14 @@ void write_file(const std::filesystem::path &path, std::string_view contents) {
 
 [[nodiscard]] std::string_view target_name(std::uint8_t ordinal) {
   switch (ordinal) {
-  case 0: return "aarch64-macos";
-  case 1: return "aarch64-linux";
-  case 2: return "x86_64-linux";
-  case 3: return "x86_64-windows";
+  case 0:
+    return "aarch64-macos";
+  case 1:
+    return "aarch64-linux";
+  case 2:
+    return "x86_64-linux";
+  case 3:
+    return "x86_64-windows";
   }
   return {};
 }
@@ -219,8 +223,8 @@ void test_service_transactions_and_native_build(TestState &state) {
   draft_compiler_session_colorize(session, &incomplete_overlay, &colored);
   EXPECT(state, colored.success == 1);
   EXPECT(state, colored.span_count != 0);
-  EXPECT(state, draft_compiler_session_copy_diagnostics(
-                    session, nullptr, 0) == 0);
+  EXPECT(state,
+         draft_compiler_session_copy_diagnostics(session, nullptr, 0) == 0);
   EXPECT(state, draft_compiler_session_package_row_count(session) == 1);
   for (std::size_t index = 0; index < colored.span_count; ++index) {
     DraftCompilerServiceSpan span{};
@@ -246,8 +250,7 @@ void test_service_transactions_and_native_build(TestState &state) {
   EXPECT(state, answer_definition.end == answer_declaration + 6);
   EXPECT(state, answer_definition.line == 4);
   EXPECT(state, answer_definition.column == 1);
-  EXPECT(state,
-         draft_compiler_session_navigation_usage_count(session) == 1);
+  EXPECT(state, draft_compiler_session_navigation_usage_count(session) == 1);
   DraftCompilerServiceNavigationLocation answer_usage{};
   draft_compiler_session_navigation_usage(session, 0, &answer_usage);
   EXPECT(state, answer_usage.start == answer_use);
@@ -345,8 +348,7 @@ void test_service_transactions_and_native_build(TestState &state) {
   EXPECT(state, draft_compiler_session_prepare_navigation(
                     session, canonical_source_text.data(),
                     canonical_source_text.size(), answer_use) == 1);
-  EXPECT(state,
-         draft_compiler_session_navigation_usage_count(session) == 0);
+  EXPECT(state, draft_compiler_session_navigation_usage_count(session) == 0);
 
   // Adding an import cannot preserve PackageIds through the overlay path. A
   // successful result therefore proves that the service used its explicit
@@ -436,8 +438,7 @@ void test_service_transactions_and_native_build(TestState &state) {
                     session, canonical_source_text.data(),
                     canonical_source_text.size(), imported_use + 2) == 5);
   DraftCompilerServiceNavigationLocation imported_definition{};
-  draft_compiler_session_navigation_definition(session,
-                                               &imported_definition);
+  draft_compiler_session_navigation_definition(session, &imported_definition);
   navigation_bytes.fill(0);
   const std::size_t imported_path_size =
       draft_compiler_session_copy_navigation_source_path(
@@ -449,8 +450,7 @@ void test_service_transactions_and_native_build(TestState &state) {
   EXPECT(state,
          imported_definition.start == multi_library.find("answer_two ::"));
   EXPECT(state, imported_definition.end == imported_definition.start + 10);
-  EXPECT(state,
-         draft_compiler_session_navigation_usage_count(session) == 1);
+  EXPECT(state, draft_compiler_session_navigation_usage_count(session) == 1);
 
   DraftCompilerServiceResult built{};
   draft_compiler_session_build(session, multi_overlays.data(),
@@ -653,18 +653,18 @@ void test_manifest_program_build_and_run_configuration(TestState &state) {
   const std::string canonical_working_directory =
       std::filesystem::canonical(working_directory).string();
 
-  // The IDE receives one authoritative effective policy projection rather than
-  // reconstructing manifest precedence in Draft. All user-visible Build/Run
-  // selections are present before the first build.
+  // The IDE receives one authoritative compiler-policy projection rather than
+  // reconstructing manifest precedence in Draft. Structured run settings are
+  // copied through the typed operations tested below.
   std::array<std::uint8_t, 8192> configuration_bytes{};
   const std::size_t configuration_size =
-      draft_compiler_session_copy_program_configuration(
+      draft_compiler_session_copy_build_configuration(
           session, configuration_bytes.data(), configuration_bytes.size());
   const std::string_view configuration_text{
       reinterpret_cast<const char *>(configuration_bytes.data()),
       configuration_size,
   };
-  EXPECT(state, configuration_text.find("program: app\n") !=
+  EXPECT(state, configuration_text.find("root package: app\n") !=
                     std::string_view::npos);
   EXPECT(state, configuration_text.find(
                     "target: " + std::string(native_target_name()) + "\n") !=
@@ -673,14 +673,21 @@ void test_manifest_program_build_and_run_configuration(TestState &state) {
                     std::string_view::npos);
   EXPECT(state, configuration_text.find("artifact: object\n") !=
                     std::string_view::npos);
-  EXPECT(state, configuration_text.find("argument: first argument\n") !=
+  EXPECT(state, configuration_text.find("argument:") == std::string_view::npos);
+  EXPECT(state,
+         configuration_text.find("environment:") == std::string_view::npos);
+  EXPECT(state, configuration_text.find("working directory:") ==
                     std::string_view::npos);
-  EXPECT(state, configuration_text.find(
-                    "environment: DRAFT_SERVICE_TEST=expected\n") !=
+  std::array<std::uint8_t, 1024> summary_bytes{};
+  const std::size_t summary_size = draft_compiler_session_copy_session_summary(
+      session, summary_bytes.data(), summary_bytes.size());
+  const std::string_view summary_text{
+      reinterpret_cast<const char *>(summary_bytes.data()), summary_size};
+  EXPECT(state, summary_text.find("Workspace: ") == 0);
+  EXPECT(state, summary_text.find("  Root: app  ") != std::string_view::npos);
+  EXPECT(state, summary_text.find(std::string(native_target_name())) !=
                     std::string_view::npos);
-  EXPECT(state, configuration_text.find(
-                    "working directory: " + canonical_working_directory +
-                    "\n") != std::string_view::npos);
+  EXPECT(state, summary_text.ends_with("  O0"));
 
   // With no explicit IDE override, the selected program target wins over the
   // deliberately different create-time host fallback.
@@ -757,12 +764,11 @@ void test_manifest_program_build_and_run_configuration(TestState &state) {
   copied.fill(0);
   EXPECT(state, draft_compiler_session_copy_run_argument(
                     session, 0, copied.data(), copied.size()) == 9);
-  EXPECT(state, std::string_view(reinterpret_cast<const char *>(copied.data())) ==
-                    "refreshed");
+  EXPECT(state, std::string_view(reinterpret_cast<const char *>(
+                    copied.data())) == "refreshed");
   artifact.fill(0);
-  const std::size_t refreshed_size =
-      draft_compiler_session_copy_artifact_path(
-          session, artifact.data(), artifact.size());
+  const std::size_t refreshed_size = draft_compiler_session_copy_artifact_path(
+      session, artifact.data(), artifact.size());
   const std::filesystem::path refreshed_output =
       std::filesystem::canonical(workspace / "outputs/refreshed.o");
   EXPECT(state,
@@ -789,12 +795,12 @@ void test_named_program_is_discovered_only_under_its_target(TestState &state) {
   const std::filesystem::path app = workspace / "app";
   const std::uint8_t configured_target =
       static_cast<std::uint8_t>((native_target_ordinal() + 1) % 4);
-  write_file(app / ("entry@" + std::string(target_name(configured_target)) +
-                    ".draft"),
-             "package app\n"
-             "main :: proc() -> int {\n"
-             "    return 0\n"
-             "}\n");
+  write_file(
+      app / ("entry@" + std::string(target_name(configured_target)) + ".draft"),
+      "package app\n"
+      "main :: proc() -> int {\n"
+      "    return 0\n"
+      "}\n");
   write_file(app / ("broken@" + std::string(native_target_name()) + ".draft"),
              "package app\nmain :: proc(\n");
   write_file(workspace / "draft.workspace",
@@ -819,8 +825,7 @@ void test_named_program_is_discovered_only_under_its_target(TestState &state) {
     std::cerr << reinterpret_cast<const char *>(error.data()) << '\n';
   EXPECT(state, session != nullptr);
   if (session != nullptr) {
-    EXPECT(state,
-           draft_compiler_session_target(session) == configured_target);
+    EXPECT(state, draft_compiler_session_target(session) == configured_target);
   }
   draft_compiler_session_destroy(session);
 }
