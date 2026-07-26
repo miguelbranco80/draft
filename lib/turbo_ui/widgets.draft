@@ -96,11 +96,12 @@ pub compact_button_width :: proc(label: string) -> usize {
 }
 
 // button_face returns the painted and interactive face inside one explicit
-// footprint. The ordinary resting face is followed by a bottom/right shadow.
-// A held face moves one cell down/right and covers that shadow, which gives the
-// classic pressed feedback without changing the widget's caller-owned bounds.
-button_face :: proc(bounds: Rect, held: bool) -> (Rect, bool) {
-    shadowed := bounds.width >= 4 && bounds.height >= 2
+// footprint. When the active theme enables shadows, the ordinary resting face
+// is followed by a bottom/right shadow and a held face moves down/right over it.
+// A flat theme uses the complete width and never moves the face, even when a
+// caller supplies a two-row footprint.
+button_face :: proc(bounds: Rect, held, shadows: bool) -> (Rect, bool) {
+    shadowed := shadows && bounds.width >= 4 && bounds.height >= 2
     face := bounds
     face.height = 1 if bounds.height != 0 else 0
     if shadowed {
@@ -129,7 +130,11 @@ paint_button :: proc(
     interaction: Interaction,
     enabled: bool,
 ) -> bool {
-    (face, shadowed) := button_face(bounds, interaction.held)
+    (face, shadowed) := button_face(
+        bounds,
+        interaction.held,
+        state.theme.shadows,
+    )
     style_value := control_style(state, id, interaction, enabled)
     if !fill_rect(state.surface, state.clip, face, ' ', style_value) {
         return false
@@ -264,7 +269,7 @@ pub button :: proc(
 ) -> bool {
     interaction: Interaction
     if enabled {
-        (face, _) := button_face(bounds, false)
+        (face, _) := button_face(bounds, false, state.theme.shadows)
         interaction = interact(state, id, face)
     }
     activated := enabled && interaction.activated

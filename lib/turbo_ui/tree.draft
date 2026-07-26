@@ -112,6 +112,7 @@ pub tree_view :: proc(
     visibility_scratch: []usize,
     model: ^List_State,
     activation: List_Activation = .enter_only,
+    scrollbar: Scrollbar_Visibility = .always,
 ) -> Tree_View {
     visible_count := build_tree_visibility(nodes, visibility_scratch)
     visible := visibility_scratch[:visible_count]
@@ -123,6 +124,7 @@ pub tree_view :: proc(
         visible_count,
         model,
         activation,
+        scrollbar,
     )
     result := Tree_View{
         list = list_result,

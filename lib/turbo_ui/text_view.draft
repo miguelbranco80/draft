@@ -34,6 +34,7 @@ pub text_view_bytes :: proc(
     bounds: Rect,
     bytes: []u8,
     model: ^Text_View_State,
+    scrollbar: Scrollbar_Visibility = .always,
 ) -> bool {
     assert(state.frame_open, "turbo_ui text view outside a frame")
     assert(body_id != No_Widget && scrollbar_id != No_Widget,
@@ -100,7 +101,9 @@ pub text_view_bytes :: proc(
             state.event_handled = true
         }
     }
-    if !rect_empty(scrollbar_bounds) {
+    scrollbar_needed := total > text_bounds.height
+    if !rect_empty(scrollbar_bounds) &&
+        (scrollbar == .always || scrollbar_needed) {
         if mouse_reaches_current_scope(state, bounds) &&
             state.event.kind == .mouse &&
             state.event.mouse.action == .press &&
@@ -114,6 +117,14 @@ pub text_view_bytes :: proc(
             total,
             text_bounds.height,
             &model.offset,
+        )
+    } else if !rect_empty(scrollbar_bounds) {
+        fill_rect(
+            state.surface,
+            state.clip,
+            scrollbar_bounds,
+            ' ',
+            state.theme.window,
         )
     }
 

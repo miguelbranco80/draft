@@ -141,10 +141,15 @@ check disables semantic jumps even though last-good summary reports remain
 available. Compiler-distributed and dependency sources open in read-only
 buffers whose document layer rejects mutation and save.
 
-For `lib/turbo_ui`, reserve button footprints with `button_width(label)` so the
-brackets, terminal-width label, and shadow column all fit. A mutable byte-owned
-window title is painted by calling `begin_window(..., "")` followed immediately
-by `window_title_bytes`; do not invent a mutable-slice-to-string conversion.
+For `lib/turbo_ui`, reserve a classic shadow-capable button footprint with
+`button_width(label)`, or an exact one-row flat face with
+`compact_button_width(label)`; both measure terminal columns rather than UTF-8
+bytes. Lists, trees, and read-only text views share
+`Scrollbar_Visibility`; use `.when_needed` for compact panes while remembering
+that the last column stays reserved to prevent horizontal jitter. A mutable
+byte-owned window title is painted by calling
+`begin_window(..., "")` followed immediately by `window_title_bytes`; do not
+invent a mutable-slice-to-string conversion.
 
 ## Choose the owning layer
 

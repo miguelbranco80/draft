@@ -26,7 +26,8 @@ The package provides:
 - host-supplied read-only buffers for compiler/dependency source navigation;
   the document engine—not merely disabled UI—rejects every mutation, save,
   undo/redo, and replacement operation on such a buffer;
-- optional byte-offset syntax spans with a classic Turbo C/Pascal palette;
+- optional byte-offset syntax spans with a classic Turbo C/Pascal palette
+  translated from IBM PC color numbering to the terminal's ANSI indices;
   painting advances one monotonic span cursor across the visible viewport.
 
 `poll_disk` reloads a changed clean buffer. If memory is dirty, it preserves the

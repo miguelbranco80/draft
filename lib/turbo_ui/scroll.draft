@@ -21,6 +21,15 @@ Scrollbar_Geometry :: struct {
 
 Scroll_Wheel_Rows :: 3
 
+// Scrollbar_Visibility controls only whether an unneeded scrollbar is painted.
+// The final column remains reserved in both modes so content never jumps
+// horizontally as its model crosses one page. when_needed paints that stable
+// column as ordinary window background until scrolling is possible.
+pub Scrollbar_Visibility :: enum u8 {
+    always,
+    when_needed,
+}
+
 // maximum_scroll returns the greatest valid first visible item. total and
 // visible are logical row counts rather than terminal coordinates.
 maximum_scroll :: proc(total, visible: usize) -> usize {

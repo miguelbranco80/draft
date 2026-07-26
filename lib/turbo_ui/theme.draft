@@ -1,8 +1,10 @@
-// Theme is the complete style vocabulary used by reusable widgets. It contains
-// only core/tui cell styles and may be copied freely. The default constructor
-// recreates the high-contrast blue, cyan, white, yellow, and shadowed look of
-// classic Borland text interfaces without hard-coding those colors in widget
-// algorithms; an application can supply another complete Theme per frame.
+// Theme is the complete visual policy used by reusable widgets. Cell styles use
+// core/tui values and shadows selects whether buttons, windows, and popups paint
+// their optional shade-glyph decoration. The value may be copied freely. The
+// default constructor recreates the high-contrast blue, cyan, white, yellow,
+// and shadowed look of classic Borland text interfaces without hard-coding
+// those choices in widget algorithms; an application can supply another
+// complete Theme per frame.
 package turbo_ui
 
 import core/tui
@@ -29,11 +31,64 @@ pub Theme :: struct {
     input_cursor: tui.Style,
     dialog: tui.Style,
     status: tui.Style,
+    shadows: bool,
 }
+
+// turbo_color maps the logical 16-color IBM PC palette used by Turbo-era
+// interfaces onto the terminal's ANSI palette. The two palettes number red and
+// blue differently: passing logical blue (1) directly to ANSI produces red,
+// while logical red (4) produces blue. Keeping the translation at style
+// construction prevents every authored palette entry from repeating that
+// non-obvious permutation. Values outside the closed 0..15 palette are an
+// application-authored invariant failure, not terminal input.
+pub turbo_color :: proc(index: u8) -> tui.Color {
+    assert(index < 16, "turbo_ui logical color must be in the 16-color palette")
+    ansi: u8
+    switch index {
+    case 0:
+        ansi = 0
+    case 1:
+        ansi = 4
+    case 2:
+        ansi = 2
+    case 3:
+        ansi = 6
+    case 4:
+        ansi = 1
+    case 5:
+        ansi = 5
+    case 6:
+        ansi = 3
+    case 7:
+        ansi = 7
+    case 8:
+        ansi = 8
+    case 9:
+        ansi = 12
+    case 10:
+        ansi = 10
+    case 11:
+        ansi = 14
+    case 12:
+        ansi = 9
+    case 13:
+        ansi = 13
+    case 14:
+        ansi = 11
+    case 15:
+        ansi = 15
+    case:
+        // The assertion above makes this path unreachable in checked builds;
+        // retain a valid color when assertions are disabled.
+        ansi = 0
+    }
+    return tui.indexed_color(ansi)
+}
+
 style :: proc(foreground, background: u8, bold: bool = false) -> tui.Style {
     return tui.Style{
-        foreground = tui.indexed_color(foreground),
-        background = tui.indexed_color(background),
+        foreground = turbo_color(foreground),
+        background = turbo_color(background),
         bold = bold,
     }
 }
@@ -61,5 +116,6 @@ pub turbo_theme :: proc() -> Theme {
         input_cursor = style(0, 15, true),
         dialog = style(15, 1),
         status = style(0, 7),
+        shadows = true,
     }
 }

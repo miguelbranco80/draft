@@ -187,13 +187,21 @@ top_visible_window :: proc(windows: []Window_State) -> Widget_Id {
     return selected
 }
 
-// point_in_window_footprint matches the cells painted by begin_window. Window
-// shadows sit one cell to the right and below the frame; treating those cells
-// as empty would let a visually covered rear resize handle receive a click.
-// The two unpainted bounding-box corners remain transparent.
-point_in_window_footprint :: proc(point: Point, window: Window_State) -> bool {
+// point_in_window_footprint matches the cells painted by begin_window under the
+// current theme. Enabled shadows sit one cell to the right and below the frame;
+// treating those cells as empty would let a visually covered rear resize handle
+// receive a click. A flat theme stops at the frame itself. The two unpainted
+// shadow bounding-box corners remain transparent.
+point_in_window_footprint :: proc(
+    point: Point,
+    window: Window_State,
+    shadows: bool,
+) -> bool {
     if point_in_rect(point, window.bounds) {
         return true
+    }
+    if !shadows {
+        return false
     }
     right_shadow := Rect{
         column = rect_right(window.bounds),
@@ -214,12 +222,16 @@ point_in_window_footprint :: proc(point: Point, window: Window_State) -> bool {
 // top_window_at returns the visible painted window footprint with greatest z
 // at point. Equal z values resolve by later slice position, matching
 // window_order exactly.
-top_window_at :: proc(windows: []Window_State, point: Point) -> Widget_Id {
+top_window_at :: proc(
+    windows: []Window_State,
+    point: Point,
+    shadows: bool,
+) -> Widget_Id {
     selected := No_Widget
     selected_z: u32
     found := false
     for window in windows {
-        if window.visible && point_in_window_footprint(point, window) &&
+        if window.visible && point_in_window_footprint(point, window, shadows) &&
             (!found || window.z >= selected_z) {
             selected = window.id
             selected_z = window.z
@@ -836,7 +848,11 @@ pub begin_window_frame :: proc(
         } else if requested_modal != No_Widget {
             state.target_window = requested_modal
         } else {
-            state.target_window = top_window_at(windows, event.mouse.position)
+            state.target_window = top_window_at(
+                windows,
+                event.mouse.position,
+                state.theme.shadows,
+            )
             if event.mouse.action == .press &&
                 event.mouse.button == .primary {
                 activate_window(state, windows, state.target_window)
@@ -1050,12 +1066,20 @@ pub begin_window :: proc(
     if active {
         border_kind = .double
     }
-    result.painted = draw_shadow(
-        state.surface,
-        surface_bounds(state.surface),
-        window.bounds,
-        state.theme.shadow,
-    ) && fill_rect(
+    // A flat theme has no preliminary decoration to paint, so its successful
+    // prefix is the identity value for the following fill/border chain. Leave
+    // the all-or-nothing result intact when a shadow is enabled and any part of
+    // that larger footprint falls outside the surface.
+    result.painted = true
+    if state.theme.shadows {
+        result.painted = draw_shadow(
+            state.surface,
+            surface_bounds(state.surface),
+            window.bounds,
+            state.theme.shadow,
+        )
+    }
+    result.painted = result.painted && fill_rect(
         state.surface,
         surface_bounds(state.surface),
         window.bounds,

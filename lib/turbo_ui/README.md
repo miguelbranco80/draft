@@ -47,10 +47,16 @@ supporting file paths and generated document labels without allocation.
 
 Chrome geometry follows `core/unicode`'s pinned terminal-width policy. The
 text-default zoom arrow occupies one cell immediately before the upper-right
-border corner; an emoji-presentation selector is deliberately absent. Shadows
-use an explicit one-column shade glyph in the shadow color, so exposing an old
-shadow changes glyph content as well as background style during differential
-repainting.
+border corner; an emoji-presentation selector is deliberately absent. A theme
+selects shadowed or flat decoration for every button, window, and popup in one
+frame. Enabled shadows use an explicit one-column shade glyph, so exposing an
+a previous-frame shadow changes glyph content as well as background style during
+differential repainting.
+
+`turbo_theme` authors its 16 colors in the IBM PC numbering used by Turbo-era
+interfaces and translates them to ANSI palette indices at style construction.
+In particular, logical blue and red must not be passed directly to ANSI, whose
+indices for those two colors are reversed.
 
 `tile_windows` and `cascade_windows` provide deterministic whole-desktop
 arrangement for visible windows whose independent `tileable` flag is set. Both
@@ -60,9 +66,10 @@ participation; an application may change `flags.tileable` explicitly.
 
 Hit testing follows the same frame-and-shadow footprint that painting exposes.
 A front shadow therefore occludes rear controls instead of visually covering a
-resize handle while allowing that handle to receive the click. Window chrome
-capture normally ends on release; a later no-button move or new primary press
-also cancels stale capture when a terminal or multiplexer lost the release.
+resize handle while allowing that handle to receive the click; a flat theme's
+hit region ends at the frame. Window chrome capture normally ends on release; a
+later no-button move or new primary press also cancels stale capture when a
+terminal or multiplexer lost the release.
 
 ```draft
 desktop := turbo_ui.Rect{row = 1, width = surface.columns}
@@ -107,9 +114,10 @@ Controls are ordinary procedure calls over caller-owned values:
 
 Button bounds describe their complete caller-reserved footprint. A footprint
 at least two rows high uses its final row and column for a real shade-glyph
-shadow; only the face is hit-tested, and a held face moves down/right over the
-shadow. Use `button_width(label)` when a horizontal layout should reserve the
-smallest complete brackets-plus-label-plus-shadow footprint; byte length is not
+shadow when the active theme enables shadows; only the face is hit-tested, and
+a held face moves down/right over the shadow. Flat themes use the complete face
+without movement. Use `button_width(label)` for a shadow-capable footprint and
+`compact_button_width(label)` for an exact one-row face; byte length is not
 terminal width. `.default_action` and `.cancel_action` roles accept an otherwise-
 unhandled Enter or Escape in the current scope. An optional printable ASCII
 access key underlines the same label character and activates it with Alt. The
@@ -140,7 +148,8 @@ selection is what keeps the cursor visible. `Text_View_State` and
 `text_view_bytes` provide the same scrolling behavior for allocation-free
 read-only line views. Vertical scrollbars have arrow cells, a proportional
 thumb, page regions, grab-relative dragging, and held-arrow capture. Lists may
-keep an unneeded reserved scrollbar column visually empty for compact panes.
+keep an unneeded reserved scrollbar column visually empty for compact panes;
+text and tree views accept the same shared `Scrollbar_Visibility` policy.
 The UI owns no clock: an application schedules deterministic `repeat_event()`
 pulses while `scrollbar_repeat_active(&ui)` is true.
 

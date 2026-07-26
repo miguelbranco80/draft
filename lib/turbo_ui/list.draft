@@ -19,15 +19,6 @@ pub List_Activation :: enum u8 {
     double_click_and_enter,
 }
 
-// List_Scrollbar controls only whether an unneeded scrollbar is painted. The
-// final column remains reserved in both modes so labels never jump horizontally
-// as the model crosses one page; when_needed paints that stable column as empty
-// window background until scrolling is possible.
-pub List_Scrollbar :: enum u8 {
-    always,
-    when_needed,
-}
-
 // List_State is application-owned persistent state for one logical list.
 // cursor is the selected item index; offset is the first visible item. Empty
 // lists normalize both fields to zero. The double-click fields retain only the
@@ -96,7 +87,7 @@ pub list_view :: proc(
     item_count: usize,
     model: ^List_State,
     activation: List_Activation = .enter_only,
-    scrollbar: List_Scrollbar = .always,
+    scrollbar: Scrollbar_Visibility = .always,
 ) -> List_View {
     assert(state.frame_open, "turbo_ui list outside a frame")
     assert(body_id != No_Widget && scrollbar_id != No_Widget,
@@ -382,7 +373,7 @@ pub list :: proc(
     items: []string,
     model: ^List_State,
     activation: List_Activation = .enter_only,
-    scrollbar: List_Scrollbar = .always,
+    scrollbar: Scrollbar_Visibility = .always,
 ) -> List_View {
     result := list_view(
         state,

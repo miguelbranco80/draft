@@ -120,12 +120,15 @@ pub begin_popup :: proc(
     state.clip = result.content
     state.input_scope = id
     state.target_window = id
-    result.painted = draw_shadow(
-        state.surface,
-        surface_bounds(state.surface),
-        state.popup_bounds,
-        state.theme.shadow,
-    ) && fill_rect(
+    if state.theme.shadows {
+        result.painted = draw_shadow(
+            state.surface,
+            surface_bounds(state.surface),
+            state.popup_bounds,
+            state.theme.shadow,
+        )
+    }
+    result.painted = result.painted && fill_rect(
         state.surface,
         surface_bounds(state.surface),
         state.popup_bounds,

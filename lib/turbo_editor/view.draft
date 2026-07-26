@@ -48,17 +48,21 @@ pub Editor_Theme :: struct {
     invalid: tui.Style,
 }
 
+// editor_style keeps syntax colors in the same logical IBM PC palette as the
+// surrounding Turbo UI chrome, then translates once at Style construction.
+// This prevents an editor span from interpreting logical blue/red differently
+// from the window beneath it.
 editor_style :: proc(foreground, background: u8, bold: bool = false) -> tui.Style {
     return tui.Style{
-        foreground = tui.indexed_color(foreground),
-        background = tui.indexed_color(background),
+        foreground = turbo_ui.turbo_color(foreground),
+        background = turbo_ui.turbo_color(background),
         bold = bold,
     }
 }
 
 // turbo_editor_theme reproduces the legible Turbo Pascal/C editor palette:
 // yellow keywords, cyan strings, light-gray comments, white declarations, and
-// red invalid text over the common blue editing surface.
+// white invalid text on red over the common blue editing surface.
 pub turbo_editor_theme :: proc() -> Editor_Theme {
     return Editor_Theme{
         text = editor_style(15, 1),
