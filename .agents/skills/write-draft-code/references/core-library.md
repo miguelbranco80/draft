@@ -2,9 +2,12 @@
 
 This is an applied index of the public core surface in this checkout. Core
 packages are authored as ordinary Draft source under
-[`core/`](../../../../core), then embedded byte-for-byte in `draftc`; inspect
-the imported package before calling it. An installed compiler therefore uses
-its exact versioned core without a checkout or environment path. The
+[`core/`](../../../../core), then embedded byte-for-byte in `draftc`. During
+repository editing, inspect the imported package before calling it. An isolated
+compiler Codex request deliberately contains no core source: use this public
+index and the exact definitions supplied in its request context instead. An
+installed compiler uses its exact versioned core without a checkout or
+environment path. The
 specification's library contract
 is in [`docs/specification/02-types-memory-runtime.md`](../../../../docs/specification/02-types-memory-runtime.md#section-7).
 
@@ -57,8 +60,9 @@ Core is deliberately small and direct:
 - Recoverable failure is an explicit return value.
 - Generic containers copy values and do not invoke element destructors.
 - Most allocation failures are assertions in the current API.
-- Package implementation comments are part of the API contract and are often
-  more precise than the short inventory below.
+- During repository editing, package implementation comments are part of the
+  API contract and are often more precise than the short inventory below. In
+  an isolated compiler request, unavailable source must not be inferred.
 
 Only `core/atomic` operations and narrow `core/runtime` bridges receive
 compiler-special lowering. Everything else is ordinary Draft code.
@@ -721,6 +725,7 @@ Allocation-backed Unicode-grapheme cell surfaces and ANSI differential
 rendering:
 
 ```draft
+tui.Color_Kind // .terminal_default, .indexed, .rgb
 tui.Color
 tui.indexed_color(index: u8) -> tui.Color
 tui.rgb_color(red, green, blue: u8) -> tui.Color

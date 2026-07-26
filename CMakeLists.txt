@@ -21,32 +21,33 @@ option(DRAFT_ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers
 
 find_package(Threads REQUIRED)
 
-# The checked-in Draft coding skill is also the Codex synthesis adapter's exact
-# language guide. Generate an immutable byte table from an explicit file list so
-# installed draftc binaries do not depend on a repository checkout at runtime.
-set(DRAFT_SKILL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.agents/skills/write-draft-code")
-set(DRAFT_SKILL_BUNDLE "${CMAKE_CURRENT_BINARY_DIR}/generated/draft_skill_bundle.cpp")
+# Internal Codex operations share the factual language references maintained by
+# the repository coding skill, but not that skill's repository-editing workflow
+# or agent metadata. Generate an immutable byte table from an explicit file list
+# so installed draftc binaries do not depend on a checkout at runtime and an
+# incidental file can never enter the provider context.
+set(DRAFT_REFERENCE_ROOT
+  "${CMAKE_CURRENT_SOURCE_DIR}/.agents/skills/write-draft-code/references")
+set(DRAFT_REFERENCE_BUNDLE
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/draft_reference_bundle.cpp")
 set(
-  DRAFT_SKILL_INPUTS
-  "${DRAFT_SKILL_ROOT}/SKILL.md"
-  "${DRAFT_SKILL_ROOT}/agents/openai.yaml"
-  "${DRAFT_SKILL_ROOT}/references/agent-features.md"
-  "${DRAFT_SKILL_ROOT}/references/core-library.md"
-  "${DRAFT_SKILL_ROOT}/references/interop-and-targets.md"
-  "${DRAFT_SKILL_ROOT}/references/language.md"
-  "${DRAFT_SKILL_ROOT}/references/memory-and-ownership.md"
-  "${DRAFT_SKILL_ROOT}/references/workflow-and-testing.md"
+  DRAFT_REFERENCE_INPUTS
+  "${DRAFT_REFERENCE_ROOT}/agent-features.md"
+  "${DRAFT_REFERENCE_ROOT}/core-library.md"
+  "${DRAFT_REFERENCE_ROOT}/interop-and-targets.md"
+  "${DRAFT_REFERENCE_ROOT}/language.md"
+  "${DRAFT_REFERENCE_ROOT}/memory-and-ownership.md"
 )
 add_custom_command(
-  OUTPUT "${DRAFT_SKILL_BUNDLE}"
+  OUTPUT "${DRAFT_REFERENCE_BUNDLE}"
   COMMAND
     "${CMAKE_COMMAND}"
-    "-DDRAFT_SKILL_ROOT=${DRAFT_SKILL_ROOT}"
-    "-DDRAFT_SKILL_OUTPUT=${DRAFT_SKILL_BUNDLE}"
-    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_draft_skill.cmake"
+    "-DDRAFT_REFERENCE_ROOT=${DRAFT_REFERENCE_ROOT}"
+    "-DDRAFT_REFERENCE_OUTPUT=${DRAFT_REFERENCE_BUNDLE}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_draft_reference.cmake"
   DEPENDS
-    ${DRAFT_SKILL_INPUTS}
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_draft_skill.cmake"
+    ${DRAFT_REFERENCE_INPUTS}
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_draft_reference.cmake"
   VERBATIM
 )
 
@@ -281,8 +282,8 @@ add_library(
   src/compile/resolver.cpp
   src/compile/semantic_work_graph.cpp
   src/elaborator/codex_cli.cpp
-  src/elaborator/draft_skill.cpp
-  "${DRAFT_SKILL_BUNDLE}"
+  src/elaborator/draft_reference.cpp
+  "${DRAFT_REFERENCE_BUNDLE}"
   src/elaborator/generated_source.cpp
   src/elaborator/obligation.cpp
   src/elaborator/resolution.cpp

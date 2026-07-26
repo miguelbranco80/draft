@@ -213,6 +213,28 @@ ordered usage locations, and Alt-Left/Alt-Right move through navigation
 history. Definitions in compiler-distributed core or dependency sources open
 as read-only buffers.
 
+Ctrl-E, also available as **Compile > Expand //? Prompt**, invokes the
+experimental active-file Codex expansion. The cursor must be on one line in a
+maximal contiguous group whose first non-whitespace bytes are `//?`. Text after
+all markers is joined with line breaks and their exact byte range and line are
+identified in the active source. Codex may inspect a private read-only tree of
+reachable workspace-owned Draft sources; unsaved active/dirty overlays replace
+disk bytes, while compiler core, dependency roots, build state, and unrelated
+workspace files are absent. The operation never exposes the physical workspace
+path.
+
+Codex returns optional import, package-declaration, and local strings. The
+compiler supplies legal package-header and post-marker offsets; DraftIDE inserts
+all nonempty strings verbatim without saving or compiling. Every marker line
+remains, and ordinary Ctrl-Z removes the complete multi-slot edit as one
+transaction. This operation creates no workspace file or resolution pin and
+does not replace semantic Diagnostics on failure. The status bar animates while
+the synchronous Codex invocation runs on one Draft-owned worker. During that
+interval DraftIDE consumes input without dispatch, pauses disk polling, and
+makes no other call on the borrowed compiler session. Its removable private
+request tree is transport for that invocation only. Returned source is not
+automatically parsed or compiler-validated.
+
 The executable and `draft_compiler_service` shared library must remain
 discoverable as siblings. The build records a loader-relative lookup on macOS
 and ELF; Windows places the DLL beside the executable. `--smoke` performs a
@@ -477,14 +499,24 @@ pins remain exact, and a failed attempt leaves the committed manifest unchanged.
 It cannot be combined with `--revalidate`.
 
 The Codex adapter discovers `codex` through the user's `PATH` and uses that
-installation's ordinary authentication and configuration. If `--model` is
-omitted, the adapter also uses the Codex-configured default model. Executable
-paths, distribution hashing, and credentials are not Draft program inputs.
-The compiler binary contains the complete Draft coding skill used by synthesis;
-users do not install or locate a separate skill directory. It is materialized
-once only when the command actually needs Codex, then shared read-only through
-the otherwise separate request directory for each site. Its digest is recorded
-as generation provenance and does not invalidate accepted source.
+installation's ordinary authentication. It intentionally ignores user
+configuration so ambient instructions and execution policy cannot alter the
+compiler-owned operation. If `--model` is omitted, the adapter omits the Codex
+model argument and the installed Codex CLI selects its built-in default model.
+Executable paths, distribution hashing, and credentials are not Draft program
+inputs.
+The compiler binary contains a compact factual Draft reference bundle used by
+code-producing Codex operations; users do not install or locate a skill
+directory. The bundle contains the language, ownership, public core API,
+interop/target, and agent-construct references, but no repository workflow,
+skill metadata, `SKILL.md`, or `core/*.draft` source. It is materialized once
+only when a resolve command actually needs Codex, then shared read-only through
+the otherwise separate request directory for each site. Editor expansion owns
+one short-lived materialization for its synchronous call. Synthesis, editor
+expansion, and judgment receive separate versioned operation policies through
+Codex's developer-instruction channel; judgment receives no coding references.
+Policy and reference digests are generation provenance and do not invalidate
+accepted source.
 
 `--revalidate` rechecks all saved sites without a provider and writes a fresh
 source-resolution manifest. It cannot be combined with a provider model.

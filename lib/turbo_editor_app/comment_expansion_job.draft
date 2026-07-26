@@ -1,0 +1,238 @@
+// Comment expansion jobs are the cross-thread ownership boundary for the
+// DraftIDE `//?` prototype. The main thread supplies exact reachable-overlay and
+// prompt snapshots plus borrowed synchronous compiler callbacks; one child
+// thread writes the fixed result and publishes completion. The main thread alone
+// owns UI state, joins the child, copies the compiler session's three returned
+// slots, and releases the snapshots.
+//
+// This module owns no editor buffer, window, terminal, or compiler session. Its
+// job record must remain at a stable address from spawn through join. Release/
+// acquire publication is the sole cross-thread state transition, and callers
+// must suppress every other use of the borrowed Host_Api while a job is active.
+// The operation is an editor experiment rather than Draft synthesis semantics;
+// specification section 10's checked, pinned `...` resolution remains separate.
+package turbo_editor_app
+
+import core/atomic
+import core/memory
+import core/thread
+import lib/draft_compiler_api
+
+// Comment_Expansion_Job is the single in-flight `//?` request owned by App.
+// paths/sources and prompt are independent snapshots because the compiler
+// callback runs after the command frame has returned. Overlay rows preserve the
+// active-plus-dirty order used by foreground compiler operations. The worker
+// writes only result and then publishes Comment_Expansion_Complete with release
+// ordering; the main thread observes that phase with acquire ordering before
+// reading the result. active and spinner_index are main-thread-only.
+Comment_Expansion_Job :: struct {
+    worker: thread.Thread,
+    phase: atomic.Value[u8],
+    host_user: rawptr,
+    expand: draft_compiler_api.Expand_Comment_Proc,
+    copy_imports: draft_compiler_api.Copy_Text_Proc,
+    copy_declarations: draft_compiler_api.Copy_Text_Proc,
+    copy_local: draft_compiler_api.Copy_Text_Proc,
+    copy_error: draft_compiler_api.Copy_Text_Proc,
+    paths: [Maximum_Buffers]memory.Owned_String,
+    sources: [Maximum_Buffers]memory.Owned_String,
+    prompt: memory.Owned_String,
+    result: draft_compiler_api.Comment_Expansion_Result,
+    overlay_count: usize,
+    active_overlay: usize,
+    prompt_start: usize,
+    prompt_end: usize,
+    spinner_index: usize,
+    active: bool,
+}
+
+Comment_Expansion_Idle :: cast[u8](0)
+Comment_Expansion_Running :: cast[u8](1)
+Comment_Expansion_Complete :: cast[u8](2)
+
+// comment_expansion_job_init establishes the exclusive zero state before App
+// can publish this record to a child thread. It allocates no resources.
+comment_expansion_job_init :: proc(job: ^Comment_Expansion_Job) {
+    atomic.init(&job.phase, Comment_Expansion_Idle)
+}
+
+// release_comment_expansion_job is called only after no worker can observe the
+// record. It ends all snapshot lifetimes, clears borrowed compiler procedures,
+// and returns the job to the exact state accepted by the next start operation.
+release_comment_expansion_job :: proc(job: ^Comment_Expansion_Job) {
+    for index: usize = 0; index < job.overlay_count; index += 1 {
+        memory.owned_string_destroy(&job.paths[index])
+        memory.owned_string_destroy(&job.sources[index])
+    }
+    memory.owned_string_destroy(&job.prompt)
+    empty_thread: thread.Thread
+    job.worker = empty_thread
+    job.host_user = nil
+    job.expand = nil
+    job.copy_imports = nil
+    job.copy_declarations = nil
+    job.copy_local = nil
+    job.copy_error = nil
+    job.result = draft_compiler_api.Comment_Expansion_Result{}
+    job.overlay_count = 0
+    job.active_overlay = 0
+    job.prompt_start = 0
+    job.prompt_end = 0
+    job.spinner_index = 0
+    job.active = false
+    atomic.init(&job.phase, Comment_Expansion_Idle)
+}
+
+// comment_expansion_job_destroy is the final App-lifetime backstop. Normal UI
+// flow cannot quit while a request is active, but partial terminal teardown or
+// EOF may still reach destroy_app. The worker borrows this record and the host
+// session, so freeing either before a successful join would be a use-after-free
+// rather than a recoverable provider error.
+comment_expansion_job_destroy :: proc(job: ^Comment_Expansion_Job) {
+    if job.active {
+        assert(
+            thread.join(&job.worker),
+            "comment expansion worker could not be joined during shutdown",
+        )
+    }
+    release_comment_expansion_job(job)
+}
+
+// run_comment_expansion calls only the callback and writes only the job's
+// result. Every borrowed byte comes from a main-thread-owned snapshot whose
+// lifetime ends after join. Release publication makes the ordinary result write
+// visible before the main thread is allowed to inspect it.
+run_comment_expansion :: proc(user: rawptr) {
+    job := cast[^Comment_Expansion_Job](user)
+    overlays: [Maximum_Buffers]draft_compiler_api.Overlay
+    for index: usize = 0; index < job.overlay_count; index += 1 {
+        path := memory.owned_string_bytes(&job.paths[index])
+        source := memory.owned_string_bytes(&job.sources[index])
+        path_data: rawptr = nil
+        if len(path) != 0 {
+            path_data = cast[rawptr](&path[0])
+        }
+        source_data: rawptr = nil
+        if len(source) != 0 {
+            source_data = cast[rawptr](&source[0])
+        }
+        overlays[index] = draft_compiler_api.Overlay{
+            path_data = path_data,
+            path_length = len(path),
+            source_data = source_data,
+            source_length = len(source),
+        }
+    }
+    prompt := memory.owned_string_bytes(&job.prompt)
+    prompt_data: rawptr = nil
+    if len(prompt) != 0 {
+        prompt_data = cast[rawptr](&prompt[0])
+    }
+    job.expand(
+        job.host_user,
+        &overlays[0],
+        job.overlay_count,
+        job.active_overlay,
+        job.prompt_start,
+        job.prompt_end,
+        prompt_data,
+        len(prompt),
+        &job.result,
+    )
+    atomic.store(&job.phase, Comment_Expansion_Complete, .release)
+}
+
+// comment_expansion_job_start copies all borrowed command inputs before the
+// worker can see them. A false result means native thread creation failed; it
+// releases every snapshot and leaves the job reusable and inactive.
+comment_expansion_job_start :: proc(
+    job: ^Comment_Expansion_Job,
+    host_user: rawptr,
+    expand: draft_compiler_api.Expand_Comment_Proc,
+    copy_imports, copy_declarations, copy_local, copy_error:
+        draft_compiler_api.Copy_Text_Proc,
+    overlays: []draft_compiler_api.Overlay,
+    active_overlay, prompt_start, prompt_end: usize,
+    prompt: []u8,
+) -> bool {
+    assert(!job.active, "a second comment expansion was started")
+    assert(expand != nil, "comment expansion procedure is nil")
+    assert(copy_imports != nil, "comment import copy procedure is nil")
+    assert(copy_declarations != nil,
+        "comment declaration copy procedure is nil")
+    assert(copy_local != nil, "comment local copy procedure is nil")
+    assert(copy_error != nil, "comment expansion error procedure is nil")
+    assert(len(overlays) != 0 && len(overlays) <= Maximum_Buffers,
+        "comment expansion overlay count is invalid")
+    assert(active_overlay < len(overlays),
+        "comment expansion active overlay is invalid")
+    assert(prompt_start <= prompt_end,
+        "comment expansion prompt range is invalid")
+    assert(len(prompt) != 0, "comment expansion prompt is empty")
+
+    job.overlay_count = 0
+    for index: usize = 0; index < len(overlays); index += 1 {
+        path: []u8
+        if overlays[index].path_length != 0 {
+            path_data := cast[[^]u8](overlays[index].path_data)
+            path = path_data[:overlays[index].path_length]
+        }
+        source: []u8
+        if overlays[index].source_length != 0 {
+            source_data := cast[[^]u8](overlays[index].source_data)
+            source = source_data[:overlays[index].source_length]
+        }
+        memory.owned_string_copy_bytes(&job.paths[index], path)
+        memory.owned_string_copy_bytes(&job.sources[index], source)
+        job.overlay_count += 1
+    }
+    memory.owned_string_copy_bytes(&job.prompt, prompt)
+    job.host_user = host_user
+    job.expand = expand
+    job.copy_imports = copy_imports
+    job.copy_declarations = copy_declarations
+    job.copy_local = copy_local
+    job.copy_error = copy_error
+    job.active_overlay = active_overlay
+    job.prompt_start = prompt_start
+    job.prompt_end = prompt_end
+    job.result = draft_compiler_api.Comment_Expansion_Result{}
+    job.spinner_index = 0
+    atomic.init(&job.phase, Comment_Expansion_Running)
+    (worker, spawned) := thread.spawn(
+        run_comment_expansion,
+        cast[rawptr](job),
+    )
+    if !spawned {
+        release_comment_expansion_job(job)
+        return false
+    }
+    job.worker = worker
+    job.active = true
+    return true
+}
+
+// comment_expansion_job_ready acquires the worker's result publication. false
+// forbids reading result or copying any session-owned response bytes.
+comment_expansion_job_ready :: proc(job: ^Comment_Expansion_Job) -> bool {
+    if !job.active {
+        return false
+    }
+    phase := atomic.load(&job.phase, .acquire)
+    return phase == Comment_Expansion_Complete
+}
+
+// comment_expansion_job_join balances one completed spawn. Joining before the
+// response-copy phase proves the callback no longer accesses snapshots or the
+// host session. A native join failure is an internal lifetime violation rather
+// than a provider failure which the editor could safely recover from.
+comment_expansion_job_join :: proc(job: ^Comment_Expansion_Job) {
+    assert(
+        comment_expansion_job_ready(job),
+        "comment expansion worker was joined before completion",
+    )
+    assert(
+        thread.join(&job.worker),
+        "completed comment expansion worker could not be joined",
+    )
+}

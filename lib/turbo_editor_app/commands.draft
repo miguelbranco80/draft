@@ -903,6 +903,10 @@ handle_global_key :: proc(app: ^App, event: turbo_ui.Event) -> (turbo_ui.Event, 
             _ = copy_selection(app)
             return (turbo_ui.no_event(), false)
         }
+        if key.byte_value == 5 {
+            request_comment_expansion(app)
+            return (turbo_ui.no_event(), false)
+        }
         if key.byte_value == 6 {
             if active_buffer(app).bytes.length != 0 {
                 request_search(app)

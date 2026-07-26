@@ -6,8 +6,9 @@
 //
 // Text storage preserves exact bytes. Cursor movement follows extended Unicode
 // grapheme boundaries when bytes are valid UTF-8 and advances one byte through
-// malformed input, so an editor can always recover without silently rewriting
-// a file. Newlines are LF bytes. Selection endpoints and history ranges are
+// malformed input, while literal tab bytes advance through shared four-column
+// display stops. An editor can therefore recover without silently rewriting a
+// file. Newlines are LF bytes. Selection endpoints and history ranges are
 // zero-based byte offsets in Buffer.bytes and never retain pointers across an
 // allocation.
 package turbo_editor
@@ -25,6 +26,11 @@ Line_Array :: array.Dynamic[usize]
 History_Limit :: 128
 History_Byte_Limit :: 1024 * 1024
 File_Read_Chunk :: 16 * 1024
+// Literal tab bytes are preserved in Buffer storage and advance to the next
+// four-column stop in every visual operation. Keeping this policy beside the
+// shared display-step operation prevents painting, cursor placement, mouse
+// hit-testing, and vertical movement from assigning different columns.
+Tab_Columns :: 4
 
 Edit_Kind :: enum u8 {
     insert,
@@ -34,10 +40,11 @@ Edit_Kind :: enum u8 {
 // Edit records one primitive forward operation. byte_start/byte_length address
 // inserted bytes for insert or removed bytes for delete in the append-only
 // history byte pool. before_cursor and after_cursor restore the user-visible
-// insertion point for undo/redo. joined_to_previous is true only on the insert
-// half of one atomic replacement; Undo/Redo then consume the adjacent
-// delete+insert pair as one user transaction. The flag occupies existing enum
-// padding, retaining the compact record representation used by ordinary edits.
+// insertion point for undo/redo. joined_to_previous chains every record after
+// the first in one atomic transaction; ordinary replacement uses two records,
+// while a generated multi-slot edit may use several insertions. The flag
+// occupies existing enum padding, retaining the compact record representation
+// used by ordinary edits.
 Edit :: struct {
     kind: Edit_Kind,
     joined_to_previous: bool,
@@ -46,6 +53,16 @@ Edit :: struct {
     byte_length: usize,
     before_cursor: usize,
     after_cursor: usize,
+}
+
+// Insertion is one borrowed exact source fragment and its byte offset in the
+// unchanged document. insert_at_many interprets the input order as desired
+// final order when offsets coincide, derives a safe descending mutation order,
+// and retains no slice after returning. This small record lets callers express
+// one coherent edit without exposing history representation.
+pub Insertion :: struct {
+    at: usize,
+    source: []u8,
 }
 
 Edit_Array :: array.Dynamic[Edit]
@@ -577,19 +594,21 @@ append_history_bytes :: proc(buffer: ^Buffer, source: []u8) -> usize {
     return start
 }
 
-// record_edit stores the single payload used by insert/delete. Oversized
-// ordinary typing retains the historical bounded behavior: the document edit
-// remains valid but is not undoable after the previous history is cleared.
+// record_edit stores the single payload used by insert/delete. False means the
+// payload cannot fit the complete bounded history. Ordinary typing deliberately
+// retains its historical behavior by ignoring that result and still applying
+// the edit after history is cleared; callers promising one-step undo, such as
+// an agent expansion, must refuse the source mutation instead.
 record_edit :: proc(
     buffer: ^Buffer,
     kind: Edit_Kind,
     at: usize,
     source: []u8,
     before_cursor, after_cursor: usize,
-) {
+) -> bool {
     if !prepare_history_append(buffer, len(source), 1) {
         clear_history(buffer)
-        return
+        return false
     }
     start := append_history_bytes(buffer, source)
     array.append(&buffer.history, Edit{
@@ -601,6 +620,7 @@ record_edit :: proc(
         after_cursor = after_cursor,
     })
     buffer.history_index = buffer.history.length
+    return true
 }
 
 // record_replace stores old and replacement bytes in one joined record pair. The caller
@@ -674,7 +694,7 @@ delete_range :: proc(buffer: ^Buffer, start, end: usize) {
     }
     before := buffer.cursor
     deleted := cast[[^]u8](&buffer.bytes.data[start])
-    record_edit(
+    _ = record_edit(
         buffer,
         .delete,
         start,
@@ -711,7 +731,7 @@ pub insert :: proc(buffer: ^Buffer, source: []u8) {
         return
     }
     before := buffer.cursor
-    record_edit(
+    _ = record_edit(
         buffer,
         .insert,
         buffer.cursor,
@@ -725,6 +745,108 @@ pub insert :: proc(buffer: ^Buffer, source: []u8) {
     buffer.preferred_column_valid = false
     buffer.reveal_cursor = true
     buffer.dirty = true
+}
+
+// insert_at performs one exact insertion without interpreting the current
+// selection as replacement. The operation succeeds only when its complete
+// payload can be retained as one undo record; false leaves content, cursor,
+// selection, dirty state, and existing history unchanged. This is the editor's
+// transaction boundary for externally generated source whose defining UX is
+// ordinary Ctrl-Z rather than a parallel accept/reject mechanism.
+pub insert_at :: proc(buffer: ^Buffer, at: usize, source: []u8) -> bool {
+    if at > buffer.bytes.length || len(source) == 0 ||
+        len(source) > ~cast[usize](0) - at {
+        return false
+    }
+    insertions := [1]Insertion{Insertion{at = at, source = source}}
+    return insert_at_many(buffer, insertions[:], at + len(source))
+}
+
+// insert_at_many applies zero-width insertions against one unchanged source as
+// a single bounded undo transaction. Empty rows are ignored. Nonempty rows may
+// appear in any offset order; a local fixed index table produces descending
+// mutation order so every supplied offset remains valid. Equal offsets are
+// applied in reverse input order, making the input order the final byte order.
+//
+// The complete operation is validated and recorded before content mutation.
+// false therefore preserves content, cursor, selection, dirty state, redo, and
+// prior history. cursor_after is an exact byte offset in the final document and
+// becomes the one redo cursor for the whole transaction.
+pub insert_at_many :: proc(
+    buffer: ^Buffer,
+    insertions: []Insertion,
+    cursor_after: usize,
+) -> bool {
+    if buffer.read_only || len(insertions) == 0 ||
+        len(insertions) > History_Limit {
+        return false
+    }
+    order: [History_Limit]usize
+    count: usize
+    total: usize
+    for index: usize = 0; index < len(insertions); index += 1 {
+        insertion := insertions[index]
+        if len(insertion.source) == 0 {
+            continue
+        }
+        if insertion.at > buffer.bytes.length ||
+            len(insertion.source) > History_Byte_Limit - total ||
+            len(insertion.source) > ~cast[usize](0) - buffer.bytes.length - total {
+            return false
+        }
+        total += len(insertion.source)
+
+        // Descending offsets preserve the unchanged-source coordinate system.
+        // For equal offsets, the later requested fragment is applied first so
+        // repeated insertion at that offset leaves earlier input bytes first.
+        position := count
+        for position > 0 {
+            previous_index := order[position - 1]
+            previous := insertions[previous_index]
+            comes_before := insertion.at > previous.at ||
+                (insertion.at == previous.at && index > previous_index)
+            if !comes_before {
+                break
+            }
+            order[position] = previous_index
+            position -= 1
+        }
+        order[position] = index
+        count += 1
+    }
+    if count == 0 || cursor_after > buffer.bytes.length + total {
+        return false
+    }
+
+    before_cursor := buffer.cursor
+    if !prepare_history_append(buffer, total, count) {
+        return false
+    }
+    for order_index: usize = 0; order_index < count; order_index += 1 {
+        insertion := insertions[order[order_index]]
+        byte_start := append_history_bytes(buffer, insertion.source)
+        array.append(&buffer.history, Edit{
+            kind = .insert,
+            joined_to_previous = order_index != 0,
+            at = insertion.at,
+            byte_start = byte_start,
+            byte_length = len(insertion.source),
+            before_cursor = before_cursor if order_index == 0 else 0,
+            after_cursor = cursor_after if order_index + 1 == count else 0,
+        })
+    }
+    buffer.history_index = buffer.history.length
+
+    for order_index: usize = 0; order_index < count; order_index += 1 {
+        insertion := insertions[order[order_index]]
+        insert_raw(buffer, insertion.at, insertion.source)
+    }
+    buffer.cursor = cursor_after
+    clear_selection(buffer)
+    buffer.preferred_column_valid = false
+    buffer.reveal_cursor = true
+    buffer.dirty = true
+    return true
 }
 
 // insert_text is the immutable-string adapter for paste/IME events. The
@@ -930,25 +1052,54 @@ pub go_to_line :: proc(buffer: ^Buffer, one_based_line: usize) -> bool {
     return true
 }
 
+// display_step returns the next byte offset and terminal-cell width of one
+// editor text unit at the supplied zero-based visual column. A tab is a
+// deliberate one-byte control unit whose width reaches the next Tab_Columns
+// stop. Valid UTF-8 advances by one extended grapheme; malformed or nonprinting
+// bytes remain recoverable one-byte, one-cell units and retain their error so
+// the view can paint a replacement glyph. offset must address bytes.
+display_step :: proc(
+    bytes: []u8,
+    offset, column: usize,
+) -> (usize, usize, unicode.Grapheme_Error) {
+    assert(offset < len(bytes), "editor display step is outside source")
+    if bytes[offset] == cast[u8]('\t') {
+        return (
+            offset + 1,
+            Tab_Columns - column % Tab_Columns,
+            .none,
+        )
+    }
+    (next, width, error) := unicode.next_grapheme_bytes(bytes, offset)
+    if next <= offset {
+        next = offset + 1
+        error = .invalid_encoding
+    }
+    if error != .none {
+        width = 1
+    }
+    return (next, width, error)
+}
+
+// display_column measures one half-open byte range using the same tab stops and
+// recovery units as painting. start/end are cursor-valid offsets on one line;
+// the result is relative to that line start and independent of viewport scroll.
 display_column :: proc(buffer: ^Buffer, start, end: usize) -> usize {
     column: usize
     cursor := start
     bytes := array.view(&buffer.bytes)
     for cursor < end {
-        (next, width, error) := unicode.next_grapheme_bytes(bytes, cursor)
-        if next <= cursor {
-            next = cursor + 1
-        }
-        if error == .none {
-            column += width
-        } else {
-            column += 1
-        }
+        (next, width, _) := display_step(bytes, cursor, column)
+        column += width
         cursor = next
     }
     return column
 }
 
+// offset_at_column is display_column's hit-testing inverse. A target inside a
+// multi-column grapheme or expanded tab selects the unit's starting byte; a
+// target at its far edge selects the following byte. This deterministic rule
+// is shared by mouse placement and preferred-column vertical movement.
 offset_at_column :: proc(
     buffer: ^Buffer,
     start, end, target_column: usize,
@@ -957,14 +1108,7 @@ offset_at_column :: proc(
     cursor := start
     bytes := array.view(&buffer.bytes)
     for cursor < end {
-        (next, width, error) := unicode.next_grapheme_bytes(bytes, cursor)
-        if next <= cursor {
-            next = cursor + 1
-        }
-        step := width
-        if error != .none {
-            step = 1
-        }
+        (next, step, _) := display_step(bytes, cursor, column)
         if column + step > target_column {
             break
         }
@@ -1082,15 +1226,15 @@ pub undo :: proc(buffer: ^Buffer) -> bool {
     undo_primitive(buffer, edit)
     buffer.history_index -= 1
     before_cursor := edit.before_cursor
-    if edit.joined_to_previous {
+    joined := edit.joined_to_previous
+    for joined {
         assert(buffer.history_index != 0,
             "joined editor history must have a preceding record")
         previous := buffer.history.data[buffer.history_index - 1]
-        assert(!previous.joined_to_previous,
-            "editor replacement history groups exactly two records")
         undo_primitive(buffer, previous)
         buffer.history_index -= 1
         before_cursor = previous.before_cursor
+        joined = previous.joined_to_previous
     }
     buffer.cursor = before_cursor
     clear_selection(buffer)
@@ -1135,7 +1279,7 @@ pub redo :: proc(buffer: ^Buffer) -> bool {
     redo_primitive(buffer, edit)
     buffer.history_index += 1
     after_cursor := edit.after_cursor
-    if buffer.history_index < buffer.history.length &&
+    for buffer.history_index < buffer.history.length &&
         buffer.history.data[buffer.history_index].joined_to_previous {
         joined := buffer.history.data[buffer.history_index]
         redo_primitive(buffer, joined)

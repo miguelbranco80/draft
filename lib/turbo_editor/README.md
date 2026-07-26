@@ -15,6 +15,8 @@ The package provides:
 - Unicode grapheme-aware cursor movement with one-byte invalid-data recovery,
   Draft-identifier word movement, file Home/End, viewport-sized paging, and a
   preferred visual column retained across short lines;
+- literal tab preservation with one shared four-column-stop calculation for
+  painting, cursor placement, mouse hit-testing, and vertical movement;
 - selection, mouse positioning, wrapped forward/reverse literal search,
   one-based line navigation, and independent horizontal/vertical scroll (wheel
   movement never snaps back to the cursor); the editor reserves a stable final
@@ -22,8 +24,11 @@ The package provides:
   the viewport;
 - single-match and whole-document replacement. Replace All scans only original
   bytes, reports its exact count, and never re-matches replacement text;
-- bounded undo/redo with a 128-record/1 MiB history policy; each replacement is
-  a joined record pair and therefore remains one atomic user undo/redo step;
+- bounded undo/redo with a 128-record/1 MiB history policy; replacement pairs
+  and exact multi-insertion groups are joined into one atomic user undo/redo
+  step,
+  while exact external insertions refuse before mutation if they cannot retain
+  the same one-step undo guarantee;
 - dirty close protection and polling-based disk conflict detection;
 - host-supplied read-only buffers for compiler/dependency source navigation;
   the document engine—not merely disabled UI—rejects every mutation, save,

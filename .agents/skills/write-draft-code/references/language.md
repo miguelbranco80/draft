@@ -6,6 +6,10 @@ normative section before relying on an edge case. Prefer copying a pattern from
 The primary authorities are the
 [`core language specification`](../../../../docs/specification/01-core-language.md)
 and [`types, memory, and runtime specification`](../../../../docs/specification/02-types-memory-runtime.md).
+Those repository links are actionable during repository editing. In an
+isolated compiler Codex request, their targets are deliberately absent and the
+operation's developer instruction, this reference, and the supplied typed or
+source context form the complete available authority.
 
 ## Contents
 

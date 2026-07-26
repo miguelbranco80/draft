@@ -34,18 +34,24 @@ The package is split by owned transition rather than widget type:
 - `views.draft` paints dialogs and compiler/document inspectors;
 - `desktop.draft` authors the complete menu vocabulary, window routing, and
   status bar;
+- `comment_expansion_job.draft` owns the one worker, immutable request
+  snapshots, and atomic completion publication for the `//?` prototype;
 - `host_integration.draft` copies compiler-service products and performs
-  provider-free Check/Build/Run, explicit Resolve/Judge, structured diagnostic
-  activation, persistent result recording, and semantic navigation; and
+  provider-free Check/Build/Run, unsaved `//?` expansion, explicit
+  Resolve/Judge, structured diagnostic activation, persistent result recording,
+  and semantic navigation; and
 - `terminal_runtime.draft` alone owns the terminal session and event loop.
 
 An optional `draft_compiler_api.Host_Api` is a borrowed synchronous procedure
 table rather than a compiler dependency. A zero table produces the standalone
-editor; DraftIDE supplies the compiler service; tests supply direct fakes.
+editor; DraftIDE supplies the compiler service; tests supply direct fakes. The
+`//?` callback remains synchronous at this boundary but is invoked by one
+App-owned Draft worker while the terminal thread makes no other host call.
 Typing invokes only the host's production-lexer color operation. Check, Build,
 Run, Resolve, Judge, Definition, and Usages explicitly enter package semantics.
-Resolve and Judge occupy distinct optional callbacks, so an ordinary Build or
-F5 path has no flag or fallback which could enter provider work.
+Comment expansion, Resolve, and Judge occupy distinct optional callbacks, so an
+ordinary Build or F5 path has no flag or fallback which could enter provider
+work.
 
 Build and Check update an app-owned result transcript and timed status without
 changing result-window visibility on success. Compiler failure raises
@@ -64,10 +70,31 @@ completed negative verdict with no diagnostic raises Build Output. The event
 loop presents the pending status before beginning potentially long provider
 work.
 
+The prototype comment command is intentionally smaller. Put the cursor on any
+line in a maximal contiguous block whose first non-whitespace bytes are `//?`,
+then press Ctrl-E or choose **Compile > Expand //? Prompt**. Text after the
+markers is joined with newlines and sent with the exact marker range, active
+logical path, and a private read-only snapshot of reachable workspace-owned
+Draft sources. Active and dirty open buffers override disk, so Codex sees the
+same unsaved workspace state as Check; compiler/dependency sources and unrelated
+workspace files are absent.
+
+Codex returns separate optional import, package-declaration, and local strings.
+The compiler supplies the legal package-header and post-marker offsets, and the
+editor inserts all nonempty strings verbatim as one unsaved history transaction.
+Every `//?` line remains, no file is created or saved, and one ordinary Ctrl-Z
+removes the complete edit. Failure updates Build Output without replacing
+semantic Diagnostics. While Codex runs, the status bar animates and terminal
+input is consumed without dispatch; disk polling and every other compiler-
+session call resume after the worker joins. Returned bytes are not compiler-
+validated by this prototype.
+
 Menu commands and global shortcuts call the same named operations. Disabled
 commands remain visible but inert, separators and blank popup space preserve
 selection, Escape is local cancel, and Alt-X is the sole application exit
-shortcut. New documents remain `Untitled N` until Save As installs a real path;
+shortcut. A successful Save explicitly replaces any earlier formatted status
+with `Saved`, so its confirmation is visible until subsequent feedback replaces
+it. New documents remain `Untitled N` until Save As installs a real path;
 closing a dirty document or workspace always requires an explicit save,
 discard, or cancel decision.
 

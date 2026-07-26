@@ -48,6 +48,9 @@ static_assert(alignof(DraftCompilerServiceResolveResult) ==
 static_assert(sizeof(DraftCompilerServiceJudgeResult) == 48);
 static_assert(alignof(DraftCompilerServiceJudgeResult) ==
               alignof(std::size_t));
+static_assert(sizeof(DraftCompilerServiceCommentExpansionResult) == 64);
+static_assert(alignof(DraftCompilerServiceCommentExpansionResult) ==
+              alignof(std::size_t));
 static_assert(sizeof(DraftCompilerServiceSyntaxResult) == 16);
 static_assert(alignof(DraftCompilerServiceSyntaxResult) ==
               alignof(std::size_t));
@@ -551,6 +554,71 @@ void draft_compiler_session_judge(
       judged.selected_judgments,
       judged.evidence_count,
   };
+}
+
+void draft_compiler_session_expand_comment(
+    void *opaque_session,
+    const DraftCompilerServiceOverlay *overlays,
+    std::size_t overlay_count,
+    std::size_t active_overlay,
+    std::size_t prompt_start,
+    std::size_t prompt_end,
+    const void *prompt_data,
+    std::size_t prompt_length,
+    DraftCompilerServiceCommentExpansionResult *result) {
+  if (result == nullptr) return;
+  *result = {};
+  const auto started = std::chrono::steady_clock::now();
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  const std::optional<std::vector<draft::ide::SourceOverlay>> checked =
+      checked_overlays(overlays, overlay_count, active_overlay);
+  if (session == nullptr || !checked.has_value() ||
+      (prompt_data == nullptr && prompt_length != 0)) {
+    result->elapsed_nanoseconds = elapsed_nanoseconds(started);
+    return;
+  }
+  const draft::ide::CommentExpansionResult expanded = session->expand_comment(
+      *checked, active_overlay, prompt_start, prompt_end,
+      borrowed_text(prompt_data, prompt_length));
+  *result = {
+      static_cast<std::uint8_t>(expanded.ok ? 1 : 0),
+      expanded.import_offset,
+      session->comment_expansion_imports().size(),
+      expanded.declaration_offset,
+      session->comment_expansion_declarations().size(),
+      expanded.local_offset,
+      session->comment_expansion_local().size(),
+      elapsed_nanoseconds(started),
+  };
+}
+
+std::size_t draft_compiler_session_copy_comment_expansion_imports(
+    void *opaque_session, std::uint8_t *destination, std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr) return copy_text({}, destination, capacity);
+  return copy_text(session->comment_expansion_imports(), destination, capacity);
+}
+
+std::size_t draft_compiler_session_copy_comment_expansion_declarations(
+    void *opaque_session, std::uint8_t *destination, std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr) return copy_text({}, destination, capacity);
+  return copy_text(
+      session->comment_expansion_declarations(), destination, capacity);
+}
+
+std::size_t draft_compiler_session_copy_comment_expansion_local(
+    void *opaque_session, std::uint8_t *destination, std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr) return copy_text({}, destination, capacity);
+  return copy_text(session->comment_expansion_local(), destination, capacity);
+}
+
+std::size_t draft_compiler_session_copy_comment_expansion_error(
+    void *opaque_session, std::uint8_t *destination, std::size_t capacity) {
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  if (session == nullptr) return copy_text({}, destination, capacity);
+  return copy_text(session->comment_expansion_error(), destination, capacity);
 }
 
 void draft_compiler_session_colorize(void *opaque_session,

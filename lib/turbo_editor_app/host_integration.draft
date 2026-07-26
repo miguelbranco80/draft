@@ -1,13 +1,14 @@
 // Host integration contains the optional compiler-facing state transitions for
 // DraftIDE. It copies variable-length service results into Draft ownership,
 // maintains stable semantic navigation destinations, restores each document's
-// root package before a compiler action, separates explicit Resolve/Judge from
-// provider-free Build, and translates Build/Run results into one explicit
-// child-process request.
+// root package before a compiler action, separates ephemeral `//?` expansion
+// and explicit Resolve/Judge from provider-free Build, and translates
+// Build/Run results into one explicit child-process request.
 //
-// The Host_Api remains a borrowed synchronous procedure table. No compiler or
-// C ABI type beyond that public Draft record enters application state, and the
-// standalone editor can link this module with an all-zero host.
+// Host_Api remains a borrowed synchronous procedure table. The separate
+// comment-expansion job snapshots only the three procedures and fixed result it
+// needs while its worker is active; no compiler implementation type enters
+// application state. The standalone editor still links with an all-zero host.
 package turbo_editor_app
 
 import core/array
@@ -44,6 +45,150 @@ Prepared_Run :: struct {
     configuration: Run_Configuration,
     artifact_path: memory.Owned_String,
     has_artifact_path: bool,
+}
+
+// Comment_Prompt is the exact authored source anchor for one contiguous `//?`
+// group. start/end form a half-open byte range in the active buffer; end is also
+// the local insertion slot immediately after the final line terminator. found
+// distinguishes an absent group from a valid group whose concatenated text is
+// empty. The value owns no source or prompt bytes.
+Comment_Prompt :: struct {
+    start: usize,
+    end: usize,
+    found: bool,
+}
+
+// comment_prompt_line_start returns the first byte of the line containing one
+// cursor offset. A cursor at bytes.length belongs to the final unterminated
+// line; LF belongs to the line it terminates. The operation scans only within
+// the active line and is used solely by the explicit expansion command.
+comment_prompt_line_start :: proc(bytes: []u8, offset: usize) -> usize {
+    assert(offset <= len(bytes), "comment prompt cursor is outside source")
+    start := offset
+    for start > 0 && bytes[start - 1] != cast[u8]('\n') {
+        start -= 1
+    }
+    return start
+}
+
+// comment_prompt_line_end returns the LF offset or bytes.length for the line
+// beginning at start. The LF is not part of the authored prompt text but is
+// included later in the block insertion boundary.
+comment_prompt_line_end :: proc(bytes: []u8, start: usize) -> usize {
+    end := start
+    for end < len(bytes) && bytes[end] != cast[u8]('\n') {
+        end += 1
+    }
+    return end
+}
+
+// comment_prompt_content recognizes a line whose first non-horizontal-space
+// bytes are `//?`. On success content_start points immediately after the
+// marker and at most one conventional following space. The source indentation
+// and marker remain ordinary immutable editor bytes.
+comment_prompt_content :: proc(
+    bytes: []u8,
+    start, end: usize,
+) -> (usize, bool) {
+    marker := start
+    for marker < end &&
+        (bytes[marker] == cast[u8](' ') ||
+            bytes[marker] == cast[u8]('\t')) {
+        marker += 1
+    }
+    if marker + 3 > end ||
+        bytes[marker] != cast[u8]('/') ||
+        bytes[marker + 1] != cast[u8]('/') ||
+        bytes[marker + 2] != cast[u8]('?') {
+        return (0, false)
+    }
+    content := marker + 3
+    if content < end && bytes[content] == cast[u8](' ') {
+        content += 1
+    }
+    return (content, true)
+}
+
+// collect_comment_prompt finds the maximal contiguous `//?` line group which
+// contains the current editor line. It concatenates only the text after each
+// marker with LF separators and returns the zero-width insertion offset after
+// the final marker line. A blank or ordinary comment breaks the group. CR from
+// a CRLF terminator is excluded from the prompt while the exact source bytes
+// remain untouched.
+collect_comment_prompt :: proc(
+    buffer: ^turbo_editor.Buffer,
+    prompt: ^array.Dynamic[u8],
+) -> Comment_Prompt {
+    array.clear(prompt)
+    bytes := turbo_editor.content(buffer)
+    line_start := comment_prompt_line_start(bytes, buffer.cursor)
+    line_end := comment_prompt_line_end(bytes, line_start)
+    (_, current_is_prompt) := comment_prompt_content(
+        bytes,
+        line_start,
+        line_end,
+    )
+    if !current_is_prompt {
+        return Comment_Prompt{}
+    }
+
+    first := line_start
+    for first != 0 {
+        previous_end := first - 1
+        previous_start := comment_prompt_line_start(bytes, previous_end)
+        (_, previous_is_prompt) := comment_prompt_content(
+            bytes,
+            previous_start,
+            previous_end,
+        )
+        if !previous_is_prompt {
+            break
+        }
+        first = previous_start
+    }
+
+    last_end := line_end
+    for last_end < len(bytes) {
+        next_start := last_end + 1
+        next_end := comment_prompt_line_end(bytes, next_start)
+        (_, next_is_prompt) := comment_prompt_content(
+            bytes,
+            next_start,
+            next_end,
+        )
+        if !next_is_prompt {
+            break
+        }
+        last_end = next_end
+    }
+    insertion := last_end
+    if insertion < len(bytes) {
+        insertion += 1
+    }
+
+    source := first
+    first_prompt_line := true
+    for source < insertion {
+        end := comment_prompt_line_end(bytes, source)
+        (content, valid) := comment_prompt_content(bytes, source, end)
+        assert(valid, "collected comment prompt line lost its marker")
+        prompt_end := end
+        if prompt_end > content && bytes[prompt_end - 1] == cast[u8]('\r') {
+            prompt_end -= 1
+        }
+        if !first_prompt_line {
+            array.append(prompt, cast[u8]('\n'))
+        }
+        for index := content; index < prompt_end; index += 1 {
+            array.append(prompt, bytes[index])
+        }
+        first_prompt_line = false
+        if end == len(bytes) {
+            break
+        }
+        source = end + 1
+    }
+    return Comment_Prompt{start = first, end = insertion, found = true}
 }
 
 // run_configuration_init establishes all four Dynamic owners before any
@@ -1311,12 +1456,267 @@ request_agent_action :: proc(app: ^App, action: Agent_Action) {
     }
 }
 
+// request_comment_expansion is the only automatic trigger for the prototype:
+// an explicit command while the cursor is on one line of a contiguous `//?`
+// block. Unlike Resolve/Judge it deliberately does not save anything. The
+// pending event lets the terminal present progress before starting the worker;
+// the block is collected again immediately before snapshots are made so no
+// borrowed prompt bytes survive a frame boundary.
+request_comment_expansion :: proc(app: ^App) {
+    if !app.workspace_open || app.host.expand_comment == nil ||
+        app.host.copy_comment_expansion_imports == nil ||
+        app.host.copy_comment_expansion_declarations == nil ||
+        app.host.copy_comment_expansion_local == nil ||
+        app.host.copy_comment_expansion_error == nil {
+        set_plain_status(app, "Open a Draft compiler workspace to expand //?")
+        return
+    }
+    buffer := active_buffer(app)
+    if turbo_editor.is_read_only(buffer) {
+        set_plain_status(app, "Compiler and dependency sources are read-only")
+        return
+    }
+    prompt: array.Dynamic[u8]
+    array.init(&prompt)
+    collected := collect_comment_prompt(buffer, &prompt)
+    prompt_length := prompt.length
+    array.destroy(&prompt)
+    if !collected.found {
+        set_plain_status(app, "Place the cursor on a //? prompt line")
+        return
+    }
+    if prompt_length == 0 {
+        set_plain_status(app, "The contiguous //? prompt is empty")
+        return
+    }
+    app.pending_agent_action = .expand_comment
+    set_plain_status(app, "Codex is generating Draft source; please wait...")
+}
+
+// start_comment_expansion snapshots the current path, source, and concatenated
+// prompt, then starts exactly one worker which enters the synchronous compiler
+// callback. It does not inspect or validate returned source. On spawn failure
+// every snapshot is released and the editor remains unchanged.
+start_comment_expansion :: proc(app: ^App) {
+    job := &app.comment_expansion_job
+    buffer := active_buffer(app)
+    prompt: array.Dynamic[u8]
+    array.init(&prompt)
+    defer array.destroy(&prompt)
+    collected := collect_comment_prompt(buffer, &prompt)
+    if !collected.found || prompt.length == 0 {
+        set_plain_status(app, "The //? prompt changed before expansion began")
+        return
+    }
+
+    overlays: [Maximum_Buffers]draft_compiler_api.Overlay
+    (overlay_count, active_overlay, valid_overlays) := collect_host_overlays(
+        app,
+        overlays[:],
+    )
+    if !valid_overlays {
+        set_plain_status(
+            app,
+            "Active file is not part of the active root package",
+        )
+        return
+    }
+    spawned := comment_expansion_job_start(
+        job,
+        app.host.user,
+        app.host.expand_comment,
+        app.host.copy_comment_expansion_imports,
+        app.host.copy_comment_expansion_declarations,
+        app.host.copy_comment_expansion_local,
+        app.host.copy_comment_expansion_error,
+        overlays[:overlay_count],
+        active_overlay,
+        collected.start,
+        collected.end,
+        prompt.data[:prompt.length],
+    )
+    if !spawned {
+        set_plain_status(app, "Could not start the Codex expansion worker")
+        return
+    }
+}
+
+// comment_expansion_active is a main-thread query used to select the event
+// loop's host-quiescent path. active changes only around spawn/join.
+comment_expansion_active :: proc(app: ^App) -> bool {
+    return app.comment_expansion_job.active
+}
+
+// comment_expansion_ready acquires the worker's result publication. A false
+// result means the event loop may repaint progress but must not read result or
+// call any other member of the borrowed compiler table.
+comment_expansion_ready :: proc(app: ^App) -> bool {
+    return comment_expansion_job_ready(&app.comment_expansion_job)
+}
+
+// advance_comment_expansion_status rotates an ASCII activity marker. It runs
+// only on the main thread; the terminal runtime paints this status line without
+// traversing compiler-backed windows while the worker owns Host_Api access.
+advance_comment_expansion_status :: proc(app: ^App) {
+    statuses := [4]string{
+        "Codex is generating Draft source [|]",
+        "Codex is generating Draft source [/]",
+        "Codex is generating Draft source [-]",
+        "Codex is generating Draft source [\\]",
+    }
+    job := &app.comment_expansion_job
+    set_plain_status(app, statuses[job.spinner_index])
+    job.spinner_index = (job.spinner_index + 1) % len(statuses)
+}
+
+// finish_comment_expansion joins a published worker and applies its exact three
+// slots on the main thread. Success copies provider bytes into one bounded
+// editor transaction; Ctrl-Z therefore removes imports, package declarations,
+// and local code together while leaving every `//?` line in place. Provider
+// failure replaces Build Output but does not overwrite semantic Diagnostics or
+// editor history. false means the worker is still running and no state changed.
+finish_comment_expansion :: proc(app: ^App) -> bool {
+    if !comment_expansion_ready(app) {
+        return false
+    }
+    job := &app.comment_expansion_job
+    comment_expansion_job_join(job)
+    defer release_comment_expansion_job(job)
+    result := job.result
+    begin_result_output(
+        app,
+        "Expand //? Prompt",
+        result.success != 0,
+        result.elapsed_nanoseconds,
+    )
+
+    if result.success == 0 {
+        error_text: memory.Owned_String
+        if copy_host_text(
+            job.host_user,
+            job.copy_error,
+            &error_text,
+        ) {
+            error_bytes := memory.owned_string_bytes(&error_text)
+            _ = append_bounded_bytes(
+                app.build_output[:],
+                &app.build_output_length,
+                error_bytes,
+            )
+            memory.owned_string_destroy(&error_text)
+        } else {
+            _ = append_bounded_text(
+                app.build_output[:],
+                &app.build_output_length,
+                "Provider failure details are unavailable.\n",
+            )
+        }
+        set_timed_status(
+            app,
+            "Expand //? failed in ",
+            result.elapsed_nanoseconds,
+            "; see Build Output",
+        )
+        turbo_ui.show_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Build_Output].id,
+        )
+        return true
+    }
+
+    imports: memory.Owned_String
+    declarations: memory.Owned_String
+    local: memory.Owned_String
+    defer memory.owned_string_destroy(&local)
+    defer memory.owned_string_destroy(&declarations)
+    defer memory.owned_string_destroy(&imports)
+    if !copy_host_text(
+        job.host_user,
+        job.copy_imports,
+        &imports,
+    ) || !copy_host_text(
+        job.host_user,
+        job.copy_declarations,
+        &declarations,
+    ) || !copy_host_text(
+        job.host_user,
+        job.copy_local,
+        &local,
+    ) {
+        set_plain_status(app, "Could not copy the generated Draft edit")
+        return true
+    }
+    import_bytes := memory.owned_string_bytes(&imports)
+    declaration_bytes := memory.owned_string_bytes(&declarations)
+    local_bytes := memory.owned_string_bytes(&local)
+    copied_lengths_match := len(import_bytes) == result.import_length &&
+        len(declaration_bytes) == result.declaration_length &&
+        len(local_bytes) == result.local_length
+
+    insertions := [3]turbo_editor.Insertion{
+        turbo_editor.Insertion{
+            at = result.import_offset,
+            source = import_bytes,
+        },
+        turbo_editor.Insertion{
+            at = result.declaration_offset,
+            source = declaration_bytes,
+        },
+        turbo_editor.Insertion{
+            at = result.local_offset,
+            source = local_bytes,
+        },
+    }
+    cursor_after := result.local_offset
+    cursor_valid := true
+    for index: usize = 0; index < len(insertions); index += 1 {
+        insertion := insertions[index]
+        if insertion.at <= result.local_offset {
+            if len(insertion.source) > ~cast[usize](0) - cursor_after {
+                cursor_valid = false
+                break
+            }
+            cursor_after += len(insertion.source)
+        }
+    }
+    inserted := copied_lengths_match && cursor_valid &&
+        turbo_editor.insert_at_many(
+            active_buffer(app),
+            insertions[:],
+            cursor_after,
+        )
+    if !inserted {
+        set_plain_status(
+            app,
+            "Generated source exceeds the bounded atomic undo operation",
+        )
+        return true
+    }
+
+    source_changed(app)
+    inserted_bytes := result.import_length + result.declaration_length +
+        result.local_length
+    append_result_unsigned(app, "Inserted bytes: ", inserted_bytes)
+    set_timed_status(
+        app,
+        "Expanded //? in ",
+        result.elapsed_nanoseconds,
+        "; Ctrl-Z removes the insertion",
+    )
+    return true
+}
+
 // execute_agent_action is reached only from the event loop after its pending
 // status frame has been presented. Resolve and Judge have distinct ABI records
 // and result vocabularies; sharing only overlay collection and final compiler
 // projection refresh prevents either operation from becoming a hidden Build
 // flag.
 execute_agent_action :: proc(app: ^App, action: Agent_Action) {
+    if action == .expand_comment {
+        start_comment_expansion(app)
+        return
+    }
     overlays: [Maximum_Buffers]draft_compiler_api.Overlay
     (overlay_count, active_overlay, valid_overlays) := collect_host_overlays(
         app,

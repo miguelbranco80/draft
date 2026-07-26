@@ -272,20 +272,29 @@ credentials, and physical paths are ambient user tooling and are neither hashed
 nor serialized. An embedding may supply another executable command for
 deterministic tests without exposing that plumbing in the language CLI.
 
-`draftc` embeds the repository's complete `write-draft-code` skill as immutable
-bytes. The first stale or explicitly regenerated site lazily materializes those
-bytes once for the resolve command. Each Codex process still receives its own
-private request directory; a compiler-created read-only view named
-`draft-skill` points at the shared command-owned guide. The child reads the
-skill's explicit synthesis-provider mode, which treats the typed obligation as
-the complete environment and forbids repository edits, command execution, and
-nested synthesis. The materialization is removed with provider state at command
-exit. A provider-free resolve or build creates no skill directory.
+`draftc` embeds five factual references shared with the repository's
+`write-draft-code` skill: language, memory/ownership, the public core API index,
+interop/targets, and agent constructs. It deliberately does not embed the
+skill's repository-editing workflow, metadata, or `core/*.draft` implementation
+source. The first stale or explicitly regenerated site lazily materializes the
+reference bytes once for the resolve command. Each Codex process still receives
+its own private request directory; a compiler-created read-only view named
+`draft-reference` points at that command-owned bundle. The materialization is
+removed with provider state at command exit. A provider-free resolve or build
+creates no reference directory.
 
-The exact skill bundle digest is generation-policy provenance. Changing the
-guide can change a future proposal, so it changes Codex configuration identity,
-but it does not stale already accepted source. Physical temporary paths never
-enter either provenance or semantic identity.
+Operation policy is not hidden in that reference bundle or mixed into authored
+request data. The synthesis adapter passes a focused, versioned policy through
+Codex's developer-instruction configuration channel. The stdin transcript then
+contains only a request-kind header and byte-counted typed data. Editor expansion
+and judgment have independent developer instructions, prompt identities, output
+schemas, and response parsers. Judgment needs no Draft coding reference and
+therefore receives no `draft-reference` view.
+
+The exact reference-bundle and developer-instruction digests are generation-
+policy provenance. Changing either can change a future proposal, so it changes
+Codex configuration identity, but it does not stale already accepted source.
+Physical temporary paths never enter either provenance or semantic identity.
 
 ## Shared Codex runtime for synthesis and judgment
 
@@ -358,11 +367,11 @@ explicit snapshot terms are provider vocabulary; neither promises that mutable
 upper source re-evaluates to the displayed value at the site. Other loop shapes
 produce no inferred range.
 
-`draft-agent-obligation-v19`, synthesis request v21 / prompt v22, judgment
-request/prompt v4, and compiler content v140 identities make these facts and
+`draft-agent-obligation-v19`, synthesis request v21 / prompt v24, judgment
+request v4 / prompt v6, and compiler content v144 identities make these facts and
 the compiler-checked correction policy stale-pin and evidence inputs. The
-synthesis adapter uses provider identity `openai-codex-cli-v28`; the judgment
-adapter uses `openai-codex-cli-v23`. Both recheck the canonical
+synthesis adapter uses provider identity `openai-codex-cli-v30`; the judgment
+adapter uses `openai-codex-cli-v25`. Both recheck the canonical
 upper-source digest before a child starts. Obligation construction also drops a
 range when the binding or any resolved upper-expression input is hidden by an
 active denial.

@@ -147,6 +147,54 @@ shorten_timeout :: proc(
     }
 }
 
+// paint_comment_expansion_progress updates only the physical status row. A
+// normal paint_app traversal may call compiler-backed inspectors such as
+// Diagnostics or Compiler Options; those calls must remain quiescent while the
+// comment worker owns the synchronous Host_Api session. The already-rendered
+// desktop remains intact, except after a resize where the fresh surface shows
+// only this honest progress row until the worker completes.
+paint_comment_expansion_progress :: proc(
+    app: ^App,
+    surface: ^tui.Surface,
+) {
+    if surface.rows == 0 {
+        return
+    }
+    row := surface.rows - 1
+    style_value := draftide_theme().status
+    _ = tui.fill(
+        surface,
+        0,
+        row,
+        surface.columns,
+        1,
+        ' ',
+        style_value,
+    )
+    bounds := turbo_ui.Rect{
+        row = row,
+        width = surface.columns,
+        height = 1,
+    }
+    if app.status_bytes_active {
+        _ = turbo_ui.write_clipped_bytes(
+            surface,
+            bounds,
+            turbo_ui.Point{row = row},
+            app.status_storage[:app.status_length],
+            style_value,
+        )
+    } else {
+        _ = turbo_ui.write_clipped(
+            surface,
+            bounds,
+            turbo_ui.Point{row = row},
+            app.status,
+            style_value,
+        )
+    }
+}
+
 // begin_run_output marks the primary terminal as child-owned before launch.
 // stdout and stderr remain inherited rather than captured, which preserves
 // interactive console programs and exact stream ordering. The header is
@@ -220,6 +268,7 @@ run_interactive :: proc(
     next_disk_poll := time.monotonic_now() + 1 * time.second
     escape_deadline: time.Duration
     scrollbar_repeat_deadline: time.Duration
+    comment_expansion_repaint_deadline: time.Duration
     last_motion: turbo_ui.Mouse_Event
     last_motion_valid := false
     pointer_clicks: Pointer_Click_State
@@ -239,10 +288,98 @@ run_interactive :: proc(
                 return .unavailable
             }
             tui.renderer_resize(&renderer, new_columns, new_rows)
-            paint_app(app, tui.surface(&renderer), turbo_ui_terminal.resize(size))
+            if comment_expansion_active(app) {
+                paint_comment_expansion_progress(
+                    app,
+                    tui.surface(&renderer),
+                )
+            } else {
+                paint_app(
+                    app,
+                    tui.surface(&renderer),
+                    turbo_ui_terminal.resize(size),
+                )
+            }
             if tui.present(&renderer, screen) != .none {
                 return .unavailable
             }
+        }
+
+        if comment_expansion_active(app) {
+            // No full UI traversal, disk polling, or input dispatch is allowed
+            // in this branch. Those operations can mutate the snapshotted
+            // buffer or call the same compiler session. Raw input is consumed
+            // and discarded so a key pressed during generation cannot execute
+            // later as a surprising deferred command.
+            if comment_expansion_ready(app) {
+                _ = finish_comment_expansion(app)
+                comment_expansion_repaint_deadline = 0
+                paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
+                if tui.present(&renderer, screen) != .none {
+                    return .unavailable
+                }
+                continue
+            }
+            if terminal.decoder_pending(&decoder) {
+                _ = turbo_ui_terminal.flush(&decoder)
+            }
+            // Input may remain continuously readable under all-motion mouse
+            // reporting. Cap status publication at the ordinary idle cadence
+            // and drain a bounded queued batch, so discarded motion cannot
+            // turn the progress indicator into a repaint/PTY busy loop.
+            progress_now := time.monotonic_now()
+            if comment_expansion_repaint_deadline == 0 ||
+                progress_now >= comment_expansion_repaint_deadline {
+                advance_comment_expansion_status(app)
+                paint_comment_expansion_progress(app, tui.surface(&renderer))
+                if tui.present(&renderer, screen) != .none {
+                    return .unavailable
+                }
+                comment_expansion_repaint_deadline =
+                    progress_now + Input_Idle_Timeout
+            }
+            progress_timeout := Input_Idle_Timeout
+            shorten_timeout(
+                &progress_timeout,
+                progress_now,
+                comment_expansion_repaint_deadline,
+            )
+            (discarded_count, read_error) := terminal.read(
+                session,
+                input[:],
+                progress_timeout,
+            )
+            if read_error == .end_of_input {
+                return .none
+            }
+            if read_error != .none {
+                return read_error
+            }
+            discarded_batches: usize
+            for discarded_count != 0 &&
+                discarded_batches < Input_Drain_Batch_Limit {
+                discarded_batches += 1
+                (discarded_count, read_error) = terminal.read(
+                    session,
+                    input[:],
+                    0,
+                )
+                if read_error == .end_of_input {
+                    return .none
+                }
+                if read_error != .none {
+                    return read_error
+                }
+            }
+            if comment_expansion_ready(app) {
+                _ = finish_comment_expansion(app)
+                comment_expansion_repaint_deadline = 0
+                paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
+                if tui.present(&renderer, screen) != .none {
+                    return .unavailable
+                }
+            }
+            continue
         }
 
         repaint := false
@@ -476,16 +613,21 @@ run_interactive :: proc(
             repaint = false
         }
         if app.pending_agent_action != .none {
-            // Resolve/Judge can spend minutes in an external provider. Publish
-            // the explicit pending status before the synchronous call, but
-            // keep terminal ownership in DraftIDE because provider I/O is not
-            // the user's Program Output stream.
+            // All agent operations publish their explicit pending status first.
+            // Resolve and Judge then remain synchronous. Expansion instead
+            // starts one worker and enters the host-quiescent progress branch
+            // above, keeping terminal ownership in DraftIDE because provider
+            // I/O is not the user's Program Output stream.
             if repaint && tui.present(&renderer, screen) != .none {
                 return .unavailable
             }
             action := app.pending_agent_action
             app.pending_agent_action = .none
             execute_agent_action(app, action)
+            if comment_expansion_active(app) {
+                repaint = false
+                continue
+            }
             paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
             if tui.present(&renderer, screen) != .none {
                 return .unavailable

@@ -7,7 +7,9 @@
 // previous checked program intact. Resolve and Judge are separate, explicit
 // synchronous transactions: Resolve alone may invoke a synthesis provider and
 // publish target-scoped generated-source pins; Judge may invoke a judgment
-// provider and publish evidence, but never changes source.
+// provider and publish evidence, but never changes source. The experimental
+// `//?` editor expansion is a third provider-backed operation which returns
+// ephemeral bytes without checking or publishing them.
 //
 // The class owns no terminal, editor buffer, or Draft allocation. C ABI bridge
 // functions in service.cpp borrow source bytes synchronously and copy only
@@ -68,6 +70,18 @@ struct SyntaxSpan {
 struct CheckResult {
   bool ok = false;
   std::uint32_t diagnostic_count = 0;
+};
+
+// CommentExpansionResult reports one ephemeral `//?` editor request. Offsets
+// address the exact active overlay supplied to the operation; lengths name the
+// three session-owned result strings copied separately through the C facade.
+// It has no diagnostic/span counters because the operation neither checks
+// source nor replaces the latest semantic products.
+struct CommentExpansionResult {
+  bool ok = false;
+  std::size_t import_offset = 0;
+  std::size_t declaration_offset = 0;
+  std::size_t local_offset = 0;
 };
 
 // ResolveResult reports the source-generating transaction separately from
@@ -284,6 +298,21 @@ public:
   [[nodiscard]] JudgeResult judge(std::span<const SourceOverlay> overlays,
                                   std::size_t active_overlay);
 
+  // Expands one editor-authored prompt block in one reachable current source.
+  // overlays contain the active source and all dirty reachable buffers, so the
+  // compiler can construct a deterministic workspace-source snapshot with
+  // unsaved bytes taking precedence over disk. prompt_start/prompt_end are the
+  // exact half-open `//?` block range in the active overlay. This operation is
+  // deliberately independent from Resolve: it does not save, compile, pin, or
+  // publish the returned bytes. The active Draft editor remains the sole owner
+  // allowed to insert the three fragments into one ordinary undo transaction.
+  [[nodiscard]] CommentExpansionResult expand_comment(
+      std::span<const SourceOverlay> overlays,
+      std::size_t active_overlay,
+      std::size_t prompt_start,
+      std::size_t prompt_end,
+      std::string_view prompt);
+
   // Lexes one complete editor buffer with the production lexer and replaces
   // only syntax_spans_. This operation deliberately does not refresh package
   // configuration, type-check source, publish diagnostics, or mutate the
@@ -320,6 +349,10 @@ public:
   // fixed-buffer facade instead of observing these C++ representations.
   [[nodiscard]] const std::vector<SyntaxSpan> &syntax_spans() const;
   [[nodiscard]] std::string_view diagnostics_text() const;
+  [[nodiscard]] std::string_view comment_expansion_imports() const;
+  [[nodiscard]] std::string_view comment_expansion_declarations() const;
+  [[nodiscard]] std::string_view comment_expansion_local() const;
+  [[nodiscard]] std::string_view comment_expansion_error() const;
   [[nodiscard]] const std::vector<DiagnosticRow> &diagnostic_rows() const;
   [[nodiscard]] std::string_view tooling_text(ToolingSection section) const;
   [[nodiscard]] const std::vector<PackageTreeRow> &package_tree_rows() const;
@@ -435,6 +468,15 @@ private:
   std::string diagnostics_text_;
   std::vector<DiagnosticRow> diagnostic_rows_;
   std::uint32_t diagnostic_count_ = 0;
+  // These strings are replaced only by expand_comment. The three edit slots are
+  // separate so the C boundary never needs to serialize an editor transaction.
+  // Keeping all four separate from semantic diagnostics preserves the last
+  // Check/Build result while a provider-backed editing convenience succeeds or
+  // fails.
+  std::string comment_expansion_imports_;
+  std::string comment_expansion_declarations_;
+  std::string comment_expansion_local_;
+  std::string comment_expansion_error_;
 };
 
 } // namespace draft::ide

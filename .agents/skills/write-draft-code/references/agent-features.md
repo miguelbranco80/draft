@@ -8,6 +8,10 @@ Read the normative
 [`agent synthesis specification`](../../../../docs/specification/03-agent-synthesis.md)
 and [`denials and validation specification`](../../../../docs/specification/05-denials-validation.md)
 before changing these constructs or their tooling.
+Those repository documents are available during repository editing. In an
+isolated compiler Codex request their links are provenance only; use this guide,
+the operation's developer instruction, and the supplied typed or source context
+as the complete available authority.
 
 ## Contents
 
@@ -233,14 +237,20 @@ surface source + pinned manifest + one generated expansion per required site
 loads valid pins, elaborates missing/stale sites in semantic dependency order,
 checks each expansion and the coherent complete program, and commits successful
 staged pins atomically. It does not run tests, benchmarks, or judgments.
-The bootstrap adapter embeds this complete skill in `draftc`. A provider-using
-resolve materializes its exact files once, exposes that immutable guide inside
-each isolated Codex request directory, and removes it when the command ends.
-Fresh provider-free builds and resolves never materialize it. The adapter
-discovers `codex` through `PATH`; `--model` is optional and omission uses the
-Codex-configured default. Skill, model, retry, and adapter identities are
-generation provenance, not accepted-source freshness. Do not add executable
-paths, credentials, or Codex installation hashes to Draft source identity.
+The bootstrap adapter embeds this guide plus the focused language, ownership,
+core-library, and interop/target references in `draftc`; it does not embed the
+repository-editing skill, workflow guide, metadata, or `core/*.draft` source.
+A provider-using resolve materializes that compact factual bundle once and
+exposes it as `draft-reference` inside each isolated Codex request directory.
+Repository-relative links in the embedded copies are provenance only because
+their targets are not part of that directory. A versioned synthesis developer
+instruction defines the operation, while the length-prefixed typed request is
+the complete program context. The command removes the materialization when it
+ends. Provider-free commands never materialize it. The adapter discovers
+`codex` through `PATH`; model, retry, reference, instruction, and adapter
+identities are generation provenance, not accepted-source freshness. Do not add
+executable paths, credentials, or Codex installation hashes to Draft source
+identity.
 Within one semantic ready set, independent provider requests run in bounded
 parallel waves. The compiler joins the wave, checks proposals sequentially in
 canonical package/obligation order, and sends only rejected sites through a
@@ -280,8 +290,9 @@ In DraftIDE, use **Compile > Resolve Synthesis** for the same provider-authorize
 source transaction and **Compile > Judge Claims** for the separate evidence
 command. Both save dirty files in the active root's reachable graph before
 beginning, including a package shared by multiple roots but excluding unrelated
-editing-only documents. The current IDE uses the configured default Codex CLI
-policy. **Build**, **Build All Programs**, and F5 never invoke either operation.
+editing-only documents. The current IDE uses the compiler-owned Codex CLI policy
+and the installed CLI's built-in default model. **Build**, **Build All
+Programs**, and F5 never invoke either operation.
 Resolve does not build or run the result, and Judge does not resolve source.
 Their counters and verdicts go to Build Output; compiler/provider errors go to
 Diagnostics.

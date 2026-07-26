@@ -121,11 +121,21 @@ DraftIDE keeps agent work explicit. **Compile > Resolve Synthesis** is the only
 IDE command that may fill or update `...` pins; **Compile > Judge Claims** is the
 separate evidence command. They save dirty documents in the active root's
 reachable graph (including shared package files), show a pending status, and
-use the configured default Codex CLI policy. Unrelated editing-only documents
-are untouched. Build, Build All Programs, and F5 remain provider-free and fail
-on a missing or stale pin. Resolve success still requires a later Build/F5.
+use the compiler-owned Codex CLI policy and the installed CLI's built-in default
+model. Unrelated editing-only documents are untouched. Build, Build All
+Programs, and F5 remain provider-free and fail on a missing or stale pin.
+Resolve success still requires a later Build/F5.
 Results always replace Build Output; compiler/provider errors raise Diagnostics,
 while a completed negative judgment raises Build Output for its verdict.
+
+**Compile > Expand //? Prompt** (Ctrl-E) is a separate unsaved editor
+experiment, not `...` resolution. It snapshots reachable workspace-owned Draft
+sources with current active/dirty overlays, gives Codex the exact marker range
+and compiler-calculated import/declaration/local insertion slots, and applies
+the returned nonempty strings to the active file as one ordinary undo
+transaction. It leaves every `//?` line in place, writes no file or pin, edits
+no other file, and performs no automatic compiler validation; Check remains
+explicit.
 
 F5 launches executables directly without a shell. Arguments remain literal and
 ordered. Environment rows are `NAME=value` overrides on the inherited
@@ -221,9 +231,11 @@ build/draftc check path/to/workspace/package --target x86_64-linux
 build/draftc check path/to/workspace/package --target x86_64-windows
 build/draftc expand path/to/workspace/package --out /tmp/expanded-source \
   --target aarch64-macos
-build/draftc resolve path/to/workspace/package --build -o /tmp/program \
-  --target aarch64-macos
 ```
+
+Fail-closed provider-free CI must omit every `resolve` spelling, including
+`resolve --build` and `resolve --revalidate`: resolution may contact a provider
+or rewrite pins. The consumer commands above reject missing or stale pins.
 
 For fresh source containing `...`, `check`, `expand`, and plain `build` must
 fail until a pin exists; they never contact a synthesis provider. After any

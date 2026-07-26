@@ -93,10 +93,13 @@ Workspace_Transition :: enum u8 {
 
 // Agent_Action is an explicit event-loop request, never a Build mode. Resolve
 // may change target-scoped generated-source pins and Judge may record evidence,
-// so both are queued after saving current source and painted once before their
-// potentially long synchronous provider operation begins.
+// so those two save current root source before queuing. expand_comment instead
+// returns unsaved editor bytes and starts the one Comment_Expansion_Job after
+// its pending frame is visible. Resolve and Judge remain synchronous; comment
+// expansion alone keeps the terminal loop responsive through an owned worker.
 Agent_Action :: enum u8 {
     none,
+    expand_comment,
     resolve,
     judge_claims,
 }
@@ -119,7 +122,7 @@ Menu_Help_Popup :: 531
 // manipulation in addition to menu accelerators: these commands are otherwise
 // discoverable only by experimenting with a terminal keyboard. shortcut_row
 // below is the single text source for the visible table and its coverage test.
-Shortcut_Row_Count :: 50
+Shortcut_Row_Count :: 51
 
 // Only the four immutable semantic reports share the tooling-text table.
 // Diagnostics are structured activatable rows, and Build Output has a distinct
@@ -314,6 +317,10 @@ App :: struct {
     run_configuration_overridden: bool,
     run_requested: bool,
     pending_agent_action: Agent_Action,
+    // comment_expansion_job is the sole cross-thread application record. The
+    // host-integration module owns its snapshots and atomic phase; the terminal
+    // loop merely quiesces editor/host interaction until it can join the worker.
+    comment_expansion_job: Comment_Expansion_Job,
     quit_discard_mask: u64,
     // clipboard is an IDE-local byte clipboard. Bracketed terminal paste still
     // enters as text events; this owner gives Cut/Copy/Paste deterministic
@@ -323,6 +330,7 @@ App :: struct {
 
 init_windows :: proc(app: ^App) {
     array.init(&app.clipboard)
+    comment_expansion_job_init(&app.comment_expansion_job)
     // The document is an ordinary desktop window rather than a privileged
     // background layer. Its content remains the reusable turbo_editor view;
     // only this application decides that the view is closable, zoomable, and
@@ -429,7 +437,7 @@ init_windows :: proc(app: ^App) {
     )
     app.windows[Window_About] = turbo_ui.dialog_window_init(
         418,
-        turbo_ui.Rect{column = 18, row = 7, width = 58, height = 8},
+        turbo_ui.Rect{column = 18, row = 7, width = 62, height = 11},
         20,
     )
     app.windows[Window_Workspace_Files] = turbo_ui.tool_window_init(
@@ -557,6 +565,8 @@ shortcut_row :: proc(index: usize) -> (string, string) {
         return ("Enter", "Open a selected file or enter a directory")
     case 49:
         return ("Drag title / border", "Move or resize an ordinary window")
+    case 50:
+        return ("Ctrl-E", "Expand the contiguous //? prompt under the cursor")
     case:
         assert(false, "shortcut help row index is outside the authored table")
         return ("", "")
@@ -703,6 +713,11 @@ destroy_workspace_documents :: proc(app: ^App) {
 // may run after partial document initialization; every counted owner is valid,
 // and no application operation may observe App afterward.
 destroy_app :: proc(app: ^App) {
+    // The compiler worker borrows App and the externally owned host session,
+    // so it must stop before any document or application-owned byte storage is
+    // released. Normal interactive flow has already completed it; this join is
+    // the teardown guarantee for terminal EOF and partial initialization paths.
+    comment_expansion_job_destroy(&app.comment_expansion_job)
     destroy_workspace_documents(app)
     for index: usize = 0; index < app.browser_entry_count; index += 1 {
         memory.owned_string_destroy(&app.browser_entry_names[index])
@@ -1237,17 +1252,26 @@ refresh_host :: proc(app: ^App) -> bool {
     return result.success != 0
 }
 
+// save_active_buffer applies the active document's ordinary save policy and
+// publishes one complete status transition for every outcome. Save may be
+// reached from the global shortcut, editor request, menu, or another command;
+// it therefore cannot rely on a preceding input frame to retire an earlier
+// byte-formatted status. Using set_plain_status ensures a successful save
+// visibly reports `Saved` instead of leaving the renderer on stale storage.
 save_active_buffer :: proc(app: ^App) {
     if turbo_editor.is_read_only(active_buffer(app)) {
-        app.status = "Compiler and dependency sources are read-only"
+        set_plain_status(app, "Compiler and dependency sources are read-only")
     } else if turbo_editor.is_unnamed(active_buffer(app)) {
         request_save_as(app)
     } else if turbo_editor.save(active_buffer(app)) {
-        app.status = "Saved"
+        set_plain_status(app, "Saved")
     } else if active_buffer(app).disk_conflict {
-        app.status = "Disk conflict: Save refused; Alt-X offers overwrite/discard"
+        set_plain_status(
+            app,
+            "Disk conflict: Save refused; Alt-X offers overwrite/discard",
+        )
     } else {
-        app.status = "Save failed"
+        set_plain_status(app, "Save failed")
     }
 }
 

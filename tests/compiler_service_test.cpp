@@ -25,6 +25,10 @@
 #include <system_error>
 #include <vector>
 
+#if defined(__APPLE__) || defined(__unix__)
+#include <sys/stat.h>
+#endif
+
 namespace {
 
 struct TestState {
@@ -57,6 +61,44 @@ void write_file(const std::filesystem::path &path, std::string_view contents) {
     std::exit(EXIT_FAILURE);
   }
 }
+
+#if defined(__APPLE__) || defined(__unix__)
+// ScopedPath installs one deterministic fake `codex` only around the successful
+// editor-expansion call. CompilerSession intentionally uses ordinary PATH
+// discovery, so this exercises the real service/provider boundary without user
+// credentials or network access. Destruction restores both the prior value and
+// the distinction between an absent and empty PATH.
+class ScopedPath {
+public:
+  explicit ScopedPath(const std::filesystem::path &first) {
+    const char *current = std::getenv("PATH");
+    if (current != nullptr) {
+      had_previous_ = true;
+      previous_ = current;
+    }
+    const std::string replacement = first.string() + ":" + previous_;
+    if (::setenv("PATH", replacement.c_str(), 1) != 0) {
+      std::cerr << "cannot install compiler-service fixture PATH\n";
+      std::exit(EXIT_FAILURE);
+    }
+  }
+
+  ScopedPath(const ScopedPath &) = delete;
+  ScopedPath &operator=(const ScopedPath &) = delete;
+
+  ~ScopedPath() {
+    if (had_previous_) {
+      static_cast<void>(::setenv("PATH", previous_.c_str(), 1));
+    } else {
+      static_cast<void>(::unsetenv("PATH"));
+    }
+  }
+
+private:
+  bool had_previous_ = false;
+  std::string previous_;
+};
+#endif
 
 [[nodiscard]] std::uint8_t native_target_ordinal() {
 #if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
@@ -175,6 +217,113 @@ void test_service_transactions_and_native_build(TestState &state) {
   EXPECT(state,
          std::string_view(reinterpret_cast<const char *>(path_bytes.data()),
                           path_size) == canonical_source.string());
+
+  // The ephemeral editor bridge validates its exact byte gap before it can
+  // configure or launch Codex. This provider-free failure exercises the new C
+  // record and separate error-copy lifetime without making an integration test
+  // depend on user credentials or an installed model.
+  const DraftCompilerServiceOverlay expansion_overlay =
+      overlay(canonical_source_text, disk_source);
+  constexpr std::string_view expansion_prompt = "create an answer";
+  DraftCompilerServiceCommentExpansionResult expansion_result{};
+  draft_compiler_session_expand_comment(
+      session, &expansion_overlay, 1, 0, 0, disk_source.size() + 1,
+      expansion_prompt.data(), expansion_prompt.size(), &expansion_result);
+  EXPECT(state, expansion_result.success == 0);
+  EXPECT(state, expansion_result.import_length == 0);
+  EXPECT(state, expansion_result.declaration_length == 0);
+  EXPECT(state, expansion_result.local_length == 0);
+  std::array<std::uint8_t, 512> expansion_error{};
+  const std::size_t expansion_error_size =
+      draft_compiler_session_copy_comment_expansion_error(
+          session, expansion_error.data(), expansion_error.size());
+  EXPECT(state, expansion_error_size != 0);
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(expansion_error.data()),
+                    std::min(expansion_error_size, expansion_error.size() - 1))
+                        .find("prompt range is outside") !=
+                    std::string_view::npos);
+
+#if defined(__APPLE__) || defined(__unix__)
+  // A real successful service request proves the complete bridge: the unsaved
+  // active overlay becomes a private workspace tree, unrelated workspace
+  // packages remain absent, the parser chooses the package-header slot, and all
+  // three response strings retain independent C-copy lifetimes. The fake is an
+  // executable boundary rather than an in-process provider callback.
+  const std::filesystem::path fake_directory = temporary.path() / "fake-bin";
+  const std::filesystem::path fake_codex = fake_directory / "codex";
+  write_file(
+      fake_codex,
+      "#!/bin/sh\n"
+      "output=\n"
+      "work=\n"
+      "test \"$1\" = exec || exit 20\n"
+      "shift\n"
+      "while test \"$#\" -gt 0; do\n"
+      "  case \"$1\" in\n"
+      "    --output-last-message) output=$2; shift 2 ;;\n"
+      "    --cd) work=$2; shift 2 ;;\n"
+      "    --sandbox|--color|--output-schema|-c|--model) shift 2 ;;\n"
+      "    --ephemeral|--skip-git-repo-check|--ignore-user-config|--ignore-rules|-) shift ;;\n"
+      "    *) exit 21 ;;\n"
+      "  esac\n"
+      "done\n"
+      "prompt=$(cat)\n"
+      "case \"$prompt\" in *ACTIVE_SOURCE_PATH*workspace/app/package.draft*PROMPT_START_LINE*2*IMPORT_INSERTION_BYTE*12*DECLARATION_INSERTION_BYTE*12*WORKSPACE_FILE_COUNT*1*) ;; *) exit 22 ;; esac\n"
+      "test \"$(cat \"$work/workspace/app/package.draft\")\" = 'package app\n//? create answer\nmain :: proc() -> int { return Answer }' || exit 23\n"
+      "test ! -e \"$work/workspace/tool\" || exit 25\n"
+      "test ! -e \"$work/workspace/lib\" || exit 26\n"
+      "printf '%s' '{\"declarations\":\"Answer :: Helper + 1\\n\",\"local\":\"// local bytes\\n\",\"imports\":\"import core/console\\n\"}' > \"$output\"\n");
+  if (::chmod(fake_codex.c_str(), 0700) != 0) {
+    std::cerr << "cannot make fake Codex executable\n";
+    std::exit(EXIT_FAILURE);
+  }
+
+  std::string expansion_source =
+      "package app\n"
+      "//? create answer\n"
+      "main :: proc() -> int { return Answer }\n";
+  const DraftCompilerServiceOverlay successful_expansion_overlay =
+      overlay(canonical_source_text, expansion_source);
+  const std::size_t prompt_start = expansion_source.find("//?");
+  const std::size_t prompt_end = expansion_source.find("main");
+  DraftCompilerServiceCommentExpansionResult successful_expansion{};
+  {
+    ScopedPath path(fake_directory);
+    draft_compiler_session_expand_comment(
+        session, &successful_expansion_overlay, 1, 0,
+        prompt_start, prompt_end, expansion_prompt.data(),
+        expansion_prompt.size(), &successful_expansion);
+  }
+  EXPECT(state, successful_expansion.success == 1);
+  EXPECT(state, successful_expansion.import_offset == 12);
+  EXPECT(state, successful_expansion.declaration_offset == 12);
+  EXPECT(state, successful_expansion.local_offset == prompt_end);
+  EXPECT(state, successful_expansion.import_length ==
+                    std::string_view("import core/console\n").size());
+  EXPECT(state, successful_expansion.declaration_length ==
+                    std::string_view("Answer :: Helper + 1\n").size());
+  EXPECT(state, successful_expansion.local_length ==
+                    std::string_view("// local bytes\n").size());
+  std::array<std::uint8_t, 128> expansion_copy{};
+  std::size_t expansion_copy_size =
+      draft_compiler_session_copy_comment_expansion_imports(
+          session, expansion_copy.data(), expansion_copy.size());
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(expansion_copy.data()),
+                    expansion_copy_size) == "import core/console\n");
+  expansion_copy_size =
+      draft_compiler_session_copy_comment_expansion_declarations(
+          session, expansion_copy.data(), expansion_copy.size());
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(expansion_copy.data()),
+                    expansion_copy_size) == "Answer :: Helper + 1\n");
+  expansion_copy_size = draft_compiler_session_copy_comment_expansion_local(
+      session, expansion_copy.data(), expansion_copy.size());
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(expansion_copy.data()),
+                    expansion_copy_size) == "// local bytes\n");
+#endif
 
   std::string valid =
       "package app\n"

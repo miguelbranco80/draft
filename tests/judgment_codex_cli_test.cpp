@@ -56,6 +56,7 @@ struct TemporaryFixture {
         "schema=\n"
         "model=\n"
         "work=\n"
+        "developer=\n"
         "test \"$1\" = exec || exit 20\n"
         "shift\n"
         "while test \"$#\" -gt 0; do\n"
@@ -63,6 +64,7 @@ struct TemporaryFixture {
         "    --ephemeral|--skip-git-repo-check|--ignore-user-config|--ignore-rules) shift ;;\n"
         "    --sandbox) test \"$2\" = read-only || exit 21; shift 2 ;;\n"
         "    --color) test \"$2\" = never || exit 22; shift 2 ;;\n"
+        "    -c) developer=$2; shift 2 ;;\n"
         "    --model) model=$2; shift 2 ;;\n"
         "    --cd) work=$2; shift 2 ;;\n"
         "    --output-schema) schema=$2; shift 2 ;;\n"
@@ -73,13 +75,21 @@ struct TemporaryFixture {
         "done\n"
         "if test -z \"$model\"; then model=fixture-model; fi\n"
         "test -f \"$schema\" || exit 24\n"
+        "case \"$developer\" in *DRAFT_JUDGMENT_PROVIDER_INSTRUCTIONS_V2*) ;; *) exit 31 ;; esac\n"
+        "case \"$developer\" in *Draft*) ;; *) exit 35 ;; esac\n"
+        "case \"$developer\" in *authoritative*) ;; *) exit 36 ;; esac\n"
+        "case \"$developer\" in *verdict*) ;; *) exit 37 ;; esac\n"
+        "case \"$developer\" in *evidence*) ;; *) exit 38 ;; esac\n"
+        "test ! -e \"$work/draft-reference\" || exit 32\n"
         "test -f \"$work/attachment-00000000.bin\" || exit 25\n"
         "test \"$(cat \"$work/attachment-00000000.bin\")\" = claim-evidence || exit 26\n"
         "test -f \"$work/requested-artifact-00000000.bin\" || exit 27\n"
         "test \"$(cat \"$work/requested-artifact-00000000.bin\")\" = object-bytes || exit 28\n"
         "prompt=$(cat)\n"
+        "case \"$prompt\" in *DRAFT_JUDGMENT_PROVIDER_INSTRUCTIONS_V2*) exit 33 ;; esac\n"
+        "case \"$developer\" in *preserve-the-abi*) exit 34 ;; esac\n"
         "case \"$prompt\" in\n"
-        "  *REQUEST_FORMAT*draft-judgment-request-v4*SITE*judgment-site*TARGET_IDENTITY*draft-aarch64-macos-v6*BRANCH_KIND*if-condition-entered-false*BRANCH_SUBJECT*validated*LOOP_RANGES*LOOP_RANGE_KIND*captured-iteration-length*LOOP_RANGE_BINDING*index*LOOP_RANGE_UPPER*values*JUDGMENT_CLAIM*preserve-the-abi*ATTACHMENT_PATH*EVIDENCE.md*RESOLVED_PROGRAM_SHA256*COMPILER_IDENTITY*draft-bootstrap-cpp-v119*POLICY_IDENTITY*draft-judgment-policy-v1*VALIDATOR_IDENTITY*validator-0*REQUESTED_ARTIFACTS*ARTIFACT_KIND*object*ARTIFACT_FILE*requested-artifact-00000000.bin*ARTIFACT_SHA256*) ;;\n"
+        "  *DRAFT_JUDGMENT_REQUEST_V1*REQUEST_FORMAT*draft-judgment-request-v4*SITE*judgment-site*TARGET_IDENTITY*draft-aarch64-macos-v6*BRANCH_KIND*if-condition-entered-false*BRANCH_SUBJECT*validated*LOOP_RANGES*LOOP_RANGE_KIND*captured-iteration-length*LOOP_RANGE_BINDING*index*LOOP_RANGE_UPPER*values*JUDGMENT_CLAIM*preserve-the-abi*ATTACHMENT_PATH*EVIDENCE.md*RESOLVED_PROGRAM_SHA256*COMPILER_IDENTITY*draft-bootstrap-cpp-v119*POLICY_IDENTITY*draft-judgment-policy-v1*VALIDATOR_IDENTITY*validator-0*REQUESTED_ARTIFACTS*ARTIFACT_KIND*object*ARTIFACT_FILE*requested-artifact-00000000.bin*ARTIFACT_SHA256*) ;;\n"
         "  *) exit 29 ;;\n"
         "esac\n"
         "case \"$model\" in\n"
@@ -178,7 +188,7 @@ void test_adapter_contract(TestState &state) {
   const draft::JudgmentProvider provider = configure(
       fixture, "fixture-model", provider_state, diagnostics);
   EXPECT(state, provider.judge != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v23");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v25");
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state,
       provider.configuration_identity == provider_state.configuration_identity);

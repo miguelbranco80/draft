@@ -5,6 +5,10 @@ or mutable state shared through a pointer. The normative rules are in
 [`docs/specification/02-types-memory-runtime.md`](../../../../docs/specification/02-types-memory-runtime.md),
 especially sections 5–6. The concrete ownership contracts live in the imported
 `core/` package sources.
+Those links and package sources are available during repository editing. An
+isolated compiler Codex request instead uses this ownership guide, the public
+core index, and the exact declarations supplied in its request context; it must
+not infer contracts from unavailable source.
 
 ## Contents
 
@@ -232,10 +236,12 @@ a structural element copy, not a deep clone. A `Buffer` of owning `T` therefore
 does not define the elements' cleanup policy.
 
 `memory.Owned_String` owns copied bytes plus one trailing zero. Initialize it
-with `owned_string_copy`, borrow its bounded mutable bytes with
-`owned_string_bytes`, borrow its C view with `owned_string_cstring`, and end
-both views with `owned_string_destroy`. Embedded zero bytes are preserved, but
-C observes the first zero as the end of the string.
+from immutable `string` with `owned_string_copy`, or from a mutable byte view
+with `owned_string_copy_bytes`; both also have explicit-allocator forms. Borrow
+its bounded mutable bytes with `owned_string_bytes`, borrow its C view with
+`owned_string_cstring`, and end both views with `owned_string_destroy`.
+Embedded zero bytes are preserved, but C observes the first zero as the end of
+the string.
 
 ## Growable containers
 

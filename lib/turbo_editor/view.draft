@@ -8,10 +8,8 @@ package turbo_editor
 import core/array
 import core/format
 import core/tui
-import core/unicode
 import lib/turbo_ui
 
-Tab_Columns :: 4
 Gutter_Columns :: 5
 
 pub Syntax_Kind :: enum u8 {
@@ -311,19 +309,11 @@ paint_text_row :: proc(
     logical_column: usize
     offset := start
     for offset < end {
-        next := offset + 1
-        width: usize = 1
-        error: unicode.Grapheme_Error = .none
-        if bytes[offset] == cast[u8]('\t') {
-            width = Tab_Columns - logical_column % Tab_Columns
-        } else {
-            (next, width, error) = unicode.next_grapheme_bytes(bytes, offset)
-            if next <= offset {
-                next = offset + 1
-                width = 1
-                error = .invalid_encoding
-            }
-        }
+        (next, width, error) := display_step(
+            bytes,
+            offset,
+            logical_column,
+        )
         visible_start := logical_column >= buffer.scroll_column
         screen_column := bounds.column
         if visible_start {

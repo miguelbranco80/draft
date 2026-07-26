@@ -13,6 +13,7 @@
 #include "judgment/cli_policy.h"
 #include "judgment/command.h"
 #include "syntax/lexer.h"
+#include "syntax/parser.h"
 #include "syntax/token.h"
 #include "workspace/embedded_core.h"
 #include "workspace/manifest.h"
@@ -1558,12 +1559,225 @@ JudgeResult CompilerSession::judge(std::span<const SourceOverlay> overlays,
   return result;
 }
 
+CommentExpansionResult CompilerSession::expand_comment(
+    std::span<const SourceOverlay> overlays,
+    std::size_t active_overlay,
+    std::size_t prompt_start,
+    std::size_t prompt_end,
+    std::string_view prompt) {
+  comment_expansion_imports_.clear();
+  comment_expansion_declarations_.clear();
+  comment_expansion_local_.clear();
+  comment_expansion_error_.clear();
+  DiagnosticSink diagnostics;
+
+  if (overlays.empty() || active_overlay >= overlays.size()) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "Draft editor expansion requires one active source overlay");
+  }
+  const SourceOverlay *active = active_overlay < overlays.size()
+      ? &overlays[active_overlay]
+      : nullptr;
+  if (active != nullptr &&
+      (prompt_start > prompt_end || prompt_end > active->contents.size())) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "Draft editor expansion prompt range is outside the active source");
+  }
+
+  // Resolve every physical editor path through the current deterministic source
+  // table and copy its exact bytes into semantic override records. This rejects
+  // editing-only documents, duplicate overlays, and host paths which do not
+  // belong to the active root before any request directory is created.
+  std::vector<WorkspaceSourceOverride> converted;
+  if (!diagnostics.has_errors()) {
+    std::optional<std::vector<WorkspaceSourceOverride>> checked =
+        source_overrides(overlays, diagnostics);
+    if (checked.has_value()) converted = std::move(*checked);
+  }
+
+  const SourceOption *selected_source = nullptr;
+  if (!diagnostics.has_errors()) {
+    const WorkspaceSourceOverride &active_source = converted[active_overlay];
+    for (const SourceOption &option : source_options_) {
+      if (option.identity == active_source.identity &&
+          option.relative_name == active_source.source.relative_name) {
+        selected_source = &option;
+        break;
+      }
+    }
+  }
+  if (selected_source == nullptr) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "Draft editor expansion requires a source in the active root");
+  }
+
+  // Materialize a deterministic logical workspace tree. SourceOption contains
+  // only reachable workspace-owned Draft files; compiler core and dependency
+  // roots are absent by construction. Dirty/open overlays replace disk bytes by
+  // semantic package identity, while clean unopened files are read at the exact
+  // request boundary. Physical paths remain an I/O fact and never enter Codex
+  // request data.
+  std::vector<std::string> snapshot_contents;
+  std::vector<CodexEditorWorkspaceFile> snapshot_files;
+  if (!diagnostics.has_errors()) {
+    std::vector<const SourceOption *> ordered_sources;
+    ordered_sources.reserve(source_options_.size());
+    for (const SourceOption &option : source_options_) {
+      ordered_sources.push_back(&option);
+    }
+    std::sort(
+        ordered_sources.begin(), ordered_sources.end(),
+        [](const SourceOption *left, const SourceOption *right) {
+          return left->display_name < right->display_name;
+        });
+
+    snapshot_contents.reserve(ordered_sources.size());
+    for (const SourceOption *option : ordered_sources) {
+      const auto override = std::find_if(
+          converted.begin(), converted.end(),
+          [option](const WorkspaceSourceOverride &candidate) {
+            return candidate.identity == option->identity &&
+                candidate.source.relative_name == option->relative_name;
+          });
+      if (override != converted.end()) {
+        snapshot_contents.push_back(override->source.contents);
+        continue;
+      }
+      SourceManager disk_source;
+      const LoadFileResult loaded =
+          disk_source.load_file(option->physical_path.string());
+      if (!loaded.ok) {
+        diagnostics.error(SourceRange::invalid(), loaded.error);
+        break;
+      }
+      snapshot_contents.emplace_back(disk_source.text(loaded.file));
+    }
+    if (!diagnostics.has_errors()) {
+      snapshot_files.reserve(ordered_sources.size());
+      for (std::size_t index = 0; index < ordered_sources.size(); ++index) {
+        snapshot_files.push_back({
+            ordered_sources[index]->display_name,
+            snapshot_contents[index],
+        });
+      }
+    }
+  }
+
+  // Parse only to locate the grammar-owned end of package/docs/import header.
+  // Parser diagnostics are intentionally private: this editor convenience
+  // neither validates the authored buffer nor publishes a semantic Check
+  // result. Both package-wide slots use the first byte after the header line.
+  // This keeps imports ahead of every declaration even when the `//?` group is
+  // itself a top-level comment before the first authored declaration. Applying
+  // the import fragment before the declaration fragment preserves grammar order
+  // when their offsets coincide.
+  std::size_t header_insertion_offset = 0;
+  std::size_t prompt_line = 0;
+  if (!diagnostics.has_errors()) {
+    SourceManager syntax_sources;
+    const FileId file = syntax_sources.add_source(
+        selected_source->display_name, std::string(active->contents));
+    DiagnosticSink ignored_parser_diagnostics;
+    const SyntaxTree syntax =
+        parse_source_file(syntax_sources, file, ignored_parser_diagnostics);
+    const SyntaxNode &root = syntax.node(syntax.root());
+    const SyntaxNode *last_header = nullptr;
+    for (const NodeId child : root.children) {
+      const SyntaxNode &node = syntax.node(child);
+      if (node.kind == NodeKind::DeclarationList) break;
+      if (node.range.is_valid()) last_header = &node;
+    }
+    if (last_header == nullptr || last_header->token_end == 0) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "Draft editor expansion could not locate the package header "
+          "boundary");
+    } else {
+      header_insertion_offset = last_header->range.end.offset;
+      const Token &terminator = syntax.token(last_header->token_end - 1);
+      if (terminator.kind == TokenKind::Semicolon && terminator.inserted &&
+          header_insertion_offset < active->contents.size() &&
+          active->contents[header_insertion_offset] == '\r') {
+        ++header_insertion_offset;
+      }
+      if (terminator.kind == TokenKind::Semicolon && terminator.inserted &&
+          header_insertion_offset < active->contents.size() &&
+          active->contents[header_insertion_offset] == '\n') {
+        ++header_insertion_offset;
+      }
+      prompt_line = syntax_sources.line_column({
+          file, static_cast<std::uint32_t>(prompt_start)}).line;
+    }
+  }
+
+  bool expanded = false;
+  if (!diagnostics.has_errors()) {
+    const CodexEditorExpansionRequest request{
+        selected_source->display_name,
+        snapshot_files,
+        prompt_start,
+        prompt_end,
+        prompt_line,
+        header_insertion_offset,
+        header_insertion_offset,
+        prompt_end,
+        prompt,
+    };
+    CodexEditorExpansion expansion;
+    expanded = expand_editor_comment_with_codex(
+        CodexCliProviderOptions{}, request, expansion, diagnostics);
+    if (expanded) {
+      comment_expansion_imports_ = std::move(expansion.imports);
+      comment_expansion_declarations_ = std::move(expansion.declarations);
+      comment_expansion_local_ = std::move(expansion.local);
+    }
+  }
+
+  if (!expanded || diagnostics.has_errors()) {
+    SourceManager no_sources;
+    comment_expansion_imports_.clear();
+    comment_expansion_declarations_.clear();
+    comment_expansion_local_.clear();
+    comment_expansion_error_ = render_diagnostics(no_sources, diagnostics);
+    if (comment_expansion_error_.empty()) {
+      comment_expansion_error_ =
+          "error: Draft editor expansion failed without a diagnostic\n";
+    }
+    return {};
+  }
+  return {
+      true,
+      header_insertion_offset,
+      header_insertion_offset,
+      prompt_end,
+  };
+}
+
 const std::vector<SyntaxSpan> &CompilerSession::syntax_spans() const {
   return syntax_spans_;
 }
 
 std::string_view CompilerSession::diagnostics_text() const {
   return diagnostics_text_;
+}
+
+std::string_view CompilerSession::comment_expansion_imports() const {
+  return comment_expansion_imports_;
+}
+
+std::string_view CompilerSession::comment_expansion_declarations() const {
+  return comment_expansion_declarations_;
+}
+
+std::string_view CompilerSession::comment_expansion_local() const {
+  return comment_expansion_local_;
+}
+
+std::string_view CompilerSession::comment_expansion_error() const {
+  return comment_expansion_error_;
 }
 
 const std::vector<DiagnosticRow> &CompilerSession::diagnostic_rows() const {

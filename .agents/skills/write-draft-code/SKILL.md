@@ -9,34 +9,6 @@ Write production-quality Draft against this checkout's actual language and
 core library. Treat the specification as semantic authority, `core/` as the
 library API, and compiling examples/tests as the executable usage record.
 
-## Synthesis-provider mode
-
-When the request begins with `DRAFT_SYNTHESIS_PROVIDER_MODE`, this skill is
-running from the compiler's embedded, read-only copy rather than a repository
-checkout. Use this narrower workflow instead of the editing workflow below:
-
-1. Read [language.md](references/language.md), then only the task-specific
-   references needed for the requested fragment. For `...`, always read
-   [agent-features.md](references/agent-features.md).
-2. Treat the compiler-supplied obligation, imported interfaces, visible
-   bindings, target facts, denials, validation context, fragment contract, and
-   compiler rejections as the complete semantic environment. They override an
-   under-specified or conflicting author prompt.
-3. Use read-only file inspection only to load compiler-supplied files reachable
-   through the private request tree, including the `draft-skill` link. Do not
-   inspect a repository or unrelated path, edit files, run builds or programs,
-   use the network, or request external context. Repository links in the
-   embedded references are provenance only in this mode; do not follow them.
-   The embedded guidance plus typed request is the complete working authority.
-   An API is available only when its declaration appears in supplied context.
-4. Return only the requested ordinary Draft fragment in the response schema.
-   Never return Markdown, a `judge` construct, another unresolved `...`, or a
-   declaration/block wrapper forbidden by the fragment contract.
-
-The ordinary compiler parses and type-checks the result. A later correction
-request contains the exact rejected source and authoritative diagnostics; fix
-that proposal without assuming any sibling synthesis result is visible.
-
 ## Establish the contract
 
 1. Read the repository `AGENTS.md` before editing.
@@ -132,12 +104,16 @@ build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
 build/draftc check path/to/workspace/package
 build/draftc expand path/to/workspace/package --out /tmp/expanded-source
-build/draftc resolve path/to/workspace/package --build -o /tmp/program
 build/draftc test path/to/workspace/package
 build/draftc build path/to/workspace/package -o /tmp/program
 build/draftc run path/to/workspace/package -- argument
 /tmp/program
 ```
+
+For fail-closed provider-free CI, do not run any `resolve` command. Ordinary
+`resolve` and `resolve --build` may contact the configured synthesis provider
+when a selected site is missing or stale; `check`, `expand`, `test`, `build`,
+and `run` never repair pins or contact that provider.
 
 For fresh source containing `...`, run `lex` and `syntax` as useful, then run
 `resolve` for each target before `check`, `expand`, or plain `build`; those

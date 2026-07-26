@@ -1,6 +1,6 @@
 # DraftIDE and the embedded compiler service
 
-Status: first synchronous terminal IDE implemented on every current hosted
+Status: first terminal IDE implemented on every current hosted
 target; native execution is qualified on matching hosts.
 
 DraftIDE is a Draft program, not a C++ editor wrapped around Draft widgets.
@@ -183,6 +183,45 @@ operation refreshes the retained semantic graph and Build Output transcript;
 compiler/provider diagnostics raise Diagnostics, while a completed negative
 judgment with no compiler error raises Build Output to show its verdict.
 
+The `//?` editor experiment is intentionally outside those semantic
+transactions. Ctrl-E finds the maximal contiguous marker group containing the
+cursor, joins the text following its markers, and records its exact half-open
+byte range. The App snapshots the active buffer plus every dirty reachable
+buffer before invoking the otherwise synchronous callback on one Draft thread.
+The compiler service resolves those paths through its workspace-owned source
+table, then builds one deterministic private `workspace/` tree: supplied
+overlays take precedence over disk and clean unopened reachable Draft sources
+are read at the request boundary. Compiler-owned core, dependency roots,
+editing-only files, `.draft` products, and arbitrary workspace files are never
+enumerated into this snapshot. The separate compact factual Draft reference
+bundle remains the source of language/core contracts.
+
+The service parses the active source only to locate the end of its legal
+package/docs/import header. Parser diagnostics are discarded because this is
+not a Check. Codex receives the active logical path, exact marker bytes and
+one-based line, the package-header insertion offset, the local offset after the
+marker group, and the read-only source tree. Its dedicated developer
+instructions request three exact strings: file imports, package declarations,
+and local source. Imports and declarations share the header offset and are
+ordered imports-first; the local fragment stays at the marker end. No physical
+workspace path is exposed.
+
+DraftIDE copies the complete overlay/prompt inputs into one App-owned job. The terminal thread
+continues repainting a small activity marker, but deliberately discards input,
+pauses disk polling, and makes no other `Host_Api` call until acquire-observing
+completion and joining the worker. This quiescent interval keeps the borrowed
+compiler session single-caller and keeps all snapshotted offsets exact.
+It creates no `AgentObligation`, pin, evidence, checked graph, or workspace
+write. It retains three returned edit strings plus one error string for C-ABI
+copying after join. Draft-owned editor code applies every nonempty string at its
+unchanged-source offset through a descending multi-insertion transaction. The
+history records are chained, so Ctrl-Z removes all three slots together and
+redo restores them together. The marker comments remain ordinary unsaved
+source. A failed request replaces Build Output while preserving the last
+semantic Diagnostics. This deliberately small prototype has no proposal state,
+accept/reject UI, edits to other files, automatic trigger, or compiler
+validation of returned source.
+
 After one successful handwritten compile, the common semantic path copies the
 retained command-local graph, applies all complete source-file overrides as
 conservative interface changes, and resumes semantic work. Physical paths are
@@ -300,6 +339,12 @@ the network and event loop; clicks, releases, wheels, and drags remain intact.
 Escape is solely a popup/dialog/window-operation cancel key; Alt-X starts the
 explicit exit policy.
 
+The window desktop excludes the top menu row and bottom status row. DraftIDE
+therefore paints each chrome row under its exact surface clip rather than the
+window clip left after the back-to-front desktop traversal. Save publishes a
+complete plain-status transition, so `Saved` replaces any earlier formatted
+compiler status and remains visible until later feedback supersedes it.
+
 F1 opens a modal, scrollable reference generated from the application's single
 authored shortcut table. F2 saves, Alt-0 opens Open Documents, F6 opens Compiler
 Options, and F8 opens Diagnostics. The Window menu exposes Workspace Files
@@ -381,7 +426,8 @@ Identifier completion, background checking, broad Codex worktree editing,
 named configuration variants, provider/model selection in the IDE, selective
 regeneration/revalidation controls, judgment selectors, and body-only
 invalidation remain later measurements or features. The explicit Resolve and
-Judge commands currently use the configured default Codex CLI policy.
+Judge commands currently use the compiler-owned Codex CLI policy and the
+installed CLI's built-in default model.
 
 ## Verification boundary
 

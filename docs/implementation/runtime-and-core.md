@@ -21,11 +21,13 @@ for each supported target and embeds those exact object and assembly bytes in
 the compiler. A native build therefore needs neither the repository's `core/`
 tree nor an installed runtime sidecar.
 
-The repository's Draft coding skill is a third, independent distribution
-asset. `draftc` embeds a read-only copy for the Codex synthesis adapter used by
-`...`; an external coding agent installs the repository/marketplace skill in
-its own agent environment. Ordinary checking, building, and running use
-neither the external skill nor Codex.
+The five factual Markdown references shared with the repository's Draft coding
+skill form a third, independent distribution asset. `draftc` embeds that compact
+read-only bundle for internal code-producing Codex operations, not the skill's
+repository workflow or any core implementation source. An external coding
+agent installs the repository/marketplace skill in its own environment.
+Ordinary checking, building, and running use neither the external skill nor
+Codex.
 
 ## Initial hosted runtime context layout
 

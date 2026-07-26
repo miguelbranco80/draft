@@ -392,7 +392,7 @@ gate.
     MIR-to-LLVM compatibility API are deleted. The current package LLVM emitter
     instead borrows the ordered procedure-product payloads. Sequential
     declaration snapshots are also deleted. The current implementation docs and
-    embedded Draft coding skill describe only frozen semantic prefixes, task-
+    embedded factual Draft references describe only frozen semantic prefixes, task-
     owned outputs, and deterministic publication; the superseded compiler graph
     plan is retained under `docs/history/`.
 
@@ -416,5 +416,5 @@ Completion evidence consists of both positive proof and absence checks:
   retain exact source diagnostics;
 - one-worker and multi-worker runs produce byte-identical outputs and identical
   ordered diagnostics; and
-- searches, current documentation, examples, and the embedded coding skill all
+- searches, current documentation, examples, and embedded coding references all
   describe only the final architecture.

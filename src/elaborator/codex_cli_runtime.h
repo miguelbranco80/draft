@@ -11,7 +11,7 @@
 #pragma once
 
 #include "base/sha256.h"
-#include "elaborator/draft_skill.h"
+#include "elaborator/draft_reference.h"
 #include "elaborator/obligation.h"
 #include "source/diagnostic.h"
 
@@ -33,7 +33,8 @@ struct CodexCliProviderOptions {
   // deterministic tests may supply a different command without exposing an
   // executable-path flag in the Draft language workflow.
   std::filesystem::path executable = "codex";
-  // Empty selects the Codex user's configured default and omits `--model`.
+  // Empty omits `--model`. Because the hardened invocation ignores user
+  // configuration, the installed Codex CLI then selects its built-in default.
   std::string model;
   std::uint32_t timeout_milliseconds = 5U * 60U * 1000U;
   std::uint32_t maximum_attempts = 2;
@@ -41,31 +42,39 @@ struct CodexCliProviderOptions {
   CodexCancellationRequested cancellation_requested = nullptr;
 };
 
-// One configured state is specific to one prompt/schema contract. Synthesis and
-// judgment therefore use separate state objects even when they select the same
-// model; their configuration identities intentionally differ.
+// One configured state is specific to one developer-instruction, prompt, and
+// schema contract. Synthesis, editor expansion, and judgment therefore use
+// separate state objects even when they select the same model; their
+// configuration identities intentionally differ.
 struct CodexCliProviderState {
   std::filesystem::path executable;
   Sha256Digest output_schema_digest;
   std::string model;
+  // Exact trusted operation policy passed through Codex's developer-instruction
+  // configuration channel. Authored request data never enters this string.
+  std::string developer_instructions;
   // Nonempty audit spelling used when model is empty and Codex chooses its
-  // configured default. This is provenance only.
+  // built-in default. This is provenance only.
   std::string model_identity;
   std::string configuration_identity;
   std::uint32_t timeout_milliseconds = 0;
   std::uint32_t maximum_attempts = 0;
   void *cancellation_state = nullptr;
   CodexCancellationRequested cancellation_requested = nullptr;
-  // Synthesis configures this owner; judgment leaves it null. Preparation
-  // materializes it once, after which concurrent invocations borrow its stable
-  // directory through request-local read-only links.
-  std::unique_ptr<MaterializedDraftSkill> synthesis_skill;
+  // Draft-code-producing operations configure this owner; judgment leaves it
+  // null. Preparation materializes it once, after which concurrent invocations
+  // borrow its stable directory through request-local read-only links.
+  std::unique_ptr<MaterializedDraftReference> draft_reference;
 };
 
 struct CodexCliInputFile {
-  // name is one compiler-generated leaf filename in the private request
-  // directory. Provider adapters keep semantic paths in the prompt separately.
-  std::string name;
+  // relative_path is one compiler-generated path below the private request
+  // directory. Components are validated again at materialization: absolute
+  // paths, dot traversal, backslashes, reserved runtime names, duplicates, and
+  // file/directory collisions are rejected. Most semantic attachments use one
+  // generated leaf; the editor prototype deliberately mirrors a bounded
+  // workspace source tree so Codex can navigate related Draft files normally.
+  std::string relative_path;
   std::string contents;
 };
 
@@ -78,10 +87,11 @@ struct CodexAgentRequestFile {
 
 // Renders every canonical semantic field in obligation, verifies all nested
 // context identities, and adds nested/direct attachment bytes under generated
-// private filenames. instruction and primary field distinguish synthesis from
-// judgment without duplicating the typed context protocol.
+// private filenames. request_header and primary field distinguish synthesis
+// from judgment without mixing operation policy into request data or
+// duplicating the typed context protocol.
 [[nodiscard]] bool prepare_codex_agent_request(
-    std::string_view instruction,
+    std::string_view request_header,
     std::string_view request_format,
     const AgentObligation &obligation,
     std::string_view primary_field_name,
@@ -91,11 +101,13 @@ struct CodexAgentRequestFile {
     std::string &prompt,
     DiagnosticSink &diagnostics);
 
-// Validates and hashes the model/process policy plus caller-owned prompt and
-// output-schema identities. Executable discovery and installation bytes are
-// deliberately excluded because they are ambient user configuration.
+// Validates and hashes the model/process policy plus caller-owned developer
+// instructions, request transcript, and output-schema identities. Executable
+// discovery and installation bytes are deliberately excluded because they are
+// ambient user configuration.
 [[nodiscard]] bool configure_codex_cli_runtime(
     const CodexCliProviderOptions &options,
+    std::string_view developer_instructions,
     std::string_view prompt_contract_identity,
     std::string_view output_schema,
     CodexCliProviderState &state,

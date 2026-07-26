@@ -1,9 +1,11 @@
 package turbo_editor_app
 
+import core/atomic
 import core/filesystem
 import core/memory
 import core/terminal
 import core/testing
+import core/thread
 import core/time
 import core/tui
 import lib/draft_compiler_api
@@ -138,6 +140,130 @@ Fake_Navigation_State :: c struct {
 Fake_Foreground_State :: c struct {
     check_count: usize,
     colorize_count: usize,
+}
+
+// Fake_Expansion_State gives the test deterministic control over the provider
+// worker. entered and release are the only fields accessed concurrently before
+// the job's own release/acquire completion publication; the ordinary result
+// observations happen only after finish_comment_expansion has joined.
+Fake_Expansion_State :: struct {
+    entered: atomic.Value[u8],
+    release: atomic.Value[u8],
+    block: bool,
+    call_count: usize,
+    prompt_valid: u8,
+    range_valid: u8,
+    overlays_valid: u8,
+}
+
+fake_expand_comment :: c proc(
+    user: rawptr,
+    overlays: ^draft_compiler_api.Overlay,
+    overlay_count: usize,
+    active_overlay: usize,
+    prompt_start: usize,
+    prompt_end: usize,
+    prompt_data: rawptr,
+    prompt_length: usize,
+    result: ^draft_compiler_api.Comment_Expansion_Result,
+) {
+    state := cast[^Fake_Expansion_State](user)
+    atomic.store(&state.entered, 1, .release)
+    if state.block {
+        for atomic.load(&state.release, .acquire) == 0 {
+        }
+    }
+    state.call_count += 1
+    expected_prompt := "create answer\nusing two lines"
+    prompt := cast[[^]u8](prompt_data)
+    state.prompt_valid = 1
+    if prompt_length != len(expected_prompt) {
+        state.prompt_valid = 0
+    } else {
+        for index: usize = 0; index < prompt_length; index += 1 {
+            if prompt[index] != expected_prompt[index] {
+                state.prompt_valid = 0
+            }
+        }
+    }
+    expected_prompt_start := len("package sample\n")
+    expected_prompt_end := len(
+        "package sample\n//? create answer\n    //? using two lines\n",
+    )
+    state.range_valid = 1 if prompt_start == expected_prompt_start &&
+        prompt_end == expected_prompt_end else 0
+    state.overlays_valid = 1 if overlay_count == 1 &&
+        active_overlay == 0 && overlays.source_length != 0 else 0
+    result^ = draft_compiler_api.Comment_Expansion_Result{
+        success = 1,
+        import_offset = len("package sample\n"),
+        import_length = len("import core/console\n"),
+        declaration_offset = len("package sample\n"),
+        declaration_length = len("answer :: 40\n"),
+        local_offset = expected_prompt_end,
+        local_length = len("answer_local :: 2\n"),
+        elapsed_nanoseconds = 50_000_000,
+    }
+}
+
+fake_copy_comment_expansion_imports :: c proc(
+    user: rawptr,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    source := "import core/console\n"
+    return fake_copy_bytes(
+        cast[rawptr](raw_data(source)),
+        len(source),
+        destination,
+        capacity,
+    )
+}
+
+fake_copy_comment_expansion_declarations :: c proc(
+    user: rawptr,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    source := "answer :: 40\n"
+    return fake_copy_bytes(
+        cast[rawptr](raw_data(source)),
+        len(source),
+        destination,
+        capacity,
+    )
+}
+
+fake_copy_comment_expansion_local :: c proc(
+    user: rawptr,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    source := "answer_local :: 2\n"
+    return fake_copy_bytes(
+        cast[rawptr](raw_data(source)),
+        len(source),
+        destination,
+        capacity,
+    )
+}
+
+fake_copy_comment_expansion_error :: c proc(
+    user: rawptr,
+    destination: [^]u8,
+    capacity: usize,
+) -> usize {
+    _ = user
+    source := "error: fixture expansion failed\n"
+    return fake_copy_bytes(
+        cast[rawptr](raw_data(source)),
+        len(source),
+        destination,
+        capacity,
+    )
 }
 
 fake_check :: c proc(
@@ -930,6 +1056,108 @@ test_agent_commands_are_explicit_and_separate_from_build :: proc(
     testing.expect(test, app.diagnostic_count == 0)
 }
 
+// The editor prototype treats contiguous marker lines as one FIM request and
+// keeps those lines as normal source. Ctrl-E queues the provider only while the
+// cursor is on the block. The gated fake proves execute_agent_action returns
+// while Codex is still running; completion then inserts one unsaved history
+// transaction across the import, declaration, and local slots, and ordinary
+// undo restores the exact original file.
+test_comment_prompt_expands_as_one_undoable_insertion :: proc(
+    test: ^testing.Test,
+) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-expand-comment.draft"))
+    defer destroy_app(&app)
+    original := "package sample\n//? create answer\n    //? using two lines\nmain :: proc() -> int { return answer }\n"
+    turbo_editor.insert_text(active_buffer(&app), original)
+    active_buffer(&app).cursor = len("package sample\n//? create")
+
+    state: Fake_Expansion_State
+    // The zeroed local is still exclusively owned here. Its atomic fields are
+    // first published only when the job thread is spawned below.
+    state.block = true
+    app.workspace_open = true
+    app.host.user = cast[rawptr](&state)
+    app.host.expand_comment = fake_expand_comment
+    app.host.copy_comment_expansion_imports =
+        fake_copy_comment_expansion_imports
+    app.host.copy_comment_expansion_declarations =
+        fake_copy_comment_expansion_declarations
+    app.host.copy_comment_expansion_local = fake_copy_comment_expansion_local
+    app.host.copy_comment_expansion_error =
+        fake_copy_comment_expansion_error
+
+    (remaining, quit) := handle_global_key(
+        &app,
+        turbo_ui.key_event(turbo_ui.Key_Event{
+            code = .character,
+            byte_value = 5,
+            control = true,
+        }),
+    )
+    testing.expect(test, remaining.kind == .none && !quit)
+    testing.expect(test, app.pending_agent_action == .expand_comment)
+    testing.expect(test, text_equal(
+        app.status,
+        "Codex is generating Draft source; please wait...",
+    ))
+    action := app.pending_agent_action
+    app.pending_agent_action = .none
+    execute_agent_action(&app, action)
+
+    testing.expect(test, comment_expansion_active(&app))
+    testing.expect(test, bytes_equal_string(
+        turbo_editor.content(active_buffer(&app)),
+        original,
+    ))
+    entered_deadline := time.monotonic_now() + 2 * time.second
+    for atomic.load(&state.entered, .acquire) == 0 &&
+        time.monotonic_now() < entered_deadline {
+        thread.yield()
+    }
+    testing.expect(test, atomic.load(&state.entered, .acquire) != 0)
+    testing.expect(test, state.call_count == 0)
+    advance_comment_expansion_status(&app)
+    testing.expect(test, text_equal(
+        app.status,
+        "Codex is generating Draft source [|]",
+    ))
+
+    // Release even if the preceding expectation failed so deferred App
+    // destruction can never deadlock while reporting the actual regression.
+    atomic.store(&state.release, 1, .release)
+    ready_deadline := time.monotonic_now() + 2 * time.second
+    for !comment_expansion_ready(&app) &&
+        time.monotonic_now() < ready_deadline {
+        thread.yield()
+    }
+    testing.expect(test, comment_expansion_ready(&app))
+    testing.expect(test, finish_comment_expansion(&app))
+    testing.expect(test, !comment_expansion_active(&app))
+    testing.expect(test, state.call_count == 1)
+    testing.expect(test, state.prompt_valid != 0)
+    testing.expect(test, state.range_valid != 0)
+    testing.expect(test, state.overlays_valid != 0)
+    testing.expect(test, bytes_equal_string(
+        turbo_editor.content(active_buffer(&app)),
+        "package sample\nimport core/console\nanswer :: 40\n//? create answer\n    //? using two lines\nanswer_local :: 2\nmain :: proc() -> int { return answer }\n",
+    ))
+    testing.expect(test, active_buffer(&app).dirty)
+    undo_active(&app)
+    testing.expect(test, bytes_equal_string(
+        turbo_editor.content(active_buffer(&app)),
+        original,
+    ))
+
+    // Moving onto an ordinary source line removes the only explicit trigger.
+    // The same shortcut must not infer a nearby prompt or call the provider.
+    active_buffer(&app).cursor = len(original) - 2
+    request_comment_expansion(&app)
+    testing.expect(test, app.pending_agent_action == .none)
+    testing.expect(test, state.call_count == 1)
+}
+
 // Run Configuration keeps argv, environment, and working directory as three
 // distinct field types. Values containing spaces remain one argument, invalid
 // environment names never enter the row table, and the explicit workspace-
@@ -1055,6 +1283,50 @@ test_all_dirty_buffers_require_quit_decisions :: proc(test: ^testing.Test) {
     app.windows[Window_Quit].visible = false
     testing.expect(test, !request_quit(&app))
     testing.expect(test, app.active == 0)
+}
+
+// Save owns the status representation as well as the filesystem transition.
+// Beginning from an active but empty byte-formatted message reproduces the
+// formerly blank status bar: a plain string assignment alone was hidden by the
+// renderer's byte-status branch. The shared command must retire that branch,
+// and the real Ctrl-S path must paint the confirmation on the same frame. The
+// selected platform's null device exercises a genuine successful write without
+// creating shared scratch state in the source checkout or another worktree.
+test_ctrl_s_paints_save_confirmation :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    save_path := "/dev/null"
+    when target.os == .windows {
+        save_path = "NUL"
+    }
+    testing.expect(test, init_one_buffer(&app, save_path))
+    defer destroy_app(&app)
+
+    turbo_editor.insert_text(active_buffer(&app), "first")
+    app.status_bytes_active = true
+    app.status_length = 0
+    save_active_buffer(&app)
+    testing.expect(test, !active_buffer(&app).dirty)
+    testing.expect(test, !app.status_bytes_active)
+    testing.expect(test, text_equal(app.status, "Saved"))
+
+    turbo_editor.insert_text(active_buffer(&app), " second")
+    surface: tui.Surface
+    tui.surface_init(&surface, 80, 24)
+    defer tui.surface_destroy(&surface)
+    should_quit := paint_app(
+        &app,
+        &surface,
+        turbo_ui.key_event(turbo_ui.Key_Event{
+            code = .character,
+            byte_value = 19,
+            control = true,
+        }),
+    )
+    testing.expect(test, !should_quit)
+    testing.expect(test, !active_buffer(&app).dirty)
+    testing.expect(test, !app.status_bytes_active)
+    expect_surface_text(test, &surface, 0, 23, "Saved")
 }
 
 // Exiting an unnamed document cannot invoke ordinary Save because its visible
@@ -2087,8 +2359,9 @@ test_complete_menu_vocabulary :: proc(test: ^testing.Test) {
     expect_surface_text(test, &surface, 18, 4, "Check")
     expect_surface_text(test, &surface, 18, 5, "Build")
     expect_surface_text(test, &surface, 18, 6, "Build All Programs")
-    expect_surface_text(test, &surface, 18, 8, "Resolve Synthesis")
-    expect_surface_text(test, &surface, 18, 9, "Judge Claims")
+    expect_surface_text(test, &surface, 18, 8, "Expand //? Prompt")
+    expect_surface_text(test, &surface, 18, 9, "Resolve Synthesis")
+    expect_surface_text(test, &surface, 18, 10, "Judge Claims")
     testing.expect(test, !surface_has_black_shadow(&surface))
 
     open_menu_for_test(&app, &surface, cast[u8]('r'))
@@ -2181,7 +2454,7 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
         "Key                  Command",
         "Arguments (one exact argv row)",
         "The active document has unsaved changes.",
-        "DraftIDE is the default IDE for Draft.",
+        "The default IDE for Draft",
     }
     expected_actions := [10]string{
         "Next",
@@ -2222,6 +2495,36 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
         testing.expect(test, has_field)
         testing.expect(test, has_action)
         if index == Window_About {
+            // The initial 62-column dialog yields a 60-column content area at
+            // column 19. Exact starts prove all five labels share its center
+            // axis instead of merely fitting somewhere in the dialog.
+            expect_surface_text(test, &surface, 41, 8, "D R A F T I D E")
+            expect_surface_text(
+                test,
+                &surface,
+                35,
+                9,
+                "// small language, big ideas",
+            )
+            expect_surface_text(
+                test,
+                &surface,
+                36,
+                11,
+                "The default IDE for Draft",
+            )
+            expect_surface_text(
+                test,
+                &surface,
+                37,
+                12,
+                "Created by Miguel Branco",
+            )
+            expect_surface_text(test, &surface, 40, 13, "msb@spacebase.org")
+            testing.expect(test,
+                surface_contains(&surface, "D R A F T I D E"))
+            testing.expect(test,
+                surface_contains(&surface, "// small language, big ideas"))
             testing.expect(test,
                 surface_contains(&surface, "Created by Miguel Branco"))
             testing.expect(test,

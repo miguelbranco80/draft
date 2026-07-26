@@ -275,7 +275,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
 
     compile_menu := turbo_ui.begin_menu(
         &app.ui, &app.menus, Menu_Compile, Menu_Compile_Popup,
-        turbo_ui.Rect{column = 15, row = 1, width = 38, height = 10},
+        turbo_ui.Rect{column = 15, row = 1, width = 38, height = 11},
     )
     if turbo_ui.menu_action(&app.ui, &app.menus, &compile_menu,
         950, "Compiler Options...", "F6", compiler_ready,
@@ -306,6 +306,12 @@ paint_app_menus :: proc(app: ^App) -> bool {
         build_all_programs(app)
     }
     turbo_ui.menu_separator(&app.ui, &compile_menu)
+    if turbo_ui.menu_action(&app.ui, &app.menus, &compile_menu,
+        956, "Expand //? Prompt", "Ctrl-E",
+        compiler_ready && app.host.expand_comment != nil,
+        access_key = cast[u8]('x')) {
+        request_comment_expansion(app)
+    }
     if turbo_ui.menu_action(&app.ui, &app.menus, &compile_menu,
         954, "Resolve Synthesis", "", compiler_ready && app.host.resolve != nil,
         access_key = cast[u8]('r')) {
@@ -700,6 +706,15 @@ paint_app :: proc(
             width = surface.columns,
             height = 1,
         }
+        // Window painting deliberately leaves State.clip at the desktop
+        // rectangle, which excludes the menu and status rows. The status bar
+        // is application chrome outside that rectangle, so give it its exact
+        // physical row while painting and then restore the desktop clip for
+        // end-of-frame invariants. Without this transition every status glyph
+        // is rejected by the clip intersection even though its geometry is
+        // otherwise correct.
+        previous_clip := app.ui.clip
+        app.ui.clip = status_bounds
         summary := app.session_summary[:app.session_summary_length]
         if app.status_bytes_active {
             turbo_ui.status_bar_sections_bytes(
@@ -716,6 +731,7 @@ paint_app :: proc(
                 summary,
             )
         }
+        app.ui.clip = previous_clip
     }
     turbo_ui.end_frame(&app.ui)
     // A command result belongs to the physical input traversal which produced

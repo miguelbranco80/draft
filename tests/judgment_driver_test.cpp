@@ -99,17 +99,20 @@ struct TemporaryWorkspace {
     script <<
         "#!/bin/sh\n"
         "output=\n"
+        "developer=\n"
         "test \"$1\" = exec || exit 20\n"
         "shift\n"
         "while test \"$#\" -gt 0; do\n"
         "  case \"$1\" in\n"
         "    --ephemeral|--skip-git-repo-check|--ignore-user-config|--ignore-rules) shift ;;\n"
         "    --sandbox|--color|--model|--cd|--output-schema) shift 2 ;;\n"
+        "    -c) developer=$2; shift 2 ;;\n"
         "    --output-last-message) output=$2; shift 2 ;;\n"
         "    -) shift ;;\n"
         "    *) exit 21 ;;\n"
         "  esac\n"
         "done\n"
+        "case \"$developer\" in *DRAFT_JUDGMENT_PROVIDER_INSTRUCTIONS_V2*) ;; *) exit 23 ;; esac\n"
         "test -n \"$output\" || exit 22\n";
     if (passed) {
       script <<

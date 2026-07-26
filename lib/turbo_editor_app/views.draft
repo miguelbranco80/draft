@@ -1923,29 +1923,58 @@ paint_close_document :: proc(app: ^App, content: turbo_ui.Rect) {
     }
 }
 
-// paint_about presents only DraftIDE's product role and authorship plus one
-// local close action. It borrows the current dialog content rectangle, retains
-// no label storage, and changes application state only when Close is activated.
+// paint_centered_about_label centers one trusted ASCII label by terminal cells.
+// Every About string is deliberately ASCII, so byte length is its exact column
+// width; a narrow/clamped dialog instead gives the label the full available row
+// and lets the ordinary widget clipping rule preserve memory safety.
+paint_centered_about_label :: proc(
+    app: ^App,
+    content: turbo_ui.Rect,
+    row: usize,
+    text: string,
+) {
+    if row >= content.height {
+        return
+    }
+    bounds := turbo_ui.Rect{
+        column = content.column,
+        row = content.row + row,
+        width = content.width,
+        height = 1,
+    }
+    // turbo_ui.label reserves one blank cell on each side of its text. Center
+    // that complete authored footprint rather than shrinking away the margins
+    // and accidentally clipping the first/last character.
+    footprint := len(text) + 2
+    if footprint < bounds.width {
+        bounds.column += (bounds.width - footprint) / 2
+        bounds.width = footprint
+    }
+    turbo_ui.label(&app.ui, bounds, text)
+}
+
+// paint_about gives the product identity a small Draft-flavored banner, then
+// presents the exact role and authorship requested by the application owner.
+// All content and the sole local action share one center axis. The procedure
+// borrows the dialog rectangle, retains no label storage, and changes state
+// only when Close is activated.
 paint_about :: proc(app: ^App, content: turbo_ui.Rect) {
-    lines := [3]string{
-        "DraftIDE is the default IDE for Draft.",
+    lines := [5]string{
+        "D R A F T I D E",
+        "// small language, big ideas",
+        "The default IDE for Draft",
         "Created by Miguel Branco",
         "msb@spacebase.org",
     }
     for index: usize = 0; index < len(lines); index += 1 {
-        turbo_ui.label(
-            &app.ui,
-            turbo_ui.Rect{
-                column = content.column,
-                row = content.row + index,
-                width = content.width,
-                height = 1,
-            },
-            lines[index],
-        )
+        row := index
+        if index >= 2 {
+            row += 1
+        }
+        paint_centered_about_label(app, content, row, lines[index])
     }
     close_requested := false
-    if content.height < 5 {
+    if content.height < 8 {
         close_requested = turbo_ui.button(
             &app.ui,
             9100,
@@ -1956,15 +1985,19 @@ paint_about :: proc(app: ^App, content: turbo_ui.Rect) {
         )
     } else {
         close_width := turbo_ui.compact_button_width("Close")
-        close := action_row(
-            content,
-            content.row + content.height - 1,
-            close_width,
-        )
+        close_bounds := turbo_ui.Rect{
+            column = content.column,
+            row = content.row + content.height - 1,
+            width = close_width,
+            height = 1,
+        }
+        if close_width < content.width {
+            close_bounds.column += (content.width - close_width) / 2
+        }
         close_requested = turbo_ui.button(
             &app.ui,
             9100,
-            turbo_ui.layout_next(&close, close_width),
+            close_bounds,
             "Close",
             true,
             .cancel_action,

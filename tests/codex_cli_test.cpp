@@ -58,9 +58,9 @@ struct TemporaryFixture {
     executable = root / "fixture-codex";
 
     // The script rejects any drift in the documented adapter command. It also
-    // verifies that the embedded skill, canonical prompt, and exact attachment
-    // reached Codex's private request directory, then emits one schema-shaped
-    // final message.
+    // verifies that trusted operation instructions, the factual reference
+    // bundle, canonical request data, and exact attachments reached Codex's
+    // private request directory, then emits one schema-shaped final message.
     std::ofstream script(executable, std::ios::binary | std::ios::trunc);
     script <<
         "#!/bin/sh\n"
@@ -68,6 +68,7 @@ struct TemporaryFixture {
         "schema=\n"
         "model=\n"
         "work=\n"
+        "developer=\n"
         "test \"$1\" = exec || exit 20\n"
         "shift\n"
         "while test \"$#\" -gt 0; do\n"
@@ -75,6 +76,7 @@ struct TemporaryFixture {
         "    --ephemeral|--skip-git-repo-check|--ignore-user-config|--ignore-rules) shift ;;\n"
         "    --sandbox) test \"$2\" = read-only || exit 21; shift 2 ;;\n"
         "    --color) test \"$2\" = never || exit 22; shift 2 ;;\n"
+        "    -c) developer=$2; shift 2 ;;\n"
         "    --model) model=$2; shift 2 ;;\n"
         "    --cd) work=$2; shift 2 ;;\n"
         "    --output-schema) schema=$2; shift 2 ;;\n"
@@ -87,8 +89,38 @@ struct TemporaryFixture {
         "if test \"$model\" = slow-model; then while :; do :; done; fi\n"
         "test \"$model\" = fixture-model || exit 24\n"
         "test -f \"$schema\" || exit 25\n"
-        "test -f \"$work/draft-skill/SKILL.md\" || exit 36\n"
-        "grep -q DRAFT_SYNTHESIS_PROVIDER_MODE \"$work/draft-skill/SKILL.md\" || exit 37\n"
+        "test -f \"$work/draft-reference/language.md\" || exit 36\n"
+        "test -f \"$work/draft-reference/agent-features.md\" || exit 37\n"
+        "test -f \"$work/draft-reference/memory-and-ownership.md\" || exit 41\n"
+        "test -f \"$work/draft-reference/interop-and-targets.md\" || exit 42\n"
+        "test -f \"$work/draft-reference/core-library.md\" || exit 43\n"
+        "set -- \"$work/draft-reference\"/*\n"
+        "test \"$#\" -eq 5 || exit 53\n"
+        "grep -q 'tui.Color_Kind' \"$work/draft-reference/core-library.md\" || exit 44\n"
+        "grep -q 'does not embed the' \"$work/draft-reference/agent-features.md\" || exit 54\n"
+        "! grep -q 'embeds this complete skill' \"$work/draft-reference/agent-features.md\" || exit 55\n"
+        "test ! -e \"$work/draft-reference/SKILL.md\" || exit 45\n"
+        "test ! -e \"$work/draft-reference/workflow-and-testing.md\" || exit 46\n"
+        "test ! -e \"$work/draft-reference/core\" || exit 47\n"
+        "test ! -e \"$work/draft-skill\" || exit 48\n"
+        "prompt=$(cat)\n"
+        "case \"$prompt\" in *DRAFT_SYNTHESIS_PROVIDER_INSTRUCTIONS_V2*|*DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V3*) exit 51 ;; esac\n"
+        "case \"$developer\" in *make-answer*|*write-answer*) exit 52 ;; esac\n"
+        "case \"$prompt\" in\n"
+        "  *DRAFT_EDITOR_COMMENT_EXPANSION_REQUEST_V2*REQUEST_FORMAT*draft-editor-comment-expansion-v2*ACTIVE_SOURCE_PATH*workspace/app/package.draft*AUTHOR_PROMPT*write-answer*PROMPT_START_BYTE*PROMPT_END_BYTE*PROMPT_START_LINE*IMPORT_INSERTION_BYTE*DECLARATION_INSERTION_BYTE*LOCAL_INSERTION_BYTE*WORKSPACE_FILE_COUNT*WORKSPACE_FILE_PATH*workspace/app/helper.draft*WORKSPACE_FILE_PATH*workspace/app/package.draft*)\n"
+        "    case \"$developer\" in *DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V3*) ;; *) exit 49 ;; esac\n"
+        "    case \"$developer\" in *Draft*) ;; *) exit 67 ;; esac\n"
+        "    case \"$developer\" in *fill-in-the-middle*) ;; *) exit 56 ;; esac\n"
+        "    case \"$developer\" in *workspace/*) ;; *) exit 57 ;; esac\n"
+        "    case \"$developer\" in *three*insertion*) ;; *) exit 58 ;; esac\n"
+        "    case \"$developer\" in *multi-slot*) ;; *) exit 59 ;; esac\n"
+        "    case \"$developer\" in *Rust*) ;; *) exit 60 ;; esac\n"
+        "    case \"$developer\" in *verbatim*) ;; *) exit 61 ;; esac\n"
+        "    test \"$(cat \"$work/workspace/app/package.draft\")\" = 'package app\n//? write-answer\nmain :: proc() -> int { return answer }' || exit 39\n"
+        "    test \"$(cat \"$work/workspace/app/helper.draft\")\" = 'package app\nhelper :: 40' || exit 40\n"
+        "    printf '%s' '{\"local\":\"// generated local\\n\",\"imports\":\"import core/console\\n\",\"declarations\":\"answer :: helper + 2\\n\"}' > \"$output\"\n"
+        "    exit 0 ;;\n"
+        "esac\n"
         "test -f \"$work/attachment-00000000.bin\" || exit 26\n"
         "attachment=$(cat \"$work/attachment-00000000.bin\")\n"
         "case \"$attachment\" in attachment-bytes|parallel-first|parallel-second) ;; *) exit 27 ;; esac\n"
@@ -98,15 +130,20 @@ struct TemporaryFixture {
         "test \"$(cat \"$work/judgment-00000000-attachment-00000000.bin\")\" = evidence-bytes || exit 32\n"
         "test -f \"$work/import-00000000-documentation-00000000-attachment-00000000.bin\" || exit 33\n"
         "test \"$(cat \"$work/import-00000000-documentation-00000000-attachment-00000000.bin\")\" = imported-design-bytes || exit 34\n"
-        "prompt=$(cat)\n"
         "case \"$prompt\" in\n"
         "  *REJECTED_SOURCE*bad-fragment*COMPILER_DIAGNOSTICS*fixture-compiler-error*) ;;\n"
         "  *REJECTED_SOURCE*) exit 35 ;;\n"
         "esac\n"
         "case \"$prompt\" in\n"
-        "  *DRAFT_SYNTHESIS_PROVIDER_MODE*draft-skill/SKILL.md*REQUEST_FORMAT*draft-synthesis-request-v21*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v6*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*LOOP_RANGES*LOOP_RANGE_KIND*header-entry-value*LOOP_RANGE_BINDING*index*LOOP_RANGE_BINDING_TYPE_TEXT*i64*LOOP_RANGE_LOWER_INCLUSIVE*0*LOOP_RANGE_UPPER*limit*LOOP_RANGE_UPPER_TYPE_TEXT*i64*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*VALIDATION_TYPING_COMPLETE*true*VALIDATION_PROCEDURE_NAME*test_fixture*VALIDATION_PROCEDURE_TYPE_TEXT*proc*VALIDATION_STATE_SIZE*24*VALIDATION_REFERENCE_NAME*visible_name*VALIDATION_REFERENCE_TYPE_TEXT*u32*VALIDATION_REFERENCE_HAS_CONSTANT*true*VALIDATION_REFERENCE_CONSTANT*fixture-constant*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*RELEVANT_DECLARATIONS*DECLARATION_SOURCE_PATH*package.draft*DECLARATION_NAME*visible_name*DECLARATION_TYPE_TEXT*u32*DECLARATION_HAS_CONSTANT*true*DECLARATION_CONSTANT*fixture-constant*DECLARATION_SOURCE*visible_name*FRAGMENT_CONTRACT*EXPECTED_TYPE_TEXT*COMPILER_REJECTIONS*) ;;\n"
+        "  *DRAFT_SYNTHESIS_REQUEST_V1*REQUEST_FORMAT*draft-synthesis-request-v21*ROOT_IDENTITY*workspace*SOURCE_RELATIVE_PATH*package.draft*ANCHOR_NAME*visible_name*EXPECTED_TYPE_TEXT*i64*TARGET_IDENTITY*draft-aarch64-macos-v6*ENCLOSING_DECLARATION_NAME*visible_name*ENCLOSING_DECLARATION_SOURCE*visible_name*ENCLOSING_SEMANTIC_SKELETON*fixture-skeleton*BRANCH_REFINEMENTS*BRANCH_KIND*loop-condition-entered*BRANCH_SUBJECT*ready*BRANCH_SUBJECT_TYPE_TEXT*bool*LOOP_RANGES*LOOP_RANGE_KIND*header-entry-value*LOOP_RANGE_BINDING*index*LOOP_RANGE_BINDING_TYPE_TEXT*i64*LOOP_RANGE_LOWER_INCLUSIVE*0*LOOP_RANGE_UPPER*limit*LOOP_RANGE_UPPER_TYPE_TEXT*i64*ACTIVE_DENIALS*DENIAL_SELECTOR*assert*PERMITTED_CONTEXT_FIELDS*CONTEXT_FIELD_NAME*allocator*CONTEXT_FIELD_TYPE_TEXT*runtime.Allocator*PARAMETRIC_PARAMETERS*PARAMETER_NAME*T*PARAMETER_CONSTRAINT*integer*PARAMETER_TYPE_TEXT*T*TYPE_CONTEXTS*TYPE_REFERENCE_SHA256*TYPE_DEFINITION*MEMBER_NAME*IMPORTED_PACKAGES*IMPORT_ALIAS*lib*IMPORT_DEFINITION*DECLARATION_NAME*make*IMPORT_DOCUMENTATION*IMPORT_DOC_ANCHOR*make*IMPORT_DOC_TEXT*imported-design*IMPORT_DOC_ATTACHMENT_PATH*IMPORTED.md*GUIDING_JUDGMENTS*JUDGMENT_ANCHOR*visible_name*JUDGMENT_CLAIM*preserve-invariant*JUDGMENT_ATTACHMENT_PATH*EVIDENCE.md*DOCUMENTATION*DOC_ANCHOR*visible_name*DOC_TEXT*design-context*DOC_ATTACHMENT_PATH*DESIGN.md*VALIDATION_CONTEXT*VALIDATION_KIND*test*VALIDATION_SOURCE_PATH*behavior_test.draft*VALIDATION_SOURCE*test_fixture*VALIDATION_TYPING_COMPLETE*true*VALIDATION_PROCEDURE_NAME*test_fixture*VALIDATION_PROCEDURE_TYPE_TEXT*proc*VALIDATION_STATE_SIZE*24*VALIDATION_REFERENCE_NAME*visible_name*VALIDATION_REFERENCE_TYPE_TEXT*u32*VALIDATION_REFERENCE_HAS_CONSTANT*true*VALIDATION_REFERENCE_CONSTANT*fixture-constant*AUTHOR_PROMPT*make-answer*BINDING_NAME*visible_name*BINDING_TYPE_TEXT*u32*BINDING_HAS_CONSTANT*true*BINDING_CONSTANT*fixture-constant*RELEVANT_DECLARATIONS*DECLARATION_SOURCE_PATH*package.draft*DECLARATION_NAME*visible_name*DECLARATION_TYPE_TEXT*u32*DECLARATION_HAS_CONSTANT*true*DECLARATION_CONSTANT*fixture-constant*DECLARATION_SOURCE*visible_name*FRAGMENT_CONTRACT*EXPECTED_TYPE_TEXT*COMPILER_REJECTIONS*) ;;\n"
         "  *) exit 28 ;;\n"
         "esac\n"
+        "case \"$developer\" in *DRAFT_SYNTHESIS_PROVIDER_INSTRUCTIONS_V2*) ;; *) exit 50 ;; esac\n"
+        "case \"$developer\" in *Draft*) ;; *) exit 62 ;; esac\n"
+        "case \"$developer\" in *grammar*) ;; *) exit 63 ;; esac\n"
+        "case \"$developer\" in *Rust*) ;; *) exit 64 ;; esac\n"
+        "case \"$developer\" in *fragment*) ;; *) exit 65 ;; esac\n"
+        "case \"$developer\" in *rejections*) ;; *) exit 66 ;; esac\n"
         "result='{\"source\":\"40 + 2\\n\"}'\n"
         "fixture=$(dirname \"$0\")\n"
         "case \"$attachment\" in\n"
@@ -323,6 +360,47 @@ draft::SynthesisRequest make_request() {
   return request;
 }
 
+// The editor experiment shares process hardening and the factual language
+// references with synthesis while retaining a separate FIM contract. This test
+// proves that exact active/sibling snapshots enter the request, that prompt and
+// slot offsets remain explicit, and that property order does not affect the
+// three returned fragments.
+void test_editor_comment_expansion(TestState &state) {
+  TemporaryFixture fixture;
+  draft::CodexCliProviderOptions options;
+  options.executable = fixture.executable;
+  options.model = "fixture-model";
+  const std::string active =
+      "package app\n//? write-answer\n"
+      "main :: proc() -> int { return answer }\n";
+  const std::string helper = "package app\nhelper :: 40\n";
+  const std::array<draft::CodexEditorWorkspaceFile, 2> workspace{{
+      {"app/helper.draft", helper},
+      {"app/package.draft", active},
+  }};
+  const std::size_t prompt_start = active.find("//?");
+  const std::size_t prompt_end = active.find("main");
+  const draft::CodexEditorExpansionRequest request{
+      "app/package.draft",
+      workspace,
+      prompt_start,
+      prompt_end,
+      2,
+      std::string_view("package app\n").size(),
+      std::string_view("package app\n").size(),
+      prompt_end,
+      "write-answer",
+  };
+  draft::DiagnosticSink diagnostics;
+  draft::CodexEditorExpansion expansion;
+  EXPECT(state, draft::expand_editor_comment_with_codex(options, request,
+                                                        expansion, diagnostics));
+  EXPECT(state, expansion.imports == "import core/console\n");
+  EXPECT(state, expansion.declarations == "answer :: helper + 2\n");
+  EXPECT(state, expansion.local == "// generated local\n");
+  EXPECT(state, !diagnostics.has_errors());
+}
+
 void test_adapter_contract_and_identity(TestState &state) {
   TemporaryFixture fixture;
   draft::DiagnosticSink diagnostics;
@@ -334,30 +412,37 @@ void test_adapter_contract_and_identity(TestState &state) {
       draft::configure_codex_cli_provider(options, provider_state, diagnostics);
   EXPECT(state, provider.synthesize != nullptr);
   EXPECT(state, provider.prepare != nullptr);
-  EXPECT(state, provider.provider_identity == "openai-codex-cli-v28");
+  EXPECT(state, provider.provider_identity == "openai-codex-cli-v30");
   EXPECT(state, provider.maximum_parallel_calls == 4);
   EXPECT(state, provider.model_identity == "fixture-model");
   EXPECT(state, provider.configuration_identity ==
       provider_state.configuration_identity);
   EXPECT(state, !diagnostics.has_errors());
-  EXPECT(state, provider_state.synthesis_skill != nullptr);
-  if (provider_state.synthesis_skill != nullptr) {
-    EXPECT(state, provider_state.synthesis_skill->root().empty());
+  EXPECT(state, provider_state.draft_reference != nullptr);
+  if (provider_state.draft_reference != nullptr) {
+    EXPECT(state, provider_state.draft_reference->root().empty());
   }
 
   // Provider preparation is lazy and command-scoped. Repeating it reuses the
-  // same materialization rather than copying 100 KiB of skill files per site.
+  // same materialization rather than copying the references per synthesis site.
   EXPECT(state, provider.prepare(provider.state, diagnostics));
-  std::filesystem::path materialized_skill;
-  if (provider_state.synthesis_skill != nullptr) {
-    materialized_skill = provider_state.synthesis_skill->root();
-    EXPECT(state, !materialized_skill.empty());
-    EXPECT(state, std::filesystem::is_regular_file(
-        materialized_skill / "SKILL.md"));
+  std::filesystem::path materialized_reference;
+  if (provider_state.draft_reference != nullptr) {
+    materialized_reference = provider_state.draft_reference->root();
+    EXPECT(state, !materialized_reference.empty());
+    EXPECT(state,
+           (std::filesystem::status(materialized_reference).permissions() &
+            std::filesystem::perms::owner_write) ==
+               std::filesystem::perms::none);
+    EXPECT(state, std::filesystem::is_regular_file(materialized_reference /
+                                                   "language.md"));
+    EXPECT(state,
+           !std::filesystem::exists(materialized_reference / "SKILL.md"));
   }
   EXPECT(state, provider.prepare(provider.state, diagnostics));
-  if (provider_state.synthesis_skill != nullptr) {
-    EXPECT(state, provider_state.synthesis_skill->root() == materialized_skill);
+  if (provider_state.draft_reference != nullptr) {
+    EXPECT(state,
+        provider_state.draft_reference->root() == materialized_reference);
   }
 
   draft::SynthesisRequest request = make_request();
@@ -369,10 +454,11 @@ void test_adapter_contract_and_identity(TestState &state) {
   EXPECT(state, !diagnostics.has_errors());
 
   // One prepared state may serve independent request directories concurrently.
-  // This exercises the real posix_spawn boundary and shared immutable skill
-  // link rather than proving concurrency only with the in-process resolver fake.
-  // Distinct attachment/response pairs detect request-directory cross-talk; the
-  // child fixture releases neither response until both processes are present.
+  // This exercises the real posix_spawn boundary and shared immutable reference
+  // link rather than proving concurrency only with the in-process resolver
+  // fake. Distinct attachment/response pairs detect request-directory
+  // cross-talk; the child fixture releases neither response until both
+  // processes are present.
   std::array<draft::SynthesisResponse, 2> parallel_responses;
   std::array<draft::DiagnosticSink, 2> parallel_diagnostics;
   std::array<bool, 2> parallel_ok{false, false};
@@ -510,7 +596,7 @@ void test_adapter_contract_and_identity(TestState &state) {
   EXPECT(state, default_provider.synthesize != nullptr);
   EXPECT(state, default_provider.prepare != nullptr);
   EXPECT(state,
-      default_provider.model_identity == "codex-configured-default");
+      default_provider.model_identity == "codex-built-in-default");
   draft::SynthesisResponse default_response;
   EXPECT(state,
       default_provider.prepare(default_provider.state, default_diagnostics));
@@ -598,11 +684,55 @@ void test_adapter_contract_and_identity(TestState &state) {
   }
 }
 
+void test_runtime_instruction_identity(TestState &state) {
+  draft::CodexCliProviderOptions options;
+  options.executable = "fixture-codex";
+  constexpr std::string_view schema =
+      R"({"type":"object","properties":{},"additionalProperties":false})";
+
+  draft::CodexCliProviderState first;
+  draft::DiagnosticSink first_diagnostics;
+  EXPECT(state, draft::configure_codex_cli_runtime(
+      options,
+      "first focused operation",
+      "same-request-contract",
+      schema,
+      first,
+      first_diagnostics));
+  EXPECT(state, first.developer_instructions == "first focused operation");
+  EXPECT(state, !first_diagnostics.has_errors());
+
+  draft::CodexCliProviderState second;
+  draft::DiagnosticSink second_diagnostics;
+  EXPECT(state, draft::configure_codex_cli_runtime(
+      options,
+      "second focused operation",
+      "same-request-contract",
+      schema,
+      second,
+      second_diagnostics));
+  EXPECT(state, second.configuration_identity != first.configuration_identity);
+  EXPECT(state, !second_diagnostics.has_errors());
+
+  draft::CodexCliProviderState missing;
+  draft::DiagnosticSink missing_diagnostics;
+  EXPECT(state, !draft::configure_codex_cli_runtime(
+      options,
+      {},
+      "same-request-contract",
+      schema,
+      missing,
+      missing_diagnostics));
+  EXPECT(state, missing_diagnostics.error_count() == 1);
+}
+
 } // namespace
 
 int main() {
   TestState state;
   test_adapter_contract_and_identity(state);
+  test_editor_comment_expansion(state);
+  test_runtime_instruction_identity(state);
   if (state.failures != 0) {
     std::cerr << state.failures << " Codex CLI expectation(s) failed\n";
     return EXIT_FAILURE;

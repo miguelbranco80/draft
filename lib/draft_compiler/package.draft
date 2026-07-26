@@ -3,8 +3,9 @@
 // native handle implicitly and performs no filesystem discovery of its own.
 // Configuration strings are borrowed only during create, while source and
 // destination buffers are borrowed only for their synchronous call. Ordinary
-// Check/Build operations are provider-free; explicit Resolve/Judge foreign
-// procedures are the only provider-authorized entries in the table.
+// Check/Build operations are provider-free. Resolve/Judge own persistent
+// synthesis/evidence transactions, while the separate `//?` operation returns
+// only an unsaved editor insertion.
 package draft_compiler
 
 import lib/draft_compiler_api
@@ -94,6 +95,46 @@ foreign draft_compiler_service {
         active_overlay: usize,
         result: ^draft_compiler_api.Judge_Result,
     )
+
+    // Comment expansion is an unsaved editor transaction, not normal synthesis
+    // resolution. Reachable overlays, the active prompt range, and prompt are
+    // borrowed synchronously; the three result slots remain in the session
+    // until copied by the caller.
+    pub expand_comment as "draft_compiler_session_expand_comment" :: c proc(
+        session: rawptr,
+        overlays: ^draft_compiler_api.Overlay,
+        overlay_count: usize,
+        active_overlay: usize,
+        prompt_start: usize,
+        prompt_end: usize,
+        prompt_data: rawptr,
+        prompt_length: usize,
+        result: ^draft_compiler_api.Comment_Expansion_Result,
+    )
+
+    pub copy_comment_expansion_imports as "draft_compiler_session_copy_comment_expansion_imports" :: c proc(
+        session: rawptr,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub copy_comment_expansion_declarations as "draft_compiler_session_copy_comment_expansion_declarations" :: c proc(
+        session: rawptr,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub copy_comment_expansion_local as "draft_compiler_session_copy_comment_expansion_local" :: c proc(
+        session: rawptr,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
+    pub copy_comment_expansion_error as "draft_compiler_session_copy_comment_expansion_error" :: c proc(
+        session: rawptr,
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
 
     // colorize runs only the production lexer for one complete buffer. It is
     // intentionally separate from check so an interactive editor does not
@@ -396,6 +437,11 @@ pub host_api :: proc(session: rawptr) -> draft_compiler_api.Host_Api {
         build = build,
         resolve = resolve,
         judge_claims = judge_claims,
+        expand_comment = expand_comment,
+        copy_comment_expansion_imports = copy_comment_expansion_imports,
+        copy_comment_expansion_declarations = copy_comment_expansion_declarations,
+        copy_comment_expansion_local = copy_comment_expansion_local,
+        copy_comment_expansion_error = copy_comment_expansion_error,
         colorize = colorize,
         span = span,
         copy_diagnostics = copy_diagnostics,

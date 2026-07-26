@@ -86,7 +86,7 @@ using SynthesizeFunction = bool (*)(
 
 // Optional command preparation runs on the resolver thread before the first
 // provider call and at most once per resolve command. It exists for immutable
-// shared resources such as the embedded Draft coding skill. Preparation may
+// shared resources such as embedded factual Draft references. Preparation may
 // mutate provider-owned command state; synthesize calls may only borrow the
 // resulting stable resources.
 using PrepareSynthesisProviderFunction = bool (*)(

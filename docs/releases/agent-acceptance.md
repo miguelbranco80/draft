@@ -141,7 +141,7 @@ for AArch64 GNU/Linux; the generated source objects did not change. The full
 CTest matrix passed 74 of 74 tests on the qualified tree.
 
 Field-level `bits(N)` layout was requalified on 2026-07-22 with compiler
-content identity `draft-bootstrap-cpp-v142`. The embedded Draft coding skill
+content identity `draft-bootstrap-cpp-v142`. The then-embedded Draft coding skill
 changed with the language contract, so provider-free `resolve --revalidate`
 rechecked and reused all four saved expansions for each target with zero
 synthesis calls. The resulting committed program digests are

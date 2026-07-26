@@ -6,6 +6,10 @@ artifacts, or platform core work. Read the normative
 the selected [`target profile`](../../../../docs/targets/), and the current
 [`command reference`](../../../../docs/operations/command-reference.md) before
 editing.
+Those repository documents are available during repository editing. In an
+isolated compiler Codex request their links are provenance only; use this guide
+and the exact target, ABI, assembly, provider, and artifact facts supplied in
+the request instead.
 
 ## Contents
 
