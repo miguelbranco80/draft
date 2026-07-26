@@ -211,6 +211,69 @@ void test_service_transactions_and_native_build(TestState &state) {
   EXPECT(state, observed_styles[4]); // number
   EXPECT(state, observed_styles[5]); // declaration
 
+  // Build must reject a missing synthesis pin without entering Resolve or
+  // invoking a provider. The service has no provider parameter on this entry;
+  // a prompt return with the ordinary resolver instruction is the observable
+  // regression contract for an IDE F9/F5 action.
+  std::string unresolved =
+      "package app\n"
+      "main :: proc() -> int {\n"
+      "    return ... \"produce zero\"\n"
+      "}\n";
+  const DraftCompilerServiceOverlay unresolved_overlay =
+      overlay(canonical_source_text, unresolved);
+  DraftCompilerServiceResult unresolved_build{};
+  draft_compiler_session_build(
+      session, &unresolved_overlay, 1, 0, &unresolved_build);
+  EXPECT(state, unresolved_build.success == 0);
+  EXPECT(state, unresolved_build.diagnostic_count != 0);
+  std::array<std::uint8_t, 4096> unresolved_diagnostics{};
+  const std::size_t unresolved_diagnostic_size =
+      draft_compiler_session_copy_diagnostics(
+          session, unresolved_diagnostics.data(),
+          unresolved_diagnostics.size());
+  const std::string_view unresolved_diagnostic_text(
+      reinterpret_cast<const char *>(unresolved_diagnostics.data()),
+      unresolved_diagnostic_size);
+  if (unresolved_diagnostic_text.find("run 'draftc resolve'") ==
+      std::string_view::npos) {
+    std::cerr << unresolved_diagnostic_text;
+  }
+  EXPECT(state, unresolved_diagnostic_text.find("run 'draftc resolve'") !=
+                    std::string_view::npos);
+
+  // Resolve and Judge are explicit service operations, not modes of Build.
+  // This handwritten program has no provider sites, so both commands complete
+  // without requiring Codex while still exercising their distinct ABI records.
+  const DraftCompilerServiceOverlay valid_overlay =
+      overlay(canonical_source_text, valid);
+  DraftCompilerServiceResolveResult resolved{};
+  draft_compiler_session_resolve(session, &valid_overlay, 1, 0, &resolved);
+  EXPECT(state, resolved.success == 1);
+  EXPECT(state, resolved.diagnostic_count == 0);
+  EXPECT(state, resolved.elapsed_nanoseconds != 0);
+  EXPECT(state, resolved.committed == 0);
+  EXPECT(state, resolved.site_count == 0);
+  EXPECT(state, resolved.synthesized_sites == 0);
+  EXPECT(state, resolved.reused_sites == 0);
+  EXPECT(state, resolved.regenerated_sites == 0);
+
+  DraftCompilerServiceJudgeResult judged{};
+  draft_compiler_session_judge(session, &valid_overlay, 1, 0, &judged);
+  if (judged.success == 0) {
+    std::array<std::uint8_t, 4096> bytes{};
+    draft_compiler_session_copy_diagnostics(session, bytes.data(),
+                                            bytes.size());
+    std::cerr << reinterpret_cast<const char *>(bytes.data());
+  }
+  EXPECT(state, judged.success == 1);
+  EXPECT(state, judged.completed == 1);
+  EXPECT(state, judged.passed == 1);
+  EXPECT(state, judged.diagnostic_count == 0);
+  EXPECT(state, judged.elapsed_nanoseconds != 0);
+  EXPECT(state, judged.selected_judgments == 0);
+  EXPECT(state, judged.evidence_count == 0);
+
   // Foreground colorization is intentionally a lexical-only service call. It
   // accepts incomplete editor bytes, replaces the span table, and preserves
   // diagnostics plus the retained checked WorkspaceGraph. This is the

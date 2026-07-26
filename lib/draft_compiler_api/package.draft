@@ -1,9 +1,11 @@
-// draft_compiler_api is the provider-free C ABI vocabulary between a Draft
-// development tool and an optional compiler service. It owns no session and
-// declares no foreign symbols, so ordinary clients such as turbo-editor can
-// retain the optional function table without acquiring a native dependency.
-// Every procedure is synchronous: source and destination pointers are borrowed
-// only for the call, while user remains owned by the service that created it.
+// draft_compiler_api is the C ABI vocabulary between a Draft development tool
+// and an optional compiler service. It owns no session and declares no foreign
+// symbols, so ordinary clients such as turbo-editor can retain the optional
+// function table without acquiring a native dependency. Check and Build remain
+// provider-free; source generation and judgment are separate, explicitly named
+// procedures. Every procedure is synchronous: source and destination pointers
+// are borrowed only for the call, while user remains owned by the service that
+// created it.
 package draft_compiler_api
 
 // Result summarizes one compiler operation. success is an explicit byte at the
@@ -15,6 +17,36 @@ pub Result :: c struct {
     diagnostic_count: u32,
     span_count: usize,
     elapsed_nanoseconds: u64,
+}
+
+// Resolve_Result belongs only to the explicit source-generating command.
+// committed is false for a successful handwritten program with no manifest
+// transaction. The site counters describe resolver work and never appear on
+// ordinary Build, which remains provider-free.
+pub Resolve_Result :: c struct {
+    success: u8,
+    diagnostic_count: u32,
+    span_count: usize,
+    elapsed_nanoseconds: u64,
+    committed: u8,
+    site_count: usize,
+    synthesized_sites: usize,
+    reused_sites: usize,
+    regenerated_sites: usize,
+}
+
+// Judge_Result separates command completion from the all-pass verdict. success
+// requires both plus the absence of compiler errors. evidence_count is the
+// number of durable evidence objects recorded by this explicit invocation.
+pub Judge_Result :: c struct {
+    success: u8,
+    diagnostic_count: u32,
+    span_count: usize,
+    elapsed_nanoseconds: u64,
+    completed: u8,
+    passed: u8,
+    selected_judgments: usize,
+    evidence_count: usize,
 }
 
 // Diagnostic_Row is the fixed structural half of one diagnostic from the
@@ -71,6 +103,22 @@ pub Batch_Proc :: c proc(
     overlay_count: usize,
     active_overlay: usize,
     result: ^Result,
+)
+
+pub Resolve_Proc :: c proc(
+    user: rawptr,
+    overlays: ^Overlay,
+    overlay_count: usize,
+    active_overlay: usize,
+    result: ^Resolve_Result,
+)
+
+pub Judge_Proc :: c proc(
+    user: rawptr,
+    overlays: ^Overlay,
+    overlay_count: usize,
+    active_overlay: usize,
+    result: ^Judge_Result,
 )
 
 pub Colorize_Proc :: c proc(
@@ -212,6 +260,10 @@ pub Host_Api :: c struct {
     user: rawptr,
     check: Batch_Proc,
     build: Batch_Proc,
+    resolve: Resolve_Proc,
+    // `judge` is a Draft keyword; this field keeps the operation descriptive
+    // while the native binding retains the exact session_judge symbol.
+    judge_claims: Judge_Proc,
     colorize: Colorize_Proc,
     span: Span_Proc,
     copy_diagnostics: Copy_Text_Proc,

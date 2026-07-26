@@ -276,6 +276,16 @@ contacts a model, updates a pin, runs tests, evaluates judgments, or reruns
 benchmarks. Missing, stale, invalid, or ambiguously associated pins fail with a
 request to resolve. A complete handwritten program needs no manifest at all.
 
+In DraftIDE, use **Compile > Resolve Synthesis** for the same provider-authorized
+source transaction and **Compile > Judge Claims** for the separate evidence
+command. Both save dirty files in the active root's reachable graph before
+beginning, including a package shared by multiple roots but excluding unrelated
+editing-only documents. The current IDE uses the configured default Codex CLI
+policy. **Build**, **Build All Programs**, and F5 never invoke either operation.
+Resolve does not build or run the result, and Judge does not resolve source.
+Their counters and verdicts go to Build Output; compiler/provider errors go to
+Diagnostics.
+
 Pins hash every synthesis input, including grammar/type obligation, prompt and
 attachments, surrounding declaration, visible facts, target/ABI/assembly,
 denials, supplied code/interfaces, and semantic compiler/resolver configuration.

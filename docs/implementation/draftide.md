@@ -16,7 +16,7 @@ library bridges the bootstrapping boundary:
 ```text
 tools/draftide                 hosted Draft executable and main
   -> lib/turbo_editor_app      editor, workspace UI, Build/Run policy
-       -> Host_Api             provider-free Draft procedure table
+       -> Host_Api             explicit compiler-operation procedure table
             -> lib/draft_compiler
                  -> C ABI      opaque handle and fixed-layout records
                       -> CompilerSession -> draft_compiler -> LLVM
@@ -160,23 +160,42 @@ classification over that same stream, not a second lexer. Diagnostics and
 semantic inspection views remain the result of the latest explicit semantic
 operation while an edit is pending.
 
-Check, Build, Run, Go to Definition, and Find Usages are explicit semantic
-operations. They submit the active buffer plus every other dirty buffer
-belonging to the checked graph as one synchronous source transaction. Clean
+Check, Build, Run, Resolve Synthesis, Judge Claims, Go to Definition, and Find
+Usages are explicit semantic operations. Check, Build, Run, and semantic
+navigation submit the active buffer plus every other dirty buffer belonging to
+the checked graph as one synchronous in-memory source transaction. Clean
 inactive files remain ordinary disk inputs, avoiding conservative invalidation
 of unchanged packages. Definition and usage navigation first checks pending
 edits so exact source ranges can never come from a stale retained graph.
 
-After one successful compile, the common semantic path copies the retained
-command-local graph, applies all complete source-file overrides as conservative
-interface changes, and resumes semantic work. Physical paths are resolved
-against the service source table and converted to package identities before
-this compiler API is entered. Success atomically replaces the
-retained graph. Failure publishes the attempt's diagnostics while leaving the
-last successful graph available for inspection. If imports or packages change
-topology, the stable-PackageId transition rejects the update and the service
-performs a complete fresh workspace compile with the same in-memory override.
-Neither path writes the unsaved bytes to disk.
+Resolve and Judge are intentionally not Build modes. Resolve is the sole IDE
+operation allowed to invoke the default Codex synthesis provider or commit
+target-scoped generated-source pins. Judge is the sole IDE operation which
+evaluates current `judge` sites and records evidence through the default Codex
+judgment policy. Because those commands may persist products whose identity is
+bound to source bytes, DraftIDE first saves dirty documents whose paths belong
+to the active root's reachable graph and refuses save conflicts. A package file
+shared by two executable roots is included because it participates in the
+selected transaction; unrelated editing-only and other-root documents are not.
+The event loop presents a pending status frame before entering either
+synchronous provider call. A successful
+operation refreshes the retained semantic graph and Build Output transcript;
+compiler/provider diagnostics raise Diagnostics, while a completed negative
+judgment with no compiler error raises Build Output to show its verdict.
+
+After one successful handwritten compile, the common semantic path copies the
+retained command-local graph, applies all complete source-file overrides as
+conservative interface changes, and resumes semantic work. Physical paths are
+resolved against the service source table and converted to package identities
+before this compiler API is entered. Success atomically replaces the retained
+graph. Failure publishes the attempt's diagnostics while leaving the last
+successful graph available for inspection. If imports or packages change
+topology, or if an edit introduces a synthesis obligation, the transition
+falls through to a complete fresh resolution-aware workspace check with the
+same in-memory override. A graph which already consumed a resolution manifest
+always takes that authoritative path so every pin is revalidated against the
+new source inputs. Neither check path invokes a provider or writes unsaved bytes
+to disk.
 
 This internal transaction is not a user-visible “candidate” mechanism. The
 editor has one current buffer and one latest explicit diagnostic set. Background
@@ -311,6 +330,17 @@ alone and reports `Build succeeded in <time> → <artifact>` in the status
 line; failure raises Diagnostics and leaves last-good semantic inspectors
 available.
 
+The adjacent Compile-menu commands preserve the language's explicit agent
+boundary. **Resolve Synthesis** may generate and pin source but does not build,
+run, test, benchmark, or judge. **Judge Claims** performs a fresh provider-free
+check of the saved current source before selecting judgments, then may invoke
+the judgment provider and record evidence; it never resolves source or emits a
+native artifact. A handwritten program with no synthesis or judgment sites
+completes either command without starting Codex. Check, Build, Build All
+Programs, and F5 never construct an agent provider. Consequently a missing or
+stale `...` pin fails Build with an instruction to run Resolve instead of
+silently causing network or model work.
+
 F5 performs that complete build and copies the selected run configuration while
 DraftIDE still owns the alternate screen. A compiler failure therefore remains
 inside the IDE and never flashes Program Output. Only a successfully prepared
@@ -342,10 +372,10 @@ lifetime. IDE build speed now follows the manifest optimization choice; a
 program configured as O2 deliberately pays the ordinary O2/ThinLTO cost.
 
 Identifier completion, background checking, broad Codex worktree editing,
-named configuration variants, and body-only invalidation remain later
-measurements or features.
-Ordinary Codex can continue editing the normal files, and Draft `...` retains
-its existing compiler-synthesis meaning.
+named configuration variants, provider/model selection in the IDE, selective
+regeneration/revalidation controls, judgment selectors, and body-only
+invalidation remain later measurements or features. The explicit Resolve and
+Judge commands currently use the configured default Codex CLI policy.
 
 ## Verification boundary
 
@@ -355,14 +385,17 @@ canonical paths, multi-file source transactions, source enumeration, independent
 production-lexer coloring, structured package rows, definition/usage navigation, stale-check
 navigation rejection, semantic views, timed operations, structured exact-range
 diagnostics and retained overlay bytes,
-retained last-good state, topology changes, automatic root discovery,
+retained last-good state, provider-free rejection of an unresolved synthesis
+site, explicit no-site Resolve/Judge ABI transactions, topology changes,
+automatic root discovery,
 transactional workspace replacement,
 root/target switching, traversal rejection, effective build configuration and
 session-summary projection, live manifest/summary refresh, target-specialized
 named-root discovery, run-setting copying, configured output kinds, and native Build. Draft package
 tests cover the application-side Host table, lexical-only typing path, overlay
 assembly, timed Build status/transcript behavior, raised and activatable
-Diagnostics, pre-terminal F5 failure, runtime-result separation, configured
+Diagnostics, explicit separation of Build/Resolve/Judge callbacks,
+pre-terminal F5 failure, runtime-result separation, configured
 Draft-owned Run, read-only buffer enforcement, real
 document/clipboard/save-as commands, directory browsing, structured run-setting
 editing, exhaustive menu/help behavior, 80x24 dialog layout, semantic history,

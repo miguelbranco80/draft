@@ -42,7 +42,7 @@ paint_app_menu_bar :: proc(app: ^App, surface: ^tui.Surface) {
         Menu_Compile, Menu_Compile_Popup,
         turbo_ui.Rect{column = 15, width = 10, height = 1},
         "Compile", cast[u8]('c'),
-        turbo_ui.Rect{column = 15, row = 1, width = 38, height = 7},
+        turbo_ui.Rect{column = 15, row = 1, width = 38, height = 10},
     )
     turbo_ui.menu_title(
         &app.ui, &app.menus,
@@ -275,7 +275,7 @@ paint_app_menus :: proc(app: ^App) -> bool {
 
     compile_menu := turbo_ui.begin_menu(
         &app.ui, &app.menus, Menu_Compile, Menu_Compile_Popup,
-        turbo_ui.Rect{column = 15, row = 1, width = 38, height = 7},
+        turbo_ui.Rect{column = 15, row = 1, width = 38, height = 10},
     )
     if turbo_ui.menu_action(&app.ui, &app.menus, &compile_menu,
         950, "Compiler Options...", "F6", compiler_ready,
@@ -304,6 +304,17 @@ paint_app_menus :: proc(app: ^App) -> bool {
         953, "Build All Programs", "", compiler_ready && roots != 0,
         access_key = cast[u8]('a')) {
         build_all_programs(app)
+    }
+    turbo_ui.menu_separator(&app.ui, &compile_menu)
+    if turbo_ui.menu_action(&app.ui, &app.menus, &compile_menu,
+        954, "Resolve Synthesis", "", compiler_ready && app.host.resolve != nil,
+        access_key = cast[u8]('r')) {
+        request_agent_action(app, .resolve)
+    }
+    if turbo_ui.menu_action(&app.ui, &app.menus, &compile_menu,
+        955, "Judge Claims", "", compiler_ready && app.host.judge_claims != nil,
+        access_key = cast[u8]('j')) {
+        request_agent_action(app, .judge_claims)
     }
     turbo_ui.end_menu(&app.ui, &app.menus, compile_menu)
 

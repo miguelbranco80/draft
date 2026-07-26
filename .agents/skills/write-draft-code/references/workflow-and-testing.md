@@ -117,6 +117,16 @@ conservatively invalidates the retained checked graph; provider-summary files
 are reread even when the manifest is unchanged, and a changed effective summary
 policy also invalidates that graph.
 
+DraftIDE keeps agent work explicit. **Compile > Resolve Synthesis** is the only
+IDE command that may fill or update `...` pins; **Compile > Judge Claims** is the
+separate evidence command. They save dirty documents in the active root's
+reachable graph (including shared package files), show a pending status, and
+use the configured default Codex CLI policy. Unrelated editing-only documents
+are untouched. Build, Build All Programs, and F5 remain provider-free and fail
+on a missing or stale pin. Resolve success still requires a later Build/F5.
+Results always replace Build Output; compiler/provider errors raise Diagnostics,
+while a completed negative judgment raises Build Output for its verdict.
+
 F5 launches executables directly without a shell. Arguments remain literal and
 ordered. Environment rows are `NAME=value` overrides on the inherited
 environment with the last occurrence winning. Relative working directories are

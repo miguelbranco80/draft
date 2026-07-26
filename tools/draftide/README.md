@@ -30,7 +30,8 @@ The six menus have conventional, non-overlapping responsibilities:
   As/Save All, and Exit.
 - **Edit**: undo/redo, clipboard commands, find/replace, line and semantic
   navigation, and navigation history.
-- **Compile**: Compiler Options, Check, Build, and Build All Programs.
+- **Compile**: Compiler Options, provider-free Check/Build/Build All Programs,
+  explicit Resolve Synthesis, and explicit Judge Claims.
 - **Run**: Run and Run Configuration.
 - **Window**: desktop navigation/arrangement, Workspace Files, Diagnostics,
   persistent Build Output, and document or last-successful semantic windows.
@@ -77,6 +78,17 @@ Diagnostics, whose selectable rows open the exact source range. DraftIDE does
 not hide Diagnostics after a later success. An F5 build failure stays inside
 the IDE; a launched program's nonzero exit or signal remains in Program Output
 and the Run Result rather than becoming a compiler diagnostic.
+
+**Compile > Resolve Synthesis** is the only IDE command allowed to ask the
+default Codex provider for missing or stale `...` expansions. **Compile > Judge
+Claims** separately evaluates `judge` sites and records evidence. Both save
+dirty files in the active root's reachable graph first (including a package
+shared by multiple roots), show progress before their synchronous provider
+work, update Build Output, and raise Diagnostics for compiler/provider errors.
+A completed negative judgment with no compiler error raises Build
+Output for the verdict. Build and F5 never invoke either command: an unresolved
+site fails normally and asks for Resolve. A successful Resolve still requires a
+separate Build or F5.
 
 Typing runs only the production lexer for syntax color. Package semantics run
 on explicit Check/Build/Run or semantic navigation. Local terminals enable

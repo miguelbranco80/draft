@@ -81,6 +81,10 @@ struct ResolveWorkspaceOptions {
 struct ResolveWorkspaceResult {
   bool ok = false;
   bool committed = false;
+  // Number of distinct synthesis obligations reached across all dependency-
+  // ready stages. Unlike manifest.pins.size(), this remains meaningful when a
+  // provider or proposal fails before the transaction publishes a manifest.
+  std::size_t site_count = 0;
   std::size_t reused_sites = 0;
   std::size_t synthesized_sites = 0;
   std::size_t regenerated_sites = 0;

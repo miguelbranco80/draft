@@ -1,8 +1,9 @@
 // Host integration contains the optional compiler-facing state transitions for
 // DraftIDE. It copies variable-length service results into Draft ownership,
 // maintains stable semantic navigation destinations, restores each document's
-// root package before a compiler action, and translates Build/Run results into one
-// explicit child-process request.
+// root package before a compiler action, separates explicit Resolve/Judge from
+// provider-free Build, and translates Build/Run results into one explicit
+// child-process request.
 //
 // The Host_Api remains a borrowed synchronous procedure table. No compiler or
 // C ABI type beyond that public Draft record enters application state, and the
@@ -225,6 +226,21 @@ append_result_detail :: proc(app: ^App, label: string, value: []u8) {
         &app.build_output_length,
         "\n",
     )
+}
+
+// append_result_unsigned adds one labeled resolver/judgment counter to the
+// bounded Build Output transcript. Formatting failure simply omits that
+// presentation-only row; it cannot change the compiler operation result.
+append_result_unsigned :: proc(app: ^App, label: string, value: usize) {
+    digits_storage: [20]u8
+    (digits, formatted) := format.unsigned_decimal(
+        digits_storage[:],
+        cast[u64](value),
+    )
+    if !formatted {
+        return
+    }
+    append_result_detail(app, label, digits)
 }
 
 set_timed_status :: proc(
@@ -1012,6 +1028,7 @@ build_active :: proc(
         result.success != 0,
         result.elapsed_nanoseconds,
     )
+    refresh_reachable_sources(app)
     refresh_tooling_text(app)
     if result.success == 0 {
         _ = append_bounded_text(
@@ -1240,6 +1257,212 @@ host_action :: proc(app: ^App, run: bool) {
         return
     }
     _ = build_active(app)
+}
+
+// save_active_root_for_agent commits every dirty source in the selected root's
+// reachable path set before a source-changing/evidence-producing command.
+// Resolving against unsaved surface bytes would immediately create stale pins
+// relative to disk. A source shared by two roots is saved because it genuinely
+// participates in this transaction; unrelated editing-only and other-root
+// documents remain untouched.
+save_active_root_for_agent :: proc(app: ^App) -> bool {
+    if app.host.selected_root == nil {
+        return save_all_dirty_buffers(app)
+    }
+    for index: usize = 0; index < app.buffer_count; index += 1 {
+        // Use the same path membership predicate as overlay collection. Root
+        // association describes which compiler selection to restore when a
+        // document is activated; it is not exclusive file ownership because
+        // two executable roots may import the same package.
+        if !app.buffers[index].dirty || !buffer_in_active_root(app, index) {
+            continue
+        }
+        if turbo_editor.is_unnamed(&app.buffers[index]) ||
+            !turbo_editor.save(&app.buffers[index]) {
+            return false
+        }
+    }
+    return true
+}
+
+// request_agent_action verifies that the optional host implements the selected
+// explicit command, saves every dirty buffer in its active root, and queues the
+// synchronous work. It performs no provider call itself, allowing the event
+// loop to present the pending status first.
+request_agent_action :: proc(app: ^App, action: Agent_Action) {
+    procedure_available := (action == .resolve && app.host.resolve != nil) ||
+        (action == .judge_claims && app.host.judge_claims != nil)
+    if !procedure_available {
+        set_plain_status(app, "The requested compiler agent command is unavailable")
+        return
+    }
+    if !save_active_root_for_agent(app) {
+        set_plain_status(
+            app,
+            "Resolve/Judge requires saved source; save conflict or unnamed file",
+        )
+        return
+    }
+    app.pending_agent_action = action
+    if action == .resolve {
+        set_plain_status(app, "Resolving synthesis sites...")
+    } else {
+        set_plain_status(app, "Judging claims...")
+    }
+}
+
+// execute_agent_action is reached only from the event loop after its pending
+// status frame has been presented. Resolve and Judge have distinct ABI records
+// and result vocabularies; sharing only overlay collection and final compiler
+// projection refresh prevents either operation from becoming a hidden Build
+// flag.
+execute_agent_action :: proc(app: ^App, action: Agent_Action) {
+    overlays: [Maximum_Buffers]draft_compiler_api.Overlay
+    (overlay_count, active_overlay, valid_overlays) := collect_host_overlays(
+        app,
+        overlays[:],
+    )
+    if !valid_overlays {
+        set_plain_status(
+            app,
+            "Active file is not part of the active root package",
+        )
+        return
+    }
+
+    if action == .resolve && app.host.resolve != nil {
+        result: draft_compiler_api.Resolve_Result
+        app.host.resolve(
+            app.host.user,
+            &overlays[0],
+            overlay_count,
+            active_overlay,
+            &result,
+        )
+        app.semantic_dirty = false
+        app.diagnostic_count = result.diagnostic_count
+        copy_syntax_spans(app, result.span_count)
+        begin_result_output(
+            app,
+            "Resolve",
+            result.success != 0,
+            result.elapsed_nanoseconds,
+        )
+        append_result_unsigned(app, "Sites: ", result.site_count)
+        append_result_unsigned(
+            app,
+            "Synthesized: ",
+            result.synthesized_sites,
+        )
+        append_result_unsigned(app, "Reused: ", result.reused_sites)
+        append_result_unsigned(
+            app,
+            "Regenerated: ",
+            result.regenerated_sites,
+        )
+        committed := "Manifest committed: no\n"
+        if result.committed != 0 {
+            committed = "Manifest committed: yes\n"
+        }
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            committed,
+        )
+        refresh_reachable_sources(app)
+        refresh_tooling_text(app)
+        if result.success != 0 {
+            set_timed_status(
+                app,
+                "Resolve succeeded in ",
+                result.elapsed_nanoseconds,
+                "; Build remains provider-free",
+            )
+        } else {
+            set_timed_status(
+                app,
+                "Resolve failed in ",
+                result.elapsed_nanoseconds,
+                "; see Diagnostics",
+            )
+            show_diagnostics(app)
+        }
+        return
+    }
+
+    if action == .judge_claims && app.host.judge_claims != nil {
+        result: draft_compiler_api.Judge_Result
+        app.host.judge_claims(
+            app.host.user,
+            &overlays[0],
+            overlay_count,
+            active_overlay,
+            &result,
+        )
+        app.semantic_dirty = false
+        app.diagnostic_count = result.diagnostic_count
+        copy_syntax_spans(app, result.span_count)
+        begin_result_output(
+            app,
+            "Judge",
+            result.success != 0,
+            result.elapsed_nanoseconds,
+        )
+        append_result_unsigned(
+            app,
+            "Selected claims: ",
+            result.selected_judgments,
+        )
+        append_result_unsigned(
+            app,
+            "Evidence objects: ",
+            result.evidence_count,
+        )
+        verdict := "Verdict: unavailable\n"
+        if result.completed != 0 && result.passed != 0 {
+            verdict = "Verdict: pass\n"
+        } else if result.completed != 0 {
+            verdict = "Verdict: fail\n"
+        }
+        _ = append_bounded_text(
+            app.build_output[:],
+            &app.build_output_length,
+            verdict,
+        )
+        refresh_reachable_sources(app)
+        refresh_tooling_text(app)
+        if result.success != 0 {
+            set_timed_status(
+                app,
+                "Judge passed in ",
+                result.elapsed_nanoseconds,
+                "",
+            )
+        } else if result.diagnostic_count != 0 {
+            set_timed_status(
+                app,
+                "Judge failed in ",
+                result.elapsed_nanoseconds,
+                "; see Diagnostics",
+            )
+            show_diagnostics(app)
+        } else {
+            set_timed_status(
+                app,
+                "Judge failed in ",
+                result.elapsed_nanoseconds,
+                "; see Build Output",
+            )
+            turbo_ui.show_window(
+                &app.ui,
+                app.windows[:],
+                app.windows[Window_Build_Output].id,
+            )
+        }
+        return
+    }
+
+    set_plain_status(app, "The requested compiler agent command is unavailable")
 }
 
 // build_all_programs builds each compiler-discovered executable root exactly

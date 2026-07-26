@@ -35,15 +35,17 @@ The package is split by owned transition rather than widget type:
 - `desktop.draft` authors the complete menu vocabulary, window routing, and
   status bar;
 - `host_integration.draft` copies compiler-service products and performs
-  Check/Build/Run, structured diagnostic activation, persistent result
-  recording, and semantic navigation; and
+  provider-free Check/Build/Run, explicit Resolve/Judge, structured diagnostic
+  activation, persistent result recording, and semantic navigation; and
 - `terminal_runtime.draft` alone owns the terminal session and event loop.
 
 An optional `draft_compiler_api.Host_Api` is a borrowed synchronous procedure
 table rather than a compiler dependency. A zero table produces the standalone
 editor; DraftIDE supplies the compiler service; tests supply direct fakes.
 Typing invokes only the host's production-lexer color operation. Check, Build,
-Run, Definition, and Usages explicitly enter package semantics.
+Run, Resolve, Judge, Definition, and Usages explicitly enter package semantics.
+Resolve and Judge occupy distinct optional callbacks, so an ordinary Build or
+F5 path has no flag or fallback which could enter provider work.
 
 Build and Check update an app-owned result transcript and timed status without
 changing result-window visibility on success. Compiler failure raises
@@ -52,6 +54,15 @@ retained read-only source for generated/compiler-owned bytes. F5 prepares the
 artifact and run configuration before the terminal is suspended, so failed
 compilation never enters Program Output. Once launched, exit/signal/launch
 failures remain runtime results and do not mutate Diagnostics.
+
+Resolve and Judge save dirty documents in the active root's reachable path set
+before queuing their synchronous calls. This includes a package shared by two
+roots but excludes unrelated editing-only documents. Resolve reports pin counts
+and commit state; Judge reports selected claims, evidence count, and verdict.
+Both replace Build Output. Compiler/provider errors raise Diagnostics, while a
+completed negative verdict with no diagnostic raises Build Output. The event
+loop presents the pending status before beginning potentially long provider
+work.
 
 Menu commands and global shortcuts call the same named operations. Disabled
 commands remain visible but inert, separators and blank popup space preserve

@@ -1373,9 +1373,11 @@ paint_diagnostics :: proc(app: ^App, content: turbo_ui.Rect) {
     }
 }
 
-// paint_build_output is the persistent transcript for the latest Build plus
-// its optional Run Result. Updating these bytes never changes window
-// visibility; users may keep the view open, close it, or inspect it later.
+// paint_build_output is the persistent transcript for the latest explicit
+// compiler operation plus an optional Run Result. Updating these bytes never
+// changes window visibility; users may keep the view open, close it, or inspect
+// it later unless an operation explicitly raises the window for a result which
+// has no compiler diagnostic row, such as a negative judgment verdict.
 paint_build_output :: proc(app: ^App, content: turbo_ui.Rect) {
     turbo_ui.text_view_bytes(
         &app.ui,

@@ -4,13 +4,18 @@
 // CompileWorkspaceResult. Each check builds a private candidate through the
 // existing complete-file override API; success atomically replaces the stored
 // source/graph pair, while failure publishes diagnostics and leaves the
-// previous checked program intact.
+// previous checked program intact. Resolve and Judge are separate, explicit
+// synchronous transactions: Resolve alone may invoke a synthesis provider and
+// publish target-scoped generated-source pins; Judge may invoke a judgment
+// provider and publish evidence, but never changes source.
 //
 // The class owns no terminal, editor buffer, or Draft allocation. C ABI bridge
 // functions in service.cpp borrow source bytes synchronously and copy only
 // plain result records back to the Draft owner. The module depends on compiler
-// and workspace products, the production lexer, and native publication, never
-// on driver CLI internals or the Turbo UI.
+// and workspace products, the resolver/provider boundary, judgment commands,
+// the production lexer, and native publication, never on driver CLI internals
+// or the Turbo UI. Relevant semantics are specified by specification 03
+// sections 8-10 and specification 05 sections 4-6.
 
 #pragma once
 
@@ -63,6 +68,34 @@ struct SyntaxSpan {
 struct CheckResult {
   bool ok = false;
   std::uint32_t diagnostic_count = 0;
+};
+
+// ResolveResult reports the source-generating transaction separately from
+// CheckResult so no caller can accidentally treat an ordinary Build as
+// provider-authorized resolution. Counts are operation facts returned by the
+// resolver; committed distinguishes a no-site handwritten success from an
+// atomic resolution-store publication.
+struct ResolveResult {
+  bool ok = false;
+  bool committed = false;
+  std::uint32_t diagnostic_count = 0;
+  std::size_t site_count = 0;
+  std::size_t synthesized_sites = 0;
+  std::size_t reused_sites = 0;
+  std::size_t regenerated_sites = 0;
+};
+
+// JudgeResult describes one explicit evidence-producing judgment command.
+// completed distinguishes provider/storage failure from a completed negative
+// verdict. ok requires completion, an all-pass verdict, and no compiler error;
+// selected/evidence counts remain useful for Build Output in every state.
+struct JudgeResult {
+  bool ok = false;
+  bool completed = false;
+  bool passed = false;
+  std::uint32_t diagnostic_count = 0;
+  std::size_t selected_judgments = 0;
+  std::size_t evidence_count = 0;
 };
 
 // DiagnosticRow is the editor-facing structural form of one diagnostic from
@@ -242,6 +275,15 @@ public:
   [[nodiscard]] CheckResult build(std::span<const SourceOverlay> overlays,
                                   std::size_t active_overlay);
 
+  // Resolve is the sole IDE operation allowed to request generated source and
+  // atomically update target-scoped pins. Judge performs one provider-free
+  // check first, then evaluates all selected claims and records evidence. Both
+  // use the default Codex CLI policy; neither is called by check or build.
+  [[nodiscard]] ResolveResult resolve(
+      std::span<const SourceOverlay> overlays, std::size_t active_overlay);
+  [[nodiscard]] JudgeResult judge(std::span<const SourceOverlay> overlays,
+                                  std::size_t active_overlay);
+
   // Lexes one complete editor buffer with the production lexer and replaces
   // only syntax_spans_. This operation deliberately does not refresh package
   // configuration, type-check source, publish diagnostics, or mutate the
@@ -319,6 +361,15 @@ public:
 
 private:
   [[nodiscard]] CompileWorkspaceOptions compile_options() const;
+  // Validates and copies the complete overlay set shared by Check, Build,
+  // Resolve, and Judge. It refreshes root configuration, records the active
+  // source, rebuilds lexical spans, and invalidates exact semantic navigation;
+  // callers still own diagnostic publication because each operation may have
+  // a different SourceManager after this preparation succeeds.
+  [[nodiscard]] bool prepare_source_transaction(
+      std::span<const SourceOverlay> overlays, std::size_t active_overlay,
+      std::vector<WorkspaceSourceOverride> &converted,
+      DiagnosticSink &diagnostics);
   [[nodiscard]] std::optional<std::vector<WorkspaceSourceOverride>>
   source_overrides(std::span<const SourceOverlay> overlays,
                    DiagnosticSink &diagnostics) const;

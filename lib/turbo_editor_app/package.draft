@@ -91,6 +91,16 @@ Workspace_Transition :: enum u8 {
     close_workspace,
 }
 
+// Agent_Action is an explicit event-loop request, never a Build mode. Resolve
+// may change target-scoped generated-source pins and Judge may record evidence,
+// so both are queued after saving current source and painted once before their
+// potentially long synchronous provider operation begins.
+Agent_Action :: enum u8 {
+    none,
+    resolve,
+    judge_claims,
+}
+
 Menu_File :: 520
 Menu_File_Popup :: 521
 Menu_Edit :: 522
@@ -303,6 +313,7 @@ App :: struct {
     run_configuration_loaded: bool,
     run_configuration_overridden: bool,
     run_requested: bool,
+    pending_agent_action: Agent_Action,
     quit_discard_mask: u64,
     // clipboard is an IDE-local byte clipboard. Bracketed terminal paste still
     // enters as text events; this owner gives Cut/Copy/Paste deterministic
@@ -1207,10 +1218,6 @@ refresh_host :: proc(app: ^App) -> bool {
             result.elapsed_nanoseconds,
             "",
         )
-        if app.host.source_count != nil &&
-            app.host.source_count(app.host.user) != app.reachable_source_count {
-            refresh_reachable_sources(app)
-        }
     } else {
         set_timed_status(
             app,
@@ -1219,6 +1226,10 @@ refresh_host :: proc(app: ^App) -> bool {
             "; see Diagnostics",
         )
     }
+    // A successful graph may replace one reachable path without changing the
+    // row count. Copy the authoritative source set after every explicit
+    // semantic transaction; on failure the host retains its last-good set.
+    refresh_reachable_sources(app)
     refresh_tooling_text(app)
     if result.success == 0 {
         show_diagnostics(app)

@@ -475,6 +475,23 @@ run_interactive :: proc(
             }
             repaint = false
         }
+        if app.pending_agent_action != .none {
+            // Resolve/Judge can spend minutes in an external provider. Publish
+            // the explicit pending status before the synchronous call, but
+            // keep terminal ownership in DraftIDE because provider I/O is not
+            // the user's Program Output stream.
+            if repaint && tui.present(&renderer, screen) != .none {
+                return .unavailable
+            }
+            action := app.pending_agent_action
+            app.pending_agent_action = .none
+            execute_agent_action(app, action)
+            paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
+            if tui.present(&renderer, screen) != .none {
+                return .unavailable
+            }
+            repaint = false
+        }
         if repaint && tui.present(&renderer, screen) != .none {
             return .unavailable
         }

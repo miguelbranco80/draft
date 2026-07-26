@@ -42,6 +42,12 @@ static_assert(alignof(DraftCompilerServiceResult) == alignof(std::size_t));
 static_assert(sizeof(DraftCompilerServiceDiagnosticRow) == 40);
 static_assert(alignof(DraftCompilerServiceDiagnosticRow) ==
               alignof(std::size_t));
+static_assert(sizeof(DraftCompilerServiceResolveResult) == 64);
+static_assert(alignof(DraftCompilerServiceResolveResult) ==
+              alignof(std::size_t));
+static_assert(sizeof(DraftCompilerServiceJudgeResult) == 48);
+static_assert(alignof(DraftCompilerServiceJudgeResult) ==
+              alignof(std::size_t));
 static_assert(sizeof(DraftCompilerServiceSyntaxResult) == 16);
 static_assert(alignof(DraftCompilerServiceSyntaxResult) ==
               alignof(std::size_t));
@@ -486,6 +492,65 @@ void draft_compiler_session_build(void *opaque_session,
   const draft::ide::CheckResult built =
       session->build(*checked, active_overlay);
   *result = service_result(*session, built, elapsed_nanoseconds(started));
+}
+
+void draft_compiler_session_resolve(
+    void *opaque_session, const DraftCompilerServiceOverlay *overlays,
+    std::size_t overlay_count, std::size_t active_overlay,
+    DraftCompilerServiceResolveResult *result) {
+  if (result == nullptr)
+    return;
+  *result = {};
+  const auto started = std::chrono::steady_clock::now();
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  const std::optional<std::vector<draft::ide::SourceOverlay>> checked =
+      checked_overlays(overlays, overlay_count, active_overlay);
+  if (session == nullptr || !checked.has_value()) {
+    result->elapsed_nanoseconds = elapsed_nanoseconds(started);
+    return;
+  }
+  const draft::ide::ResolveResult resolved =
+      session->resolve(*checked, active_overlay);
+  *result = {
+      static_cast<std::uint8_t>(resolved.ok ? 1 : 0),
+      resolved.diagnostic_count,
+      session->syntax_spans().size(),
+      elapsed_nanoseconds(started),
+      static_cast<std::uint8_t>(resolved.committed ? 1 : 0),
+      resolved.site_count,
+      resolved.synthesized_sites,
+      resolved.reused_sites,
+      resolved.regenerated_sites,
+  };
+}
+
+void draft_compiler_session_judge(
+    void *opaque_session, const DraftCompilerServiceOverlay *overlays,
+    std::size_t overlay_count, std::size_t active_overlay,
+    DraftCompilerServiceJudgeResult *result) {
+  if (result == nullptr)
+    return;
+  *result = {};
+  const auto started = std::chrono::steady_clock::now();
+  draft::ide::CompilerSession *session = compiler_session(opaque_session);
+  const std::optional<std::vector<draft::ide::SourceOverlay>> checked =
+      checked_overlays(overlays, overlay_count, active_overlay);
+  if (session == nullptr || !checked.has_value()) {
+    result->elapsed_nanoseconds = elapsed_nanoseconds(started);
+    return;
+  }
+  const draft::ide::JudgeResult judged =
+      session->judge(*checked, active_overlay);
+  *result = {
+      static_cast<std::uint8_t>(judged.ok ? 1 : 0),
+      judged.diagnostic_count,
+      session->syntax_spans().size(),
+      elapsed_nanoseconds(started),
+      static_cast<std::uint8_t>(judged.completed ? 1 : 0),
+      static_cast<std::uint8_t>(judged.passed ? 1 : 0),
+      judged.selected_judgments,
+      judged.evidence_count,
+  };
 }
 
 void draft_compiler_session_colorize(void *opaque_session,

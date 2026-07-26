@@ -111,7 +111,11 @@ Fake_Root_State :: c struct {
     fail_selection: u8,
     target: u8,
     build_count: usize,
+    resolve_count: usize,
+    judge_count: usize,
     fail_build: u8,
+    fail_resolve: u8,
+    fail_judge_verdict: u8,
     diagnostic_path: rawptr,
     diagnostic_path_length: usize,
     diagnostic_source: rawptr,
@@ -339,8 +343,70 @@ fake_build :: c proc(
     result.elapsed_nanoseconds = 360_000_000
 }
 
+fake_resolve :: c proc(
+    user: rawptr,
+    overlays: ^draft_compiler_api.Overlay,
+    overlay_count: usize,
+    active_overlay: usize,
+    result: ^draft_compiler_api.Resolve_Result,
+) {
+    _ = overlays
+    _ = overlay_count
+    _ = active_overlay
+    result^ = draft_compiler_api.Resolve_Result{}
+    if user != nil {
+        state := cast[^Fake_Root_State](user)
+        state.resolve_count += 1
+        if state.fail_resolve != 0 {
+            result.diagnostic_count = 1
+            result.elapsed_nanoseconds = 125_000_000
+            return
+        }
+    }
+    result.success = 1
+    result.elapsed_nanoseconds = 125_000_000
+    result.committed = 1
+    result.site_count = 3
+    result.synthesized_sites = 2
+    result.reused_sites = 1
+}
+
+fake_judge :: c proc(
+    user: rawptr,
+    overlays: ^draft_compiler_api.Overlay,
+    overlay_count: usize,
+    active_overlay: usize,
+    result: ^draft_compiler_api.Judge_Result,
+) {
+    _ = overlays
+    _ = overlay_count
+    _ = active_overlay
+    result^ = draft_compiler_api.Judge_Result{}
+    if user != nil {
+        state := cast[^Fake_Root_State](user)
+        state.judge_count += 1
+        if state.fail_judge_verdict != 0 {
+            result.completed = 1
+            result.elapsed_nanoseconds = 240_000_000
+            result.selected_judgments = 2
+            result.evidence_count = 2
+            return
+        }
+    }
+    result.success = 1
+    result.elapsed_nanoseconds = 240_000_000
+    result.completed = 1
+    result.passed = 1
+    result.selected_judgments = 2
+    result.evidence_count = 2
+}
+
 fake_diagnostic_row_count :: c proc(user: rawptr) -> usize {
-    if user == nil || cast[^Fake_Root_State](user).fail_build == 0 {
+    if user == nil {
+        return 0
+    }
+    state := cast[^Fake_Root_State](user)
+    if state.fail_build == 0 && state.fail_resolve == 0 {
         return 0
     }
     return 1
@@ -751,6 +817,117 @@ test_build_results_and_activatable_diagnostics :: proc(test: ^testing.Test) {
     testing.expect(test, build_active(&app))
     testing.expect(test, app.windows[Window_Diagnostics].visible)
     testing.expect(test, app.diagnostic_row_count == 0)
+}
+
+// Build, Resolve, and Judge occupy three distinct host callbacks. This test
+// proves the ordinary provider-free Build path cannot silently enter either
+// agent operation, while the explicit requests publish their own result
+// transcript and counters.
+test_agent_commands_are_explicit_and_separate_from_build :: proc(
+    test: ^testing.Test,
+) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "turbo-agent-command.draft"))
+    defer destroy_app(&app)
+    state: Fake_Root_State
+    app.host.user = cast[rawptr](&state)
+    app.host.build = fake_build
+    app.host.copy_artifact_path = fake_artifact_path
+    app.host.resolve = fake_resolve
+    app.host.judge_claims = fake_judge
+    app.host.selected_root = fake_selected_root
+    app.buffer_has_root[0] = true
+    app.buffer_root[0] = state.selected
+
+    testing.expect(test, build_active(&app))
+    testing.expect(test, state.build_count == 1)
+    testing.expect(test, state.resolve_count == 0)
+    testing.expect(test, state.judge_count == 0)
+
+    // An unrelated editing-only buffer is not part of the durable resolution
+    // transaction. In particular, an unsaved unnamed document must not block
+    // Resolve for the selected root or be written as an accidental side effect.
+    testing.expect(test, init_one_unnamed_buffer(&app))
+    turbo_editor.insert_text(&app.buffers[1], "unrelated")
+    request_agent_action(&app, .resolve)
+    testing.expect(test, app.pending_agent_action == .resolve)
+    testing.expect(test, app.buffers[1].dirty)
+    // The fake host has no semantic source table, so make the unrelated buffer
+    // clean before directly exercising the lower-level callback projection.
+    app.buffers[1].dirty = false
+    action := app.pending_agent_action
+    app.pending_agent_action = .none
+    execute_agent_action(&app, action)
+    testing.expect(test, state.build_count == 1)
+    testing.expect(test, state.resolve_count == 1)
+    testing.expect(test, state.judge_count == 0)
+    testing.expect(test, bytes_equal_string(
+        app.status_storage[:app.status_length],
+        "Resolve succeeded in 0.13s; Build remains provider-free",
+    ))
+
+    // Root association controls later root restoration, not exclusive source
+    // ownership. A dirty package file remembered under root 1 must still enter
+    // root 0's save prepass when root 0's reachable graph contains its path.
+    // A forced disk conflict proves the save was attempted without writing a
+    // fixture file.
+    testing.expect(test, init_one_buffer(&app, "shared-agent-command.draft"))
+    turbo_editor.insert_text(&app.buffers[2], "shared")
+    app.buffers[2].disk_conflict = true
+    app.buffer_has_root[2] = true
+    app.buffer_root[2] = 1
+    memory.owned_string_copy(
+        &app.reachable_source_paths[0],
+        "shared-agent-command.draft",
+    )
+    app.reachable_source_count = 1
+    request_agent_action(&app, .resolve)
+    testing.expect(test, app.pending_agent_action == .none)
+    testing.expect(test, app.buffers[2].dirty)
+    testing.expect(test, state.resolve_count == 1)
+    app.buffers[2].dirty = false
+
+    request_agent_action(&app, .judge_claims)
+    testing.expect(test, app.pending_agent_action == .judge_claims)
+    action = app.pending_agent_action
+    app.pending_agent_action = .none
+    execute_agent_action(&app, action)
+    testing.expect(test, state.build_count == 1)
+    testing.expect(test, state.resolve_count == 1)
+    testing.expect(test, state.judge_count == 1)
+    testing.expect(test, bytes_equal_string(
+        app.status_storage[:app.status_length],
+        "Judge passed in 0.24s",
+    ))
+
+    // Provider/compiler failures follow the same structured diagnostic route
+    // as Build, while a completed negative verdict is a result rather than a
+    // compiler error and therefore raises the persistent Build Output window.
+    testing.expect(test, !app.windows[Window_Diagnostics].visible)
+    state.fail_resolve = 1
+    request_agent_action(&app, .resolve)
+    action = app.pending_agent_action
+    app.pending_agent_action = .none
+    execute_agent_action(&app, action)
+    testing.expect(test, app.windows[Window_Diagnostics].visible)
+    testing.expect(test, app.diagnostic_count == 1)
+    turbo_ui.hide_window(
+        &app.ui,
+        app.windows[:],
+        app.windows[Window_Diagnostics].id,
+    )
+    state.fail_resolve = 0
+
+    testing.expect(test, !app.windows[Window_Build_Output].visible)
+    state.fail_judge_verdict = 1
+    request_agent_action(&app, .judge_claims)
+    action = app.pending_agent_action
+    app.pending_agent_action = .none
+    execute_agent_action(&app, action)
+    testing.expect(test, app.windows[Window_Build_Output].visible)
+    testing.expect(test, !app.windows[Window_Diagnostics].visible)
+    testing.expect(test, app.diagnostic_count == 0)
 }
 
 // Run Configuration keeps argv, environment, and working directory as three
@@ -1822,6 +1999,8 @@ test_complete_menu_vocabulary :: proc(test: ^testing.Test) {
     expect_surface_text(test, &surface, 18, 4, "Check")
     expect_surface_text(test, &surface, 18, 5, "Build")
     expect_surface_text(test, &surface, 18, 6, "Build All Programs")
+    expect_surface_text(test, &surface, 18, 8, "Resolve Synthesis")
+    expect_surface_text(test, &surface, 18, 9, "Judge Claims")
     testing.expect(test, !surface_has_black_shadow(&surface))
 
     open_menu_for_test(&app, &surface, cast[u8]('r'))

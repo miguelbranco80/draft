@@ -52,6 +52,36 @@ typedef struct DraftCompilerServiceResult {
   uint64_t elapsed_nanoseconds;
 } DraftCompilerServiceResult;
 
+// ResolveResult is returned only by the explicit source-generating operation.
+// Its counters describe the resolver attempt; committed is zero for a
+// successful handwritten no-site program. No field is shared implicitly with
+// Build, which remains provider-free.
+typedef struct DraftCompilerServiceResolveResult {
+  uint8_t success;
+  uint32_t diagnostic_count;
+  size_t span_count;
+  uint64_t elapsed_nanoseconds;
+  uint8_t committed;
+  size_t site_count;
+  size_t synthesized_sites;
+  size_t reused_sites;
+  size_t regenerated_sites;
+} DraftCompilerServiceResolveResult;
+
+// JudgeResult separates command completion from the all-pass verdict. success
+// is one only when both are true and no compiler error was produced. Evidence
+// count reports durable objects recorded by the explicit command.
+typedef struct DraftCompilerServiceJudgeResult {
+  uint8_t success;
+  uint32_t diagnostic_count;
+  size_t span_count;
+  uint64_t elapsed_nanoseconds;
+  uint8_t completed;
+  uint8_t passed;
+  size_t selected_judgments;
+  size_t evidence_count;
+} DraftCompilerServiceJudgeResult;
+
 // DiagnosticRow is the fixed structural half of one latest-attempt diagnostic.
 // start/end are exact half-open byte offsets into the source copied for the
 // same row; line/column are one-based. severity uses error=0, warning=1,
@@ -164,6 +194,22 @@ draft_compiler_session_build(void *session,
                              const DraftCompilerServiceOverlay *overlays,
                              size_t overlay_count, size_t active_overlay,
                              DraftCompilerServiceResult *result);
+
+// resolve is the sole provider-authorized source-generation operation. judge
+// first performs a provider-free check, then evaluates all current judgment
+// sites with the default Codex policy. Both borrow overlays synchronously and
+// publish diagnostics/spans through the same latest-operation session tables.
+DRAFT_COMPILER_SERVICE_API void
+draft_compiler_session_resolve(void *session,
+                               const DraftCompilerServiceOverlay *overlays,
+                               size_t overlay_count, size_t active_overlay,
+                               DraftCompilerServiceResolveResult *result);
+
+DRAFT_COMPILER_SERVICE_API void
+draft_compiler_session_judge(void *session,
+                             const DraftCompilerServiceOverlay *overlays,
+                             size_t overlay_count, size_t active_overlay,
+                             DraftCompilerServiceJudgeResult *result);
 
 // colorize lexes exactly one complete source buffer and publishes only its
 // syntax spans. It performs no filesystem discovery, package checking, tooling

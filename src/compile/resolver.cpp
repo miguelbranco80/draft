@@ -456,6 +456,10 @@ struct ResolvedStage {
     for (const AgentObligation &obligation :
          package.obligations.obligations) {
       if (!is_synthesis(obligation.kind)) continue;
+      // A site belongs to exactly one dependency-ready stage. Count it before
+      // any provider, source-map, or proposal validation can return so failed
+      // explicit Resolve commands still report discovered work accurately.
+      ++result.site_count;
       if (resolution_cancelled(options, diagnostics)) return stage;
       const ResolutionPin *existing = find_pin(loaded, obligation.site_identity);
       const bool regenerate = regeneration_selects(

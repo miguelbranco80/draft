@@ -2,7 +2,9 @@
 // The service is an explicitly mapped native provider; this package owns no
 // native handle implicitly and performs no filesystem discovery of its own.
 // Configuration strings are borrowed only during create, while source and
-// destination buffers are borrowed only for their synchronous call.
+// destination buffers are borrowed only for their synchronous call. Ordinary
+// Check/Build operations are provider-free; explicit Resolve/Judge foreign
+// procedures are the only provider-authorized entries in the table.
 package draft_compiler
 
 import lib/draft_compiler_api
@@ -73,6 +75,24 @@ foreign draft_compiler_service {
         overlay_count: usize,
         active_overlay: usize,
         result: ^draft_compiler_api.Result,
+    )
+
+    pub resolve as "draft_compiler_session_resolve" :: c proc(
+        session: rawptr,
+        overlays: ^draft_compiler_api.Overlay,
+        overlay_count: usize,
+        active_overlay: usize,
+        result: ^draft_compiler_api.Resolve_Result,
+    )
+
+    // `judge` is reserved surface syntax, so the Draft name is judge_claims;
+    // the exported C operation keeps its direct session_judge spelling.
+    pub judge_claims as "draft_compiler_session_judge" :: c proc(
+        session: rawptr,
+        overlays: ^draft_compiler_api.Overlay,
+        overlay_count: usize,
+        active_overlay: usize,
+        result: ^draft_compiler_api.Judge_Result,
     )
 
     // colorize runs only the production lexer for one complete buffer. It is
@@ -374,6 +394,8 @@ pub host_api :: proc(session: rawptr) -> draft_compiler_api.Host_Api {
         user = session,
         check = check,
         build = build,
+        resolve = resolve,
+        judge_claims = judge_claims,
         colorize = colorize,
         span = span,
         copy_diagnostics = copy_diagnostics,

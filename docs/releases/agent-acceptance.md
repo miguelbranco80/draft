@@ -260,3 +260,22 @@ for `draft-x86_64-linux-gnu-v2`, and
 for `draft-x86_64-windows-msvc-v2`. The complete 95-test normal suite passed;
 the embedded-core, native-process, compiler-service, and Turbo IDE library
 tests also passed in the address/undefined-behavior sanitizer build.
+
+## DraftIDE agent-command revalidation
+
+On 2026-07-26, the explicit DraftIDE Resolve Synthesis and Judge Claims
+commands added the IDE's compiler-service adapter to the compiler content
+identity `draft-bootstrap-cpp-v144`. Provider-free `resolve --revalidate`
+reused and rechecked all four saved expansions with zero synthesis calls for
+each target; no generated source object or provider provenance changed. The
+committed resolved-program digests are
+`b841c73f171e7c91602d67c2e7a124f328ae93adba614cafcbe6e15c9254eb6e`
+for `draft-aarch64-macos-v6`,
+`7860a526e0dbde50e01a079f52de19d42c1467520e420885090f89f2e688c99d`
+for `draft-aarch64-linux-gnu-v2`,
+`fc28c0bc4e9f39d2f1fae90cfb632bfaf4e97a92399e6a2cc43b6a38f2807b5f`
+for `draft-x86_64-linux-gnu-v2`, and
+`b4ac7db72d0c8db54e9585af4b37dff396c11d29a9affd1b86cbea04c725f87f`
+for `draft-x86_64-windows-msvc-v2`. The complete normal CTest matrix passed
+95 of 95 tests. This was a provider-free evidence refresh; it does not claim a
+new live Codex synthesis or judgment qualification.

@@ -1,11 +1,17 @@
 // See compiler_session.h for ownership and transaction boundaries. This file
 // keeps the implementation deliberately direct: one speculative graph copy,
-// one full-topology fallback, one last-good publication point, and one native
-// artifact operation. There is no cache, query framework, background thread,
-// or IDE-specific semantic representation.
+// one full-topology fallback, one last-good publication point, one native
+// artifact operation, and explicit calls into the existing resolution and
+// judgment commands. Provider state is command-local and can be constructed
+// only by Resolve or Judge. There is no cache, query framework, background
+// thread, or IDE-specific semantic representation.
 
 #include "ide/compiler_session.h"
 
+#include "compile/resolver.h"
+#include "elaborator/codex_cli.h"
+#include "judgment/cli_policy.h"
+#include "judgment/command.h"
 #include "syntax/lexer.h"
 #include "syntax/token.h"
 #include "workspace/embedded_core.h"
@@ -37,6 +43,33 @@ namespace {
 
 [[nodiscard]] bool is_number(TokenKind kind) {
   return kind == TokenKind::IntegerLiteral || kind == TokenKind::FloatLiteral;
+}
+
+// Resolution pins apply only to syntax-producing obligations. This local query
+// guards the IDE's incremental handwritten fast path: if a body edit introduces
+// its first synthesis site, the candidate must re-enter the authoritative
+// resolution-aware workspace operation instead of reaching MIR with a raw HIR
+// synthesis node. The compiler's resolver owns all further pin semantics.
+[[nodiscard]] bool has_synthesis_site(
+    const CompileWorkspaceResult &compiled) {
+  for (const std::optional<CompiledPackage> &package : compiled.packages) {
+    if (!package.has_value()) continue;
+    for (const AgentObligation &obligation :
+         package->obligations.obligations) {
+      switch (obligation.kind) {
+      case AgentConstructKind::SynthesisDeclaration:
+      case AgentConstructKind::SynthesisMember:
+      case AgentConstructKind::SynthesisStatement:
+      case AgentConstructKind::SynthesisExpression:
+      case AgentConstructKind::SynthesisAssembly:
+        return true;
+      case AgentConstructKind::Documentation:
+      case AgentConstructKind::Judgment:
+        break;
+      }
+    }
+  }
+  return false;
 }
 
 [[nodiscard]] bool begins_declaration(const std::vector<ToolingToken> &tokens,
@@ -1257,66 +1290,81 @@ bool CompilerSession::fresh_check(
   return candidate.ok && !diagnostics.has_errors();
 }
 
-CheckResult CompilerSession::check(std::span<const SourceOverlay> overlays,
-                                   std::size_t active_overlay) {
-  // Navigation describes the exact latest accepted bytes. Clear it before any
-  // validation so every early return and failed candidate makes retained
-  // last-good semantics inaccessible to F12 by construction.
+bool CompilerSession::prepare_source_transaction(
+    std::span<const SourceOverlay> overlays, std::size_t active_overlay,
+    std::vector<WorkspaceSourceOverride> &converted,
+    DiagnosticSink &diagnostics) {
+  // Every semantic operation invalidates exact navigation before inspecting
+  // user-controlled inputs. A later successful operation is the only place
+  // which may re-enable it for the newly visible byte generation.
   latest_check_succeeded_ = false;
   navigation_definition_.reset();
   navigation_usages_.clear();
   if (overlays.empty() || active_overlay >= overlays.size()) {
     syntax_spans_.clear();
-    SourceManager sources;
-    DiagnosticSink diagnostics;
     diagnostics.error(SourceRange::invalid(),
-                      "compiler check requires one active source overlay");
-    publish_diagnostics(sources, diagnostics);
-    return {false, diagnostic_count_};
+                      "compiler operation requires one active source overlay");
+    return false;
   }
-
-  DiagnosticSink configuration_diagnostics;
-  if (!refresh_configuration(configuration_diagnostics)) {
+  if (!refresh_configuration(diagnostics)) {
     syntax_spans_.clear();
-    SourceManager sources;
-    publish_diagnostics(sources, configuration_diagnostics);
-    return {false, diagnostic_count_};
+    return false;
   }
-
-  DiagnosticSink conversion_diagnostics;
-  const std::optional<std::vector<WorkspaceSourceOverride>> converted =
-      source_overrides(overlays, conversion_diagnostics);
-  if (!converted.has_value()) {
+  std::optional<std::vector<WorkspaceSourceOverride>> checked =
+      source_overrides(overlays, diagnostics);
+  if (!checked.has_value()) {
     syntax_spans_.clear();
-    SourceManager sources;
-    publish_diagnostics(sources, conversion_diagnostics);
-    return {false, diagnostic_count_};
+    return false;
   }
+  converted = std::move(*checked);
+
   std::error_code active_error;
   source_path_ = std::filesystem::weakly_canonical(
       overlays[active_overlay].physical_path, active_error);
   if (active_error)
     source_path_ = overlays[active_overlay].physical_path;
   collect_syntax_spans(overlays[active_overlay]);
+  return true;
+}
 
-  // The common path copies the last immutable command-local graph, installs
-  // every open complete-file interface change, and resumes semantics.
-  // Diagnostics are private until this candidate is known to be the one shown
-  // to the user.
-  if (last_good_.has_value()) {
+CheckResult CompilerSession::check(std::span<const SourceOverlay> overlays,
+                                   std::size_t active_overlay) {
+  std::vector<WorkspaceSourceOverride> converted;
+  DiagnosticSink preparation_diagnostics;
+  if (!prepare_source_transaction(overlays, active_overlay, converted,
+                                  preparation_diagnostics)) {
+    SourceManager sources;
+    publish_diagnostics(sources, preparation_diagnostics);
+    return {false, diagnostic_count_};
+  }
+
+  // The common handwritten path copies the last immutable command-local graph,
+  // installs every open complete-file interface change, and resumes semantics.
+  // A graph with a resolution manifest takes the fresh path below because only
+  // compile_workspace_with_resolution validates every pin against the new
+  // synthesis inputs. Diagnostics are private until this candidate is known to
+  // be the one shown to the user.
+  if (last_good_.has_value() &&
+      !last_good_->resolution_manifest.has_value()) {
     SourceManager candidate_sources = last_good_sources_;
     CompileWorkspaceResult candidate = *last_good_;
     DiagnosticSink diagnostics;
     CompileWorkspaceOptions options = compile_options();
     const bool applied = apply_compiled_workspace_source_overrides(
-        candidate_sources, *converted, WorkspaceSemanticChange::Interface,
+        candidate_sources, converted, WorkspaceSemanticChange::Interface,
         options, candidate, diagnostics);
     const bool completed =
         applied &&
         continue_compiled_workspace_semantics(
             candidate_sources, configuration_.root_package_directory.string(),
             options, candidate, diagnostics);
-    if (completed && candidate.ok && !diagnostics.has_errors()) {
+    // Interface synthesis already suspends the transition and reaches the
+    // fresh path. Body/expression/assembly synthesis can survive semantic
+    // closure as an obligation, so detect it explicitly before publication.
+    // The fresh path then emits the ordinary missing-pin diagnostic and never
+    // permits unresolved HIR to leak into native lowering.
+    if (completed && candidate.ok && !diagnostics.has_errors() &&
+        !has_synthesis_site(candidate)) {
       last_good_sources_ = std::move(candidate_sources);
       last_good_ = std::move(candidate);
       rebuild_source_options();
@@ -1333,7 +1381,7 @@ CheckResult CompilerSession::check(std::span<const SourceOverlay> overlays,
   SourceManager fresh_sources;
   CompileWorkspaceResult fresh;
   DiagnosticSink fresh_diagnostics;
-  if (fresh_check(*converted, fresh_sources, fresh, fresh_diagnostics)) {
+  if (fresh_check(converted, fresh_sources, fresh, fresh_diagnostics)) {
     last_good_sources_ = std::move(fresh_sources);
     last_good_ = std::move(fresh);
     rebuild_source_options();
@@ -1396,6 +1444,118 @@ CheckResult CompilerSession::build_checked() {
   built_artifact_kind_ = program.build.artifact_kind;
   publish_diagnostics(sources, diagnostics);
   return {true, diagnostic_count_};
+}
+
+ResolveResult CompilerSession::resolve(
+    std::span<const SourceOverlay> overlays, std::size_t active_overlay) {
+  built_output_path_.clear();
+  std::vector<WorkspaceSourceOverride> converted;
+  DiagnosticSink diagnostics;
+  if (!prepare_source_transaction(overlays, active_overlay, converted,
+                                  diagnostics)) {
+    SourceManager sources;
+    publish_diagnostics(sources, diagnostics);
+    return {false, false, diagnostic_count_};
+  }
+
+  // The default adapter is configured only for this explicit Resolve call.
+  // Its function table borrows codex_state until the synchronous transaction
+  // returns. Ordinary Check/Build never construct this provider or enter the
+  // resolver, which preserves the specification's provider-free build rule.
+  CodexCliProviderState codex_state;
+  ResolveWorkspaceOptions options;
+  options.compile = compile_options();
+  options.compile.workspace.source_overrides = converted;
+  options.provider = configure_codex_cli_provider(
+      CodexCliProviderOptions{}, codex_state, diagnostics);
+
+  SourceManager sources;
+  ResolveWorkspaceResult resolved = resolve_workspace(
+      sources, configuration_.root_package_directory.string(),
+      std::move(options), diagnostics);
+  ResolveResult result;
+  result.committed = resolved.committed;
+  result.synthesized_sites = resolved.synthesized_sites;
+  result.reused_sites = resolved.reused_sites;
+  result.regenerated_sites = resolved.regenerated_sites;
+  result.site_count = resolved.site_count;
+  if (resolved.ok && resolved.compiled_program.has_value() &&
+      !diagnostics.has_errors()) {
+    last_good_sources_ = std::move(sources);
+    last_good_ = std::move(*resolved.compiled_program);
+    rebuild_source_options();
+    rebuild_tooling_index();
+    publish_diagnostics(last_good_sources_, diagnostics);
+    latest_check_succeeded_ = true;
+    result.ok = true;
+  } else {
+    publish_diagnostics(sources, diagnostics);
+  }
+  result.diagnostic_count = diagnostic_count_;
+  return result;
+}
+
+JudgeResult CompilerSession::judge(std::span<const SourceOverlay> overlays,
+                                   std::size_t active_overlay) {
+  std::vector<WorkspaceSourceOverride> converted;
+  DiagnosticSink diagnostics;
+  if (!prepare_source_transaction(overlays, active_overlay, converted,
+                                  diagnostics)) {
+    SourceManager sources;
+    publish_diagnostics(sources, diagnostics);
+    return {false, false, false, diagnostic_count_};
+  }
+
+  // Judgment evidence binds the complete resolved-program digest. Build's
+  // incremental last-good transition is sufficient for native continuation,
+  // but a source override deliberately invalidates that persistent digest.
+  // Reconstruct one provider-free graph here so the evidence key is derived
+  // from the exact current surface bytes and target-scoped resolution pins.
+  SourceManager checked_sources;
+  CompileWorkspaceResult checked_program;
+  if (!fresh_check(converted, checked_sources, checked_program, diagnostics)) {
+    publish_diagnostics(checked_sources, diagnostics);
+    return {false, false, false, diagnostic_count_};
+  }
+  last_good_sources_ = std::move(checked_sources);
+  last_good_ = std::move(checked_program);
+  rebuild_source_options();
+  rebuild_tooling_index();
+  latest_check_succeeded_ = true;
+
+  JudgmentCommandOptions options;
+  options.workspace_directory = configuration_.workspace_directory;
+  options.target = active_program().build.target;
+  // Constructing the default adapter is side-effect free: no executable lookup,
+  // temporary directory, or subprocess exists until execute_judgment_command
+  // reaches a selected site. Delegating selection to that command keeps one
+  // semantic selection path; a judgment-free program therefore completes
+  // without contacting or requiring an installed Codex executable.
+  std::vector<CodexCliProviderState> codex_states;
+  const std::optional<CodexCliProviderOptions> default_codex{
+      CodexCliProviderOptions{}};
+  if (!configure_codex_judgment_policy(
+          default_codex, {}, {}, codex_states, options, diagnostics)) {
+    publish_diagnostics(last_good_sources_, diagnostics);
+    return {false, false, false, diagnostic_count_};
+  }
+
+  JudgmentCommandResult judged = execute_judgment_command(
+      *last_good_, std::move(options), diagnostics);
+  publish_diagnostics(last_good_sources_, diagnostics);
+  // The provider/evidence operation cannot invalidate the successful semantic
+  // graph established above. Exact source navigation therefore remains valid
+  // even when a judgment returns a negative verdict or provider error.
+  latest_check_succeeded_ = true;
+
+  JudgeResult result;
+  result.completed = judged.completed;
+  result.passed = judged.passed;
+  result.selected_judgments = judged.selected_judgments;
+  result.evidence_count = judged.evidence.size();
+  result.diagnostic_count = diagnostic_count_;
+  result.ok = judged.completed && judged.passed && !diagnostics.has_errors();
+  return result;
 }
 
 const std::vector<SyntaxSpan> &CompilerSession::syntax_spans() const {
