@@ -115,6 +115,23 @@ std::size_t SyntaxTree::count(NodeKind kind) const {
   return result;
 }
 
+std::optional<IterationHeaderParts> iteration_header_parts(
+    const SyntaxTree &tree, NodeId header_id) {
+  const SyntaxNode &header = tree.node(header_id);
+  if (header.kind != NodeKind::IterationHeader ||
+      (header.children.size() != 2 && header.children.size() != 3)) {
+    return std::nullopt;
+  }
+
+  IterationHeaderParts parts;
+  parts.value_pattern = header.children.front();
+  if (header.children.size() == 3) {
+    parts.index_pattern = header.children[1];
+  }
+  parts.iterable = header.children.back();
+  return parts;
+}
+
 std::string_view node_kind_name(NodeKind kind) {
   switch (kind) {
   case NodeKind::Error: return "Error";

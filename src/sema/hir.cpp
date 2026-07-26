@@ -42,6 +42,16 @@ HirExpressionId HirProgram::add_expression(HirExpression expression) {
 HirStatementId HirProgram::add_statement(HirStatement statement) {
   assert(statements_.size() <
          static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()));
+  // Iteration locals and their initializer roles form one atomic HIR packet.
+  // Other statement kinds do not own role rows. Enforce the representation at
+  // the arena boundary so every later analysis and lowering pass sees the same
+  // source mapping documented by HirStatement.
+  assert(
+      (statement.for_kind == HirForKind::Iteration &&
+       statement.bindings.size() ==
+           statement.iteration_binding_sources.size()) ||
+      (statement.for_kind != HirForKind::Iteration &&
+       statement.iteration_binding_sources.empty()));
   const HirStatementId id{static_cast<std::uint32_t>(statements_.size())};
   statements_.push_back(std::move(statement));
   return id;

@@ -13,8 +13,11 @@
 #include "syntax/parser.h"
 #include "syntax/syntax_tree.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -399,32 +402,56 @@ package iteration_headers
 
 run :: proc(values: [2]u32, pairs: [2](u32, bool), ready: bool) {
     for value, index in values {}
+    for value in values {}
     for (number, _), index in pairs {}
     for (ready) {}
 }
 )draft");
 
   expect_clean(state, source);
-  EXPECT(state, source.tree.count(draft::NodeKind::IterationHeader) == 2);
+  EXPECT(state, source.tree.count(draft::NodeKind::IterationHeader) == 3);
+  EXPECT(
+      state,
+      !draft::iteration_header_parts(
+          source.tree, source.tree.root()).has_value());
 
   bool saw_simple_binding = false;
+  bool saw_omitted_index = false;
   bool saw_tuple_binding = false;
-  for (const draft::SyntaxNode &node : source.tree.nodes()) {
+  std::size_t indexed_header_count = 0;
+  for (std::size_t index = 0; index < source.tree.nodes().size(); ++index) {
+    const draft::SyntaxNode &node = source.tree.nodes()[index];
     if (node.kind != draft::NodeKind::IterationHeader) continue;
-    EXPECT(state, node.children.size() == 3);
-    if (node.children.size() != 3) continue;
+    const std::optional<draft::IterationHeaderParts> parts =
+        draft::iteration_header_parts(
+            source.tree,
+            draft::NodeId{static_cast<std::uint32_t>(index)});
+    EXPECT(state, parts.has_value());
+    if (!parts.has_value()) continue;
     const draft::NodeKind value_kind =
-        source.tree.node(node.children[0]).kind;
-    const draft::NodeKind index_kind =
-        source.tree.node(node.children[1]).kind;
-    EXPECT(state, index_kind == draft::NodeKind::BindingPattern);
+        source.tree.node(parts->value_pattern).kind;
+    if (parts->index_pattern.has_value()) {
+      ++indexed_header_count;
+      EXPECT(
+          state,
+          source.tree.node(*parts->index_pattern).kind ==
+              draft::NodeKind::BindingPattern);
+    } else {
+      saw_omitted_index = true;
+    }
+    EXPECT(
+        state,
+        source.tree.node(parts->iterable).kind ==
+            draft::NodeKind::NameExpression);
     saw_simple_binding = saw_simple_binding ||
         value_kind == draft::NodeKind::BindingPattern;
     saw_tuple_binding = saw_tuple_binding ||
         value_kind == draft::NodeKind::TuplePattern;
   }
   EXPECT(state, saw_simple_binding);
+  EXPECT(state, saw_omitted_index);
   EXPECT(state, saw_tuple_binding);
+  EXPECT(state, indexed_header_count == 2);
 }
 
 void test_binary_xor_and_postfix_dereference(TestState &state) {

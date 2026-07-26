@@ -7833,12 +7833,11 @@ private:
       ControlDepth depth) {
     const SyntaxNode &node = tree.node(statement_id);
     if (node.children.empty()) return std::nullopt;
+    const std::optional<IterationHeaderParts> header_parts =
+        iteration_header_parts(tree, node.children.front());
+    if (!header_parts.has_value()) return std::nullopt;
     const SyntaxNode &header = tree.node(node.children.front());
-    if (header.kind != NodeKind::IterationHeader ||
-        (header.children.size() != 2 && header.children.size() != 3)) {
-      return std::nullopt;
-    }
-    const NodeId iterable_id = header.children.back();
+    const NodeId iterable_id = header_parts->iterable;
     const StaticArgumentPack *pack = active_static_argument_pack(
         tree, iterable_id, scope);
     if (pack == nullptr) return std::nullopt;
@@ -7851,14 +7850,14 @@ private:
       return hir_.add_statement(std::move(statement));
     }
 
-    const SyntaxNode &value_pattern = tree.node(header.children.front());
+    const SyntaxNode &value_pattern = tree.node(header_parts->value_pattern);
     const std::vector<SourceName> value_names = names_in_binding_pattern(
-        tree, header.children.front());
-    const SyntaxNode *index_pattern = header.children.size() == 3
-        ? &tree.node(header.children[1])
+        tree, header_parts->value_pattern);
+    const SyntaxNode *index_pattern = header_parts->index_pattern.has_value()
+        ? &tree.node(*header_parts->index_pattern)
         : nullptr;
     const std::vector<SourceName> index_names = index_pattern != nullptr
-        ? names_in_binding_pattern(tree, header.children[1])
+        ? names_in_binding_pattern(tree, *header_parts->index_pattern)
         : std::vector<SourceName>{};
     if (value_pattern.kind != NodeKind::BindingPattern ||
         value_names.size() != 1) {
@@ -8097,11 +8096,13 @@ private:
         statement.for_kind = HirForKind::Iteration;
         const NodeId header_id = node.children.front();
         const SyntaxNode &header = tree.node(header_id);
-        if (header.children.size() != 2 && header.children.size() != 3) {
+        const std::optional<IterationHeaderParts> header_parts =
+            iteration_header_parts(tree, header_id);
+        if (!header_parts.has_value()) {
           diagnostics_.error(header.range, "malformed iteration header");
           break;
         }
-        const NodeId iterable_id = header.children.back();
+        const NodeId iterable_id = header_parts->iterable;
         const ScopeId loop_scope = semantic_.symbols.add_scope(
             ScopeKind::Block, scope, header.range);
         const HirExpressionId iterable =
@@ -8127,14 +8128,15 @@ private:
               header.range,
               "iteration requires an array, slice, or string");
         }
-        const SyntaxNode &value_pattern = tree.node(header.children.front());
+        const SyntaxNode &value_pattern =
+            tree.node(header_parts->value_pattern);
         const std::vector<SourceName> value_names = names_in_binding_pattern(
-            tree, header.children.front());
-        const SyntaxNode *index_pattern = header.children.size() == 3
-            ? &tree.node(header.children[1])
+            tree, header_parts->value_pattern);
+        const SyntaxNode *index_pattern = header_parts->index_pattern.has_value()
+            ? &tree.node(*header_parts->index_pattern)
             : nullptr;
         const std::vector<SourceName> index_names = index_pattern != nullptr
-            ? names_in_binding_pattern(tree, header.children[1])
+            ? names_in_binding_pattern(tree, *header_parts->index_pattern)
             : std::vector<SourceName>{};
         const bool binds_complete_element =
             value_pattern.kind == NodeKind::BindingPattern;

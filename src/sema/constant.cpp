@@ -4835,13 +4835,15 @@ private:
     const SyntaxNode &header = tree.node(statement.children.front());
 
     if (header.kind == NodeKind::IterationHeader) {
-      if (header.children.size() != 2 && header.children.size() != 3) {
+      const std::optional<IterationHeaderParts> header_parts =
+          iteration_header_parts(tree, statement.children.front());
+      if (!header_parts.has_value()) {
         return failed_execution(fail(
             header.range, "malformed compile-time iteration header", required));
       }
       // Evaluate and retain the iterable exactly once, matching runtime loop
       // capture. Subsequent assignments read only this constant snapshot.
-      const NodeId iterable_id = header.children.back();
+      const NodeId iterable_id = header_parts->iterable;
       const EvalResult iterable = evaluate_expression(
           tree, iterable_id, scope, required);
       if (iterable.status != EvalStatus::Ready) {
@@ -4882,14 +4884,14 @@ private:
         }
         return names;
       };
-      const SyntaxNode &value_pattern = tree.node(header.children.front());
+      const SyntaxNode &value_pattern = tree.node(header_parts->value_pattern);
       const std::vector<std::string> value_names = pattern_names(
-          header.children.front());
-      const SyntaxNode *index_pattern = header.children.size() == 3
-          ? &tree.node(header.children[1])
+          header_parts->value_pattern);
+      const SyntaxNode *index_pattern = header_parts->index_pattern.has_value()
+          ? &tree.node(*header_parts->index_pattern)
           : nullptr;
       const std::vector<std::string> index_names = index_pattern != nullptr
-          ? pattern_names(header.children[1])
+          ? pattern_names(*header_parts->index_pattern)
           : std::vector<std::string>{};
       const bool binds_complete_element =
           value_pattern.kind == NodeKind::BindingPattern;

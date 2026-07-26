@@ -5,6 +5,7 @@
 #include "syntax/token.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <optional>
 #include <utility>
@@ -366,16 +367,15 @@ private:
     if (tree == nullptr) return std::nullopt;
     const SyntaxNode &loop = tree->node(statement.syntax.node);
     if (loop.children.empty()) return std::nullopt;
-    const SyntaxNode &header = tree->node(loop.children.front());
-    if (header.kind != NodeKind::IterationHeader ||
-        (header.children.size() != 2 && header.children.size() != 3)) {
-      return std::nullopt;
-    }
+    const std::optional<IterationHeaderParts> header_parts =
+        iteration_header_parts(*tree, loop.children.front());
+    if (!header_parts.has_value()) return std::nullopt;
+    // Body checking appends the symbol and its source role together. A
+    // mismatch is an invalid HIR packet, not recoverable Draft source.
+    assert(statement.bindings.size() ==
+           statement.iteration_binding_sources.size());
     SymbolId index_binding;
-    const std::size_t binding_count = std::min(
-        statement.bindings.size(),
-        statement.iteration_binding_sources.size());
-    for (std::size_t index = 0; index < binding_count; ++index) {
+    for (std::size_t index = 0; index < statement.bindings.size(); ++index) {
       if (statement.iteration_binding_sources[index].kind ==
           HirIterationBindingKind::Index) {
         index_binding = statement.bindings[index];
@@ -395,7 +395,7 @@ private:
     SemanticLoopRange fact;
     fact.kind = SemanticLoopRangeKind::IterationIndex;
     fact.binding = index_binding;
-    fact.upper = {statement.syntax.file, header.children.back()};
+    fact.upper = {statement.syntax.file, header_parts->iterable};
     fact.upper_type = hir_.expression(statement.expressions.front()).type;
     collect_expression_symbols(
         hir_, statement.expressions.front(), fact.upper_symbols);

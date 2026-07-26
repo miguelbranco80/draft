@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -1995,18 +1996,14 @@ private:
     controls_.push_back(
         {exit_block, post_block, defer_scopes_.size(), true});
     current_ = body_block;
-    if (statement.bindings.size() !=
-        statement.iteration_binding_sources.size()) {
-      diagnostics_.error(
-          statement.range,
-          "iteration loop HIR binding roles are inconsistent");
-    }
-    const std::size_t binding_count = std::min(
-        statement.bindings.size(),
-        statement.iteration_binding_sources.size());
+    // Body checking appends each retained symbol and its source role as one
+    // operation. A mismatch is an internal HIR construction bug; silently
+    // lowering the shorter prefix would manufacture a different program.
+    assert(statement.bindings.size() ==
+           statement.iteration_binding_sources.size());
     MirValueId element;
     for (std::size_t binding_index = 0;
-         binding_index < binding_count;
+         binding_index < statement.bindings.size();
          ++binding_index) {
       const MirLocalId local = ensure_local(statement.bindings[binding_index]);
       switch (statement.iteration_binding_sources[binding_index].kind) {

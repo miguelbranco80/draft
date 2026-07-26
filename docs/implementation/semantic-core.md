@@ -369,11 +369,15 @@ implemented in body checking, constant execution, MIR, and native lowering.
 
 An `IterationHeader` retains the value binding pattern, optional index binding,
 and iterable expression as separate syntax children. Semantic consumers never
-infer these roles from comma offsets. Body checking evaluates the iterable once
-and records one `HirIterationBindingSource` beside every retained local: the
-complete element, one source-order tuple member, or the hidden zero-based
-`usize` index. Discarded `_` positions create no local but do not shift the
-source recorded for later bindings.
+infer these roles from comma offsets or private child indices: the syntax-layer
+`iteration_header_parts` view is the single checked decoder for all semantic
+phases. Body checking evaluates the iterable once and records one
+`HirIterationBindingSource` beside every retained local: the complete element,
+one source-order tuple member, or the hidden zero-based `usize` index. The two
+HIR vectors are one atomic representation and must have equal length; a
+mismatch is an internal construction invariant rather than recoverable source.
+Discarded `_` positions create no local but do not shift the source recorded for
+later bindings.
 
 Array and slice elements keep their declared type. String elements use the same
 unit as indexing and `len`: copied `u8` values at byte offsets. A tuple pattern

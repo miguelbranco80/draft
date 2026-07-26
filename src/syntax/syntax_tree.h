@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -120,6 +121,8 @@ enum class NodeKind {
   // the element BindingPattern or TuplePattern, an optional single-name index
   // BindingPattern, and the iterable expression in that order. This shape
   // preserves discarded positions and tuple-member order through parsing.
+  // Consumers use iteration_header_parts instead of depending on these raw
+  // child offsets.
   IterationHeader,
   ForClause,
   SwitchStatement,
@@ -181,6 +184,19 @@ struct SyntaxNode {
   std::vector<NodeId> children;
 };
 
+// One IterationHeaderParts value is a checked, non-owning view of an
+// IterationHeader node's grammatical children. The IDs remain valid for the
+// SyntaxTree lifetime. value_pattern names either a BindingPattern or
+// TuplePattern, index_pattern is present only for the optional binding after
+// the comma, and iterable is the expression after `in`. This view validates
+// only the parser-owned header shape; semantic consumers still own pattern and
+// iterable type rules.
+struct IterationHeaderParts {
+  NodeId value_pattern;
+  std::optional<NodeId> index_pattern;
+  NodeId iterable;
+};
+
 class SyntaxTree {
 public:
   SyntaxTree(FileId file, std::vector<Token> tokens);
@@ -217,6 +233,13 @@ private:
   std::vector<SyntaxNode> nodes_;
   NodeId root_;
 };
+
+// Decodes the fixed child roles of one IterationHeader without exposing child
+// offsets to each semantic phase. Parser recovery or a non-header node returns
+// null; callers that own diagnostics retain the original node and report at its
+// range. The operation borrows the immutable tree and allocates no storage.
+[[nodiscard]] std::optional<IterationHeaderParts> iteration_header_parts(
+    const SyntaxTree &tree, NodeId header);
 
 [[nodiscard]] std::string_view node_kind_name(NodeKind kind);
 
