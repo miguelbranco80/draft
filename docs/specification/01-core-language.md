@@ -252,6 +252,20 @@ contains one Unicode scalar. Raw backtick strings preserve their UTF-8 bytes
 across lines. Escaped Unicode scalars in strings are encoded as UTF-8, while
 byte escapes permit arbitrary string bytes.
 
+A rune literal has standalone type `rune`. When an expression position instead
+expects a signed or unsigned integer type, including a distinct integer type,
+the literal adopts that type if its scalar value is exactly representable.
+Expected types come from assignments, returns, fixed procedure arguments,
+aggregate members, switch subjects, conditional branches, and the concrete
+operand of a binary operator, so both `byte_value == 'q'` and
+`'q' == byte_value` are valid when `byte_value` is `u8`. A context-free literal
+still has type `rune`, and two rune literals do not invent an integer context.
+This rule does not apply to floating, enum, endian-storage, or boolean-storage
+types and does not implicitly convert a variable or named constant whose type
+is `rune`. For non-ASCII text the literal denotes the Unicode scalar rather
+than its UTF-8 encoding; for example, `'é'` is 233 and not either byte of its
+two-byte UTF-8 representation.
+
 Composite literals have these Draft 1 forms: `[N]T{values}` for fixed arrays,
 `T{field = value, ...}` for structs, `T{field = value}` for one selected union
 field, `(a, b)` for tuples, and contextual `.case` or `.case(value)` for
@@ -329,10 +343,12 @@ selected value. Other operands evaluate left to right; `&&` and `||`
 short-circuit.
 
 Concrete numeric types do not convert implicitly; an untyped numeric constant
-converts when representable in the required type. An assignment, return, or
-argument position supplies that expected type through the complete expression;
-a compound assignment uses its left operand's type. `cast[T](value)` is the
-sole explicit value-conversion form in Draft 1:
+converts when representable in the required type. The exact contextual typing
+of a rune literal described above is also a source-literal rule, not a
+conversion from concrete `rune`. An assignment, return, or argument position
+supplies its expected type through the complete expression; a compound
+assignment uses its left operand's type. `cast[T](value)` is the sole explicit
+value-conversion form in Draft 1:
 
 - Integer-to-integer conversion reduces the mathematical value modulo the
   target width and interprets the resulting bits using the target signedness.

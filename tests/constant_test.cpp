@@ -1951,6 +1951,141 @@ Bad_Dead_Conditional :: 42 if true else "wrong"
                     std::string::npos);
 }
 
+// Constant evaluation is a semantic path independent of runtime HIR checking.
+// Keep the contextual rune-literal contract covered here as well so package
+// constants, compile-time calls and switches, and global initializers cannot
+// drift from the ordinary expression checker.
+void test_contextual_rune_literals(TestState &state) {
+  AnalyzedSource valid(R"draft(
+package conditions
+
+Byte_Code :: distinct u8
+
+accept_byte :: proc(value: u8) -> u8 {
+    return value
+}
+
+classify_byte :: proc(value: u8) -> bool {
+    switch value {
+    case 'q':
+        return true
+    case:
+        return false
+    }
+}
+
+Byte_Result :: accept_byte('q')
+Left_Comparison :: Byte_Result == 'q'
+Right_Comparison :: 'q' == Byte_Result
+Conditional_Left :: 'l' if true else Byte_Result
+Conditional_Right :: Byte_Result if false else 'r'
+Selected :: classify_byte('q')
+Rune_Default :: 'é'
+Explicit_Byte :: cast[u8](Rune_Default)
+
+byte: u8 = 'q'
+distinct_byte: Byte_Code = 'x'
+bytes: [2]u8 = [2]u8{'a', 'b'}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.analysis.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  const auto expect_type = [&](std::string_view name, draft::TypeId type) {
+    const std::optional<draft::SymbolId> symbol =
+        find_symbol(valid.analysis.package, name);
+    EXPECT(state, symbol.has_value());
+    if (symbol.has_value()) {
+      EXPECT(state, valid.analysis.package.symbols.symbol(*symbol).type == type);
+    }
+  };
+  expect_type("Byte_Result", valid.analysis.package.types.builtins().u8_type);
+  expect_type(
+      "Conditional_Left", valid.analysis.package.types.builtins().u8_type);
+  expect_type(
+      "Conditional_Right", valid.analysis.package.types.builtins().u8_type);
+  expect_type(
+      "Rune_Default", valid.analysis.package.types.builtins().rune_type);
+  expect_type(
+      "Explicit_Byte", valid.analysis.package.types.builtins().u8_type);
+
+  for (std::string_view name :
+       {"Left_Comparison", "Right_Comparison", "Selected"}) {
+    const std::optional<draft::SymbolId> symbol =
+        find_symbol(valid.analysis.package, name);
+    EXPECT(state, symbol.has_value());
+    const draft::ConstantValue *value = symbol.has_value()
+        ? valid.analysis.constants.find(*symbol)
+        : nullptr;
+    EXPECT(state, value != nullptr);
+    if (value != nullptr) {
+      EXPECT(state, value->kind == draft::ConstantKind::Bool);
+      EXPECT(state, value->boolean);
+    }
+  }
+
+  AnalyzedSource invalid(R"draft(
+package conditions
+
+accept_byte :: proc(value: u8) -> u8 {
+    return value
+}
+
+Byte_Value :: accept_byte('q')
+Rune_Value :: 'q'
+
+Bad_Concrete_Rune_Comparison :: Byte_Value == Rune_Value
+Bad_Named_Rune_Argument :: accept_byte(Rune_Value)
+Bad_Rune_Arithmetic :: 'a' + 'b'
+Bad_Float_Context :: cast[f32](1) == 'q'
+too_large: u8 = '😀'
+wrong_named_rune: u8 = Rune_Value
+wrong_float_literal: f32 = 'q'
+)draft");
+  EXPECT(state, !invalid.analysis.ok);
+  EXPECT(state, invalid.diagnostics.error_count() == 7);
+
+  std::size_t named_rune_context_errors = 0;
+  bool saw_arithmetic = false;
+  std::size_t float_context_errors = 0;
+  bool saw_range = false;
+  for (const draft::Diagnostic &diagnostic : invalid.diagnostics.diagnostics()) {
+    if (diagnostic.severity != draft::DiagnosticSeverity::Error) continue;
+    EXPECT(state, diagnostic.range.is_valid());
+    const std::string spelling(
+        invalid.sources.text(diagnostic.range));
+    if (diagnostic.message.find("value of type 'rune'") !=
+            std::string::npos &&
+        spelling == "Rune_Value") {
+      ++named_rune_context_errors;
+    }
+    saw_arithmetic = saw_arithmetic ||
+        (diagnostic.message ==
+             "compile-time operator is not defined for operand types" &&
+         spelling == "'a' + 'b'");
+    if (diagnostic.message.find("value of type 'rune'") !=
+            std::string::npos &&
+        spelling == "'q'") {
+      ++float_context_errors;
+    }
+    saw_range = saw_range ||
+        (diagnostic.message.find("not representable") != std::string::npos &&
+         spelling == "'😀'");
+  }
+  EXPECT(state, named_rune_context_errors == 3);
+  EXPECT(state, saw_arithmetic);
+  EXPECT(state, float_context_errors == 2);
+  EXPECT(state, saw_range);
+  if (named_rune_context_errors != 3 || !saw_arithmetic ||
+      float_context_errors != 2 || !saw_range ||
+      invalid.diagnostics.error_count() != 7) {
+    std::cerr << draft::render_diagnostics(
+        invalid.sources, invalid.diagnostics);
+  }
+}
+
 void test_global_initializers(TestState &state) {
   AnalyzedSource source(R"draft(
 package conditions
@@ -2900,6 +3035,7 @@ int main() {
   test_compile_time_string_views(state);
   test_compile_time_structural_sequence_counts(state);
   test_operator_type_boundaries(state);
+  test_contextual_rune_literals(state);
   test_global_initializers(state);
   test_global_type_value_storage_is_rejected(state);
   test_constant_dependency_chain_is_product_scheduled(state);

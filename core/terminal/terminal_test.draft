@@ -108,7 +108,7 @@ test_key_decoder :: proc(test: ^testing.Test) {
 
     ordinary := decode_key(&decoder, cast[u8]('q'))
     testing.expect(test, ordinary.kind == .byte)
-    testing.expect(test, ordinary.byte_value == cast[u8]('q'))
+    testing.expect(test, ordinary.byte_value == 'q')
     testing.expect(test, !ordinary.shift && !ordinary.alt && !ordinary.control)
 
     enter := decode_key(&decoder, 13)

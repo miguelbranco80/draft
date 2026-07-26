@@ -927,17 +927,42 @@ invalid count traps before the shift executes.
 
 ## Conditional context discovery
 
-Status: complete Draft 1 contextual-value inference rule.
+Status: complete Draft 1 contextual-value and rune-literal inference rules.
 
 An outer expected type continues to flow into both conditional value branches.
-Without one, a direct `nil` or contextual enum/variant alternative may take
-its type from the opposite, independently typed branch regardless of whether it
-appears on the left or right. This is a type-checking dependency only: runtime
-evaluation still executes the condition first and then exactly one value branch.
-If both branches require context, the compiler does not guess an owner or pointer
-kind; an outer expected type remains mandatory. Grouping and denial wrappers do
-not change this rule, and a nested conditional requests outer context exactly
-when both of its own value branches require it.
+Without one, a direct `nil`, contextual enum/variant alternative, or rune
+literal may take a compatible type from the opposite, independently typed
+branch regardless of whether it appears on the left or right. This is a
+type-checking dependency only: runtime evaluation still executes the condition
+first and then exactly one value branch. If both branches require an owner, the
+compiler does not guess one; an outer expected type remains mandatory. Two rune
+literals instead check in source order and naturally retain their standalone
+`rune` type. Grouping and denial wrappers do not change this rule, and a nested
+conditional accepts outer context exactly when both of its own value branches
+do.
+
+The body checker and constant evaluator each keep a small syntax-only
+`accepts_sibling_context` query because they own independent semantic products.
+It never decodes or evaluates the expression. In a binary expression it permits
+the independently typed operand to be checked first solely to discover an
+expected type, while HIR/MIR execution order remains the authored left-to-right
+order. Literal checking then decodes the scalar and preserves `rune` unless the
+expected type is a signed or unsigned integer (or, in runtime generic HIR, a
+symbolic `integer` parameter). Exact representability is checked before the
+typed constant is retained. Distinct integers preserve their TypeId; floats,
+enums, endian scalars, boolean storage, and concrete rune-valued expressions do
+not enter this path. This keeps `byte == 'q'` and `'q' == byte` symmetric without
+adding a general rune conversion or another lowering operation.
+
+`ConstantValue` stores both integer constants and rune scalars in its exact
+integer payload, so payload shape alone cannot authorize a conversion. The
+constant evaluator wraps every expression result with one type-origin check: a
+literal that accepted integer context has already returned that integer TypeId;
+if a result still has concrete type `rune` under a different expected type, the
+wrapper diagnoses the mismatch before any value-only conversion. This single
+boundary covers named constants, compile-time locals, procedure arguments and
+returns, aggregate selections, and global initializers without attaching
+source-origin flags to `ConstantValue` or weakening explicit `cast` semantics.
 
 ## Runtime assertion build mode
 

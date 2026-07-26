@@ -208,6 +208,21 @@ The scalar vocabulary includes:
 Concrete numeric types never convert implicitly. Untyped constants convert
 only when representable in an expected type.
 
+A rune literal is another exact contextual source literal. It defaults to
+`rune`, but may directly take an expected signed or unsigned integer type,
+including a distinct integer type, when its Unicode scalar is representable:
+
+```draft
+byte_value: u8 = 'q'
+matches := byte_value == 'q'
+reverse_matches := 'q' == byte_value
+```
+
+This is not an implicit conversion from `rune`: a variable or named constant
+already typed `rune` still needs an explicit cast before integer use. Float,
+enum, endian-storage, and boolean-storage contexts do not qualify. Remember
+that a non-ASCII literal is its scalar value, not its UTF-8 bytes; `'é'` is 233.
+
 Pointer and view types are:
 
 ```text

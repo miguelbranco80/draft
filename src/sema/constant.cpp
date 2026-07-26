@@ -1119,9 +1119,29 @@ private:
         tree.token(expression.token_begin).kind == TokenKind::KeywordNil;
   }
 
-  [[nodiscard]] bool needs_value_context(
+  // Context discovery identifies rune syntax without decoding it. Literal
+  // evaluation remains the single owner of escape validation and scalar
+  // diagnostics; this query only lets a typed sibling contextualize the rune
+  // before left-to-right constant evaluation begins.
+  [[nodiscard]] bool is_rune_literal(
       const SyntaxTree &tree, NodeId expression_id) const {
-    if (is_nil_literal(tree, expression_id)) return true;
+    const SyntaxNode &expression = tree.node(expression_id);
+    return expression.kind == NodeKind::LiteralExpression &&
+        expression.token_begin < expression.token_end &&
+        tree.token(expression.token_begin).kind == TokenKind::RuneLiteral;
+  }
+
+  // Reports whether an expression may take its value type from a sibling.
+  // `nil` and contextual alternatives require that owner; a rune literal may
+  // accept an integer owner and otherwise defaults to `rune`. Groups, denials,
+  // and conditionals mirror the runtime body checker's structural rule so the
+  // two semantic paths cannot disagree about operand order.
+  [[nodiscard]] bool accepts_sibling_context(
+      const SyntaxTree &tree, NodeId expression_id) const {
+    if (is_nil_literal(tree, expression_id) ||
+        is_rune_literal(tree, expression_id)) {
+      return true;
+    }
     const SyntaxNode &expression = tree.node(expression_id);
     if (expression.kind == NodeKind::ContextualAlternativeExpression) {
       return true;
@@ -1129,14 +1149,29 @@ private:
     if ((expression.kind == NodeKind::GroupExpression ||
          expression.kind == NodeKind::DenyExpression) &&
         !expression.children.empty()) {
-      return needs_value_context(tree, expression.children.back());
+      return accepts_sibling_context(tree, expression.children.back());
     }
     if (expression.kind == NodeKind::ConditionalExpression &&
         expression.children.size() == 3) {
-      return needs_value_context(tree, expression.children[0]) &&
-          needs_value_context(tree, expression.children[2]);
+      return accepts_sibling_context(tree, expression.children[0]) &&
+          accepts_sibling_context(tree, expression.children[2]);
     }
     return false;
+  }
+
+  // A contextual rune literal may become only a concrete signed or unsigned
+  // integer (including a distinct integer after unwrapping). Rune-to-float,
+  // rune-to-enum, endian-storage, and other integer-shaped conversions remain
+  // explicit. The representability check itself is performed by
+  // convert_to_type with wrapping disabled.
+  [[nodiscard]] bool is_contextual_rune_integer_type(TypeId type) const {
+    if (!type.is_valid() ||
+        semantic_.types.type(type).kind == TypeKind::Invalid) {
+      return false;
+    }
+    const TypeKind kind = runtime_type(type).kind;
+    return kind == TypeKind::SignedInteger ||
+        kind == TypeKind::UnsignedInteger;
   }
 
   // Recognizes the predeclared target object through transparent grouping.
@@ -1456,6 +1491,10 @@ private:
     }
     if (is_nil_literal(tree, contextual_expression)) {
       return nil_context_type(hinted_type);
+    }
+    if (is_rune_literal(tree, contextual_expression)) {
+      return hinted_type == semantic_.types.builtins().rune_type ||
+          is_contextual_rune_integer_type(hinted_type);
     }
     const TypeKind kind = runtime_type(hinted_type).kind;
     return kind == TypeKind::Enum || kind == TypeKind::Variant;
@@ -2326,14 +2365,15 @@ private:
     }
 
     // A contextual alternative has no type until its matching operand supplies
-    // one. Source evaluation still begins on the left, but static typing may
-    // inspect the right operand's declared type first; doing so does not read
-    // its value or change evaluation order. This makes `.macos == target.os`
-    // equivalent in type validity to `target.os == .macos` while retaining the
-    // ordinary left-to-right execution rule for value-producing operands.
+    // one, and a rune literal may adopt a sibling's exact integer type. Source
+    // evaluation still begins on the left, but static typing may inspect the
+    // right operand's declared type first; doing so does not read its value or
+    // change evaluation order. Thus `.macos == target.os` and `'q' == byte`
+    // are order-independent in type validity while value-producing operands
+    // retain the ordinary left-to-right execution rule.
     TypeId left_context = numeric_context;
     if (!left_context.is_valid() &&
-        needs_value_context(tree, node.children.front())) {
+        accepts_sibling_context(tree, node.children.front())) {
       const TypeId right_type = declared_value_type_hint(
           tree, node.children.back(), scope);
       if (accepts_context_hint(
@@ -2369,7 +2409,8 @@ private:
     }
 
     TypeId right_context = numeric_context;
-    if (needs_value_context(tree, node.children[1]) && left.type.is_valid()) {
+    if (accepts_sibling_context(tree, node.children[1]) &&
+        left.type.is_valid()) {
       right_context = left.type;
     }
     if (!right_context.is_valid() && concrete_numeric(left.type) &&
@@ -5568,15 +5609,50 @@ private:
     return result;
   }
 
-  // Evaluates the deterministic expression subset in strict source order.
-  // Unsupported forms return Pending; the final fixed-point caller supplies the
-  // generic "not a ready constant" diagnostic rather than guessing semantics.
+  // Applies the one contextual rule whose source origin matters after constant
+  // evaluation. A rune literal which accepted an integer expectation already
+  // returns that integer TypeId from the literal case below. Any result which
+  // still has concrete type `rune` therefore came from a context-free literal
+  // or from a named/composite rune-valued expression and cannot silently enter
+  // a different expected type merely because ConstantValue stores its scalar
+  // payload as an integer. Keeping this guard around every evaluator result
+  // prevents value representation from erasing source-level type identity in
+  // globals, procedure arguments and returns, locals, and aggregate members.
   [[nodiscard]] EvalResult evaluate_expression(
       const SyntaxTree &tree,
       NodeId expression_id,
       ScopeId scope,
       bool required,
       TypeId expected = {}) {
+    EvalResult result = evaluate_expression_impl(
+        tree, expression_id, scope, required, expected);
+    if (result.status != EvalStatus::Ready || !result.type.is_valid() ||
+        !expected.is_valid() || result.type == expected ||
+        semantic_.types.type(result.type).kind == TypeKind::Invalid ||
+        semantic_.types.type(expected).kind == TypeKind::Invalid) {
+      return result;
+    }
+    if (runtime_type(result.type).kind == TypeKind::Rune) {
+      return fail(
+          tree.node(expression_id).range,
+          "compile-time value of type 'rune' does not match its required type; "
+          "use an explicit cast when conversion is intended",
+          required);
+    }
+    return result;
+  }
+
+  // Evaluates the deterministic expression subset in strict source order.
+  // Unsupported forms return Pending; the final fixed-point caller supplies the
+  // generic "not a ready constant" diagnostic rather than guessing semantics.
+  // Recursive calls go through evaluate_expression above so every expected
+  // type boundary retains the rune-origin guard before value-only conversion.
+  [[nodiscard]] EvalResult evaluate_expression_impl(
+      const SyntaxTree &tree,
+      NodeId expression_id,
+      ScopeId scope,
+      bool required,
+      TypeId expected) {
     const SyntaxNode &node = tree.node(expression_id);
 
     // Structural type syntax is itself an exact compile-time `type` value.
@@ -5654,9 +5730,18 @@ private:
         if (!value.has_value()) {
           return fail(token.range, "invalid rune literal", required);
         }
+        ConstantValue scalar = ConstantValue::make_integer(
+            BigInteger::from_u64(*value));
+        // Section 4 makes this exact source literal adopt a concrete integer
+        // expectation when representable. A name or expression whose type is
+        // already `rune` never reaches this branch, so the rule cannot become
+        // an implicit rune-to-integer conversion.
+        if (is_contextual_rune_integer_type(expected)) {
+          return convert_to_type(
+              std::move(scalar), expected, false, token.range, required);
+        }
         return ready(
-            ConstantValue::make_integer(BigInteger::from_u64(*value)),
-            semantic_.types.builtins().rune_type);
+            std::move(scalar), semantic_.types.builtins().rune_type);
       }
       if (token.kind == TokenKind::StringLiteral ||
           token.kind == TokenKind::RawStringLiteral) {
@@ -6164,7 +6249,7 @@ private:
           : node.children[2];
       TypeId selected_context = expected;
       if (!selected_context.is_valid() &&
-          needs_value_context(tree, selected)) {
+          accepts_sibling_context(tree, selected)) {
         const NodeId other = condition.value.boolean
             ? node.children[2]
             : node.children[0];
@@ -6176,7 +6261,8 @@ private:
       EvalResult result = evaluate_expression(
           tree, selected, scope, required, selected_context);
       if (result.status == EvalStatus::Ready && selected_context.is_valid() &&
-          needs_value_context(tree, selected) && !result.type.is_valid()) {
+          accepts_sibling_context(tree, selected) &&
+          !result.type.is_valid()) {
         // Contextual alternatives historically carry their owner separately
         // from ConstantValue so switch-label comparison can resolve labels in
         // the subject domain. Attach the inferred owner only to the complete

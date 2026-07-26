@@ -697,7 +697,7 @@ views :: proc() -> usize {
     (_, second): (u64, usize) = tuple
     text := "draft"
     middle := text[1:4]
-    assert(text[0] == cast[u8]('d'))
+    assert(text[0] == 'd')
     byte_total: usize
     for byte, offset in "Aé" {
         byte_total += cast[usize](byte) + offset
@@ -3564,6 +3564,128 @@ concrete_tuple_conversion :: proc(value: (f32, f32)) -> (f64, f64) {
                     std::string::npos);
 }
 
+// A rune literal denotes one exact Unicode scalar. It defaults to `rune`, but
+// an expected integer type may own the literal when the scalar fits exactly.
+// Exercise every runtime context that passes an expected value type, plus both
+// comparison operand orders; the negative half proves that this remains a
+// literal rule rather than an implicit conversion from concrete rune values.
+void test_contextual_rune_literals(TestState &state) {
+  CheckedSource valid(R"draft(
+package bodies
+
+Byte_Code :: distinct u8
+
+accept_byte :: proc(value: u8) -> u8 {
+    return value
+}
+
+return_byte :: proc() -> u8 {
+    return 'r'
+}
+
+generic_byte[T: integer] :: proc() -> T {
+    return 'g'
+}
+
+classify_byte :: proc(value: u8) -> bool {
+    switch value {
+    case 'q':
+        return true
+    case:
+        return false
+    }
+}
+
+contexts :: proc(value: u8, condition: bool) -> bool {
+    direct: u8 = 'q'
+    named: Byte_Code = 'x'
+    from_call := accept_byte('c')
+    from_left_branch: u8 = 'l' if condition else value
+    from_right_branch: u8 = value if condition else 'r'
+    bytes: [2]u8 = [2]u8{'a', 'b'}
+    return value == 'q' && 'q' == value &&
+        direct == 'q' && named == 'x' && from_call == 'c' &&
+        from_left_branch >= 'l' && from_right_branch >= 'r' &&
+        bytes[0] == 'a' && return_byte() == 'r' &&
+        generic_byte[u8]() == 'g' && classify_byte('q')
+}
+
+still_rune :: proc() -> rune {
+    inferred := 'é'
+    return inferred
+}
+)draft");
+  if (valid.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(valid.sources, valid.diagnostics);
+  }
+  EXPECT(state, valid.bodies.ok);
+  EXPECT(state, !valid.diagnostics.has_errors());
+
+  CheckedSource invalid(R"draft(
+package bodies
+
+too_large :: proc() {
+    byte: u8 = '😀'
+}
+
+wrong_float :: proc() {
+    value: f32 = 'q'
+}
+
+concrete_rune_does_not_convert :: proc(byte: u8, value: rune) -> bool {
+    return byte == value
+}
+
+rune_arithmetic_stays_invalid :: proc() -> rune {
+    return 'a' + 'b'
+}
+
+generic_too_large[T: integer] :: proc() -> T {
+    return '😀'
+}
+
+instantiate_too_large :: proc() -> u8 {
+    return generic_too_large[u8]()
+}
+)draft");
+  EXPECT(state, !invalid.bodies.ok);
+  EXPECT(state, invalid.diagnostics.error_count() == 5);
+
+  bool saw_range = false;
+  bool saw_float = false;
+  bool saw_concrete_rune = false;
+  bool saw_rune_arithmetic = false;
+  for (const draft::Diagnostic &diagnostic : invalid.diagnostics.diagnostics()) {
+    if (diagnostic.severity != draft::DiagnosticSeverity::Error) continue;
+    EXPECT(state, diagnostic.range.is_valid());
+    const std::string spelling(
+        invalid.sources.text(diagnostic.range));
+    saw_range = saw_range ||
+        (diagnostic.message.find("not representable") != std::string::npos &&
+         spelling == "'😀'");
+    saw_float = saw_float ||
+        (diagnostic.message.find("does not match expected type") !=
+             std::string::npos &&
+         spelling == "'q'");
+    saw_concrete_rune = saw_concrete_rune ||
+        (diagnostic.message ==
+             "comparison is not defined for operand types" &&
+         spelling == "byte == value");
+    saw_rune_arithmetic = saw_rune_arithmetic ||
+        (diagnostic.message == "numeric operands require one common type" &&
+         spelling == "'a' + 'b'");
+  }
+  EXPECT(state, saw_range);
+  EXPECT(state, saw_float);
+  EXPECT(state, saw_concrete_rune);
+  EXPECT(state, saw_rune_arithmetic);
+  if (!saw_range || !saw_float || !saw_concrete_rune ||
+      !saw_rune_arithmetic || invalid.diagnostics.error_count() != 5) {
+    std::cerr << draft::render_diagnostics(
+        invalid.sources, invalid.diagnostics);
+  }
+}
+
 void test_builtin_context_value(TestState &state) {
   CheckedSource valid(R"draft(
 package bodies
@@ -4173,6 +4295,7 @@ int main() {
   test_compound_assignment_operators(state);
   test_invalid_operator_type_matrix(state);
   test_numeric_context_boundaries(state);
+  test_contextual_rune_literals(state);
   test_builtin_context_value(state);
   test_c_variadic_call_arguments(state);
   test_compile_time_type_inspection(state);
