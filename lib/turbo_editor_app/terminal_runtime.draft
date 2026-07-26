@@ -20,6 +20,48 @@ import lib/turbo_editor
 import lib/turbo_ui
 import lib/turbo_ui_terminal
 
+// Pointer_Click_State is the event loop's small timing bridge between raw
+// terminal press/release reports and turbo_ui's semantic click_count. It owns no
+// timer or input resource: last_release_at is a monotonic observation supplied
+// by run_interactive, and valid says that one ordinary click is waiting for a
+// possible matching second release.
+Pointer_Click_State :: struct {
+    last_position: turbo_ui.Point,
+    last_release_at: time.Duration,
+    valid: bool,
+}
+
+// classify_pointer_click annotates primary releases without changing any other
+// event. Two releases at the same terminal cell within Double_Click_Interval
+// form exactly one double click; consuming that pair resets the state so a
+// third click begins a new sequence. An older timestamp cannot arise from the
+// monotonic runtime clock, but treating it as a fresh click keeps synthetic or
+// replaced clocks from manufacturing an activation.
+classify_pointer_click :: proc(
+    event: ^turbo_ui.Event,
+    clicks: ^Pointer_Click_State,
+    observed_at: time.Duration,
+) {
+    if event.kind != .mouse || event.mouse.action != .release ||
+        event.mouse.button != .primary {
+        return
+    }
+    event.mouse.click_count = 1
+    same_position := clicks.valid &&
+        clicks.last_position.column == event.mouse.position.column &&
+        clicks.last_position.row == event.mouse.position.row
+    within_interval := same_position && observed_at >= clicks.last_release_at &&
+        observed_at - clicks.last_release_at <= Double_Click_Interval
+    if within_interval {
+        event.mouse.click_count = 2
+        clicks.valid = false
+        return
+    }
+    clicks.last_position = event.mouse.position
+    clicks.last_release_at = observed_at
+    clicks.valid = true
+}
+
 render_size :: proc(size: terminal.Size) -> (usize, usize, bool) {
     if size.columns == 0 || size.rows == 0 {
         return (0, 0, false)
@@ -170,6 +212,7 @@ run_interactive :: proc(
     scrollbar_repeat_deadline: time.Duration
     last_motion: turbo_ui.Mouse_Event
     last_motion_valid := false
+    pointer_clicks: Pointer_Click_State
 
     paint_app(app, tui.surface(&renderer), turbo_ui.no_event())
     if tui.present(&renderer, screen) != .none {
@@ -249,6 +292,14 @@ run_interactive :: proc(
                 event := turbo_ui_terminal.decode(&decoder, input[index])
                 if event.kind == .none {
                     continue
+                }
+                if event.kind == .mouse && event.mouse.action == .release &&
+                    event.mouse.button == .primary {
+                    classify_pointer_click(
+                        &event,
+                        &pointer_clicks,
+                        time.monotonic_now(),
+                    )
                 }
                 if event.kind == .mouse && event.mouse.action == .move {
                     // Motion is coalesced across every immediately queued

@@ -128,17 +128,21 @@ fit, dropping the identity first on a narrow terminal.
 Combo boxes keep their item slice borrowed and separate the owner-window field
 pass from the popup pass so choices remain above every window.
 
-`List_State` owns only cursor and viewport offset. `list_view` handles keyboard,
-mouse, activation and its integrated scrollbar, then returns the visible model
-range. Simple `[]string` clients use `list`; richer clients call
+`List_State` owns cursor, viewport offset, and the first row of an armed
+double-click pair. `list_view` handles keyboard, mouse, explicit single- or
+double-click activation, and its integrated scrollbar, then returns the visible
+model range. The caller supplies semantic click counts because terminal
+protocols carry no double-click timing. Simple `[]string` clients use `list`;
+richer clients call
 `list_row_begin` and paint markers, byte labels, indentation or columns into the
 returned row. Wheel and scrollbar movement change only the viewport; keyboard
 selection is what keeps the cursor visible. `Text_View_State` and
 `text_view_bytes` provide the same scrolling behavior for allocation-free
 read-only line views. Vertical scrollbars have arrow cells, a proportional
-thumb, page regions, grab-relative dragging, and held-arrow capture. The UI
-owns no clock: an application schedules deterministic `repeat_event()` pulses
-while `scrollbar_repeat_active(&ui)` is true.
+thumb, page regions, grab-relative dragging, and held-arrow capture. Lists may
+keep an unneeded reserved scrollbar column visually empty for compact panes.
+The UI owns no clock: an application schedules deterministic `repeat_event()`
+pulses while `scrollbar_repeat_active(&ui)` is true.
 
 `tree_view` applies that same list behavior to a caller-owned flat preorder
 table of `Tree_Node` records. Each node retains its own expansion bit; the

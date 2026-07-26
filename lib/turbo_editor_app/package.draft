@@ -36,6 +36,7 @@ Input_Idle_Timeout :: 100 * time.millisecond
 Escape_Ambiguity_Timeout :: 25 * time.millisecond
 Scrollbar_Initial_Repeat :: 350 * time.millisecond
 Scrollbar_Repeat_Interval :: 50 * time.millisecond
+Double_Click_Interval :: 500 * time.millisecond
 
 Window_Editor :: 0
 Window_Open_Documents :: 1

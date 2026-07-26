@@ -9,22 +9,37 @@ package turbo_ui
 import core/tui
 
 // List_Activation states whether a completed primary click merely selects a
-// row or also activates it. Enter always activates the selected row. Keeping
-// this explicit lets a file browser open on click while a choice list uses
-// selection plus a separate confirmation action.
+// row, activates it immediately, or waits for a caller-classified double click.
+// Enter always activates the selected row. Keeping this explicit lets a file
+// browser use conventional double-click activation while a compact action list
+// can deliberately activate on one click.
 pub List_Activation :: enum u8 {
     enter_only,
     click_and_enter,
+    double_click_and_enter,
+}
+
+// List_Scrollbar controls only whether an unneeded scrollbar is painted. The
+// final column remains reserved in both modes so labels never jump horizontally
+// as the model crosses one page; when_needed paints that stable column as empty
+// window background until scrolling is possible.
+pub List_Scrollbar :: enum u8 {
+    always,
+    when_needed,
 }
 
 // List_State is application-owned persistent state for one logical list.
 // cursor is the selected item index; offset is the first visible item. Empty
-// lists normalize both fields to zero. Neither value owns or identifies item
-// storage, so rebuilding a model requires the application to restore a
-// semantic selection before its next list_view call when index identity moved.
+// lists normalize both fields to zero. The double-click fields retain only the
+// first clicked row for this exact list, preventing a physical click pair which
+// began in another control from activating it. No field owns item storage, so
+// rebuilding a model requires the application to restore semantic selection
+// and clear the armed click when index identity moved.
 pub List_State :: struct {
     cursor: usize,
     offset: usize,
+    double_click_index: usize,
+    double_click_armed: bool,
 }
 
 // List_View is one frame's interaction and visible-range result. item_bounds
@@ -70,8 +85,10 @@ keep_list_cursor_visible :: proc(model: ^List_State, visible: usize) {
 // rows. body_id and scrollbar_id must be distinct stable IDs. The final column
 // is always reserved when width permits, so labels do not jump horizontally
 // merely because the model crossed one page. Mouse activation completes on
-// release over the same selected row; keyboard movement keeps selection
-// visible, while wheel and scrollbar movement leave selection unchanged.
+// release over the same selected row. Double-click activation additionally
+// requires the first caller-classified click to have completed on that logical
+// row in this list. Keyboard movement keeps selection visible, while wheel and
+// scrollbar movement leave selection unchanged.
 pub list_view :: proc(
     state: ^State,
     body_id, scrollbar_id: Widget_Id,
@@ -79,6 +96,7 @@ pub list_view :: proc(
     item_count: usize,
     model: ^List_State,
     activation: List_Activation = .enter_only,
+    scrollbar: List_Scrollbar = .always,
 ) -> List_View {
     assert(state.frame_open, "turbo_ui list outside a frame")
     assert(body_id != No_Widget && scrollbar_id != No_Widget,
@@ -101,6 +119,7 @@ pub list_view :: proc(
     if item_count == 0 {
         model.cursor = 0
         model.offset = 0
+        model.double_click_armed = false
     } else if model.cursor >= item_count {
         model.cursor = item_count - 1
     }
@@ -123,6 +142,7 @@ pub list_view :: proc(
     selection_moved := false
     if !state.event_handled && reaches_list && state.event.kind == .mouse &&
         state.event.mouse.action == .wheel && maximum != 0 {
+        model.double_click_armed = false
         if state.event.mouse.wheel_delta < 0 {
             scroll_backward(&model.offset, Scroll_Wheel_Rows)
         } else if state.event.mouse.wheel_delta > 0 {
@@ -161,11 +181,29 @@ pub list_view :: proc(
         if reaches_items {
             row := state.event.mouse.position.row - item_bounds.row
             index := model.offset + row
-            if index < item_count && index == model.cursor &&
-                activation == .click_and_enter {
-                result.activated = true
-                result.activated_index = index
+            if index < item_count && index == model.cursor {
+                click_activates := activation == .click_and_enter
+                if activation == .double_click_and_enter {
+                    click_activates = state.event.mouse.click_count >= 2 &&
+                        model.double_click_armed &&
+                        model.double_click_index == index
+                    if state.event.mouse.click_count == 1 {
+                        model.double_click_index = index
+                        model.double_click_armed = true
+                    } else {
+                        model.double_click_armed = false
+                    }
+                }
+                if click_activates {
+                    result.activated = true
+                    result.activated_index = index
+                }
             }
+        } else if activation == .double_click_and_enter {
+            // Releasing a captured press outside the rows cannot complete the
+            // list's click pair. Retaining an older arm here could let a later
+            // unrelated release activate stale row identity.
+            model.double_click_armed = false
         }
         state.active_id = No_Widget
         state.active_kind = .none
@@ -209,6 +247,7 @@ pub list_view :: proc(
         case .enter:
             result.activated = true
             result.activated_index = model.cursor
+            model.double_click_armed = false
             state.event_handled = true
         case:
         }
@@ -218,9 +257,12 @@ pub list_view :: proc(
     }
 
     if selection_moved {
+        model.double_click_armed = false
         keep_list_cursor_visible(model, item_bounds.height)
     }
-    if !rect_empty(scrollbar_bounds) {
+    scrollbar_needed := item_count > item_bounds.height
+    if !rect_empty(scrollbar_bounds) &&
+        (scrollbar == .always || scrollbar_needed) {
         // A press anywhere in the compound list, including its scrollbar,
         // gives keyboard focus to the body while the scrollbar retains its
         // own capture ID for drag correctness.
@@ -236,6 +278,14 @@ pub list_view :: proc(
             item_count,
             item_bounds.height,
             &model.offset,
+        )
+    } else if !rect_empty(scrollbar_bounds) {
+        fill_rect(
+            state.surface,
+            state.clip,
+            scrollbar_bounds,
+            ' ',
+            state.theme.window,
         )
     }
     maximum = maximum_scroll(item_count, item_bounds.height)
@@ -332,6 +382,7 @@ pub list :: proc(
     items: []string,
     model: ^List_State,
     activation: List_Activation = .enter_only,
+    scrollbar: List_Scrollbar = .always,
 ) -> List_View {
     result := list_view(
         state,
@@ -341,6 +392,7 @@ pub list :: proc(
         len(items),
         model,
         activation,
+        scrollbar,
     )
     for index := result.first; index < result.end; index += 1 {
         list_row_text(state, result, index, items[index])

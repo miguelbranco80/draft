@@ -70,6 +70,8 @@ test_button_and_focus :: proc(test: ^testing.Test) {
     state: State
     theme := turbo_theme()
     bounds := Rect{column = 2, row = 2, width = 8, height = 1}
+    testing.expect(test, button_width("Open") == 7)
+    testing.expect(test, compact_button_width("Open") == 6)
 
     begin_frame(&state, &surface, mouse_event(Mouse_Event{
         position = Point{column = 3, row = 2},
@@ -422,6 +424,127 @@ test_collection_viewports :: proc(test: ^testing.Test) {
     )
     end_frame(&state)
     testing.expect(test, released.activated && released.activated_index == 6)
+
+    // A double-click list consumes the same press/release capture but trusts
+    // the caller-classified click count. The first click selects only; the
+    // second release activates the already-selected row. No clock enters the
+    // reusable UI or its synthetic test.
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 1},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    first_press := list(
+        &state, 31, 32, list_bounds, items[:], &model,
+        .double_click_and_enter,
+    )
+    end_frame(&state)
+    testing.expect(test, !first_press.activated)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 1},
+        action = .release,
+        button = .primary,
+        click_count = 1,
+    }), theme)
+    first_click := list(
+        &state, 31, 32, list_bounds, items[:], &model,
+        .double_click_and_enter,
+    )
+    end_frame(&state)
+    testing.expect(test, !first_click.activated)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 1},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    _ = list(
+        &state, 31, 32, list_bounds, items[:], &model,
+        .double_click_and_enter,
+    )
+    end_frame(&state)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 1},
+        action = .release,
+        button = .primary,
+        click_count = 2,
+    }), theme)
+    second_click := list(
+        &state, 31, 32, list_bounds, items[:], &model,
+        .double_click_and_enter,
+    )
+    end_frame(&state)
+    testing.expect(
+        test,
+        second_click.activated && second_click.activated_index == 6,
+    )
+
+    // A caller may classify two nearby releases as one physical pair, but the
+    // list still requires both clicks to name the same logical row. This keeps
+    // rapid selection changes from opening the newly selected item.
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 1},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    _ = list(
+        &state, 31, 32, list_bounds, items[:], &model,
+        .double_click_and_enter,
+    )
+    end_frame(&state)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 1},
+        action = .release,
+        button = .primary,
+        click_count = 1,
+    }), theme)
+    _ = list(
+        &state, 31, 32, list_bounds, items[:], &model,
+        .double_click_and_enter,
+    )
+    end_frame(&state)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 2},
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }), theme)
+    _ = list(
+        &state, 31, 32, list_bounds, items[:], &model,
+        .double_click_and_enter,
+    )
+    end_frame(&state)
+    begin_frame(&state, &surface, mouse_event(Mouse_Event{
+        position = Point{column = 2, row = 2},
+        action = .release,
+        button = .primary,
+        click_count = 2,
+    }), theme)
+    changed_row := list(
+        &state, 31, 32, list_bounds, items[:], &model,
+        .double_click_and_enter,
+    )
+    end_frame(&state)
+    testing.expect(test, !changed_row.activated && model.cursor == 7)
+
+    // when_needed preserves the reserved final column but erases the disabled
+    // full-height track when every row already fits.
+    short_items := [2]string{"one", "two"}
+    short_model: List_State
+    short_bounds := Rect{column = 20, row = 1, width = 8, height = 3}
+    begin_frame(&state, &surface, no_event(), theme)
+    _ = list(
+        &state, 35, 36, short_bounds, short_items[:], &short_model,
+        .enter_only, .when_needed,
+    )
+    end_frame(&state)
+    (empty_track, empty_track_valid) := tui.cell_at(&surface, 27, 2)
+    testing.expect(
+        test,
+        empty_track_valid && empty_track.value == ' ',
+    )
 
     text := [9]u8{97, 10, 98, 10, 99, 10, 100, 10, 101}
     text_model: Text_View_State

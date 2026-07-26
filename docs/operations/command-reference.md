@@ -183,11 +183,12 @@ IDE-local root/window selections are not stored in the workspace manifest.
 
 Turbo Draft opens ordinary files. File > Open File, Save As, and Open Workspace
 share a modal directory browser. Window > Workspace Files opens an independent
-persistent browser rooted at the active Workspace; Enter navigates or opens the
-selected row, and Up cannot leave that root. A file inside the Workspace opens
-without changing the selected root and remains editing-only when it is outside
-that root package. A path outside the active Workspace requires an explicit
-Switch and Open decision. Open Documents lists editor-owned files, while
+persistent browser rooted at the active Workspace; Enter or a same-row double
+click navigates or opens the selected row, one click only selects, and Up cannot
+leave that root. A file inside the Workspace opens without changing the
+selected root and remains editing-only when it is outside that root package. A
+path outside the active Workspace requires an explicit Switch and Open
+decision. Open Documents lists editor-owned files, while
 Packages and Imports shows the compiler-selected graph. The active file and
 every other dirty active-root file form one in-memory compiler transaction, and
 saving updates those ordinary files. Open/Close Workspace use explicit

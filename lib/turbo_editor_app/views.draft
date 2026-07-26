@@ -550,8 +550,11 @@ paint_file_browser :: proc(app: ^App, content: turbo_ui.Rect) {
 // paint_workspace_files presents a persistent, workspace-rooted directory
 // snapshot. Unlike the modal file selector, its location is read-only and its
 // Up operation stops at the compiler-published Workspace boundary. Selecting a
-// row never changes the active root package: Enter navigates a directory or
-// opens the exact file as an ordinary document, which may remain editing-only.
+// row never changes the active root package: Enter or double-click navigates a
+// directory or opens the exact file as an ordinary document, which may remain
+// editing-only. The compact toolbar deliberately uses one-row buttons and hides
+// an unneeded scrollbar; dialog shadows and a full-height disabled track would
+// waste most of a small file pane.
 paint_workspace_files :: proc(app: ^App, content: turbo_ui.Rect) {
     if content.width < 16 || content.height < 6 {
         turbo_ui.write_clipped(
@@ -578,13 +581,13 @@ paint_workspace_files :: proc(app: ^App, content: turbo_ui.Rect) {
         app.ui.surface,
         content,
         turbo_ui.Point{column = content.column + 1, row = content.row},
-        "Location:",
+        "Workspace /",
         app.ui.theme.text,
     )
     location_bounds := turbo_ui.Rect{
-        column = content.column + 11,
+        column = content.column + 12,
         row = content.row,
-        width = content.width - 12,
+        width = content.width - 13,
         height = 1,
     }
     turbo_ui.write_clipped_bytes(
@@ -594,16 +597,16 @@ paint_workspace_files :: proc(app: ^App, content: turbo_ui.Rect) {
             column = location_bounds.column,
             row = location_bounds.row,
         },
-        workspace_files_location_bytes(app),
+        workspace_files_relative_location(app),
         app.ui.theme.text,
     )
 
     navigation := turbo_ui.layout_begin(
         turbo_ui.Rect{
             column = content.column + 1,
-            row = content.row + 2,
+            row = content.row + 1,
             width = content.width - 2,
-            height = 2,
+            height = 1,
         },
         .horizontal,
         0,
@@ -612,7 +615,10 @@ paint_workspace_files :: proc(app: ^App, content: turbo_ui.Rect) {
     if turbo_ui.button(
         &app.ui,
         852,
-        turbo_ui.layout_next(&navigation, turbo_ui.button_width("Up")),
+        turbo_ui.layout_next(
+            &navigation,
+            turbo_ui.compact_button_width("Up"),
+        ),
         "Up",
         !workspace_files_at_root(app),
         .normal,
@@ -623,7 +629,10 @@ paint_workspace_files :: proc(app: ^App, content: turbo_ui.Rect) {
     if turbo_ui.button(
         &app.ui,
         853,
-        turbo_ui.layout_next(&navigation, turbo_ui.button_width("Refresh")),
+        turbo_ui.layout_next(
+            &navigation,
+            turbo_ui.compact_button_width("Refresh"),
+        ),
         "Refresh",
         true,
         .normal,
@@ -640,9 +649,9 @@ paint_workspace_files :: proc(app: ^App, content: turbo_ui.Rect) {
     }
     list_bounds := turbo_ui.Rect{
         column = content.column + 1,
-        row = content.row + 4,
+        row = content.row + 3,
         width = content.width - 2,
-        height = content.height - 4 - footer_height,
+        height = content.height - 3 - footer_height,
     }
     view := turbo_ui.list_view(
         &app.ui,
@@ -651,15 +660,16 @@ paint_workspace_files :: proc(app: ^App, content: turbo_ui.Rect) {
         list_bounds,
         app.workspace_file_entry_count,
         &app.workspace_files_list,
-        .enter_only,
+        .double_click_and_enter,
+        .when_needed,
     )
     for index := view.first; index < view.end; index += 1 {
         row := turbo_ui.list_row_begin(&app.ui, view, index)
-        marker := "[?] "
+        marker := "? "
         if app.workspace_file_entry_kind[index] == .directory {
-            marker = "[D] "
+            marker = "▸ "
         } else if app.workspace_file_entry_kind[index] == .regular_file {
-            marker = "    "
+            marker = "  "
         }
         turbo_ui.write_clipped(
             app.ui.surface,
@@ -668,10 +678,10 @@ paint_workspace_files :: proc(app: ^App, content: turbo_ui.Rect) {
             marker,
             row.style,
         )
-        if row.bounds.width > 4 {
+        if row.bounds.width > 2 {
             name_bounds := row.bounds
-            name_bounds.column += 4
-            name_bounds.width -= 4
+            name_bounds.column += 2
+            name_bounds.width -= 2
             turbo_ui.write_clipped_bytes(
                 app.ui.surface,
                 turbo_ui.intersect(app.ui.clip, name_bounds),

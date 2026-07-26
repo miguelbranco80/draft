@@ -72,6 +72,11 @@ pub Mouse_Button :: enum u8 {
 // state on movement so a drag remains explicit even when a terminal protocol
 // reports movement separately from the original press. wheel_delta is negative
 // for upward/backward motion and positive for downward/forward motion.
+// click_count is meaningful on a primary release: one is an ordinary click and
+// two is the second release of a caller-classified double click. Terminals do
+// not transmit this count, so the event-loop adapter owns the timing policy;
+// keeping the semantic result here leaves reusable controls clock-free and
+// makes synthetic interaction tests deterministic.
 pub Mouse_Event :: struct {
     position: Point,
     action: Mouse_Action,
@@ -81,6 +86,7 @@ pub Mouse_Event :: struct {
     shift: bool,
     alt: bool,
     control: bool,
+    click_count: u8,
 }
 
 pub Resize_Event :: struct {

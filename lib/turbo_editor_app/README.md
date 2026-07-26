@@ -12,6 +12,10 @@ inspectors appear only when requested. Fixed dialogs are modal.
 `lib/turbo_editor` remains the smaller reusable document engine and editor view
 with no terminal, compiler, window, or event-loop ownership.
 
+Workspace Files uses a compact one-row toolbar, Workspace-relative breadcrumb,
+and scrollbar-on-demand. Enter or a true same-row double click navigates a
+directory or opens a document; one click only selects.
+
 The package is split by owned transition rather than widget type:
 
 - `package.draft` owns the long-lived `App` model and document/tooling tables;

@@ -4,6 +4,7 @@ import core/filesystem
 import core/memory
 import core/terminal
 import core/testing
+import core/time
 import core/tui
 import lib/draft_compiler_api
 import lib/turbo_editor
@@ -874,7 +875,9 @@ test_workspace_files_directory_order_is_deterministic :: proc(
 // above that boundary, and sends a selected ordinary file through the normal
 // document-opening command. The file is deliberately absent from the active
 // root source table, proving that browsing the Workspace does not silently
-// replace compiler scope or enroll unrelated files in overlays.
+// replace compiler scope or enroll unrelated files in overlays. On POSIX the
+// same rendered double-click path then enters the stable system /tmp directory,
+// covering the folder-navigation regression without creating shared scratch.
 test_workspace_files_opens_an_editing_only_document :: proc(
     test: ^testing.Test,
 ) {
@@ -927,13 +930,45 @@ test_workspace_files_opens_an_editing_only_document :: proc(
     defer tui.surface_destroy(&surface)
     _ = paint_app(&app, &surface, turbo_ui.no_event())
     testing.expect(test, surface_contains(&surface, "Workspace Files"))
+    testing.expect(test, surface_contains(&surface, "Workspace /"))
     testing.expect(test, surface_contains(&surface, "notes.draft"))
     testing.expect(
         test,
         surface_contains(&surface, "Directory truncated: 512-row limit"),
     )
 
-    testing.expect(test, activate_workspace_file_entry(&app, 0))
+    // A single click selects without opening. The caller-classified second
+    // release activates the same row through paint_workspace_files, proving
+    // the application did not accidentally leave the list Enter-only.
+    file_point := turbo_ui.Point{
+        column = app.windows[Window_Workspace_Files].bounds.column + 3,
+        row = app.windows[Window_Workspace_Files].bounds.row + 4,
+    }
+    _ = paint_app(&app, &surface, turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+        position = file_point,
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }))
+    _ = paint_app(&app, &surface, turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+        position = file_point,
+        action = .release,
+        button = .primary,
+        click_count = 1,
+    }))
+    testing.expect(test, app.buffer_count == 1)
+    _ = paint_app(&app, &surface, turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+        position = file_point,
+        action = .press,
+        button = .primary,
+        primary_down = true,
+    }))
+    _ = paint_app(&app, &surface, turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+        position = file_point,
+        action = .release,
+        button = .primary,
+        click_count = 2,
+    }))
     expected_path := "/tmp/draft-open-workspace/notes.draft"
     when target.os == .windows {
         expected_path = "C:\\draft-open-workspace\\notes.draft"
@@ -945,6 +980,62 @@ test_workspace_files_opens_an_editing_only_document :: proc(
     }
     testing.expect(test, app.buffer_count == 2)
     testing.expect(test, !app.buffer_has_root[app.active])
+
+    when target.os == .macos || target.os == .linux {
+        clear_workspace_file_entries(&app)
+        app.workspace_files_root[0] = cast[u8]('/')
+        app.workspace_files_root_length = 1
+        app.workspace_files_location[0] = cast[u8]('/')
+        app.workspace_files_location_length = 1
+        memory.owned_string_copy(
+            &app.workspace_file_entry_names[0],
+            "tmp",
+        )
+        app.workspace_file_entry_kind[0] = .directory
+        app.workspace_file_entry_count = 1
+        turbo_ui.show_window(
+            &app.ui,
+            app.windows[:],
+            app.windows[Window_Workspace_Files].id,
+        )
+
+        _ = paint_app(&app, &surface, turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+            position = file_point,
+            action = .press,
+            button = .primary,
+            primary_down = true,
+        }))
+        _ = paint_app(&app, &surface, turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+            position = file_point,
+            action = .release,
+            button = .primary,
+            click_count = 1,
+        }))
+        testing.expect(test, app.workspace_files_location_length == 1)
+        _ = paint_app(&app, &surface, turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+            position = file_point,
+            action = .press,
+            button = .primary,
+            primary_down = true,
+        }))
+        _ = paint_app(&app, &surface, turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+            position = file_point,
+            action = .release,
+            button = .primary,
+            click_count = 2,
+        }))
+        expected_directory := "/tmp"
+        actual_directory := workspace_files_location_bytes(&app)
+        testing.expect(test, len(actual_directory) == len(expected_directory))
+        for index: usize = 0; index < len(expected_directory); index += 1 {
+            testing.expect(
+                test,
+                actual_directory[index] == expected_directory[index],
+            )
+        }
+        _ = paint_app(&app, &surface, turbo_ui.no_event())
+        testing.expect(test, surface_contains(&surface, "Workspace /tmp"))
+    }
 }
 
 // Check and Build must see every open workspace buffer in one call, while syntax
@@ -1587,6 +1678,59 @@ test_dialog_geometry_and_window_roles :: proc(test: ^testing.Test) {
     testing.expect(test, surface_contains(&surface, "Target Platform"))
     testing.expect(test,
         surface_contains(&surface, "Effective Build Configuration"))
+}
+
+// Terminal protocols report presses and releases but no click count. The event
+// loop classifies one exact same-cell pair within the monotonic interval, then
+// consumes it so a third release cannot become another double click. Different
+// cells and expired intervals always begin a fresh sequence.
+test_pointer_click_classification_is_bounded :: proc(test: ^testing.Test) {
+    clicks: Pointer_Click_State
+    event := turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+        position = turbo_ui.Point{column = 4, row = 7},
+        action = .release,
+        button = .primary,
+    })
+    first_at := 10 * time.second
+    classify_pointer_click(&event, &clicks, first_at)
+    testing.expect(test, event.mouse.click_count == 1 && clicks.valid)
+
+    event = turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+        position = turbo_ui.Point{column = 4, row = 7},
+        action = .release,
+        button = .primary,
+    })
+    classify_pointer_click(&event, &clicks, first_at + 100 * time.millisecond)
+    testing.expect(test, event.mouse.click_count == 2 && !clicks.valid)
+
+    event = turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+        position = turbo_ui.Point{column = 4, row = 7},
+        action = .release,
+        button = .primary,
+    })
+    classify_pointer_click(&event, &clicks, first_at + 200 * time.millisecond)
+    testing.expect(test, event.mouse.click_count == 1 && clicks.valid)
+
+    event = turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+        position = turbo_ui.Point{column = 5, row = 7},
+        action = .release,
+        button = .primary,
+    })
+    classify_pointer_click(&event, &clicks, first_at + 250 * time.millisecond)
+    testing.expect(test, event.mouse.click_count == 1 && clicks.valid)
+
+    event = turbo_ui.mouse_event(turbo_ui.Mouse_Event{
+        position = turbo_ui.Point{column = 5, row = 7},
+        action = .release,
+        button = .primary,
+    })
+    classify_pointer_click(
+        &event,
+        &clicks,
+        first_at + 250 * time.millisecond + Double_Click_Interval +
+            time.nanosecond,
+    )
+    testing.expect(test, event.mouse.click_count == 1 && clicks.valid)
 }
 
 // Help is both a discoverable menu and the authoritative in-application

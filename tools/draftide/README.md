@@ -38,12 +38,12 @@ The six menus have conventional, non-overlapping responsibilities:
 
 Open File, Save As, and Open Workspace use one real modal directory browser.
 **Window > Workspace Files** opens an independent persistent browser rooted at
-the active Workspace. Enter navigates a directory or opens a file; Up stops at
-the Workspace root. A file inside that Workspace but outside the active root
-package opens as an editing-only document without changing compiler scope. A
-path outside the active Workspace requires an explicit **Switch and Open**
-decision. Workspace replacement or closure never discards dirty documents
-without Save All/Discard/Cancel.
+the active Workspace. Enter or double-click navigates a directory or opens a
+file; one click selects, and Up stops at the Workspace root. A file inside that
+Workspace but outside the active root package opens as an editing-only document
+without changing compiler scope. A path outside the active Workspace requires
+an explicit **Switch and Open** decision. Workspace replacement or closure
+never discards dirty documents without Save All/Discard/Cancel.
 
 The principal shortcuts are also listed by **Help > Keyboard Shortcuts**:
 

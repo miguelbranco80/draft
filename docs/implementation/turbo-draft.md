@@ -113,12 +113,15 @@ directory browser. Location is a pathname field, entries are directories-first
 and bytewise sorted, and file operations have a distinct Name field. Workspace
 Files owns a separate persistent snapshot so opening that dialog cannot move
 the tool pane. Its read-only location begins at the compiler-published Workspace
-path, Up is disabled at that root, and activating an ordinary file calls the same
-document-opening command as Open File. A path inside the Workspace but outside
-the active root package therefore remains editing-only; a path outside the
-active Workspace requires the explicit Switch and Open decision. Such a switch
-and Open Workspace construct and validate a complete replacement compiler
-session before swapping it behind the stable host handle. Dirty buffers require
+path, Up is disabled at that root, and Enter or a same-row double click calls the
+same navigation/document-opening command; one click only selects. The pane uses
+a Workspace-relative breadcrumb, one-row toolbar controls, and an empty reserved
+scrollbar column until scrolling is possible. A path inside the Workspace but
+outside the active root package therefore remains editing-only; a path outside
+the active Workspace requires the explicit Switch and Open decision. Such a
+switch and Open Workspace construct and validate a complete replacement
+compiler session before swapping it behind the stable host handle. Dirty
+buffers require
 an explicit Save All, Discard, or Cancel choice; save never silently overwrites
 a disk conflict. Close Workspace follows the same dirty-document policy and
 leaves one ordinary unnamed editing buffer.

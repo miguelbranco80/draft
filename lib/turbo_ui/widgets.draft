@@ -82,6 +82,19 @@ pub button_width :: proc(label: string) -> usize {
     return saturated_add(columns, 3)
 }
 
+// compact_button_width returns the exact one-row bracketed face width. Use it
+// only with a one-row button footprint; unlike button_width it reserves no
+// right-shadow column. Toolbars can therefore use ordinary button interaction
+// without importing the two-row dialog visual weight.
+pub compact_button_width :: proc(label: string) -> usize {
+    (columns, valid) := text_columns(label)
+    assert(valid, "turbo_ui button label must be printable UTF-8")
+    if !valid {
+        return 2
+    }
+    return saturated_add(columns, 2)
+}
+
 // button_face returns the painted and interactive face inside one explicit
 // footprint. The ordinary resting face is followed by a bottom/right shadow.
 // A held face moves one cell down/right and covers that shadow, which gives the

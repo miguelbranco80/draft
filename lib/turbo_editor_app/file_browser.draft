@@ -146,6 +146,7 @@ clear_directory_entries :: proc(
     count^ = 0
     list.cursor = 0
     list.offset = 0
+    list.double_click_armed = false
 }
 
 clear_workspace_file_entries :: proc(app: ^App) {
@@ -511,6 +512,25 @@ workspace_files_root_bytes :: proc(app: ^App) -> []u8 {
 
 workspace_files_location_bytes :: proc(app: ^App) -> []u8 {
     return app.workspace_files_location[:app.workspace_files_location_length]
+}
+
+// workspace_files_relative_location returns the current directory spelling
+// below the compiler-published root. The root itself is an empty relative
+// slice. The caller relies on the browser invariant that location is at or
+// below root; refresh_workspace_files diagnoses a violation before painting a
+// snapshot. Both arrays live in App, so the returned view remains valid until
+// the next workspace replacement or directory transition.
+workspace_files_relative_location :: proc(app: ^App) -> []u8 {
+    root := workspace_files_root_bytes(app)
+    location := workspace_files_location_bytes(app)
+    if len(location) <= len(root) {
+        return location[len(location):]
+    }
+    begin := len(root)
+    if begin < len(location) && path_byte_is_separator(location[begin]) {
+        begin += 1
+    }
+    return location[begin:]
 }
 
 // path_is_at_or_below compares complete path components. It is a lexical guard
