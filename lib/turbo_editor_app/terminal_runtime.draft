@@ -126,6 +126,31 @@ run_smoke :: proc() -> int {
     return 0
 }
 
+// report_host_smoke_failure makes the noninteractive DraftIDE contract
+// inspectable on a remote native host. The ordinary UI already exposes these
+// diagnostics in windows, but a release runner has no terminal frame to paint.
+// The compiler service owns the text only for the synchronous copy call; this
+// bounded stack buffer receives a complete prefix and is never retained.
+report_host_smoke_failure :: proc(app: ^App, reason: string) -> int {
+    report_error(reason)
+    if app^.host.copy_diagnostics == nil {
+        return 1
+    }
+    storage: [4096]u8
+    length := app^.host.copy_diagnostics(
+        app^.host.user,
+        cast[[^]u8](&storage[0]),
+        len(storage),
+    )
+    if length > len(storage) {
+        length = len(storage)
+    }
+    if length != 0 {
+        _ = os.write_all(os.standard_error, storage[:length])
+    }
+    return 1
+}
+
 // same_motion_observation identifies terminal motion reports which cannot
 // change hover, drag, or modifier state. All-motion reporting may repeat the
 // same cell many times; skipping those events avoids rebuilding a complete
@@ -804,18 +829,52 @@ pub run_with_host_bytes :: proc(
     refresh_host(app)
     if has_smoke_argument() {
         workspace_files_ready = refresh_workspace_files(app)
-        if !workspace_files_ready ||
-            app^.diagnostic_count != 0 || app^.syntax_span_count == 0 ||
-            app^.tooling_length[1] == 0 || app^.tooling_length[2] == 0 ||
-            app^.package_row_count == 0 ||
-            app^.workspace_file_entry_count == 0 {
-            return 1
+        if !workspace_files_ready {
+            return report_host_smoke_failure(
+                app,
+                "draftide smoke: Workspace Files did not initialize\n",
+            )
+        }
+        if app^.diagnostic_count != 0 {
+            return report_host_smoke_failure(
+                app,
+                "draftide smoke: initial Check reported diagnostics\n",
+            )
+        }
+        if app^.syntax_span_count == 0 {
+            return report_host_smoke_failure(
+                app,
+                "draftide smoke: syntax coloring produced no spans\n",
+            )
+        }
+        if app^.tooling_length[1] == 0 || app^.tooling_length[2] == 0 {
+            return report_host_smoke_failure(
+                app,
+                "draftide smoke: semantic tooling text is incomplete\n",
+            )
+        }
+        if app^.package_row_count == 0 {
+            return report_host_smoke_failure(
+                app,
+                "draftide smoke: package navigation produced no rows\n",
+            )
+        }
+        if app^.workspace_file_entry_count == 0 {
+            return report_host_smoke_failure(
+                app,
+                "draftide smoke: Workspace Files produced no rows\n",
+            )
         }
         // The integration smoke exercises the same Build operation as F5,
         // including continuation of the manifest-selected root through native
         // publication. Merely painting compiler text would not prove that the
         // durable root-package selection is sufficient to build the program.
-        _ = build_active(app)
+        if !build_active(app) {
+            return report_host_smoke_failure(
+                app,
+                "draftide smoke: Build failed\n",
+            )
+        }
         artifact: [Host_Path_Capacity]u8
         if app^.host.copy_artifact_path == nil ||
             app^.host.copy_artifact_path(
@@ -823,7 +882,10 @@ pub run_with_host_bytes :: proc(
                 cast[[^]u8](&artifact[0]),
                 len(artifact),
             ) == 0 {
-            return 1
+            return report_host_smoke_failure(
+                app,
+                "draftide smoke: Build published no artifact path\n",
+            )
         }
         app^.windows[Window_Packages].visible = true
         surface: tui.Surface
