@@ -50,6 +50,16 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# CMake's MSVC platform defaults add /EHsc before repository targets can apply
+# Draft's no-exceptions policy. Leaving both switches on the command line makes
+# cl diagnose the deliberate override on every target, and the MSVC standard
+# library assumes exception unwinding unless its matching configuration macro
+# says otherwise. Remove the ambient switch once here; draft_build_options below
+# then establishes one exception policy for every repository-owned C++ target.
+if(MSVC)
+  string(REGEX REPLACE "[/-]EHsc( |$)" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+endif()
+
 option(DRAFT_WARNINGS_AS_ERRORS "Treat bootstrap compiler warnings as errors" ON)
 option(DRAFT_ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers" OFF)
 
@@ -329,6 +339,13 @@ target_include_directories(
   SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS}
 )
 target_compile_options(draft_llvm_backend PRIVATE ${LLVM_DEFINITIONS_LIST})
+if(MSVC)
+  # LLVM is a separately built dependency with its own warning policy. CMake's
+  # SYSTEM include paths mark those headers as external; this explicit level
+  # keeps template-instantiation warnings inside LLVM and the MSVC library from
+  # being promoted by Draft's /WX while warnings in adapter code remain errors.
+  target_compile_options(draft_llvm_backend PRIVATE /external:W0)
+endif()
 target_compile_definitions(
   draft_llvm_backend
   PRIVATE
@@ -455,6 +472,7 @@ set_target_properties(
 
 if(MSVC)
   target_compile_options(draft_build_options INTERFACE /W4 /permissive- /GR- /EHs-c-)
+  target_compile_definitions(draft_build_options INTERFACE _HAS_EXCEPTIONS=0)
   if(DRAFT_WARNINGS_AS_ERRORS)
     target_compile_options(draft_build_options INTERFACE /WX)
   endif()
