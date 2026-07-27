@@ -1,157 +1,113 @@
 # Draft
 
-Status: Draft 1 language design, revision 2. Syntax is provisional.
+Draft is an experimental systems language built around one question:
 
-This split edition is the canonical Draft language specification in this
-repository. The origin of the former monolithic-document reference is recorded
-in [specification history](docs/history/specification-source.md).
+> What if agent-generated code were a typed, scoped compiler operation—not a
+> text generator bolted onto the side?
 
-<a id="section-1"></a>
+The rest of the language is deliberately unsurprising: native code, explicit
+memory and layout, folder packages, C interoperation, parsed assembly, a small
+core library, no garbage collector, and no package manager.
 
-## 1. Purpose
+```draft
+package app
 
-Draft is an Odin-inspired systems language in which agent synthesis is a typed,
-scoped compiler operation that produces inspectable Draft source.
+import core/console
 
-It targets native executables, static and dynamic libraries, embedded systems,
-kernels, codecs, databases, games, and other software where layout, allocation,
-calling conventions, assembly, generated machine code, and build determinism
-matter.
+main :: proc() {
+    answer: i64 = ... "Produce the i64 expression 42."
+    assert(answer == 42)
+    assert(console.println("answer:", answer) == .none)
+}
+```
 
-The programmer writes the architecture, public interfaces, types, constraints,
-and selected algorithms. The compiler can synthesize expressions, procedure
-bodies, and declarations that fit those boundaries. Synthesized code becomes
-ordinary inspectable native source and passes the same compiler checks as
-handwritten code.
+`...` produces ordinary Draft source. The compiler checks it in the exact type
+and scope of the site, saves the accepted expansion, and can build it later
+without Codex. Handwritten programs never need an agent at all.
 
-<a id="section-2"></a>
+This is an experiment, not a production language. The syntax is provisional,
+the compiler is young, and the interesting details are in the docs. Start with
+the [language tour](examples/language-tour/package.draft), then read the
+[specification](docs/README.md).
 
-## 2. Design principles
+## What is unusual here?
 
-- Native performance with predictable memory and ABI layout.
-- Fast parsing, checking, and compilation.
-- Simple Odin-like declarations and folder packages.
-- Explicit library imports with no implicitly injected package declarations.
-- Manual memory management through explicit allocators and scoped context.
-- Private-by-default package declarations with explicit `pub`.
-- One procedure abstraction for all callables.
-- Static nested procedures with explicit runtime state and no hidden captures.
-- Rich compile-time types with concrete native lowering.
-- Native parsed assembly with typed operands.
-- Direct C ABI import and export.
-- Compiler denials over ordinary resolved names and built-in constructs.
-- Runtime and compile-time assertions with explicit failure semantics.
-- Explicit `--assertions=off` release builds that remove both runtime-assertion
-  operands during MIR lowering while retaining ordinary parsing and checking.
-- `...` as a typed synthesis construct in complete surface programs.
-- Optional agent judgments as pinned validation evidence, never runtime semantics.
-- Provider-free builds from pinned, inspectable expansions.
-- Semantic compiler context for agents rather than indiscriminate source dumps.
+- **Synthesis has a type.** An expression site cannot quietly become a file,
+  dependency, command, or unrelated declaration.
+- **Generated code stays source.** It is inspectable, diffable, committable,
+  and checked by the same compiler as handwritten Draft.
+- **Builds can be provider-free.** Accepted expansions are content-addressed
+  workspace inputs, not an invisible model cache.
+- **Judgment is separate from compilation.** Optional agent claims create
+  pinned evidence; they do not change runtime semantics.
+- **Low-level work stays low-level.** Draft has explicit allocators, native
+  layout, C ABI imports/exports, SIMD, bit fields, assembly, denials, tests, and
+  benchmarks.
+- **The tooling is written in Draft.** DraftIDE is a small Turbo-style terminal
+  IDE backed by the same compiler service.
 
-## Specification map
+## Try it
 
-- [Core language (§§3–4)](docs/specification/01-core-language.md) — packages, declarations,
-  expressions, constants, and control flow.
-- [Types, memory, and runtime (§§5–7)](docs/specification/02-types-memory-runtime.md) — native
-  types, layout, storage, context, concurrency, entry, and core libraries.
-- [Design context and agent synthesis (§§8–10)](docs/specification/03-agent-synthesis.md) — durable
-  documentation, judgments, `...`, resolution, and provider-free builds.
-- [Native interop (§§11–12)](docs/specification/04-native-interop.md) — parsed assembly, C ABI,
-  foreign imports, exports, and linking.
-- [AArch64 parsed assembly profile](docs/targets/aarch64-macos-assembly.md) — the exact
-  closed inline instruction and operand grammar for the first target.
-- [Denials and validation (§§13–14)](docs/specification/05-denials-validation.md) — semantic
-  restrictions, tests, instrumentation, and performance evidence.
-- [Compiler architecture (§15)](docs/specification/06-compiler.md) — lowering, semantic context
-  construction, evidence, and dependency-ordered elaboration.
-- [Future ideas (§16)](docs/specification/07-future-ideas.md) — prospective layout, GPU, and
-  raw-assembly extensions.
+Tagged releases publish self-contained archives for Apple Silicon macOS,
+AArch64 Linux, x86-64 Linux, and x86-64 Windows. Extract one, put its `bin`
+directory on `PATH`, and check the exact build:
 
+```sh
+draftc --version
+draftc run share/draft/examples/language-tour
+draftide share/draft/examples/language-tour
+```
 
-## Documentation
+The archive includes Draft’s matching LLVM/Clang tools, embedded `core`, docs,
+examples, and the Draft coding skill. It still uses the host platform SDK:
+install Xcode Command Line Tools on macOS, normal libc development files on
+Linux, or run from a Visual Studio 2022 x64 developer shell on Windows.
 
-The complete documentation map is in [docs/README.md](docs/README.md). In
-particular:
-
-- [Examples and feature map](examples/README.md)
-- [Bootstrap compiler architecture](docs/implementation/architecture.md)
-- [Elaboration, semantic context, and pins](docs/implementation/elaboration-and-pins.md)
-- [AArch64 macOS target profile](docs/targets/aarch64-macos.md)
-- [AArch64 Linux target and qualification](docs/targets/aarch64-linux.md)
-- [x86-64 Linux target profile](docs/targets/x86-64-linux.md)
-- [x86-64 Windows target profile](docs/targets/x86-64-windows.md)
-- [Compiler command reference](docs/operations/command-reference.md)
-- [Native host qualification](docs/releases/native-host-qualification.md)
-- [Historical first implementation plan](docs/history/first-implementation-plan.md)
-
-Repository engineering rules remain in [AGENTS.md](AGENTS.md).
-
-## Build the bootstrap compiler
-
-The C++ bootstrap links LLVM 22 through its C API. On Apple Silicon, install
-Homebrew `llvm@22`; on Ubuntu, install the matching `llvm-22-dev` distribution.
-Draft programs do not acquire a package dependency from this bootstrap build
-component: LLVM is part of the compiler implementation and distribution.
+To build the C++ bootstrap from source, install LLVM 22 and run:
 
 ```sh
 cmake -S . -B build \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DLLVM_DIR=/opt/homebrew/opt/llvm@22/lib/cmake/llvm \
-  -DDRAFT_ENABLE_SANITIZERS=ON
+  -DCMAKE_BUILD_TYPE=Release \
+  -DLLVM_DIR=/opt/homebrew/opt/llvm@22/lib/cmake/llvm
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-Use `/usr/lib/llvm-22/lib/cmake/llvm` for the standard Ubuntu LLVM 22 layout.
-`LLVM_DIR` may instead name an exact downloaded or locally built LLVM 22 CMake
-package; no ambient `llvm-config` lookup decides the linked backend version.
+On Ubuntu, use `/usr/lib/llvm-22/lib/cmake/llvm`. The same build produces
+`build/draftc` and `build/draftide`. See [Building and releasing
+Draft](docs/operations/releases.md) for installation, packaging, checksums, and
+platform details.
 
-The bootstrap is a direct C++20 implementation targeting AArch64 macOS,
-AArch64 GNU/Linux, x86-64 GNU/Linux, and x86-64 Windows/MSVC. All four build
-and execute on matching native hosts; the Linux x86-64 CI row additionally runs
-the bootstrap under address and undefined-behavior sanitizers. Windows links
-the official LLVM-C 22 development distribution and uses its matching Clang,
-lld-link, and llvm-lib tools plus the Windows SDK.
-It implements the complete ordinary-language pipeline independently of Codex;
-provider-backed synthesis and judgment live behind compiler-owned typed,
-content-addressed boundaries. Detailed capability and evidence claims belong to
-the linked qualification report rather than this overview.
+## A normal project
 
-The same CMake build produces `build/draftide`, a Turbo-style terminal IDE whose
-application, editor, workspace interaction, syntax-colored UI, and Build/Run
-policy are written in Draft. During bootstrap it calls the C++ compiler library
-through a narrow opaque C ABI:
+One directory is one package. A `draft.workspace` file is optional; add it only
+when a repository needs durable build/run settings or several named programs.
 
-```sh
-build/draftide .
+```text
+my-workspace/
+    draft.workspace
+    apps/editor/package.draft
+    lib/text/package.draft
 ```
 
-The repository's `draft.workspace` establishes the import/state boundary and
-selects `examples/turbo-editor` as the initial program. Without a marker, the
-opened directory is a standalone workspace and executable roots are discovered
-there. DraftIDE starts with one syntax-colored document; F5 checks, builds, and
-runs the active Program, F6 opens Compiler Options for root/target selection,
-and compiler inspectors remain separate opt-in windows. The CMake target builds DraftIDE
-itself at O2.
-
-The ordinary compiler commands take package paths directly. A marker found by
-searching upward supplies workspace-relative imports and optional build/run
-defaults; without one the selected package stands alone. `build` recursively
-builds every program below its path, and `run` passes literal process arguments
-after `--`:
-
 ```sh
-build/draftc check apps/editor
-build/draftc build .
-build/draftc run apps/editor -- document.txt
+draftc check apps/editor
+draftc build .
+draftc run apps/editor -- document.txt
 ```
 
-`draftc` contains the exact matching `core` source, target runtime objects, and
-the synthesis adapter's Draft coding guidance. Moving the compiler therefore
-does not require an adjacent checkout or `core` path configuration. The
-repository skill remains separately installable for external coding agents;
-ordinary compiler use does not require Codex.
+There is no package registry or dependency solver. Download source, keep it in
+the workspace, and import it explicitly.
 
-See [DraftIDE](tools/draftide/README.md) for controls and
-[the implementation boundary](docs/implementation/draftide.md) for the
-ownership design.
+## Read next
+
+- [Documentation map and specification](docs/README.md)
+- [Examples by language feature](examples/README.md)
+- [Compiler command reference](docs/operations/command-reference.md)
+- [Compiler architecture](docs/implementation/architecture.md)
+- [DraftIDE](tools/draftide/README.md)
+- [Current qualification records](docs/releases/README.md)
+
+Draft is MIT licensed. LLVM components in binary archives retain their upstream
+Apache-2.0-with-LLVM-exceptions license; see
+[third-party notices](THIRD_PARTY_NOTICES.md).
