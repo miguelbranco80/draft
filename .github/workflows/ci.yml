@@ -151,7 +151,11 @@ jobs:
   native-windows-x86-64:
     name: Native / Windows x86-64
     runs-on: windows-2022
-    timeout-minutes: 45
+    # A cold runner must fetch and extract the pinned 862 MB LLVM development
+    # archive before it can populate the content-addressed cache. Keep the same
+    # honest cold-start allowance as release qualification; cached runs remain
+    # much shorter.
+    timeout-minutes: 90
     env:
       LLVM_VERSION: 22.1.6
       LLVM_ARCHIVE_SHA256: 657343edf361ca463bd642e39c74b251c6338b96cdbd55ff277555298b027696
