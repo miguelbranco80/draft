@@ -435,8 +435,10 @@ object. COFF has no partial-link equivalent: it publishes a single-package
 `.obj` and requires `--kind static-library` for a multi-package or
 package-assembly graph. Mapped providers cannot be embedded in that archive; use a
 final executable/DLL link or supply them when consuming the Draft object or
-archive. Clang, `dsymutil`, and LLVM utilities default to the matching tools
-directory selected while building the compiler.
+archive. Clang, `dsymutil`, and LLVM utilities default first to the private
+tools in an installed Draft distribution, then to the matching directory
+selected while building the compiler. `draftc --version` reports which layout
+is active.
 On macOS it additionally uses the Apple linker/SDK and `libtool`; on Linux it
 uses `ld.lld`, `llvm-ar`, and the target's libc development files. These
 installations are compiler operational prerequisites, not resolution-manifest

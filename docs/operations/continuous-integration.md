@@ -1,6 +1,7 @@
 # Continuous integration
 
-Status: four native target gates, with bootstrap sanitizers on Linux x86-64.
+Status: four native target and installed-distribution gates, with bootstrap
+sanitizers on Linux x86-64.
 
 The ordinary GitHub Actions workflow builds and tests the bootstrap compiler on
 the four implemented native host/target pairs:
@@ -31,6 +32,13 @@ provider, and compiles/launches the independent C client against a Draft DLL.
 Draft tests and benchmarks remain in the macOS/Linux gates. Linux and Windows
 native execution are therefore required jobs, not optional cross-compilation
 probes.
+
+Every native host also exercises the relocatable install contract. The
+macOS/Linux CTest suite installs to a clean prefix; Windows performs the same
+step after its focused native gate. The common smoke checks that both version
+reports select `toolchain: bundled`, builds and runs an installed example with
+no checkout-relative core or LLVM path, and launches installed DraftIDE against
+its sibling compiler service.
 
 The x86-64 row additionally enables GCC AddressSanitizer and
 UndefinedBehaviorSanitizer with leak detection and immediate failure. Those

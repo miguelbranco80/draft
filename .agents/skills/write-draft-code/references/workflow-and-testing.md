@@ -18,6 +18,7 @@ the example map is [`examples/README.md`](../../../../examples/README.md).
 - [Draft tests and benchmarks](#draft-tests-and-benchmarks)
 - [Compiler regression tests](#compiler-regression-tests)
 - [Build the bootstrap and run CTest](#build-the-bootstrap-and-run-ctest)
+- [Exercise an installed distribution](#exercise-an-installed-distribution)
 - [Sanitizers](#sanitizers)
 - [Examples](#examples)
 - [Documentation routing](#documentation-routing)
@@ -614,6 +615,28 @@ ctest --test-dir build --output-on-failure \
 There is currently no repository formatter or lint command. Do not invent one.
 Compilation with the strict warning set, tests, and sanitizers are the
 mechanical gates; still reread comments and formatting manually.
+
+## Exercise an installed distribution
+
+When a change touches executable/resource discovery, LLVM tools, the compiler
+service, CMake installation, or release automation, passing build-tree tests is
+not enough. Build DraftIDE, then run the registered isolated-prefix smoke:
+
+```sh
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure \
+  -R '^draft_distribution_install_smoke$'
+```
+
+The smoke requires `draftc --version` and `draftide --version` to report
+`toolchain: bundled`, builds and launches installed `examples/hello`, and starts
+installed DraftIDE in noninteractive mode. It must not use checkout-relative
+core source, the build-tree compiler service, or ambient LLVM tools.
+
+For archive work, create the host package with CPack, extract it, and repeat
+`tests/distribution_smoke_test.cmake` with `DRAFT_ROOT` naming the extracted
+top-level directory. The exact commands and platform requirements are in
+[`docs/operations/releases.md`](../../../../docs/operations/releases.md).
 
 ## Sanitizers
 

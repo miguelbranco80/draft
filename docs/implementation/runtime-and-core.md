@@ -25,7 +25,10 @@ The five factual Markdown references shared with the repository's Draft coding
 skill form a third, independent distribution asset. `draftc` embeds that compact
 read-only bundle for internal code-producing Codex operations, not the skill's
 repository workflow or any core implementation source. An external coding
-agent installs the repository/marketplace skill in its own environment.
+agent installs the repository/marketplace skill in its own environment. Binary
+archives also carry a repository-shaped copy below
+`share/draft/.agents/skills/` so the exact release guidance remains available;
+the compiler never searches or loads that directory.
 Ordinary checking, building, and running use neither the external skill nor
 Codex.
 

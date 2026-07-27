@@ -7,6 +7,7 @@
 
 #include "backend/llvm_object_emitter.h"
 
+#include "base/executable_path.h"
 #include "backend/llvm_initialization.h"
 #include "backend/llvm_module_emission.h"
 
@@ -30,9 +31,32 @@
 #ifndef DRAFT_LLVM_TOOLS_DIRECTORY
 #error "DRAFT_LLVM_TOOLS_DIRECTORY must name the linked LLVM tool directory"
 #endif
+#ifndef DRAFT_DISTRIBUTION_LLVM_TOOLS_RELATIVE
+#error "DRAFT_DISTRIBUTION_LLVM_TOOLS_RELATIVE must name installed LLVM tools"
+#endif
 
 namespace draft {
 namespace {
+
+[[nodiscard]] std::optional<std::filesystem::path>
+distributed_llvm_tool_path(std::string_view tool) {
+  const std::optional<std::filesystem::path> executable =
+      current_executable_path();
+  if (!executable.has_value()) return std::nullopt;
+  std::filesystem::path candidate = executable->parent_path() /
+      DRAFT_DISTRIBUTION_LLVM_TOOLS_RELATIVE / tool;
+#if defined(_WIN32)
+  candidate += ".exe";
+#endif
+  std::error_code error;
+  if (!std::filesystem::is_regular_file(candidate, error) || error) {
+    return std::nullopt;
+  }
+  const std::filesystem::path normalized =
+      std::filesystem::weakly_canonical(candidate, error);
+  return error ? std::optional<std::filesystem::path>{std::move(candidate)}
+               : std::optional<std::filesystem::path>{normalized};
+}
 
 struct ContextOwner {
   LLVMContextRef value = nullptr;
@@ -262,11 +286,22 @@ std::string_view native_optimization_level_name(NativeOptimizationLevel level) {
 std::string_view linked_llvm_version() { return DRAFT_LLVM_VERSION; }
 
 std::string linked_llvm_tool_path(std::string_view tool) {
+  if (const std::optional<std::filesystem::path> distributed =
+          distributed_llvm_tool_path(tool)) {
+    return distributed->string();
+  }
   std::string path = DRAFT_LLVM_TOOLS_DIRECTORY;
   if (!path.empty() && path.back() != '/')
     path.push_back('/');
   path.append(tool);
+#if defined(_WIN32)
+  path += ".exe";
+#endif
   return path;
+}
+
+bool linked_llvm_tools_are_distributed() {
+  return distributed_llvm_tool_path("clang").has_value();
 }
 
 LlvmObjectEmissionResult emit_llvm_object_in_process(

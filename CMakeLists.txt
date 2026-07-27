@@ -9,6 +9,8 @@ project(
   LANGUAGES C CXX
 )
 
+include(GNUInstallDirs)
+
 # The numeric project version remains available to CMake package tooling, while
 # the explicit suffix labels this intentionally unstable public experiment. A
 # release workflow supplies the exact full commit. Source builds discover it at
@@ -290,6 +292,7 @@ target_compile_definitions(
   PRIVATE
     DRAFT_LLVM_VERSION="${LLVM_PACKAGE_VERSION}"
     DRAFT_LLVM_TOOLS_DIRECTORY="${LLVM_TOOLS_BINARY_DIR}"
+    DRAFT_DISTRIBUTION_LLVM_TOOLS_RELATIVE="../libexec/draft/bin"
 )
 target_link_libraries(
   draft_llvm_backend
@@ -309,6 +312,7 @@ add_library(
   src/backend/toolchain.cpp
   src/base/content_tree.cpp
   src/base/child_process.cpp
+  src/base/executable_path.cpp
   src/base/sha256.cpp
   src/base/timing.cpp
   src/base/work_graph.cpp
@@ -574,6 +578,226 @@ if(DRAFTIDE_HOST_TARGET)
   add_custom_target(draftide ALL DEPENDS "${DRAFTIDE_BUILD_STAMP}")
 endif()
 
+# A binary Draft distribution is a relocatable compiler, not a thin wrapper
+# around the LLVM installation which happened to build it. Keep the public
+# executables and compiler-service provider together in bin/, and keep the
+# implementation toolchain under libexec/draft so it does not pollute PATH.
+# draftc discovers that private directory from its loaded executable path.
+set(DRAFT_DISTRIBUTION_RUNTIME_DIRECTORY "libexec/draft")
+set(
+  DRAFT_DISTRIBUTION_TOOL_DIRECTORY
+  "${DRAFT_DISTRIBUTION_RUNTIME_DIRECTORY}/bin"
+)
+set(
+  DRAFT_DISTRIBUTION_LIBRARY_DIRECTORY
+  "${DRAFT_DISTRIBUTION_RUNTIME_DIRECTORY}/lib"
+)
+
+if(APPLE)
+  set(DRAFT_INSTALL_LLVM_RPATH "@loader_path/../libexec/draft/lib")
+elseif(UNIX)
+  set(DRAFT_INSTALL_LLVM_RPATH "\$ORIGIN/../libexec/draft/lib")
+endif()
+if(DEFINED DRAFT_INSTALL_LLVM_RPATH)
+  set_target_properties(
+    draftc draft_compiler_service
+    PROPERTIES INSTALL_RPATH "${DRAFT_INSTALL_LLVM_RPATH}"
+  )
+endif()
+
+install(
+  TARGETS draftc draft_compiler_service
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}"
+)
+if(DRAFTIDE_HOST_TARGET)
+  # draftide is produced by draftc rather than by the host linker, so it is a
+  # generated program rather than a CMake target. Its dependency on the service
+  # library is already loader-relative on every supported target.
+  install(
+    PROGRAMS "${DRAFTIDE_EXECUTABLE}"
+    DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  )
+endif()
+
+function(draft_install_llvm_program name)
+  set(path "${LLVM_TOOLS_BINARY_DIR}/${name}${CMAKE_EXECUTABLE_SUFFIX}")
+  if(NOT EXISTS "${path}")
+    message(FATAL_ERROR
+      "LLVM ${LLVM_PACKAGE_VERSION} does not provide required tool ${path}"
+    )
+  endif()
+  # LLVM installations commonly expose an unversioned symlink such as
+  # clang -> clang-22. An archive containing only that symlink is broken, so
+  # install the resolved program bytes under the stable name draftc launches.
+  file(REAL_PATH "${path}" real_path)
+  install(
+    PROGRAMS "${real_path}"
+    DESTINATION "${DRAFT_DISTRIBUTION_TOOL_DIRECTORY}"
+    RENAME "${name}${CMAKE_EXECUTABLE_SUFFIX}"
+  )
+endfunction()
+
+draft_install_llvm_program(clang)
+if(APPLE)
+  draft_install_llvm_program(dsymutil)
+  draft_install_llvm_program(llvm-ar)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  draft_install_llvm_program(ld.lld)
+  draft_install_llvm_program(llvm-ar)
+elseif(WIN32)
+  draft_install_llvm_program(lld-link)
+  draft_install_llvm_program(llvm-lib)
+endif()
+
+# Clang locates compiler-rt libraries relative to its own executable. Draft
+# uses this private driver only for assembly, linking, and selected runtime
+# instrumentation; it does not expose a general C compiler, so builtin headers
+# would be dead distribution weight. Copy the exact runtime subtree into
+# Clang's conventional resource layout.
+execute_process(
+  COMMAND "${DRAFT_RUNTIME_CLANG}" --print-resource-dir
+  RESULT_VARIABLE DRAFT_CLANG_RESOURCE_RESULT
+  OUTPUT_VARIABLE DRAFT_CLANG_RESOURCE_DIRECTORY
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+if(
+  NOT DRAFT_CLANG_RESOURCE_RESULT EQUAL 0
+  OR NOT IS_DIRECTORY "${DRAFT_CLANG_RESOURCE_DIRECTORY}"
+)
+  message(FATAL_ERROR
+    "Could not locate the resource directory for ${DRAFT_RUNTIME_CLANG}"
+  )
+endif()
+get_filename_component(
+  DRAFT_CLANG_RESOURCE_VERSION
+  "${DRAFT_CLANG_RESOURCE_DIRECTORY}"
+  NAME
+)
+install(
+  DIRECTORY "${DRAFT_CLANG_RESOURCE_DIRECTORY}/lib"
+  DESTINATION
+    "${DRAFT_DISTRIBUTION_LIBRARY_DIRECTORY}/clang/${DRAFT_CLANG_RESOURCE_VERSION}"
+)
+
+# Unix bootstrap binaries and LLVM tools share LLVM's dynamic libraries. Copy
+# only that runtime closure; headers, CMake metadata, static archives, and
+# unrelated LLVM executables are build inputs and do not belong in the release.
+if(APPLE)
+  install(
+    FILES
+      "${LLVM_LIBRARY_DIRS}/libLLVM.dylib"
+      "${LLVM_LIBRARY_DIRS}/libclang-cpp.dylib"
+    DESTINATION "${DRAFT_DISTRIBUTION_LIBRARY_DIRECTORY}"
+  )
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  file(GLOB DRAFT_LLVM_RUNTIME_LIBRARIES CONFIGURE_DEPENDS
+    "${LLVM_LIBRARY_DIRS}/libLLVM.so*"
+    "${LLVM_LIBRARY_DIRS}/libLLVM-${LLVM_VERSION_MAJOR}.so*"
+    "${LLVM_LIBRARY_DIRS}/libclang-cpp.so*"
+    "${LLVM_LIBRARY_DIRS}/libclang-cpp.so.${LLVM_VERSION_MAJOR}*"
+  )
+  if(NOT DRAFT_LLVM_RUNTIME_LIBRARIES)
+    message(FATAL_ERROR
+      "LLVM ${LLVM_PACKAGE_VERSION} has no distributable shared runtime"
+    )
+  endif()
+  list(REMOVE_DUPLICATES DRAFT_LLVM_RUNTIME_LIBRARIES)
+  list(SORT DRAFT_LLVM_RUNTIME_LIBRARIES)
+  install(
+    FILES ${DRAFT_LLVM_RUNTIME_LIBRARIES}
+    DESTINATION "${DRAFT_DISTRIBUTION_LIBRARY_DIRECTORY}"
+  )
+elseif(WIN32)
+  file(GLOB DRAFT_LLVM_RUNTIME_LIBRARIES CONFIGURE_DEPENDS
+    "${LLVM_TOOLS_BINARY_DIR}/*.dll"
+  )
+  if(DRAFT_LLVM_RUNTIME_LIBRARIES)
+    list(SORT DRAFT_LLVM_RUNTIME_LIBRARIES)
+    install(
+      FILES ${DRAFT_LLVM_RUNTIME_LIBRARIES}
+      DESTINATION "${DRAFT_DISTRIBUTION_TOOL_DIRECTORY}"
+    )
+  endif()
+endif()
+
+# The installed source material serves three separate purposes: the docs are
+# the public contract, core is readable source for the code embedded in draftc,
+# and the skill teaches an external coding agent how to write current Draft.
+# The skill's relative links continue to resolve because it retains the same
+# repository-shaped location below share/draft.
+install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md DESTINATION .)
+install(FILES AGENTS.md DESTINATION "${CMAKE_INSTALL_DATADIR}/draft")
+install(DIRECTORY docs core DESTINATION "${CMAKE_INSTALL_DATADIR}/draft")
+install(
+  DIRECTORY .agents/skills/write-draft-code
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/draft/.agents/skills"
+)
+install(FILES examples/README.md DESTINATION "${CMAKE_INSTALL_DATADIR}/draft/examples")
+install(
+  DIRECTORY examples/hello examples/language-tour
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/draft/examples"
+)
+
+get_filename_component(DRAFT_LLVM_ROOT "${LLVM_TOOLS_BINARY_DIR}" DIRECTORY)
+if(EXISTS "${DRAFT_LLVM_ROOT}/LICENSE.TXT")
+  install(
+    FILES "${DRAFT_LLVM_ROOT}/LICENSE.TXT"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/draft/licenses/llvm"
+  )
+else()
+  message(FATAL_ERROR
+    "LLVM distribution has no LICENSE.TXT at ${DRAFT_LLVM_ROOT}"
+  )
+endif()
+
+if(APPLE)
+  # Homebrew LLVM currently records an absolute install name in binaries which
+  # link libLLVM directly. Rewrite only that known dependency after CMake has
+  # installed its final RPATH, then restore an ad-hoc signature. Official
+  # release CI may replace this with a Developer ID signature and notarization.
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/fixup_macos_distribution.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/fixup_macos_distribution.cmake"
+    @ONLY
+  )
+  install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/fixup_macos_distribution.cmake")
+endif()
+
+# CPack is intentionally a thin archive over `cmake --install`: local installs,
+# CI smoke tests, and published archives therefore exercise one file manifest.
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+  set(DRAFT_RELEASE_PLATFORM "aarch64-macos")
+  set(CPACK_GENERATOR TXZ)
+elseif(
+  CMAKE_SYSTEM_NAME STREQUAL "Linux"
+  AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$"
+)
+  set(DRAFT_RELEASE_PLATFORM "aarch64-linux")
+  set(CPACK_GENERATOR TXZ)
+elseif(
+  CMAKE_SYSTEM_NAME STREQUAL "Linux"
+  AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$"
+)
+  set(DRAFT_RELEASE_PLATFORM "x86_64-linux")
+  set(CPACK_GENERATOR TXZ)
+elseif(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+  set(DRAFT_RELEASE_PLATFORM "x86_64-windows")
+  set(CPACK_GENERATOR ZIP)
+endif()
+if(DEFINED DRAFT_RELEASE_PLATFORM)
+  set(CPACK_PACKAGE_NAME "draft")
+  set(CPACK_PACKAGE_VENDOR "Draft")
+  set(CPACK_PACKAGE_VERSION "${DRAFT_RELEASE_VERSION}")
+  set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Draft experimental systems language")
+  set(CPACK_PACKAGE_FILE_NAME
+      "draft-${DRAFT_RELEASE_VERSION}-${DRAFT_RELEASE_PLATFORM}")
+  set(CPACK_PACKAGE_CHECKSUM SHA256)
+  set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+  set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+  include(CPack)
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
   if(DRAFTIDE_HOST_TARGET)
@@ -620,6 +844,28 @@ if(BUILD_TESTING)
       LABELS "release"
       PASS_REGULAR_EXPRESSION "draftc ${DRAFT_RELEASE_VERSION}"
   )
+
+  if(DRAFTIDE_HOST_TARGET)
+    # Install into a clean prefix and exercise that prefix without a source-tree
+    # core directory or build-tree service library. This is the release archive
+    # contract, not merely a check that CMake copied some files.
+    add_test(
+      NAME draft_distribution_install_smoke
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DBUILD_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/distribution-smoke"
+        "-DDRAFT_TARGET=${DRAFTIDE_HOST_TARGET}"
+        "-DDRAFT_RELEASE_VERSION=${DRAFT_RELEASE_VERSION}"
+        "-DCMAKE_INSTALL_CONFIG_NAME=$<CONFIG>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_distribution_smoke_test.cmake"
+    )
+    set_tests_properties(
+      draft_distribution_install_smoke
+      PROPERTIES LABELS "release;distribution;integration"
+    )
+  endif()
 
   # The complete native matrix must execute the artifacts it just built. Keep
   # it enabled only when the host exactly matches an implemented target pair.

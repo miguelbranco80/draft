@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -407,11 +408,16 @@ struct ProcessResult {
 // invocation prevents object and assembly paths from drifting apart.
 void append_target_arguments(
     const TargetProfile &target,
+    std::string_view macos_sdk_path,
     std::vector<std::string> &arguments) {
   arguments.push_back("-target");
   arguments.push_back(target.llvm_triple);
   if (target.facts.object_format == "macho") {
     arguments.push_back("-mmacosx-version-min=" + target.minimum_os_version);
+    if (!macos_sdk_path.empty()) {
+      arguments.push_back("-isysroot");
+      arguments.emplace_back(macos_sdk_path);
+    }
   }
 }
 
@@ -661,6 +667,55 @@ void abandon_assembly_output(
   return message;
 }
 
+// A relocated Homebrew Clang no longer sees Homebrew's absolute SDK config
+// file. Resolve the active macOS SDK once for the complete native build and
+// pass it to every Clang operation. SDKROOT avoids a child process in an Xcode
+// environment; xcrun is the platform authority for an ordinary terminal. The
+// physical path is host tool configuration and never enters Draft identity.
+[[nodiscard]] bool discover_macos_sdk(
+    TimingRecorder *timings,
+    std::string &sdk_path,
+    DiagnosticSink &diagnostics) {
+  sdk_path.clear();
+  if (const char *environment = std::getenv("SDKROOT");
+      environment != nullptr && environment[0] != '\0') {
+    std::error_code error;
+    const std::filesystem::path candidate(environment);
+    if (candidate.is_absolute() &&
+        std::filesystem::is_directory(candidate, error) && !error) {
+      sdk_path = candidate.string();
+      return true;
+    }
+  }
+
+  const ProcessResult process = run_timed_process(
+      {"/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"},
+      timings,
+      "macOS SDK discovery",
+      TimingVisibility::Detail);
+  if (!process.started || process.exit_code != 0) {
+    diagnostics.error(
+        SourceRange::invalid(), phase_failure("macOS SDK discovery", process));
+    return false;
+  }
+  sdk_path = process.output;
+  while (!sdk_path.empty() &&
+         (sdk_path.back() == '\n' || sdk_path.back() == '\r' ||
+          sdk_path.back() == ' ' || sdk_path.back() == '\t')) {
+    sdk_path.pop_back();
+  }
+  std::error_code error;
+  const std::filesystem::path candidate(sdk_path);
+  if (sdk_path.empty() || !candidate.is_absolute() ||
+      !std::filesystem::is_directory(candidate, error) || error) {
+    diagnostics.error(
+        SourceRange::invalid(),
+        "xcrun returned an unavailable macOS SDK path: '" + sdk_path + "'");
+    return false;
+  }
+  return true;
+}
+
 // Draft hands already-formed LLVM IR to either the in-process ASan pass or the
 // external qualification driver. Add the standard function attribute that opts
 // every definition into load/store checks and retain every frame pointer needed
@@ -852,6 +907,7 @@ struct NativeObjectExecutionContext {
       NativeInstrumentationProfile::None;
   bool assembly_output = false;
   std::string clang_path;
+  std::string macos_sdk_path;
   std::filesystem::path build_directory;
   std::vector<NativeObjectTaskProduct> *products = nullptr;
 };
@@ -943,7 +999,8 @@ void capture_child_usage(
       return false;
     }
     std::vector<std::string> arguments{context.clang_path};
-    append_target_arguments(*context.target, arguments);
+    append_target_arguments(
+        *context.target, context.macos_sdk_path, arguments);
     arguments.push_back("-x");
     arguments.push_back("ir");
     arguments.push_back(
@@ -999,7 +1056,8 @@ void capture_child_usage(
     return false;
   }
   std::vector<std::string> arguments{context.clang_path};
-  append_target_arguments(*context.target, arguments);
+  append_target_arguments(
+      *context.target, context.macos_sdk_path, arguments);
   arguments.insert(
       arguments.end(),
       {
@@ -1145,6 +1203,17 @@ NativeBuildResult build_native_artifact(
   // check. Remaining tools diagnose their own launch failure when first used.
   result.toolchain_version = std::string(linked_llvm_version());
 
+  // The source-tree Homebrew Clang sees its package configuration file. A
+  // released compiler intentionally relocates the same executable and must
+  // therefore supply the current SDK explicitly. One command-local discovery
+  // feeds every worker and the final link; workers never race xcrun.
+  std::string macos_sdk_path;
+  if (target.facts.object_format == "macho" &&
+      linked_llvm_tools_are_distributed() &&
+      !discover_macos_sdk(options.timings, macos_sdk_path, diagnostics)) {
+    return result;
+  }
+
   std::error_code directory_error;
   std::filesystem::create_directories(options.build_directory, directory_error);
   if (directory_error) {
@@ -1201,6 +1270,7 @@ NativeBuildResult build_native_artifact(
   execution.instrumentation = options.instrumentation;
   execution.assembly_output = assembly_output;
   execution.clang_path = clang_path;
+  execution.macos_sdk_path = macos_sdk_path;
   execution.build_directory = build_directory;
   execution.products = &products;
   WorkGraphRunOptions run_options;
@@ -1465,7 +1535,7 @@ NativeBuildResult build_native_artifact(
   std::vector<std::string> link_arguments = {
       clang_path,
   };
-  append_target_arguments(target, link_arguments);
+  append_target_arguments(target, macos_sdk_path, link_arguments);
   if (target.facts.object_format == "elf" ||
       target.facts.object_format == "coff") {
     // Name the linker family explicitly. The selected Clang installation can

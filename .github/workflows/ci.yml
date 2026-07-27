@@ -170,7 +170,7 @@ jobs:
       # not repeatedly transfer the large upstream package.
       - name: Restore LLVM 22 development archive
         id: llvm-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}\llvm-22.1.6
           key: llvm-windows-x86-64-22.1.6-657343edf361
@@ -182,7 +182,11 @@ jobs:
           $archive = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION.tar.xz"
           $destination = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION"
           $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/clang%2Bllvm-$env:LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"
-          Invoke-WebRequest -Uri $url -OutFile $archive
+          & curl.exe --fail --location --retry 5 --retry-all-errors `
+            --output $archive $url
+          if ($LASTEXITCODE -ne 0) {
+            throw "LLVM archive download failed with exit code $LASTEXITCODE"
+          }
           $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
           if ($actual -ne $env:LLVM_ARCHIVE_SHA256) {
             throw "LLVM archive SHA-256 mismatch: expected $env:LLVM_ARCHIVE_SHA256, got $actual"
@@ -232,4 +236,18 @@ jobs:
           call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
           if errorlevel 1 exit /b 1
           cmake -DDRAFTC="%CD%\build\Release\draftc.exe" -DCLANG="%LLVM_ROOT%\bin\clang.exe" -DSOURCE_ROOT="%CD%" -DTEST_ROOT="%CD%\build\windows-native-smoke" -P "%CD%\tests\driver_windows_native_smoke_test.cmake"
+          if errorlevel 1 exit /b 1
+
+      # BUILD_TESTING is deliberately off for the still-POSIX-shaped C++ test
+      # harnesses, so exercise the same install manifest explicitly. The
+      # common smoke builds and runs Draft from the clean prefix and launches
+      # DraftIDE against its installed sibling compiler service.
+      - name: Qualify installed distribution
+        shell: cmd
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
+          if errorlevel 1 exit /b 1
+          cmake --install "%CD%\build" --config Release --prefix "%CD%\build\distribution"
+          if errorlevel 1 exit /b 1
+          cmake -DDRAFT_ROOT="%CD%\build\distribution" -DTEST_ROOT="%CD%\build\distribution-smoke" -DDRAFT_TARGET=x86_64-windows -DDRAFT_RELEASE_VERSION=0.1.0-alpha.1 -P "%CD%\tests\distribution_smoke_test.cmake"
           if errorlevel 1 exit /b 1

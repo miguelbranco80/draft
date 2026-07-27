@@ -63,6 +63,17 @@ Ordinary commands never select it and never run
 `dsymutil` default to tools from that same selected LLVM installation. Platform
 SDKs, startup objects, and system libraries remain operational host inputs.
 
+An installed distribution resolves those tools relative to the loaded `draftc`
+or compiler-service executable before considering the build-tree LLVM path.
+Release archives include only the invoked Clang/linker/debug/archive programs,
+their LLVM/Clang dynamic runtime closure, and compiler-rt libraries; they do not
+pretend to be a general C development kit. On macOS a relocated Homebrew Clang
+can no longer see Homebrew's absolute SDK configuration. The native adapter
+therefore accepts a valid `SDKROOT` or invokes `/usr/bin/xcrun --sdk macosx
+--show-sdk-path` once on the command thread, then supplies that immutable path
+to every package worker and the final link. The SDK path is operational host
+configuration and never enters source, resolution, or artifact identity.
+
 ## Native optimization boundary
 
 Status: parallel native-only O0 units and whole-artifact O2 ThinLTO implemented.

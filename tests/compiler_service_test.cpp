@@ -72,6 +72,7 @@ void test_version_report(TestState &state) {
   EXPECT(state, text.starts_with("draftide 0.1.0-alpha.1\n"));
   EXPECT(state, text.find("\ncommit: ") != std::string_view::npos);
   EXPECT(state, text.find("\nllvm: 22.") != std::string_view::npos);
+  EXPECT(state, text.find("\ntoolchain: ") != std::string_view::npos);
   EXPECT(state, text.find("\ncore: draft-core:") != std::string_view::npos);
   EXPECT(state, text.ends_with("x86_64-windows\n"));
 }

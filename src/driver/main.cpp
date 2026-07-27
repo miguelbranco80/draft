@@ -1644,6 +1644,9 @@ void print_version() {
       << "draftc " DRAFT_RELEASE_VERSION "\n"
       << "commit: " DRAFT_BUILD_COMMIT "\n"
       << "llvm: " << draft::linked_llvm_version() << '\n'
+      << "toolchain: "
+      << (draft::linked_llvm_tools_are_distributed() ? "bundled" : "build-tree")
+      << '\n'
       << "core: " << draft::embedded_core_content_identity() << '\n'
       << "targets: aarch64-macos, aarch64-linux, x86_64-linux, "
          "x86_64-windows\n";

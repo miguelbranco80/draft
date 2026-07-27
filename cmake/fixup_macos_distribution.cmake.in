@@ -1,0 +1,48 @@
+# Finalize the relocatable Mach-O dependency graph after installation.
+#
+# CMake has already placed the binaries and added their loader-relative RPATH.
+# The LLVM distribution used to link Draft may nevertheless embed an absolute
+# libLLVM install name. This script changes only that exact dependency in the
+# two host-linked binaries, verifies each operation, and restores an ad-hoc
+# signature. draftide itself links only the sibling compiler service and needs
+# no LLVM rewrite.
+
+set(root "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+foreach(binary IN ITEMS
+    "${root}/@CMAKE_INSTALL_BINDIR@/draftc"
+    "${root}/@CMAKE_INSTALL_BINDIR@/libdraft_compiler_service.dylib")
+  execute_process(
+    COMMAND otool -L "${binary}"
+    RESULT_VARIABLE inspect_result
+    OUTPUT_VARIABLE dependencies
+    ERROR_VARIABLE inspect_error
+  )
+  if(NOT inspect_result EQUAL 0)
+    message(FATAL_ERROR "Could not inspect ${binary}: ${inspect_error}")
+  endif()
+  string(REGEX MATCH "\n[\t ]+([^ \n]*libLLVM\\.dylib)[\t ]"
+    llvm_dependency "${dependencies}")
+  set(llvm_from "${CMAKE_MATCH_1}")
+  if(llvm_from STREQUAL "")
+    message(FATAL_ERROR "${binary} has no libLLVM dependency")
+  endif()
+  execute_process(
+    COMMAND install_name_tool -change
+      "${llvm_from}" "@rpath/libLLVM.dylib" "${binary}"
+    RESULT_VARIABLE change_result
+    ERROR_VARIABLE change_error
+  )
+  if(NOT change_result EQUAL 0)
+    message(FATAL_ERROR
+      "Could not make ${binary} relocatable: ${change_error}"
+    )
+  endif()
+  execute_process(
+    COMMAND codesign --force --sign - "${binary}"
+    RESULT_VARIABLE sign_result
+    ERROR_VARIABLE sign_error
+  )
+  if(NOT sign_result EQUAL 0)
+    message(FATAL_ERROR "Could not sign ${binary}: ${sign_error}")
+  endif()
+endforeach()

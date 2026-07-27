@@ -53,6 +53,7 @@ specification.
 
 - [Compiler command reference](operations/command-reference.md)
 - [Continuous integration](operations/continuous-integration.md)
+- [Building and releasing Draft](operations/releases.md)
 - [Current release notes](releases/README.md)
 - [Native host qualification](releases/native-host-qualification.md)
 - [Agent acceptance fixture](releases/agent-acceptance.md)

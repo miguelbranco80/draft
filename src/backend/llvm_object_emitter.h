@@ -125,11 +125,17 @@ struct LlvmObjectEmissionResult {
 // or cache key.
 [[nodiscard]] std::string_view linked_llvm_version();
 
-// Returns one executable path from the exact LLVM distribution selected by
-// CMake. The caller supplies a basename such as "clang" or "dsymutil". This is
-// operational compiler configuration and may be overridden by an embedding
-// caller; it never enters Draft program identity.
+// Returns one executable path from the exact LLVM distribution shipped beside
+// the running compiler, falling back to the CMake-selected development tree
+// only when no installed tool exists. The caller supplies a basename such as
+// "clang" or "dsymutil". This is operational compiler configuration and may be
+// overridden by an embedding caller; it never enters Draft program identity.
 [[nodiscard]] std::string linked_llvm_tool_path(std::string_view tool);
+
+// Reports whether the running process has the installed sibling tool layout.
+// Version and release-smoke commands use this to distinguish a relocatable
+// archive from a source-tree build without exposing a host path as identity.
+[[nodiscard]] bool linked_llvm_tools_are_distributed();
 
 // Emits one already-lowered module synchronously. module_name is a logical
 // diagnostic label only and must not contain a physical checkout path. The

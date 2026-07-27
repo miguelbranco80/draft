@@ -375,7 +375,9 @@ std::size_t draft_compiler_copy_version_report(std::uint8_t *destination,
   const std::string report =
       std::string("draftide ") + DRAFT_RELEASE_VERSION + "\ncommit: " +
       DRAFT_BUILD_COMMIT + "\nllvm: " +
-      std::string(draft::linked_llvm_version()) + "\ncore: " +
+      std::string(draft::linked_llvm_version()) + "\ntoolchain: " +
+      (draft::linked_llvm_tools_are_distributed() ? "bundled" : "build-tree") +
+      "\ncore: " +
       std::string(draft::embedded_core_content_identity()) +
       "\ntargets: aarch64-macos, aarch64-linux, x86_64-linux, "
       "x86_64-windows\n";
