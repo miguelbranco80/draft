@@ -180,9 +180,14 @@ Navigation_Target :: struct {
     editable: bool,
 }
 
-// App owns every persistent document and window value. Buffer owns independent
-// zero-terminated pathname copies for file operations; source-list names and
-// paths are separate copies of compiler-service rows.
+// App owns every persistent document and window value. Its bounded semantic
+// indexes and text stores deliberately make repaint and compiler-result
+// publication allocation-free, but also make one value too large for a small
+// platform entry-thread stack. Executable entry points therefore allocate the
+// one long-lived App through core/memory, keep it at a stable address, call
+// destroy_app for nested owners, and then free the outer storage. Buffer owns
+// independent zero-terminated pathname copies for file operations; source-list
+// names and paths are separate copies of compiler-service rows.
 App :: struct {
     ui: turbo_ui.State,
     menus: turbo_ui.Menu_State,

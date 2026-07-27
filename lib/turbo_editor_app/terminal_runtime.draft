@@ -10,6 +10,7 @@
 package turbo_editor_app
 
 import core/io
+import core/memory
 import core/os
 import core/process
 import core/terminal
@@ -98,17 +99,23 @@ has_smoke_argument :: proc() -> bool {
 }
 
 run_smoke :: proc() -> int {
-    app: App
-    init_windows(&app)
-    if !init_one_buffer(&app, "turbo-editor-smoke.draft") {
+    // App retains the complete bounded editor/tooling model. Its fixed tables
+    // intentionally make ordinary frame work allocation-free, but together
+    // they are larger than a Windows process's ordinary thread stack. Keep the
+    // long-lived owner on the general heap just as the interactive entry points
+    // do; its nested dynamic owners still have their normal explicit lifetime.
+    app := memory.new[App]()
+    defer memory.free(app)
+    init_windows(app)
+    defer destroy_app(app)
+    if !init_one_buffer(app, "turbo-editor-smoke.draft") {
         return 1
     }
-    defer destroy_app(&app)
-    turbo_editor.insert_text(active_buffer(&app), "main :: proc() -> int { return 0 }\n")
+    turbo_editor.insert_text(active_buffer(app), "main :: proc() -> int { return 0 }\n")
     surface: tui.Surface
     tui.surface_init(&surface, 90, 30)
     defer tui.surface_destroy(&surface)
-    paint_app(&app, &surface, turbo_ui.no_event())
+    paint_app(app, &surface, turbo_ui.no_event())
     (cell, valid) := tui.cell_at(&surface, 5, 1)
     if !valid || cell.value == cast[rune](0) {
         return 1
@@ -741,25 +748,30 @@ pub run_with_host :: proc(
     if len(source_path) == 0 {
         return 1
     }
-    app: App
-    init_windows(&app)
-    if !init_one_buffer(&app, source_path) {
+    // App is a persistent owner with deliberately bounded semantic indexes and
+    // UI text buffers. Allocate it once instead of consuming the platform's
+    // small entry-thread stack; destroy_app releases its nested owners before
+    // the raw App storage is returned to the same context allocator.
+    app := memory.new[App]()
+    defer memory.free(app)
+    init_windows(app)
+    defer destroy_app(app)
+    if !init_one_buffer(app, source_path) {
         return 1
     }
-    defer destroy_app(&app)
-    app.host = host
-    app.workspace_open = true
-    workspace_files_ready := initialize_workspace_files(&app)
-    bind_active_buffer_to_host_root(&app)
-    refresh_root_packages(&app)
-    refresh_reachable_sources(&app)
+    app^.host = host
+    app^.workspace_open = true
+    workspace_files_ready := initialize_workspace_files(app)
+    bind_active_buffer_to_host_root(app)
+    refresh_root_packages(app)
+    refresh_reachable_sources(app)
     if workspace_files_ready {
-        app.status = "DraftIDE compiler session attached"
+        app^.status = "DraftIDE compiler session attached"
     } else {
-        app.status = "Compiler attached; Workspace Files is unavailable"
+        app^.status = "Compiler attached; Workspace Files is unavailable"
     }
-    refresh_host(&app)
-    return run_app_terminal(&app)
+    refresh_host(app)
+    return run_app_terminal(app)
 }
 
 // run_with_host_bytes is the mutable-path counterpart used by a native service
@@ -771,58 +783,59 @@ pub run_with_host_bytes :: proc(
     if len(source_path) == 0 {
         return 1
     }
-    app: App
-    init_windows(&app)
-    if !init_one_buffer_bytes(&app, source_path) {
+    app := memory.new[App]()
+    defer memory.free(app)
+    init_windows(app)
+    defer destroy_app(app)
+    if !init_one_buffer_bytes(app, source_path) {
         return 1
     }
-    defer destroy_app(&app)
-    app.host = host
-    app.workspace_open = true
-    workspace_files_ready := initialize_workspace_files(&app)
-    bind_active_buffer_to_host_root(&app)
-    refresh_root_packages(&app)
-    refresh_reachable_sources(&app)
+    app^.host = host
+    app^.workspace_open = true
+    workspace_files_ready := initialize_workspace_files(app)
+    bind_active_buffer_to_host_root(app)
+    refresh_root_packages(app)
+    refresh_reachable_sources(app)
     if workspace_files_ready {
-        app.status = "DraftIDE compiler session attached"
+        app^.status = "DraftIDE compiler session attached"
     } else {
-        app.status = "Compiler attached; Workspace Files is unavailable"
+        app^.status = "Compiler attached; Workspace Files is unavailable"
     }
-    refresh_host(&app)
+    refresh_host(app)
     if has_smoke_argument() {
-        workspace_files_ready = refresh_workspace_files(&app)
+        workspace_files_ready = refresh_workspace_files(app)
         if !workspace_files_ready ||
-            app.diagnostic_count != 0 || app.syntax_span_count == 0 ||
-            app.tooling_length[1] == 0 || app.tooling_length[2] == 0 ||
-            app.package_row_count == 0 ||
-            app.workspace_file_entry_count == 0 {
+            app^.diagnostic_count != 0 || app^.syntax_span_count == 0 ||
+            app^.tooling_length[1] == 0 || app^.tooling_length[2] == 0 ||
+            app^.package_row_count == 0 ||
+            app^.workspace_file_entry_count == 0 {
             return 1
         }
         // The integration smoke exercises the same Build operation as F5,
         // including continuation of the manifest-selected root through native
         // publication. Merely painting compiler text would not prove that the
         // durable root-package selection is sufficient to build the program.
-        _ = build_active(&app)
+        _ = build_active(app)
         artifact: [Host_Path_Capacity]u8
-        if app.host.copy_artifact_path == nil ||
-            app.host.copy_artifact_path(
-                app.host.user,
+        if app^.host.copy_artifact_path == nil ||
+            app^.host.copy_artifact_path(
+                app^.host.user,
                 cast[[^]u8](&artifact[0]),
                 len(artifact),
             ) == 0 {
             return 1
         }
-        app.windows[Window_Packages].visible = true
+        app^.windows[Window_Packages].visible = true
         surface: tui.Surface
         tui.surface_init(&surface, 100, 30)
         defer tui.surface_destroy(&surface)
-        paint_app(&app, &surface, turbo_ui.no_event())
+        paint_app(app, &surface, turbo_ui.no_event())
         if os.write_text_all(os.standard_output, "draftide smoke ok\n") != .none {
             return 1
         }
         return 0
     }
-    return run_app_terminal(&app)
+    return run_app_terminal(app)
 }
 
 // run_standalone is the complete example application entry below a tiny root
@@ -831,11 +844,13 @@ pub run_standalone :: proc() -> int {
     if has_smoke_argument() {
         return run_smoke()
     }
-    app: App
-    if !init_app(&app) {
+    app := memory.new[App]()
+    defer memory.free(app)
+    if !init_app(app) {
+        destroy_app(app)
         report_error("turbo-editor: could not open the requested documents\n")
         return 1
     }
-    defer destroy_app(&app)
-    return run_app_terminal(&app)
+    defer destroy_app(app)
+    return run_app_terminal(app)
 }
