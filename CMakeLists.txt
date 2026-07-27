@@ -1488,16 +1488,19 @@ if(BUILD_TESTING)
   # continuation, test, and benchmark builds. Keep both fixtures below the
   # binary tree because these commands deliberately create workspace-owned
   # build and evidence state.
-  add_test(
-    NAME draft_driver_optimization
-    COMMAND
-      "${CMAKE_COMMAND}"
-      "-DDRAFTC=$<TARGET_FILE:draftc>"
-      "-DSOURCE_WORKSPACE=${CMAKE_CURRENT_SOURCE_DIR}/examples/packages"
-      "-DSOURCE_VALIDATION=${CMAKE_CURRENT_SOURCE_DIR}/examples/validation"
-      "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/driver-optimization-test"
-      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_optimization_test.cmake"
-  )
+  if(DRAFT_NATIVE_HOST)
+    add_test(
+      NAME draft_driver_optimization
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_WORKSPACE=${CMAKE_CURRENT_SOURCE_DIR}/examples/packages"
+        "-DSOURCE_VALIDATION=${CMAKE_CURRENT_SOURCE_DIR}/examples/validation"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/driver-optimization-test"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_optimization_test.cmake"
+    )
+  endif()
 
   add_test(
     NAME draft_driver_canonicalizes_symlinked_workspace

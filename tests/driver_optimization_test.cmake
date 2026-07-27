@@ -10,9 +10,11 @@
 if(NOT DEFINED DRAFTC OR
    NOT DEFINED SOURCE_WORKSPACE OR
    NOT DEFINED SOURCE_VALIDATION OR
-   NOT DEFINED TEST_ROOT)
+   NOT DEFINED TEST_ROOT OR
+   NOT DEFINED TARGET_SELECTOR)
   message(FATAL_ERROR
-    "DRAFTC, SOURCE_WORKSPACE, SOURCE_VALIDATION, and TEST_ROOT are required")
+    "DRAFTC, SOURCE_WORKSPACE, SOURCE_VALIDATION, TEST_ROOT, and "
+    "TARGET_SELECTOR are required")
 endif()
 
 file(REMOVE_RECURSE "${TEST_ROOT}")
@@ -48,7 +50,8 @@ if(NOT debug_usage_count EQUAL 3)
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" build "${workspace}/app" -O1
+  COMMAND "${DRAFTC}" build "${workspace}/app"
+    --target "${TARGET_SELECTOR}" -O1
   RESULT_VARIABLE unsupported_result
   OUTPUT_VARIABLE unsupported_stdout
   ERROR_VARIABLE unsupported_stderr
@@ -61,7 +64,8 @@ if(NOT unsupported_result EQUAL 2 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" build "${workspace}/app" -O0 -O2
+  COMMAND "${DRAFTC}" build "${workspace}/app"
+    --target "${TARGET_SELECTOR}" -O0 -O2
   RESULT_VARIABLE duplicate_result
   OUTPUT_VARIABLE duplicate_stdout
   ERROR_VARIABLE duplicate_stderr
@@ -74,7 +78,8 @@ if(NOT duplicate_result EQUAL 2 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" resolve "${workspace}/app" -O2
+  COMMAND "${DRAFTC}" resolve "${workspace}/app"
+    --target "${TARGET_SELECTOR}" -O2
   RESULT_VARIABLE resolve_without_build_result
   OUTPUT_VARIABLE resolve_without_build_stdout
   ERROR_VARIABLE resolve_without_build_stderr
@@ -87,7 +92,8 @@ if(NOT resolve_without_build_result EQUAL 2 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" resolve "${workspace}/app" --debug-symbols
+  COMMAND "${DRAFTC}" resolve "${workspace}/app"
+    --target "${TARGET_SELECTOR}" --debug-symbols
   RESULT_VARIABLE debug_without_build_result
   OUTPUT_VARIABLE debug_without_build_stdout
   ERROR_VARIABLE debug_without_build_stderr
@@ -101,6 +107,7 @@ endif()
 
 execute_process(
   COMMAND "${DRAFTC}" emit-llvm "${workspace}/app"
+    --target "${TARGET_SELECTOR}"
   RESULT_VARIABLE fast_llvm_result
   OUTPUT_VARIABLE fast_llvm_stdout
   ERROR_VARIABLE fast_llvm_stderr
@@ -112,7 +119,8 @@ if(NOT fast_llvm_result EQUAL 0 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" emit-llvm "${workspace}/app" -O2
+  COMMAND "${DRAFTC}" emit-llvm "${workspace}/app"
+    --target "${TARGET_SELECTOR}" -O2
   RESULT_VARIABLE emit_llvm_result
   OUTPUT_VARIABLE emit_llvm_stdout
   ERROR_VARIABLE emit_llvm_stderr
@@ -140,6 +148,7 @@ foreach(level IN ITEMS default o0 o2)
   endif()
   execute_process(
     COMMAND "${DRAFTC}" build "${workspace}/app"
+      --target "${TARGET_SELECTOR}"
       --kind assembly ${level_argument} -o "${level_output}"
     RESULT_VARIABLE build_result
     OUTPUT_VARIABLE build_stdout
@@ -153,6 +162,7 @@ endforeach()
 
 execute_process(
   COMMAND "${DRAFTC}" resolve "${workspace}/app" --build
+    --target "${TARGET_SELECTOR}"
     --kind assembly -O2 -o "${resolve_o2_output}"
   RESULT_VARIABLE resolve_o2_result
   OUTPUT_VARIABLE resolve_o2_stdout
@@ -207,7 +217,8 @@ endif()
 # policy actively misleading. The committed evidence policy must distinguish
 # O0 from O2 even though both runs consume the same resolved Draft program.
 execute_process(
-  COMMAND "${DRAFTC}" test "${validation}" -O0
+  COMMAND "${DRAFTC}" test "${validation}"
+    --target "${TARGET_SELECTOR}" -O0
   RESULT_VARIABLE test_o0_result
   OUTPUT_VARIABLE test_o0_stdout
   ERROR_VARIABLE test_o0_stderr
@@ -219,7 +230,8 @@ if(NOT test_o0_result EQUAL 0 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" test "${validation}" -O2
+  COMMAND "${DRAFTC}" test "${validation}"
+    --target "${TARGET_SELECTOR}" -O2
   RESULT_VARIABLE test_o2_result
   OUTPUT_VARIABLE test_o2_stdout
   ERROR_VARIABLE test_o2_stderr
@@ -231,7 +243,8 @@ if(NOT test_o2_result EQUAL 0 OR
 endif()
 
 execute_process(
-  COMMAND "${DRAFTC}" bench "${validation}" --verify -O2
+  COMMAND "${DRAFTC}" bench "${validation}"
+    --target "${TARGET_SELECTOR}" --verify -O2
   RESULT_VARIABLE bench_o2_result
   OUTPUT_VARIABLE bench_o2_stdout
   ERROR_VARIABLE bench_o2_stderr
