@@ -27,6 +27,19 @@ set(llvm_license
 set(example "${TEST_ROOT}/hello")
 set(program "${TEST_ROOT}/hello-program${executable_suffix}")
 
+# Sanitizer qualification installs an instrumented C++ service beside an
+# ordinary DraftIDE executable. On ELF, ASan must be present before that service
+# is loaded, so the sanitizer build passes its exact runtime for only the two
+# DraftIDE launches below. Release archives leave this unset because their
+# service is not instrumented.
+set(draftide_command "${draftide}")
+if(DEFINED DRAFT_ASAN_PRELOAD AND NOT DRAFT_ASAN_PRELOAD STREQUAL "")
+  set(
+    draftide_command
+    "${CMAKE_COMMAND}" -E env "LD_PRELOAD=${DRAFT_ASAN_PRELOAD}" "${draftide}"
+  )
+endif()
+
 foreach(path IN ITEMS
     "${draftc}"
     "${draftide}"
@@ -73,7 +86,7 @@ if(NOT DRAFT_LAST_OUTPUT MATCHES "toolchain: bundled")
   message(FATAL_ERROR "draftc did not select bundled tools:\n${DRAFT_LAST_OUTPUT}")
 endif()
 
-run_checked("draftide --version" "${draftide}" --version)
+run_checked("draftide --version" ${draftide_command} --version)
 if(NOT DRAFT_LAST_OUTPUT MATCHES "draftide ${DRAFT_RELEASE_VERSION}")
   message(FATAL_ERROR "draftide reported the wrong version:\n${DRAFT_LAST_OUTPUT}")
 endif()
@@ -87,4 +100,4 @@ run_checked(
   "${draftc}" build "${example}" --target "${DRAFT_TARGET}" -o "${program}"
 )
 run_checked("built Draft program" "${program}")
-run_checked("DraftIDE smoke" "${draftide}" "${example}" --smoke)
+run_checked("DraftIDE smoke" ${draftide_command} "${example}" --smoke)

@@ -661,6 +661,10 @@ ctest --test-dir build-sanitized --output-on-failure
 This instruments the C++ compiler, not generated Draft programs. Generated
 Draft `--instrument address` is currently qualified on macOS only. Other
 required instrumentation, including Linux Draft ASan, fails closed.
+The CMake test graph handles the one mixed-process exception explicitly:
+DraftIDE remains ordinary Draft code but loads the instrumented C++ compiler
+service, so its service-backed tests preload the compiler-selected ASan runtime
+on ELF. Do not add an ambient `LD_PRELOAD` to all generated-program tests.
 
 ## Examples
 

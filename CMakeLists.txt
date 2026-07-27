@@ -53,6 +53,48 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(DRAFT_WARNINGS_AS_ERRORS "Treat bootstrap compiler warnings as errors" ON)
 option(DRAFT_ENABLE_SANITIZERS "Enable address and undefined-behavior sanitizers" OFF)
 
+# An instrumented ELF shared library cannot arrange for the address-sanitizer
+# runtime to precede the uninstrumented executable which loads it. DraftIDE has
+# exactly that shape in sanitizer builds: its Draft-owned executable is an
+# ordinary target program, while the C++ compiler service is instrumented by
+# the bootstrap build. Locate the host runtime once so the few tests which
+# launch that mixed process can preload it explicitly. This does not instrument
+# generated Draft code and does not affect installed release builds.
+set(DRAFT_ASAN_PRELOAD "")
+if(DRAFT_ENABLE_SANITIZERS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(DRAFT_ASAN_RUNTIME_NAME "")
+  set(DRAFT_ASAN_RUNTIME_RESULT 1)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(DRAFT_ASAN_RUNTIME_NAME "libasan.so")
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+      set(DRAFT_ASAN_RUNTIME_NAME "libclang_rt.asan-x86_64.so")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+      set(DRAFT_ASAN_RUNTIME_NAME "libclang_rt.asan-aarch64.so")
+    endif()
+  endif()
+  if(NOT DRAFT_ASAN_RUNTIME_NAME STREQUAL "")
+    execute_process(
+      COMMAND
+        "${CMAKE_CXX_COMPILER}"
+        "-print-file-name=${DRAFT_ASAN_RUNTIME_NAME}"
+      RESULT_VARIABLE DRAFT_ASAN_RUNTIME_RESULT
+      OUTPUT_VARIABLE DRAFT_ASAN_PRELOAD
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+    )
+  endif()
+  if(
+    NOT DRAFT_ASAN_RUNTIME_RESULT EQUAL 0
+    OR NOT IS_ABSOLUTE "${DRAFT_ASAN_PRELOAD}"
+    OR NOT EXISTS "${DRAFT_ASAN_PRELOAD}"
+  )
+    message(FATAL_ERROR
+      "The selected Linux compiler has no discoverable dynamic ASan runtime"
+    )
+  endif()
+endif()
+
 find_package(Threads REQUIRED)
 
 # Internal Codex operations share the factual language references maintained by
@@ -868,6 +910,20 @@ if(BUILD_TESTING)
         LABELS "ide;release"
         PASS_REGULAR_EXPRESSION "draftide ${DRAFT_RELEASE_VERSION}"
     )
+    if(NOT DRAFT_ASAN_PRELOAD STREQUAL "")
+      # Only the three mixed Draft/C++ service processes need preloading. The
+      # remaining native tests intentionally exercise ordinary generated Draft
+      # programs without silently turning bootstrap sanitizer policy into a
+      # target-program option.
+      set_tests_properties(
+        draft_draftide_smoke
+        draft_draftide_auto_root_smoke
+        draft_draftide_version
+        PROPERTIES
+          ENVIRONMENT_MODIFICATION
+            "LD_PRELOAD=path_list_prepend:${DRAFT_ASAN_PRELOAD}"
+      )
+    endif()
   endif()
 
   add_test(NAME draft_compiler_version COMMAND draftc --version)
@@ -891,6 +947,7 @@ if(BUILD_TESTING)
         "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/distribution-smoke"
         "-DDRAFT_TARGET=${DRAFTIDE_HOST_TARGET}"
         "-DDRAFT_RELEASE_VERSION=${DRAFT_RELEASE_VERSION}"
+        "-DDRAFT_ASAN_PRELOAD=${DRAFT_ASAN_PRELOAD}"
         "-DCMAKE_INSTALL_CONFIG_NAME=$<CONFIG>"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_distribution_smoke_test.cmake"
     )
@@ -971,6 +1028,14 @@ if(BUILD_TESTING)
     set_tests_properties(
       draft_compiler_service_tests PROPERTIES LABELS "ide;integration"
     )
+    if(NOT DRAFT_ASAN_PRELOAD STREQUAL "")
+      set_tests_properties(
+        draft_compiler_service_tests
+        PROPERTIES
+          ENVIRONMENT_MODIFICATION
+            "LD_PRELOAD=path_list_prepend:${DRAFT_ASAN_PRELOAD}"
+      )
+    endif()
   endif()
 
   add_executable(draft_parser_tests tests/parser_test.cpp)

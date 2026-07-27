@@ -45,7 +45,11 @@ UndefinedBehaviorSanitizer with leak detection and immediate failure. Those
 runtimes instrument the C++ bootstrap and test executables. Generated Draft
 programs use the ordinary x86-64 target unless a separately selected Draft
 instrumentation profile is under test; bootstrap sanitizer flags do not become
-Draft program configuration.
+Draft program configuration. DraftIDE is deliberately a mixed process: its
+ordinary Draft executable loads the instrumented C++ compiler service. CTest
+preloads the exact compiler-selected ASan runtime for only those service-backed
+tests so ELF load order cannot disable the sanitizer or leak into unrelated
+generated-program tests.
 
 ## Host toolchains and resolved inputs
 

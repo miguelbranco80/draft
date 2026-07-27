@@ -155,6 +155,19 @@ struct ConformanceCase {
 #endif
 }
 
+// LLVM's target lowering chooses the architecture's conventional hard trap.
+// AArch64 BRK is delivered as SIGTRAP by Darwin and Linux, whereas x86-64 UD2
+// is delivered as SIGILL by Linux. Requiring that exact target-specific signal
+// still distinguishes an intentional Draft trap from an incidental arithmetic
+// fault or memory violation without pretending the two ISAs share an opcode.
+[[nodiscard]] constexpr int native_trap_signal() {
+#if defined(__linux__) && defined(__x86_64__)
+  return SIGILL;
+#else
+  return SIGTRAP;
+#endif
+}
+
 // Runs an already linked path directly. No shell, inherited command search, or
 // source-authored byte can become command syntax. The child uses an isolated
 // working directory so relative process state cannot leak between fixtures.
@@ -307,11 +320,10 @@ void test_native_examples(TestState &state) {
                 process_status));
         EXPECT(state, test.name, WIFSIGNALED(process_status));
         if (WIFSIGNALED(process_status)) {
-          // LLVM lowers llvm.trap to the selected architecture's trap, and
-          // each selected kernel reports that deliberate breakpoint as
-          // SIGTRAP. Requiring the exact signal distinguishes the compiler's
-          // trap edge from an accidental arithmetic or memory fault.
-          EXPECT(state, test.name, WTERMSIG(process_status) == SIGTRAP);
+          EXPECT(
+              state,
+              test.name,
+              WTERMSIG(process_status) == native_trap_signal());
         }
       }
     } else {

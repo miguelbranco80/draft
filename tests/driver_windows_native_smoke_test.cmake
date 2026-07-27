@@ -11,11 +11,12 @@
 # recorder.
 #
 # Runtime-traps is the one deliberate exclusion: its success condition is a
-# POSIX SIGTRAP classification. Windows exception-code classification belongs
-# in the later cross-platform validation runner, not in a shell-shaped smoke
-# script. Draft tests/benchmarks remain outside this gate for the same reason.
-# Every invoked program otherwise must launch and return zero. Derived state is
-# confined to TEST_ROOT so simultaneous worktrees and CI jobs never share it.
+# POSIX target-specific signal classification. Windows exception-code matching
+# belongs in the later cross-platform validation runner, not in a shell-shaped
+# smoke script. Draft tests/benchmarks remain outside this gate for the same
+# reason. Every invoked program otherwise must launch and return zero. Derived
+# state is confined to TEST_ROOT so simultaneous worktrees and CI jobs never
+# share it.
 
 if(NOT DEFINED DRAFTC OR
    NOT DEFINED CLANG OR
