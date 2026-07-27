@@ -1,0 +1,246 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Package jobs can only read source. The final publisher alone receives the
+# narrow repository permission required to create one GitHub release.
+permissions:
+  contents: read
+
+jobs:
+  unix-packages:
+    name: Package / ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            runner: macos-15
+            bootstrap_cxx: clang++
+            llvm_dir: /opt/homebrew/opt/llvm@22/lib/cmake/llvm
+            target: aarch64-macos
+            parallel: 3
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            bootstrap_cxx: g++
+            llvm_dir: /usr/lib/llvm-22/lib/cmake/llvm
+            target: aarch64-linux
+            parallel: 4
+          - name: Linux x86-64
+            runner: ubuntu-24.04
+            bootstrap_cxx: g++
+            llvm_dir: /usr/lib/llvm-22/lib/cmake/llvm
+            target: x86_64-linux
+            parallel: 4
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install macOS LLVM development libraries
+        if: runner.os == 'macOS'
+        run: brew install llvm@22
+
+      - name: Install Linux native toolchain
+        if: runner.os == 'Linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake software-properties-common wget
+          wget --quiet https://apt.llvm.org/llvm.sh --output-document /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo apt-get install --yes llvm-22-dev
+
+      - name: Configure release build
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=${{ matrix.bootstrap_cxx }} \
+            -DLLVM_DIR=${{ matrix.llvm_dir }} \
+            -DDRAFT_BUILD_COMMIT=${{ github.sha }} \
+            -DDRAFT_WARNINGS_AS_ERRORS=ON \
+            -DDRAFT_ENABLE_SANITIZERS=OFF
+
+      - name: Build and test
+        run: |
+          cmake --build build --parallel ${{ matrix.parallel }}
+          ctest --test-dir build --output-on-failure --parallel ${{ matrix.parallel }}
+
+      - name: Verify tag and binary version agree
+        shell: bash
+        run: |
+          release_version="$(build/draftc --version | sed -n '1s/^draftc //p')"
+          test "${GITHUB_REF_NAME}" = "v${release_version}"
+
+      - name: Build release archive
+        run: cpack --config build/CPackConfig.cmake -C Release -B build/packages
+
+      - name: Exercise extracted archive
+        shell: bash
+        run: |
+          archive="$(find build/packages -maxdepth 1 -name 'draft-*.tar.xz' -print -quit)"
+          test -n "$archive"
+          archive_name="$(basename "$archive" .tar.xz)"
+          mkdir -p build/extracted
+          (cd build/extracted && cmake -E tar xf "../packages/$(basename "$archive")")
+          cmake \
+            -DDRAFT_ROOT="$PWD/build/extracted/$archive_name" \
+            -DTEST_ROOT="$PWD/build/archive-smoke" \
+            -DDRAFT_TARGET=${{ matrix.target }} \
+            -DDRAFT_RELEASE_VERSION="${GITHUB_REF_NAME#v}" \
+            -P tests/distribution_smoke_test.cmake
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: draft-${{ matrix.target }}
+          path: build/packages/draft-*.tar.xz
+          if-no-files-found: error
+
+  windows-package:
+    name: Package / Windows x86-64
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      LLVM_VERSION: 22.1.6
+      LLVM_ARCHIVE_SHA256: 657343edf361ca463bd642e39c74b251c6338b96cdbd55ff277555298b027696
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Restore LLVM 22 development archive
+        id: llvm-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}\llvm-22.1.6
+          key: llvm-windows-x86-64-22.1.6-657343edf361
+
+      - name: Install LLVM 22 development archive
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION.tar.xz"
+          $destination = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/clang%2Bllvm-$env:LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"
+          & curl.exe --fail --location --retry 5 --retry-all-errors `
+            --output $archive $url
+          if ($LASTEXITCODE -ne 0) {
+            throw "LLVM archive download failed with exit code $LASTEXITCODE"
+          }
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $env:LLVM_ARCHIVE_SHA256) {
+            throw "LLVM archive SHA-256 mismatch: expected $env:LLVM_ARCHIVE_SHA256, got $actual"
+          }
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          tar -xf $archive -C $destination --strip-components=1
+
+      - name: Select LLVM 22 tools
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION"
+          "LLVM_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          (Join-Path $root "bin") | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Configure and build release
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DLLVM_DIR="$env:LLVM_ROOT\lib\cmake\llvm" `
+            -DDRAFT_BUILD_COMMIT=${{ github.sha }} `
+            -DDRAFT_WARNINGS_AS_ERRORS=ON `
+            -DDRAFT_ENABLE_SANITIZERS=OFF `
+            -DBUILD_TESTING=OFF
+          cmake --build build --config Release --parallel 4
+
+      - name: Qualify native compiler and installed distribution
+        shell: cmd
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
+          if errorlevel 1 exit /b 1
+          cmake -DDRAFTC="%CD%\build\Release\draftc.exe" -DCLANG="%LLVM_ROOT%\bin\clang.exe" -DSOURCE_ROOT="%CD%" -DTEST_ROOT="%CD%\build\windows-native-smoke" -P "%CD%\tests\driver_windows_native_smoke_test.cmake"
+          if errorlevel 1 exit /b 1
+          cmake --install "%CD%\build" --config Release --prefix "%CD%\build\distribution"
+          if errorlevel 1 exit /b 1
+          cmake -DDRAFT_ROOT="%CD%\build\distribution" -DTEST_ROOT="%CD%\build\distribution-smoke" -DDRAFT_TARGET=x86_64-windows -DDRAFT_RELEASE_VERSION=%GITHUB_REF_NAME:~1% -P "%CD%\tests\distribution_smoke_test.cmake"
+          if errorlevel 1 exit /b 1
+
+      - name: Verify tag and binary version agree
+        shell: pwsh
+        run: |
+          $line = (& .\build\Release\draftc.exe --version | Select-Object -First 1)
+          $releaseVersion = $line -replace '^draftc ', ''
+          if ($env:GITHUB_REF_NAME -ne "v$releaseVersion") {
+            throw "tag $env:GITHUB_REF_NAME does not match draftc $releaseVersion"
+          }
+
+      - name: Build and exercise release archive
+        shell: pwsh
+        run: |
+          cpack --config build\CPackConfig.cmake -C Release -B build\packages
+          if ($LASTEXITCODE -ne 0) { throw "CPack failed" }
+          $archive = Get-ChildItem build\packages\draft-*.zip | Select-Object -First 1
+          if ($null -eq $archive) { throw "CPack produced no Draft zip" }
+          $rootName = [System.IO.Path]::GetFileNameWithoutExtension($archive.Name)
+          Expand-Archive -Path $archive.FullName -DestinationPath build\extracted
+          cmake `
+            -DDRAFT_ROOT="$PWD\build\extracted\$rootName" `
+            -DTEST_ROOT="$PWD\build\archive-smoke" `
+            -DDRAFT_TARGET=x86_64-windows `
+            -DDRAFT_RELEASE_VERSION=$($env:GITHUB_REF_NAME.Substring(1)) `
+            -P tests\distribution_smoke_test.cmake
+          if ($LASTEXITCODE -ne 0) { throw "Archive smoke failed" }
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: draft-x86_64-windows
+          path: build/packages/draft-*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: [unix-packages, windows-package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download qualified archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: draft-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create checksums
+        run: |
+          cd release-assets
+          sha256sum draft-*.tar.xz draft-*.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release-assets/draft-*.tar.xz \
+            release-assets/draft-*.zip \
+            release-assets/SHA256SUMS \
+            --verify-tag \
+            --prerelease \
+            --generate-notes \
+            --title "Draft ${GITHUB_REF_NAME#v}"

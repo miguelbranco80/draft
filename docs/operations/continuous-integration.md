@@ -67,6 +67,16 @@ and caches that immutable tree by version and digest. The Visual Studio
 developer environment supplies the matching Windows SDK include/library paths
 to the Clang processes launched by `draftc`.
 
+## Tagged releases
+
+The separate release workflow runs only for `v*` tags. It repeats Release-mode
+native qualification, creates one CPack archive on each native host, extracts
+that archive, and reruns the distribution smoke against the extracted bytes.
+The final job cannot run unless all four packages pass. It verifies the tag
+against the binary version, generates one `SHA256SUMS`, and publishes a GitHub
+prerelease. See [Building and releasing Draft](releases.md) for the archive
+layout and local equivalent.
+
 Foreign objects, archives, shared libraries, provider summaries, and runtime
 assets remain exact resolved-program inputs when a program selects them. Their
 content-tree verification is covered by target-independent tests. Native

@@ -637,6 +637,9 @@ For archive work, create the host package with CPack, extract it, and repeat
 `tests/distribution_smoke_test.cmake` with `DRAFT_ROOT` naming the extracted
 top-level directory. The exact commands and platform requirements are in
 [`docs/operations/releases.md`](../../../../docs/operations/releases.md).
+Ordinary CI runs the installed-prefix test on every native host. A `v*` tag
+runs the separate workflow which qualifies all four extracted archives before
+publication.
 
 ## Sanitizers
 

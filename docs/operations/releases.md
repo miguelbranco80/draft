@@ -66,7 +66,8 @@ The supported filenames are:
 - `draft-0.1.0-alpha.1-x86_64-linux.tar.xz`
 - `draft-0.1.0-alpha.1-x86_64-windows.zip`
 
-CPack also creates an individual SHA-256 file for a local archive.
+CPack also creates an individual SHA-256 file for a local archive. Published
+GitHub releases contain one canonical `SHA256SUMS` covering all four archives.
 
 ## Qualification
 
@@ -76,6 +77,18 @@ checks both version reports, builds and launches a real Draft program, and
 starts DraftIDE in noninteractive smoke mode. The Windows job performs the
 equivalent install smoke after its focused native compiler/C interoperation
 gate.
+
+## Tag-triggered publication
+
+Pushing a tag such as `v0.1.0-alpha.1` starts the separate release workflow.
+Each native host builds a Release bootstrap with the tagged commit embedded,
+runs its qualification gates, creates its own archive, extracts it again, and
+reruns the common distribution smoke against the extracted tree. Publication
+occurs only after all four package jobs pass. The publisher verifies that the
+tag equals the version reported by the binaries, creates `SHA256SUMS`, and
+publishes a GitHub prerelease. A normal branch push cannot publish because the
+ordinary CI token is read-only and only the final tag job receives
+`contents: write`.
 
 The macOS package receives an ad-hoc signature after its loader paths are made
 relative. That preserves local execution after archive extraction; it is not a
