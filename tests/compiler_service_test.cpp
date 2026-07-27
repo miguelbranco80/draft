@@ -62,6 +62,20 @@ void write_file(const std::filesystem::path &path, std::string_view contents) {
   }
 }
 
+void test_version_report(TestState &state) {
+  std::array<std::uint8_t, 512> report{};
+  const std::size_t size =
+      draft_compiler_copy_version_report(report.data(), report.size());
+  const std::string_view text(reinterpret_cast<const char *>(report.data()),
+                              size);
+  EXPECT(state, size < report.size());
+  EXPECT(state, text.starts_with("draftide 0.1.0-alpha.1\n"));
+  EXPECT(state, text.find("\ncommit: ") != std::string_view::npos);
+  EXPECT(state, text.find("\nllvm: 22.") != std::string_view::npos);
+  EXPECT(state, text.find("\ncore: draft-core:") != std::string_view::npos);
+  EXPECT(state, text.ends_with("x86_64-windows\n"));
+}
+
 #if defined(__APPLE__) || defined(__unix__)
 // ScopedPath installs one deterministic fake `codex` only around the successful
 // editor-expansion call. CompilerSession intentionally uses ordinary PATH
@@ -1175,6 +1189,7 @@ void test_named_program_is_discovered_only_under_its_target(TestState &state) {
 
 int main() {
   TestState state;
+  test_version_report(state);
   test_service_transactions_and_native_build(state);
   test_create_rejects_escaping_paths(state);
   test_create_discovers_root_when_omitted(state);

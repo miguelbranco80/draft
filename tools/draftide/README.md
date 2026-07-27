@@ -11,6 +11,10 @@ cmake --build build --target draftide --parallel
 build/draftide examples/raylib-asteroids
 ```
 
+`build/draftide --version` reports the same release, source commit, LLVM, core,
+and target identities as its sibling compiler service without opening a
+workspace.
+
 DraftIDE uses the same model as `draftc`:
 
 - **Workspace** is the filesystem/import boundary established by the nearest

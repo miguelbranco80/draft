@@ -241,6 +241,7 @@ passes. For handwritten programs or `...` programs that already have fresh
 saved expansions for the selected target, use the provider-free sequence:
 
 ```sh
+build/draftc --version
 build/draftc lex path/to/file.draft
 build/draftc syntax path/to/file.draft
 build/draftc check path/to/workspace/package --target aarch64-macos
@@ -250,6 +251,11 @@ build/draftc check path/to/workspace/package --target x86_64-windows
 build/draftc expand path/to/workspace/package --out /tmp/expanded-source \
   --target aarch64-macos
 ```
+
+The version report names the public release, exact source commit, linked LLVM,
+embedded core identity, and supported target selectors. Include it with a
+compiler bug report; none of its display-only release metadata changes program
+identity.
 
 Fail-closed provider-free CI must omit every `resolve` spelling, including
 `resolve --build` and `resolve --revalidate`: resolution may contact a provider

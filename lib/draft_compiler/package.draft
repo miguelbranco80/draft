@@ -38,6 +38,14 @@ pub Configuration :: c struct {
 }
 
 foreign draft_compiler_service {
+    // The distribution report is available before a workspace session exists,
+    // allowing command-line version inspection to remain independent of source
+    // discovery and compiler state.
+    pub copy_version_report as "draft_compiler_copy_version_report" :: c proc(
+        destination: [^]u8,
+        capacity: usize,
+    ) -> usize
+
     session_create_raw as "draft_compiler_session_create" :: c proc(
         configuration: ^Configuration,
         error_destination: [^]u8,

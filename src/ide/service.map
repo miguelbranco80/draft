@@ -1,5 +1,6 @@
 DRAFT_COMPILER_SERVICE_0 {
   global:
+    draft_compiler_copy_version_report;
     draft_compiler_session_create;
     draft_compiler_session_destroy;
     draft_compiler_session_open_workspace;

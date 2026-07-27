@@ -15,7 +15,10 @@
 #include "ide/service.h"
 #include "ide/compiler_session.h"
 
+#include "backend/llvm_object_emitter.h"
+#include "draft/version.h"
 #include "target/profile.h"
+#include "workspace/embedded_core.h"
 #include "workspace/manifest.h"
 #include "workspace/selection.h"
 
@@ -366,6 +369,18 @@ navigation_location(const draft::ide::NavigationLocation &location) {
 }
 
 } // namespace
+
+std::size_t draft_compiler_copy_version_report(std::uint8_t *destination,
+                                               std::size_t capacity) {
+  const std::string report =
+      std::string("draftide ") + DRAFT_RELEASE_VERSION + "\ncommit: " +
+      DRAFT_BUILD_COMMIT + "\nllvm: " +
+      std::string(draft::linked_llvm_version()) + "\ncore: " +
+      std::string(draft::embedded_core_content_identity()) +
+      "\ntargets: aarch64-macos, aarch64-linux, x86_64-linux, "
+      "x86_64-windows\n";
+  return copy_text(report, destination, capacity);
+}
 
 void *draft_compiler_session_create(
     const DraftCompilerServiceConfiguration *configuration,

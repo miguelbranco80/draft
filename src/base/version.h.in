@@ -1,0 +1,11 @@
+// Generated release identity shared by the compiler and compiler service.
+//
+// CMake is the sole writer of these strings. The release version describes the
+// public distribution contract; the commit identifies the exact source tree
+// used to build one archive. Neither value participates in Draft program
+// identity, source resolution, or native artifact determinism.
+
+#pragma once
+
+#define DRAFT_RELEASE_VERSION "@DRAFT_RELEASE_VERSION@"
+#define DRAFT_BUILD_COMMIT "@DRAFT_BUILD_COMMIT@"

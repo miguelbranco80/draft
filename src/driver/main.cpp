@@ -24,6 +24,7 @@
 #include "backend/toolchain.h"
 #include "base/child_process.h"
 #include "base/timing.h"
+#include "draft/version.h"
 #include "compile/compiler.h"
 #include "compile/expanded_source.h"
 #include "compile/resolver.h"
@@ -1541,6 +1542,7 @@ int run_agent_command(
 void print_usage() {
   std::cerr
       << "usage:\n"
+      << "  draftc --version\n"
       << "  draftc lex <file.draft>\n"
       << "  draftc syntax <file.draft>\n"
       << "  draftc check <package>\n"
@@ -1634,9 +1636,26 @@ void print_usage() {
          "aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows]\n";
 }
 
+// The version report names every compiler-distributed input a user needs when
+// reporting a release problem. It deliberately excludes host paths and ambient
+// SDK versions: those are operational configuration, not distribution identity.
+void print_version() {
+  std::cout
+      << "draftc " DRAFT_RELEASE_VERSION "\n"
+      << "commit: " DRAFT_BUILD_COMMIT "\n"
+      << "llvm: " << draft::linked_llvm_version() << '\n'
+      << "core: " << draft::embedded_core_content_identity() << '\n'
+      << "targets: aarch64-macos, aarch64-linux, x86_64-linux, "
+         "x86_64-windows\n";
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--version") {
+    print_version();
+    return 0;
+  }
   if (argc == 3 && std::string_view(argv[1]) == "lex") {
     return lex_file(argv[2]);
   }

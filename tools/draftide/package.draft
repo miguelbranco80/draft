@@ -11,6 +11,7 @@ import lib/turbo_editor_app
 
 Error_Capacity :: 512
 Path_Capacity :: 4096
+Version_Capacity :: 512
 
 text_equal :: proc(left, right: string) -> bool {
     if len(left) != len(right) {
@@ -42,6 +43,24 @@ usage :: proc() {
     write_error(
         "usage: draftide <workspace> [--source <file>] [--target <target>] [--smoke]\n",
     )
+    write_error("       draftide --version\n")
+}
+
+// print_version asks the native service for the exact distribution report. The
+// service returns the required byte count even on truncation, so this command
+// never presents a partial release identity as complete.
+print_version :: proc() -> bool {
+    storage: [Version_Capacity]u8
+    length := draft_compiler.copy_version_report(
+        cast[[^]u8](&storage[0]),
+        len(storage),
+    )
+    if length >= len(storage) {
+        write_error("draftide: version report exceeds its fixed buffer\n")
+        return false
+    }
+    result := os.write_all(os.standard_output, storage[:length])
+    return result == .none
 }
 
 parse_target :: proc(text: string) -> (draft_compiler.Target, bool) {
@@ -78,6 +97,9 @@ main :: proc() -> int {
     if len(arguments) < 2 {
         usage()
         return 1
+    }
+    if len(arguments) == 2 && text_equal(arguments[1], "--version") {
+        return 0 if print_version() else 1
     }
 
     workspace := arguments[1]

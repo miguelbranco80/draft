@@ -3,6 +3,12 @@
 Status: current bootstrap CLI. The executable is named `draftc`; examples below
 use the default `build/draftc` CMake output.
 
+`draftc --version` is independent of a workspace and reports the public release
+version, exact source commit, linked LLVM version, embedded core identity, and
+implemented target selectors. These are release/support facts; the release
+version and commit do not enter Draft program identity or invalidate saved
+synthesis source.
+
 Package commands take the package directory itself as their first positional
 path. `draftc` canonicalizes that directory and searches upward for the nearest
 `draft.workspace`; its containing directory owns workspace-relative imports and

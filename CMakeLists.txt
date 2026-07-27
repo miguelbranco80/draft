@@ -9,6 +9,38 @@ project(
   LANGUAGES C CXX
 )
 
+# The numeric project version remains available to CMake package tooling, while
+# the explicit suffix labels this intentionally unstable public experiment. A
+# release workflow supplies the exact full commit. Source builds discover it at
+# configure time when Git is available and otherwise report the honest `source`
+# sentinel rather than manufacturing provenance.
+set(DRAFT_RELEASE_SUFFIX "alpha.1")
+set(DRAFT_RELEASE_VERSION "${PROJECT_VERSION}-${DRAFT_RELEASE_SUFFIX}")
+set(
+  DRAFT_BUILD_COMMIT "" CACHE STRING
+  "Source commit recorded by Draft binaries"
+)
+if(DRAFT_BUILD_COMMIT STREQUAL "")
+  execute_process(
+    COMMAND git rev-parse --verify HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    RESULT_VARIABLE DRAFT_GIT_RESULT
+    OUTPUT_VARIABLE DRAFT_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  if(DRAFT_GIT_RESULT EQUAL 0 AND NOT DRAFT_GIT_COMMIT STREQUAL "")
+    set(DRAFT_BUILD_COMMIT "${DRAFT_GIT_COMMIT}")
+  else()
+    set(DRAFT_BUILD_COMMIT "source")
+  endif()
+endif()
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/base/version.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/draft/version.h"
+  @ONLY
+)
+
 # The bootstrap compiler deliberately uses a small, uniform C++20 dialect. We
 # disable implementation extensions so a construct accepted by one host compiler
 # does not quietly become a portability dependency of the self-hosting path.
@@ -227,6 +259,10 @@ add_custom_command(
 # them only on the static compiler archive would instrument objects without
 # linking the sanitizer runtime.
 add_library(draft_build_options INTERFACE)
+target_include_directories(
+  draft_build_options
+  INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/generated"
+)
 
 # Keep LLVM headers and definitions behind one object-library boundary. Its
 # objects become part of draft_compiler so the direct package builder may read
@@ -565,7 +601,25 @@ if(BUILD_TESTING)
     set_tests_properties(
       draft_draftide_auto_root_smoke PROPERTIES LABELS "ide;integration"
     )
+    add_test(
+      NAME draft_draftide_version
+      COMMAND "${DRAFTIDE_EXECUTABLE}" --version
+    )
+    set_tests_properties(
+      draft_draftide_version
+      PROPERTIES
+        LABELS "ide;release"
+        PASS_REGULAR_EXPRESSION "draftide ${DRAFT_RELEASE_VERSION}"
+    )
   endif()
+
+  add_test(NAME draft_compiler_version COMMAND draftc --version)
+  set_tests_properties(
+    draft_compiler_version
+    PROPERTIES
+      LABELS "release"
+      PASS_REGULAR_EXPRESSION "draftc ${DRAFT_RELEASE_VERSION}"
+  )
 
   # The complete native matrix must execute the artifacts it just built. Keep
   # it enabled only when the host exactly matches an implemented target pair.

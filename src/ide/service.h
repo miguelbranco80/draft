@@ -26,6 +26,14 @@
 extern "C" {
 #endif
 
+// Copies the complete compiler-distribution report used by the
+// `draftide --version` command. The result is independent of a workspace
+// session. A nonempty
+// destination is always NUL-terminated; the return value is the complete byte
+// count so callers can detect truncation.
+DRAFT_COMPILER_SERVICE_API size_t draft_compiler_copy_version_report(
+    uint8_t *destination, size_t capacity);
+
 typedef struct DraftCompilerServiceConfiguration {
   const void *workspace_data;
   size_t workspace_length;
