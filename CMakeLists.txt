@@ -349,6 +349,15 @@ if(MSVC)
   target_compile_options(
     draft_llvm_backend PRIVATE /external:anglebrackets /external:W0
   )
+  # Optimized MSVC code generation diagnoses unreachable branches in LLVM's
+  # DenseMap templates only after the header-level warning scope has ended.
+  # There is no source-local pragma point for that deferred C4702. Disable it
+  # for the one translation unit which consumes LLVM's C++ ThinLTO API; /WX and
+  # every other warning remain active there, and C4702 remains an error for all
+  # other Draft sources.
+  set_source_files_properties(
+    src/backend/llvm_thinlto.cpp PROPERTIES COMPILE_OPTIONS /wd4702
+  )
 endif()
 target_compile_definitions(
   draft_llvm_backend
