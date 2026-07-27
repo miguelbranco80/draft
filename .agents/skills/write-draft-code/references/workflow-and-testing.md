@@ -566,6 +566,13 @@ ordinary executable inventory through
 does not yet execute the test/benchmark rows. Do not add an example source
 package without adding its explicit final-state classification.
 
+Windows CI obtains the complete pinned LLVM development archive through
+`.github/scripts/install-windows-llvm.ps1`. That script verifies the upstream
+SHA-256, expands the xz and tar layers explicitly with 7-Zip, and leaves one
+immutable prefix for the version-and-digest cache. Do not replace it with the
+smaller tool-only installer; the bootstrap also needs headers, CMake exports,
+and static LTO/target libraries.
+
 Run one or a small regular-expression slice while iterating:
 
 ```sh

@@ -131,20 +131,11 @@ jobs:
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $archive = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION.tar.xz"
           $destination = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION"
-          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/clang%2Bllvm-$env:LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"
-          & curl.exe --fail --location --retry 5 --retry-all-errors `
-            --output $archive $url
-          if ($LASTEXITCODE -ne 0) {
-            throw "LLVM archive download failed with exit code $LASTEXITCODE"
-          }
-          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          if ($actual -ne $env:LLVM_ARCHIVE_SHA256) {
-            throw "LLVM archive SHA-256 mismatch: expected $env:LLVM_ARCHIVE_SHA256, got $actual"
-          }
-          New-Item -ItemType Directory -Path $destination -Force | Out-Null
-          tar -xf $archive -C $destination --strip-components=1
+          & "$PWD\.github\scripts\install-windows-llvm.ps1" `
+            -Version $env:LLVM_VERSION `
+            -ArchiveSha256 $env:LLVM_ARCHIVE_SHA256 `
+            -Destination $destination
 
       - name: Select LLVM 22 tools
         shell: pwsh

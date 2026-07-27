@@ -66,8 +66,9 @@ program dependencies, and they do not appear in resolution manifests.
 Windows uses the official `clang+llvm` development archive rather than the
 smaller tool-only installer because the bootstrap needs LLVM headers, CMake
 exports, static LTO/target libraries, and native tools. CI verifies the upstream
-SHA-256 before extraction
-and caches that immutable tree by version and digest. The Visual Studio
+SHA-256 before extraction. Its setup script expands the xz and tar layers with
+the runner's 7-Zip rather than the Windows bsdtar implementation, then caches
+that immutable tree by version and digest. The Visual Studio
 developer environment supplies the matching Windows SDK include/library paths
 to the Clang processes launched by `draftc`.
 

@@ -151,11 +151,10 @@ jobs:
   native-windows-x86-64:
     name: Native / Windows x86-64
     runs-on: windows-2022
-    # A cold runner must fetch and extract the pinned 862 MB LLVM development
-    # archive before it can populate the content-addressed cache. Keep the same
-    # honest cold-start allowance as release qualification; cached runs remain
-    # much shorter.
-    timeout-minutes: 90
+    # The explicit 7-Zip extractor makes a cold toolchain setup bounded. Keep a
+    # tight limit so a future archive/setup regression fails visibly instead of
+    # consuming a release-sized runner budget.
+    timeout-minutes: 45
     env:
       LLVM_VERSION: 22.1.6
       LLVM_ARCHIVE_SHA256: 657343edf361ca463bd642e39c74b251c6338b96cdbd55ff277555298b027696
@@ -183,20 +182,11 @@ jobs:
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $archive = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION.tar.xz"
           $destination = Join-Path $env:RUNNER_TEMP "llvm-$env:LLVM_VERSION"
-          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/clang%2Bllvm-$env:LLVM_VERSION-x86_64-pc-windows-msvc.tar.xz"
-          & curl.exe --fail --location --retry 5 --retry-all-errors `
-            --output $archive $url
-          if ($LASTEXITCODE -ne 0) {
-            throw "LLVM archive download failed with exit code $LASTEXITCODE"
-          }
-          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          if ($actual -ne $env:LLVM_ARCHIVE_SHA256) {
-            throw "LLVM archive SHA-256 mismatch: expected $env:LLVM_ARCHIVE_SHA256, got $actual"
-          }
-          New-Item -ItemType Directory -Path $destination -Force | Out-Null
-          tar -xf $archive -C $destination --strip-components=1
+          & "$PWD\.github\scripts\install-windows-llvm.ps1" `
+            -Version $env:LLVM_VERSION `
+            -ArchiveSha256 $env:LLVM_ARCHIVE_SHA256 `
+            -Destination $destination
 
       - name: Select LLVM 22 tools
         shell: pwsh
