@@ -340,11 +340,15 @@ target_include_directories(
 )
 target_compile_options(draft_llvm_backend PRIVATE ${LLVM_DEFINITIONS_LIST})
 if(MSVC)
-  # LLVM is a separately built dependency with its own warning policy. CMake's
-  # SYSTEM include paths mark those headers as external; this explicit level
-  # keeps template-instantiation warnings inside LLVM and the MSVC library from
-  # being promoted by Draft's /WX while warnings in adapter code remain errors.
-  target_compile_options(draft_llvm_backend PRIVATE /external:W0)
+  # LLVM and the MSVC standard library are separately built dependencies with
+  # their own warning policies. LLVM's C++ LTO headers instantiate standard-
+  # library templates, so marking only LLVM_INCLUDE_DIRS as SYSTEM still lets
+  # MSVC attribute some dependency diagnostics to the standard header. Draft
+  # headers use quoted includes; treating angle-bracket headers as external
+  # therefore keeps /WX fully active for adapter code and repository headers.
+  target_compile_options(
+    draft_llvm_backend PRIVATE /external:anglebrackets /external:W0
+  )
 endif()
 target_compile_definitions(
   draft_llvm_backend
