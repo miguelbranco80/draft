@@ -120,11 +120,15 @@ compiling scaffold/no-op, or retained annotation rather than inventing an API.
 `//?` records persistent intent and is meant to remain in the returned file.
 `//!` is a transient work annotation which Codex may remove, retain, or turn
 into an ordinary comment when appropriate. DraftIDE does not enforce either
-policy: it applies the returned bytes verbatim without saving. The status bar
-animates while one worker owns the compiler callback; input and disk polling
-pause until it rejoins. There is no proposal state, accept/reject command,
-other-file edit, or compiler validation. The complete replacement is one
-ordinary history transaction, so Ctrl-Z restores the exact previous file. The
+policy. It privately checks the first complete candidate with the provider-free
+compiler. Compiler errors cause exactly one advisory Codex reconsideration
+with the candidate and compact workspace-relative diagnostics; errors may have
+already existed, and the second result is not checked or rejected. DraftIDE
+applies the resulting bytes verbatim without saving. The status bar animates
+while one worker owns the compiler callback; input and disk polling pause until
+it rejoins. There is no proposal state, accept/reject command, other-file edit,
+or final validity gate. The complete replacement is one ordinary history
+transaction, so Ctrl-Z restores the exact previous file. The
 operation creates no file or resolution pin; Check remains the explicit way to
 validate the new visible bytes.
 

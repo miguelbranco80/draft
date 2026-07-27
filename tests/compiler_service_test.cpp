@@ -174,6 +174,20 @@ void check_source(void *session, const std::filesystem::path &path,
   draft_compiler_session_check(session, &source_overlay, 1, 0, &result);
 }
 
+// Emits the independently retained agent-comment error only on an unexpected
+// test failure. The service deliberately keeps this text separate from semantic
+// diagnostics, so ordinary compiler-test failure helpers cannot reveal a fake
+// provider contract mismatch.
+void print_comment_expansion_error(void *session) {
+  std::array<std::uint8_t, 4096> bytes{};
+  const std::size_t size =
+      draft_compiler_session_copy_comment_expansion_error(
+          session, bytes.data(), bytes.size());
+  std::cerr << std::string_view(
+      reinterpret_cast<const char *>(bytes.data()),
+      std::min(size, bytes.size() - 1));
+}
+
 void test_service_transactions_and_native_build(TestState &state) {
   draft::test::TemporaryDirectory temporary{"draft-compiler-service-test"};
   const std::filesystem::path workspace = temporary.path() / "workspace";
@@ -243,11 +257,12 @@ void test_service_transactions_and_native_build(TestState &state) {
                     std::string_view::npos);
 
 #if defined(__APPLE__) || defined(__unix__)
-  // A real successful service request proves the complete bridge: the unsaved
-  // active overlay becomes a private workspace tree, unrelated workspace
-  // packages remain absent, the selected annotation kind is explicit, and one
-  // complete replacement file retains an independent C-copy lifetime. The fake
-  // is an executable boundary rather than an in-process provider callback.
+  // Real service requests prove the complete bridge: the unsaved active overlay
+  // becomes a private workspace tree, unrelated packages remain absent, the
+  // selected annotation kind is explicit, and the first candidate receives a
+  // private provider-free check. The fake counts invocations so one valid first
+  // result proves there is no gratuitous retry, while an invalid first result
+  // proves there is exactly one advisory reconsideration.
   const std::filesystem::path fake_directory = temporary.path() / "fake-bin";
   const std::filesystem::path fake_codex = fake_directory / "codex";
   write_file(
@@ -255,6 +270,11 @@ void test_service_transactions_and_native_build(TestState &state) {
       "#!/bin/sh\n"
       "output=\n"
       "work=\n"
+      "fixture=$(dirname \"$0\")\n"
+      "calls=0\n"
+      "if test -f \"$fixture/calls\"; then calls=$(cat \"$fixture/calls\"); fi\n"
+      "calls=$((calls + 1))\n"
+      "printf '%s' \"$calls\" > \"$fixture/calls\"\n"
       "test \"$1\" = exec || exit 20\n"
       "shift\n"
       "while test \"$#\" -gt 0; do\n"
@@ -267,11 +287,26 @@ void test_service_transactions_and_native_build(TestState &state) {
       "  esac\n"
       "done\n"
       "prompt=$(cat)\n"
-      "case \"$prompt\" in *DRAFT_EDITOR_FILE_REWRITE_REQUEST_V1*ACTIVE_SOURCE_PATH*workspace/app/package.draft*SELECTED_ANNOTATION_MARKER*//?*PROMPT_START_LINE*3*WORKSPACE_FILE_COUNT*1*) ;; *) exit 22 ;; esac\n"
-      "test \"$(cat \"$work/workspace/app/package.draft\")\" = 'package app\n//! consider another cleanup\n//? create answer\nmain :: proc() -> int { return Answer }' || exit 23\n"
+      "forbidden=$(cat \"$fixture/forbidden-workspace-path\")\n"
+      "case \"$prompt\" in *\"$forbidden\"*) exit 29 ;; esac\n"
       "test ! -e \"$work/workspace/tool\" || exit 25\n"
       "test ! -e \"$work/workspace/lib\" || exit 26\n"
-      "printf '%s' '{\"source\":\"package app\\nimport core/console\\n//! consider another cleanup\\n//? create answer\\nAnswer :: 42\\nmain :: proc() -> int { return Answer }\\n\"}' > \"$output\"\n");
+      "case \"$prompt\" in\n"
+      "  *DRAFT_EDITOR_FILE_REWRITE_REQUEST_V2*ACTIVE_SOURCE_PATH*workspace/app/package.draft*SELECTED_ANNOTATION_MARKER*//?*ORIGINAL_AUTHOR_PROMPT*create*an*answer*ORIGINAL_PROMPT_START_LINE*3*COMPILER_FEEDBACK_PRESENT*false*WORKSPACE_FILE_COUNT*1*)\n"
+      "    test \"$(cat \"$work/workspace/app/package.draft\")\" = 'package app\n//! consider another cleanup\n//? create answer\nmain :: proc() -> int { return Answer }' || exit 23\n"
+      "    printf '%s' '{\"source\":\"package app\\n//! consider another cleanup\\n//? create answer\\nAnswer :: 42\\nmain :: proc() -> int {\\n    return Answer\\n}\\n\"}' > \"$output\" ;;\n"
+      "  *DRAFT_EDITOR_FILE_REWRITE_REQUEST_V2*ORIGINAL_AUTHOR_PROMPT*repair*answer*COMPILER_FEEDBACK_PRESENT*false*)\n"
+      "    test \"$(cat \"$work/workspace/app/package.draft\")\" = 'package app\n//? repair answer\nmain :: proc() -> int { return Missing }' || exit 27\n"
+      "    printf '%s' '{\"source\":\"package app\\nmain :: proc() -> int {\\n    return Missing\\n}\\n\"}' > \"$output\" ;;\n"
+      "  *DRAFT_EDITOR_FILE_REWRITE_REQUEST_V2*SELECTED_ANNOTATION_MARKER*//?*ORIGINAL_AUTHOR_PROMPT*repair*answer*COMPILER_FEEDBACK_PRESENT*true*COMPILER_DIAGNOSTICS*app/package.draft*unknown*name*Missing*)\n"
+      "    test \"$(cat \"$work/workspace/app/package.draft\")\" = 'package app\nmain :: proc() -> int {\n    return Missing\n}' || exit 28\n"
+      "    printf '%s' '{\"source\":\"package app\\nmain :: proc() -> int {\\n    return Still_Missing\\n}\\n\"}' > \"$output\" ;;\n"
+      "  *) exit 22 ;;\n"
+      "esac\n");
+  // The scratch compiler owns physical paths for I/O, but its diagnostic
+  // transcript is model input and must retain DraftIDE's logical-path privacy.
+  write_file(fake_directory / "forbidden-workspace-path",
+             std::filesystem::canonical(workspace).string());
   if (::chmod(fake_codex.c_str(), 0700) != 0) {
     std::cerr << "cannot make fake Codex executable\n";
     std::exit(EXIT_FAILURE);
@@ -294,14 +329,17 @@ void test_service_transactions_and_native_build(TestState &state) {
         prompt_start, prompt_end, expansion_prompt.data(),
         expansion_prompt.size(), &successful_expansion);
   }
+  if (successful_expansion.success == 0)
+    print_comment_expansion_error(session);
   EXPECT(state, successful_expansion.success == 1);
   constexpr std::string_view expected_expansion =
       "package app\n"
-      "import core/console\n"
       "//! consider another cleanup\n"
       "//? create answer\n"
       "Answer :: 42\n"
-      "main :: proc() -> int { return Answer }\n";
+      "main :: proc() -> int {\n"
+      "    return Answer\n"
+      "}\n";
   EXPECT(state, successful_expansion.source_length ==
                     expected_expansion.size());
   std::array<std::uint8_t, 256> expansion_copy{};
@@ -311,6 +349,55 @@ void test_service_transactions_and_native_build(TestState &state) {
   EXPECT(state, std::string_view(
                     reinterpret_cast<const char *>(expansion_copy.data()),
                     expansion_copy_size) == expected_expansion);
+
+  // A failed advisory check is not a hidden acceptance gate. The second model
+  // result below is intentionally still invalid and must nevertheless become
+  // the exact returned unsaved file. It is not compiled a third time, and the
+  // private first-candidate diagnostics must not replace visible diagnostics.
+  EXPECT(state,
+         draft_compiler_session_copy_diagnostics(session, nullptr, 0) == 0);
+  std::string repair_source =
+      "package app\n"
+      "//? repair answer\n"
+      "main :: proc() -> int { return Missing }\n";
+  constexpr std::string_view repair_prompt = "repair answer";
+  const DraftCompilerServiceOverlay repair_overlay =
+      overlay(canonical_source_text, repair_source);
+  const std::size_t repair_start = repair_source.find("//?");
+  const std::size_t repair_end = repair_source.find("main");
+  DraftCompilerServiceCommentExpansionResult repair_result{};
+  {
+    ScopedPath path(fake_directory);
+    draft_compiler_session_expand_comment(
+        session, &repair_overlay, 1, 0, repair_start, repair_end,
+        repair_prompt.data(), repair_prompt.size(), &repair_result);
+  }
+  if (repair_result.success == 0)
+    print_comment_expansion_error(session);
+  EXPECT(state, repair_result.success == 1);
+  constexpr std::string_view expected_repair =
+      "package app\n"
+      "main :: proc() -> int {\n"
+      "    return Still_Missing\n"
+      "}\n";
+  EXPECT(state, repair_result.source_length == expected_repair.size());
+  std::array<std::uint8_t, 256> repair_copy{};
+  const std::size_t repair_copy_size =
+      draft_compiler_session_copy_comment_expansion_source(
+          session, repair_copy.data(), repair_copy.size());
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(repair_copy.data()),
+                    repair_copy_size) == expected_repair);
+  EXPECT(state,
+         draft_compiler_session_copy_diagnostics(session, nullptr, 0) == 0);
+
+  std::ifstream call_count_input(fake_directory / "calls");
+  std::size_t call_count = 0;
+  call_count_input >> call_count;
+  EXPECT(state, static_cast<bool>(call_count_input));
+  if (call_count != 3)
+    std::cerr << "fake Codex call count: " << call_count << '\n';
+  EXPECT(state, call_count == 3);
 #endif
 
   std::string valid =

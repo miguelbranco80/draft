@@ -8,8 +8,10 @@
 // synchronous transactions: Resolve alone may invoke a synthesis provider and
 // publish target-scoped generated-source pins; Judge may invoke a judgment
 // provider and publish evidence, but never changes source. The experimental
-// `//?` editor expansion is a third provider-backed operation which returns
-// ephemeral bytes without checking or publishing them.
+// `//?`/`//!` editor expansion is a third provider-backed operation. It checks
+// the first returned file in a private provider-free graph and may request one
+// advisory compiler-feedback reconsideration, but publishes neither that graph
+// nor its diagnostics and never enforces validity on the final returned bytes.
 //
 // The class owns no terminal, editor buffer, or Draft allocation. C ABI bridge
 // functions in service.cpp borrow source bytes synchronously and copy only
@@ -75,8 +77,8 @@ struct CheckResult {
 // CommentExpansionResult reports one ephemeral selected `//?` or `//!` editor
 // request. The complete replacement source remains session-owned and is copied
 // separately through the C facade. This result has no diagnostic/span counters
-// because the operation neither checks source nor replaces the latest semantic
-// products.
+// because its optional scratch check never replaces or publishes the latest
+// semantic products.
 struct CommentExpansionResult {
   bool ok = false;
 };
@@ -300,10 +302,12 @@ public:
   // compiler can construct a deterministic workspace-source snapshot with
   // unsaved bytes taking precedence over disk. prompt_start/prompt_end are the
   // exact half-open `//?` or `//!` block range in the active overlay. This
-  // operation is deliberately independent from Resolve: it does not save,
-  // compile, pin, diff, or publish the returned bytes. The active Draft editor
-  // remains the sole owner allowed to install the complete replacement file as
-  // one ordinary undo transaction.
+  // operation is deliberately independent from Resolve: it does not save, pin,
+  // diff, or publish the returned bytes. The first proposal is checked once in
+  // a private provider-free compiler graph; errors cause at most one advisory
+  // Codex reconsideration, whose result is returned without validation or
+  // enforcement. The active Draft editor remains the sole owner allowed to
+  // install that complete replacement file as one ordinary undo transaction.
   [[nodiscard]] CommentExpansionResult expand_comment(
       std::span<const SourceOverlay> overlays,
       std::size_t active_overlay,

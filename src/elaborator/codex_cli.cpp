@@ -11,7 +11,7 @@
 // editor entry builds a separate exact workspace snapshot and returns one
 // complete replacement for its active file. Both share the same hardened
 // child boundary and compact factual Draft reference bundle, never repository
-// workflow policy, compiler checking, or publication policy.
+// workflow policy, compiler checking, retry policy, or publication policy.
 
 #include "elaborator/codex_cli.h"
 
@@ -65,10 +65,14 @@ constexpr std::size_t kMaximumCodexParallelCalls = 4;
 constexpr std::size_t kMaximumEditorReplacementHistoryBytes = 1024U * 1024U;
 constexpr std::size_t kMaximumEditorWorkspaceBytes = 4U * 1024U * 1024U;
 constexpr std::size_t kMaximumEditorWorkspaceFiles = 256;
+// CompilerSession renders a compact advisory transcript to this same bound.
+// Rechecking it here keeps this external-process boundary safe if another host
+// constructs a feedback request directly.
+constexpr std::size_t kMaximumEditorCompilerFeedbackBytes = 1024U * 1024U;
 constexpr std::string_view kPromptContractIdentity =
     "draft-codex-synthesis-prompt-v24";
 constexpr std::string_view kEditorPromptContractIdentity =
-    "draft-codex-editor-comment-expansion-v6";
+    "draft-codex-editor-comment-expansion-v7";
 constexpr std::string_view kDraftReferenceRequestName = "draft-reference";
 constexpr std::string_view kSynthesisDeveloperInstructions =
     R"(DRAFT_SYNTHESIS_PROVIDER_INSTRUCTIONS_V2.
@@ -82,16 +86,18 @@ Produce the smallest ordinary Draft fragment that satisfies the author intent an
 
 Return only the schema-conforming JSON response. Read only files reachable through the isolated request tree. Do not edit files, inspect unrelated paths, run commands, builds, or programs, use the network, or request more context.)";
 constexpr std::string_view kEditorDeveloperInstructions =
-    R"(DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V4.
-You are DraftIDE's single-file coding agent for the Draft programming language. Your sole task is to act on the one selected contiguous //? or //! annotation identified by SELECTED_ANNOTATION_MARKER, AUTHOR_PROMPT, ACTIVE_SOURCE_PATH, and its exact byte range. Draft is the language defined by the supplied reference documents; do not answer in Rust, Go, C, C++, Python, JavaScript, pseudocode, prose, or any other language.
+    R"(DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V5.
+You are DraftIDE's single-file coding agent for the Draft programming language. Your sole task is to act on the one selected contiguous //? or //! annotation identified by SELECTED_ANNOTATION_MARKER, ORIGINAL_AUTHOR_PROMPT, ACTIVE_SOURCE_PATH, and its original byte range. Draft is the language defined by the supplied reference documents; do not answer in Rust, Go, C, C++, Python, JavaScript, pseudocode, prose, or any other language.
 
-Before answering, read the complete active source named by ACTIVE_SOURCE_PATH under workspace/. Read other files in workspace/ whenever they help you understand existing declarations, conventions, interfaces, or behavior. This is a read-only snapshot of workspace-owned Draft sources; unsaved editor bytes are already reflected in it. Other //? and //! annotations may appear anywhere in the active file: consider all of them as authored context, while treating only the exact selected annotation as the immediate request. Read draft-reference/language.md completely, then read the ownership, core-library, interop/targets, or agent reference whenever relevant. These five files are the complete factual Draft reference bundle available in this isolated request. Repository-relative links inside them record provenance only; their targets are not available and you must not try to follow them.
+Before answering, read the complete active source at ACTIVE_SOURCE_PATH. Read other files in workspace/ whenever they help you understand existing declarations, conventions, interfaces, or behavior. This is a read-only snapshot of workspace-owned Draft sources; unsaved editor bytes are already reflected in it. Other //? and //! annotations may appear anywhere in the active file: consider all of them as authored context, while treating only the exact selected annotation as the immediate request. Read draft-reference/language.md completely, then read the ownership, core-library, interop/targets, or agent reference whenever relevant. These five files are the complete factual Draft reference bundle available in this isolated request. Repository-relative links inside them record provenance only; their targets are not available and you must not try to follow them.
 
 Rewrite only the complete active file. You may change any part of that file needed to perform the selected work, including imports, package declarations, helpers, existing code before or after the annotation, tests when the active file is itself a test source, and comments. You cannot change or create another file. Preserve unrelated behavior, public interfaces, identifiers, ownership conventions, indentation, and style unless the selected annotation genuinely requires a change. Reuse workspace declarations and documented core APIs; do not invent methods, libraries, syntax, or facilities from another language. The workspace may already contain incomplete or invalid code, so do not assume every visible problem was introduced by the selected work.
 
 Treat //? as persistent authored intent: it is meant to remain in the rewritten file even after you act on it. Treat //! as a transient work annotation: when its work is genuinely complete you may remove it or turn useful reasoning into an ordinary comment; if work remains, you may retain or revise it. Apply the same judgment to other annotations only when addressing them is coherent with the selected request. These are operation instructions, not mechanical validation rules; return the best complete active file rather than a discussion of what the editor should do.
 
 If the selected work needs an interface or implementation from another file, keep this single-file result honest. When useful, leave a precise TODO and a minimal compiling no-op or scaffold at the boundary; otherwise preserve current behavior and retain an annotation which explains the unresolved dependency. Never fabricate an existing cross-file API or silently claim that incomplete behavior is finished.
+
+When COMPILER_FEEDBACK_PRESENT is true, the file at ACTIVE_SOURCE_PATH contains your first proposed complete file and COMPILER_DIAGNOSTICS contains the result of one private provider-free compiler check. Reconsider that candidate once using those diagnostics as strong but advisory evidence. Some errors may predate the selected annotation, follow from an intentionally incomplete workspace, or be unrelated to your change; correct errors that can be corrected coherently within this one file without broadening the request or inventing cross-file APIs. This is the final model pass: return the best complete active file even when every diagnostic cannot honestly be resolved. Do not return a discussion, request another attempt, or assume the editor will reject compiler-invalid output.
 
 Return one JSON object whose "source" string is the exact complete replacement bytes for ACTIVE_SOURCE_PATH. Return the package clause and every unchanged or changed byte needed for the whole file, not a fragment, diff, Markdown fence, explanation, status report, or edit to another path. The editor applies that source verbatim as one unsaved undo transaction and performs no automatic acceptance or marker policy beyond using your returned file.
 
@@ -1124,19 +1130,35 @@ private:
 // regular files rather than giant prompt fields so Codex can browse related
 // code and every other annotation through ordinary bounded reads. The compiler
 // supplies only workspace-owned Draft sources and has already overlaid unsaved
-// editor bytes; this adapter rechecks size, identity, range, and selected marker
-// before materialization.
+// editor bytes. Initial requests recheck the original range and selected marker;
+// feedback requests carry those original coordinates beside a first candidate
+// which may legitimately have moved or removed the annotation.
 [[nodiscard]] bool prepare_editor_expansion_request(
     const CodexEditorExpansionRequest &request,
     std::vector<CodexCliInputFile> &files,
     std::string &prompt,
     DiagnosticSink &diagnostics) {
+  const bool feedback =
+      request.phase == CodexEditorExpansionPhase::CompilerFeedback;
+  const bool phase_valid = feedback ||
+      request.phase == CodexEditorExpansionPhase::Initial;
+  const bool marker_valid = request.selected_marker == "//?" ||
+      request.selected_marker == "//!";
+  const bool feedback_shape_valid =
+      feedback ? !request.compiler_diagnostics.empty()
+               : request.compiler_diagnostics.empty();
   if (request.source_relative_path.empty() || request.prompt.empty() ||
-      request.prompt_line == 0 || request.workspace_files.empty()) {
+      request.prompt_line == 0 || request.workspace_files.empty() ||
+      request.undo_original_source_bytes == 0 || !marker_valid ||
+      !phase_valid || !feedback_shape_valid ||
+      request.undo_original_source_bytes >=
+          kMaximumEditorReplacementHistoryBytes ||
+      request.compiler_diagnostics.size() >
+          kMaximumEditorCompilerFeedbackBytes) {
     provider_error(
         diagnostics,
-        "Draft editor expansion requires an active source, workspace snapshot, "
-        "and nonempty prompt");
+        "Draft editor expansion request has inconsistent source, prompt, "
+        "marker, or compiler-feedback fields");
     return false;
   }
   if (request.workspace_files.size() > kMaximumEditorWorkspaceFiles) {
@@ -1178,8 +1200,11 @@ private:
         std::string(workspace_file.contents),
     });
   }
+  const bool initial_source_size_mismatch = !feedback && active != nullptr &&
+      request.undo_original_source_bytes != active->contents.size();
   if (active == nullptr || request.prompt_start > request.prompt_end ||
-      request.prompt_end > active->contents.size()) {
+      request.prompt_end > request.undo_original_source_bytes ||
+      initial_source_size_mismatch) {
     provider_error(
         diagnostics,
         "Draft editor expansion source range is invalid");
@@ -1187,42 +1212,48 @@ private:
     return false;
   }
 
-  // The UI supplies the exact line-group range, but the C boundary is public
-  // enough that the adapter must independently identify its first marker. This
-  // is not marker-policy enforcement: it only makes the trusted developer
-  // instruction truthful about which of the two author-selected operations is
-  // being requested.
-  std::size_t marker_offset = request.prompt_start;
-  while (marker_offset < request.prompt_end &&
-         (active->contents[marker_offset] == ' ' ||
-          active->contents[marker_offset] == '\t')) {
-    ++marker_offset;
-  }
-  std::string_view selected_marker;
-  if (marker_offset + 3 <= request.prompt_end &&
-      active->contents.substr(marker_offset, 3) == "//?") {
-    selected_marker = "//?";
-  } else if (marker_offset + 3 <= request.prompt_end &&
-             active->contents.substr(marker_offset, 3) == "//!") {
-    selected_marker = "//!";
-  } else {
-    provider_error(
-        diagnostics,
-        "Draft editor expansion range does not begin with //? or //!");
-    files.clear();
-    return false;
+  if (!feedback) {
+    // The first request must prove that the trusted marker field describes the
+    // actual selected line group. The feedback candidate is deliberately not
+    // subjected to this test: completing a //! request may remove its marker.
+    std::size_t marker_offset = request.prompt_start;
+    while (marker_offset < request.prompt_end &&
+           (active->contents[marker_offset] == ' ' ||
+            active->contents[marker_offset] == '\t')) {
+      ++marker_offset;
+    }
+    if (marker_offset + request.selected_marker.size() > request.prompt_end ||
+        active->contents.substr(marker_offset,
+                                request.selected_marker.size()) !=
+            request.selected_marker) {
+      provider_error(
+          diagnostics,
+          "Draft editor expansion range does not begin with its selected "
+          "//? or //! marker");
+      files.clear();
+      return false;
+    }
   }
 
-  prompt.assign("DRAFT_EDITOR_FILE_REWRITE_REQUEST_V1\n");
-  append_field("REQUEST_FORMAT", "draft-editor-file-rewrite-v1", prompt);
+  prompt.assign("DRAFT_EDITOR_FILE_REWRITE_REQUEST_V2\n");
+  append_field("REQUEST_FORMAT", "draft-editor-file-rewrite-v2", prompt);
   append_field(
       "ACTIVE_SOURCE_PATH",
       "workspace/" + std::string(request.source_relative_path), prompt);
-  append_field("SELECTED_ANNOTATION_MARKER", selected_marker, prompt);
-  append_field("AUTHOR_PROMPT", request.prompt, prompt);
-  append_field("PROMPT_START_BYTE", std::to_string(request.prompt_start), prompt);
-  append_field("PROMPT_END_BYTE", std::to_string(request.prompt_end), prompt);
-  append_field("PROMPT_START_LINE", std::to_string(request.prompt_line), prompt);
+  append_field(
+      "SELECTED_ANNOTATION_MARKER", request.selected_marker, prompt);
+  append_field("ORIGINAL_AUTHOR_PROMPT", request.prompt, prompt);
+  append_field(
+      "ORIGINAL_PROMPT_START_BYTE", std::to_string(request.prompt_start),
+      prompt);
+  append_field(
+      "ORIGINAL_PROMPT_END_BYTE", std::to_string(request.prompt_end), prompt);
+  append_field(
+      "ORIGINAL_PROMPT_START_LINE", std::to_string(request.prompt_line),
+      prompt);
+  append_field("COMPILER_FEEDBACK_PRESENT", feedback ? "true" : "false",
+               prompt);
+  append_field("COMPILER_DIAGNOSTICS", request.compiler_diagnostics, prompt);
   append_field(
       "WORKSPACE_FILE_COUNT",
       std::to_string(request.workspace_files.size()), prompt);
@@ -1844,15 +1875,12 @@ bool expand_editor_comment_with_codex(
                    "source file");
     return false;
   }
-  const auto active = std::find_if(
-      request.workspace_files.begin(), request.workspace_files.end(),
-      [&request](const CodexEditorWorkspaceFile &file) {
-        return file.relative_path == request.source_relative_path;
-      });
-  const bool history_overflow = active == request.workspace_files.end() ||
-      active->contents.size() > kMaximumEditorReplacementHistoryBytes ||
+  const bool history_overflow =
+      request.undo_original_source_bytes >
+          kMaximumEditorReplacementHistoryBytes ||
       expansion.source.size() >
-          kMaximumEditorReplacementHistoryBytes - active->contents.size();
+          kMaximumEditorReplacementHistoryBytes -
+              request.undo_original_source_bytes;
   if (expansion.source.empty() || history_overflow ||
       expansion.source.find('\0') != std::string::npos) {
     expansion = {};

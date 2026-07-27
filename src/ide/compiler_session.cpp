@@ -3,8 +3,10 @@
 // one full-topology fallback, one last-good publication point, one native
 // artifact operation, and explicit calls into the existing resolution and
 // judgment commands. Provider state is command-local and can be constructed
-// only by Resolve or Judge. There is no cache, query framework, background
-// thread, or IDE-specific semantic representation.
+// only by Resolve, Judge, or the explicit editor expansion command. The latter
+// may compile its first proposal in a disposable graph solely to provide one
+// advisory retry; it never publishes that graph. There is no cache, query
+// framework, background thread, or IDE-specific semantic representation.
 
 #include "ide/compiler_session.h"
 
@@ -33,6 +35,14 @@
 namespace draft::ide {
 namespace {
 
+// The compiler-to-provider diagnostic transcript is deliberately bounded
+// independently of the workspace snapshot. One megabyte is already far beyond
+// useful corrective context, matches the adapter's external-boundary check,
+// and prevents a malformed source which emits many errors from expanding a
+// small Ctrl-E request without limit.
+constexpr std::size_t kMaximumEditorCompilerFeedbackBytes = 1024U * 1024U;
+constexpr std::size_t kMaximumEditorCompilerMessageBytes = 16U * 1024U;
+
 [[nodiscard]] bool is_keyword(TokenKind kind) {
   return kind >= TokenKind::KeywordPackage && kind <= TokenKind::KeywordNil;
 }
@@ -44,6 +54,125 @@ namespace {
 
 [[nodiscard]] bool is_number(TokenKind kind) {
   return kind == TokenKind::IntegerLiteral || kind == TokenKind::FloatLiteral;
+}
+
+// Returns a UTF-8 boundary at or before limit. Compiler diagnostic messages are
+// expected to be valid UTF-8, but their source-derived spellings can be large.
+// Truncating only between encoded scalars keeps the length-prefixed Codex
+// request valid without giving one diagnostic the entire feedback budget.
+[[nodiscard]] std::size_t utf8_prefix_bytes(std::string_view text,
+                                            std::size_t limit) {
+  std::size_t result = std::min(text.size(), limit);
+  while (result != 0 && result < text.size() &&
+         (static_cast<unsigned char>(text[result]) & 0xc0U) == 0x80U) {
+    --result;
+  }
+  return result;
+}
+
+// Maps a command-local SourceFile back to the deterministic logical name
+// already exposed in the editor snapshot. Workspace compilation uses physical
+// paths for I/O diagnostics and appends " [resolved]" to override sources; the
+// coding model must see neither the host workspace path nor generated/compiler
+// root layout. An unmatched compiler-owned source therefore falls back to its
+// filename only.
+[[nodiscard]] std::string editor_feedback_source_name(
+    const SourceFile &source, std::span<const SourceOption> source_options) {
+  constexpr std::string_view kResolvedSuffix = " [resolved]";
+  std::string display_path = source.display_path;
+  if (std::string_view(display_path).ends_with(kResolvedSuffix)) {
+    display_path.resize(display_path.size() - kResolvedSuffix.size());
+  }
+  const std::filesystem::path normalized =
+      std::filesystem::path(display_path).lexically_normal();
+  for (const SourceOption &option : source_options) {
+    if (display_path == option.display_name ||
+        normalized == option.physical_path.lexically_normal()) {
+      return option.display_name;
+    }
+  }
+  const std::string filename = normalized.filename().string();
+  return filename.empty() ? "<compiler-source>" : filename;
+}
+
+// Removes host workspace spellings from source-derived diagnostic messages.
+// Most compiler messages contain only identifiers, but early workspace failures
+// may quote an I/O path inside the message itself rather than only in the
+// diagnostic's SourceFile. Replace exact source paths before the broader root
+// so the model retains the useful logical filename wherever possible.
+[[nodiscard]] std::string sanitize_editor_diagnostic_message(
+    std::string_view message,
+    const std::filesystem::path &workspace_directory,
+    std::span<const SourceOption> source_options) {
+  std::string result(message);
+  const auto replace_all = [&result](std::string_view physical,
+                                     std::string_view logical) {
+    if (physical.empty()) return;
+    std::size_t offset = 0;
+    while ((offset = result.find(physical, offset)) != std::string::npos) {
+      result.replace(offset, physical.size(), logical);
+      offset += logical.size();
+    }
+  };
+  for (const SourceOption &option : source_options) {
+    replace_all(option.physical_path.string(), option.display_name);
+  }
+  replace_all(workspace_directory.string(), "<workspace>");
+  return result;
+}
+
+// Renders the scratch compiler result for one model reconsideration. The full
+// candidate file is already present under workspace/, so repeating source lines
+// and carets would waste context. Insertion order is compiler-deterministic;
+// each row retains severity and a logical one-based location when its range is
+// valid. This renderer is intentionally separate from publish_diagnostics:
+// calling that operation would overwrite the user's visible Check/Build result
+// with private advisory state.
+[[nodiscard]] std::string render_editor_compiler_feedback(
+    const SourceManager &sources, const DiagnosticSink &diagnostics,
+    const std::filesystem::path &workspace_directory,
+    std::span<const SourceOption> source_options) {
+  constexpr std::string_view kTruncated =
+      "note: additional compiler feedback omitted\n";
+  std::string output;
+  for (const Diagnostic &diagnostic : diagnostics.diagnostics()) {
+    std::string row;
+    const bool valid_range = diagnostic.range.is_valid() &&
+        diagnostic.range.begin.file.value < sources.file_count() &&
+        diagnostic.range.end.file == diagnostic.range.begin.file &&
+        static_cast<std::size_t>(diagnostic.range.end.offset) <=
+            sources.text(diagnostic.range.begin.file).size();
+    if (valid_range) {
+      const SourceFile &source = sources.file(diagnostic.range.begin.file);
+      const LineColumn coordinate =
+          sources.line_column(diagnostic.range.begin);
+      row += editor_feedback_source_name(source, source_options);
+      row += ':';
+      row += std::to_string(coordinate.line);
+      row += ':';
+      row += std::to_string(coordinate.column);
+      row += ": ";
+    }
+    row += diagnostic_severity_name(diagnostic.severity);
+    row += ": ";
+    const std::string message = sanitize_editor_diagnostic_message(
+        diagnostic.message, workspace_directory, source_options);
+    const std::size_t message_bytes = utf8_prefix_bytes(
+        message, kMaximumEditorCompilerMessageBytes);
+    row.append(message, 0, message_bytes);
+    if (message_bytes != message.size()) row += " [truncated]";
+    row += '\n';
+
+    if (row.size() > kMaximumEditorCompilerFeedbackBytes - output.size()) {
+      if (kTruncated.size() <=
+          kMaximumEditorCompilerFeedbackBytes - output.size()) {
+        output += kTruncated;
+      }
+      break;
+    }
+    output += row;
+  }
+  return output;
 }
 
 // Resolution pins apply only to syntax-producing obligations. This local query
@@ -1584,6 +1713,30 @@ CommentExpansionResult CompilerSession::expand_comment(
         "Draft editor expansion prompt range is outside the active source");
   }
 
+  // Preserve the operation kind from the author's original bytes. A //! model
+  // result may remove or move that annotation before the feedback pass, so the
+  // second request cannot rediscover the selected marker from its candidate.
+  std::string_view selected_marker;
+  if (!diagnostics.has_errors()) {
+    std::size_t marker_offset = prompt_start;
+    while (marker_offset < prompt_end &&
+           (active->contents[marker_offset] == ' ' ||
+            active->contents[marker_offset] == '\t')) {
+      ++marker_offset;
+    }
+    if (marker_offset + 3 <= prompt_end &&
+        active->contents.substr(marker_offset, 3) == "//?") {
+      selected_marker = "//?";
+    } else if (marker_offset + 3 <= prompt_end &&
+               active->contents.substr(marker_offset, 3) == "//!") {
+      selected_marker = "//!";
+    } else {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "Draft editor expansion range does not begin with //? or //!");
+    }
+  }
+
   // Resolve every physical editor path through the current deterministic source
   // table and copy its exact bytes into semantic override records. This rejects
   // editing-only documents, duplicate overlays, and host paths which do not
@@ -1620,8 +1773,9 @@ CommentExpansionResult CompilerSession::expand_comment(
   // request data.
   std::vector<std::string> snapshot_contents;
   std::vector<CodexEditorWorkspaceFile> snapshot_files;
+  std::vector<const SourceOption *> ordered_sources;
+  std::optional<std::size_t> selected_snapshot_index;
   if (!diagnostics.has_errors()) {
-    std::vector<const SourceOption *> ordered_sources;
     ordered_sources.reserve(source_options_.size());
     for (const SourceOption &option : source_options_) {
       ordered_sources.push_back(&option);
@@ -1633,7 +1787,9 @@ CommentExpansionResult CompilerSession::expand_comment(
         });
 
     snapshot_contents.reserve(ordered_sources.size());
-    for (const SourceOption *option : ordered_sources) {
+    for (std::size_t index = 0; index < ordered_sources.size(); ++index) {
+      const SourceOption *option = ordered_sources[index];
+      if (option == selected_source) selected_snapshot_index = index;
       const auto override = std::find_if(
           converted.begin(), converted.end(),
           [option](const WorkspaceSourceOverride &candidate) {
@@ -1652,6 +1808,11 @@ CommentExpansionResult CompilerSession::expand_comment(
         break;
       }
       snapshot_contents.emplace_back(disk_source.text(loaded.file));
+    }
+    if (!selected_snapshot_index.has_value()) {
+      diagnostics.error(
+          SourceRange::invalid(),
+          "Draft editor expansion cannot locate the active snapshot source");
     }
     if (!diagnostics.has_errors()) {
       snapshot_files.reserve(ordered_sources.size());
@@ -1679,19 +1840,89 @@ CommentExpansionResult CompilerSession::expand_comment(
 
   bool expanded = false;
   if (!diagnostics.has_errors()) {
-    const CodexEditorExpansionRequest request{
-        selected_source->display_name,
-        snapshot_files,
-        prompt_start,
-        prompt_end,
-        prompt_line,
-        prompt,
-    };
+    CodexEditorExpansionRequest request;
+    request.source_relative_path = selected_source->display_name;
+    request.workspace_files = snapshot_files;
+    request.phase = CodexEditorExpansionPhase::Initial;
+    request.selected_marker = selected_marker;
+    request.prompt_start = prompt_start;
+    request.prompt_end = prompt_end;
+    request.prompt_line = prompt_line;
+    request.undo_original_source_bytes = active->contents.size();
+    request.prompt = prompt;
     CodexEditorExpansion expansion;
     expanded = expand_editor_comment_with_codex(
         CodexCliProviderOptions{}, request, expansion, diagnostics);
     if (expanded) {
-      comment_expansion_source_ = std::move(expansion.source);
+      // Check the first complete-file proposal against the exact overlay set in
+      // a disposable source manager and graph. This is ordinary provider-free
+      // compilation: it cannot resolve synthesis sites, write pins, replace
+      // last_good_, or publish into DraftIDE's visible Diagnostics window.
+      converted[active_overlay].source.contents = expansion.source;
+      SourceManager candidate_sources;
+      CompileWorkspaceResult candidate;
+      DiagnosticSink candidate_diagnostics;
+      const bool candidate_checked = fresh_check(
+          converted, candidate_sources, candidate, candidate_diagnostics);
+      const bool rejection_explained =
+          candidate_checked || candidate_diagnostics.has_errors();
+      assert(rejection_explained &&
+             "rejected editor candidate must report a compiler error");
+      if (!rejection_explained) {
+        // fresh_check's contract requires every rejected candidate to explain
+        // itself. The assertion above catches compiler builds; this diagnostic
+        // keeps the editing operation recoverable when assertions are disabled.
+        diagnostics.error(
+            SourceRange::invalid(),
+            "Draft editor candidate check failed without a diagnostic");
+      }
+
+      if (candidate_diagnostics.has_errors()) {
+        const std::string compiler_feedback =
+            render_editor_compiler_feedback(
+                candidate_sources, candidate_diagnostics,
+                configuration_.workspace_directory, source_options_);
+        if (compiler_feedback.empty()) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "Draft editor candidate errors could not be rendered");
+        } else {
+          // The active workspace view points into the string replaced below.
+          // Refresh that exact view after installing the candidate so the
+          // second adapter call borrows no invalidated string buffer. Sibling
+          // strings and views are untouched by assignment to this vector row.
+          snapshot_contents[*selected_snapshot_index] = expansion.source;
+          snapshot_files[*selected_snapshot_index].contents =
+              snapshot_contents[*selected_snapshot_index];
+
+          CodexEditorExpansionRequest feedback_request;
+          feedback_request.source_relative_path =
+              selected_source->display_name;
+          feedback_request.workspace_files = snapshot_files;
+          feedback_request.phase =
+              CodexEditorExpansionPhase::CompilerFeedback;
+          feedback_request.selected_marker = selected_marker;
+          feedback_request.prompt_start = prompt_start;
+          feedback_request.prompt_end = prompt_end;
+          feedback_request.prompt_line = prompt_line;
+          feedback_request.undo_original_source_bytes =
+              active->contents.size();
+          feedback_request.prompt = prompt;
+          feedback_request.compiler_diagnostics = compiler_feedback;
+
+          CodexEditorExpansion reconsidered;
+          expanded = expand_editor_comment_with_codex(
+              CodexCliProviderOptions{}, feedback_request, reconsidered,
+              diagnostics);
+          if (expanded) expansion = std::move(reconsidered);
+        }
+      }
+      if (expanded && !diagnostics.has_errors()) {
+        // The reconsidered file is deliberately not compiled again. Compiler
+        // feedback is an editing hint, not an acceptance gate; the editor
+        // applies these exact unsaved bytes and ordinary undo remains recovery.
+        comment_expansion_source_ = std::move(expansion.source);
+      }
     }
   }
 

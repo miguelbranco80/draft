@@ -88,13 +88,16 @@ to leave an honest TODO, minimal compiling seam/no-op, or retained annotation
 when the requested work needs a change outside this single-file boundary.
 `//?` is intended to remain as persistent intent; Codex may remove, retain, or
 turn `//!` into an ordinary comment. The app deliberately does not interpret or
-enforce those choices. It replaces the active document verbatim as one unsaved
-history transaction, so one ordinary Ctrl-Z restores the exact prior bytes. A
-byte-identical result is a successful no-op. Failure updates Build Output
+enforce those choices. The compiler host privately checks the first candidate
+and, on errors, may make one advisory Codex reconsideration using compact
+logical-path diagnostics. The host does not validate or reject the second
+candidate. The app replaces the returned active document verbatim as one
+unsaved history transaction, so one ordinary Ctrl-Z restores the exact prior
+bytes. A byte-identical result is a successful no-op. Failure updates Build Output
 without replacing semantic Diagnostics. While Codex runs, the status bar
 animates and terminal input is consumed without dispatch; disk polling and
 every other compiler-session call resume after the worker joins. Returned bytes
-are not compiler-validated by this prototype.
+have no compiler-validity guarantee.
 
 Menu commands and global shortcuts call the same named operations. Disabled
 commands remain visible but inert, separators and blank popup space preserve

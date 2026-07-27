@@ -146,9 +146,14 @@ the local context warrants. Treat `//?` as persistent intent which is meant to
 stay in the returned file. A `//!` annotation is transient: remove it, keep it,
 or turn it into an ordinary comment according to whether the requested work is
 complete. DraftIDE intentionally does not enforce these policies, parse the
-result, or run Check. It applies the complete returned file verbatim as one
-unsaved undo transaction, writes no file or pin, and edits no other file; Check
-remains explicit.
+final result, or make compiler validity an acceptance condition. Its host runs
+one provider-free scratch check of the first complete candidate. If that check
+has errors, Codex receives the candidate and bounded workspace-relative
+diagnostics for exactly one advisory reconsideration; diagnostics may predate
+the selected work, and the second result is neither rechecked nor rejected.
+Apply the resulting complete file verbatim as one unsaved undo transaction,
+write no file or pin, and edit no other file. Check remains the explicit visible
+validation operation; the scratch check never replaces semantic Diagnostics.
 
 F5 launches executables directly without a shell. Arguments remain literal and
 ordered. Environment rows are `NAME=value` overrides on the inherited

@@ -104,11 +104,11 @@ struct TemporaryFixture {
         "test ! -e \"$work/draft-reference/core\" || exit 47\n"
         "test ! -e \"$work/draft-skill\" || exit 48\n"
         "prompt=$(cat)\n"
-        "case \"$prompt\" in *DRAFT_SYNTHESIS_PROVIDER_INSTRUCTIONS_V2*|*DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V4*) exit 51 ;; esac\n"
-        "case \"$developer\" in *make-answer*|*write-answer*) exit 52 ;; esac\n"
+        "case \"$prompt\" in *DRAFT_SYNTHESIS_PROVIDER_INSTRUCTIONS_V2*|*DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V5*) exit 51 ;; esac\n"
+        "case \"$developer\" in *make-answer*|*write-answer*|*repair-answer*) exit 52 ;; esac\n"
         "case \"$prompt\" in\n"
-        "  *DRAFT_EDITOR_FILE_REWRITE_REQUEST_V1*REQUEST_FORMAT*draft-editor-file-rewrite-v1*ACTIVE_SOURCE_PATH*workspace/app/package.draft*SELECTED_ANNOTATION_MARKER*//?*AUTHOR_PROMPT*write-answer*PROMPT_START_BYTE*PROMPT_END_BYTE*PROMPT_START_LINE*WORKSPACE_FILE_COUNT*WORKSPACE_FILE_PATH*workspace/app/helper.draft*WORKSPACE_FILE_PATH*workspace/app/package.draft*)\n"
-        "    case \"$developer\" in *DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V4*) ;; *) exit 49 ;; esac\n"
+        "  *DRAFT_EDITOR_FILE_REWRITE_REQUEST_V2*REQUEST_FORMAT*draft-editor-file-rewrite-v2*ACTIVE_SOURCE_PATH*workspace/app/package.draft*SELECTED_ANNOTATION_MARKER*//?*ORIGINAL_AUTHOR_PROMPT*write-answer*ORIGINAL_PROMPT_START_BYTE*ORIGINAL_PROMPT_END_BYTE*ORIGINAL_PROMPT_START_LINE*COMPILER_FEEDBACK_PRESENT*false*COMPILER_DIAGNOSTICS*WORKSPACE_FILE_COUNT*WORKSPACE_FILE_PATH*workspace/app/helper.draft*WORKSPACE_FILE_PATH*workspace/app/package.draft*)\n"
+        "    case \"$developer\" in *DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V5*) ;; *) exit 49 ;; esac\n"
         "    case \"$developer\" in *Draft*) ;; *) exit 67 ;; esac\n"
         "    case \"$developer\" in *single-file*) ;; *) exit 56 ;; esac\n"
         "    case \"$developer\" in *workspace/*) ;; *) exit 57 ;; esac\n"
@@ -120,6 +120,11 @@ struct TemporaryFixture {
         "    test \"$(cat \"$work/workspace/app/package.draft\")\" = 'package app\n//! unrelated follow-up\n//? write-answer\n//! remove after implementation\nmain :: proc() -> int { return answer }' || exit 39\n"
         "    test \"$(cat \"$work/workspace/app/helper.draft\")\" = 'package app\nhelper :: 40' || exit 40\n"
         "    printf '%s' '{\"source\":\"package app\\nimport core/console\\n//! unrelated follow-up\\n//? write-answer\\nanswer :: helper + 2\\nmain :: proc() -> int { return answer }\\n\"}' > \"$output\"\n"
+        "    exit 0 ;;\n"
+        "  *DRAFT_EDITOR_FILE_REWRITE_REQUEST_V2*ACTIVE_SOURCE_PATH*workspace/app/package.draft*SELECTED_ANNOTATION_MARKER*//!*ORIGINAL_AUTHOR_PROMPT*repair-answer*ORIGINAL_PROMPT_START_BYTE*400*ORIGINAL_PROMPT_END_BYTE*420*ORIGINAL_PROMPT_START_LINE*9*COMPILER_FEEDBACK_PRESENT*true*COMPILER_DIAGNOSTICS*unknown*name*Missing*WORKSPACE_FILE_COUNT*)\n"
+        "    case \"$developer\" in *DRAFT_EDITOR_EXPANSION_INSTRUCTIONS_V5*advisory*predate*final*model*pass*) ;; *) exit 69 ;; esac\n"
+        "    test \"$(cat \"$work/workspace/app/package.draft\")\" = 'package app\nmain :: proc() -> int { return Missing }' || exit 70\n"
+        "    printf '%s' '{\"source\":\"package app\\nAnswer :: 42\\nmain :: proc() -> int { return Answer }\\n\"}' > \"$output\"\n"
         "    exit 0 ;;\n"
         "esac\n"
         "test -f \"$work/attachment-00000000.bin\" || exit 26\n"
@@ -385,10 +390,14 @@ void test_editor_comment_expansion(TestState &state) {
   const draft::CodexEditorExpansionRequest request{
       "app/package.draft",
       workspace,
+      draft::CodexEditorExpansionPhase::Initial,
+      "//?",
       prompt_start,
       prompt_end,
       3,
+      active.size(),
       "write-answer",
+      {},
   };
   draft::DiagnosticSink diagnostics;
   draft::CodexEditorExpansion expansion;
@@ -402,6 +411,39 @@ void test_editor_comment_expansion(TestState &state) {
       "answer :: helper + 2\n"
       "main :: proc() -> int { return answer }\n");
   EXPECT(state, !diagnostics.has_errors());
+
+  // The feedback phase keeps the original annotation identity and coordinates
+  // even when the first candidate has removed that marker and is much shorter.
+  // It is one direct adapter invocation: retry policy remains CompilerSession's
+  // responsibility rather than becoming hidden provider behavior.
+  const std::string candidate =
+      "package app\nmain :: proc() -> int { return Missing }\n";
+  const std::array<draft::CodexEditorWorkspaceFile, 2> feedback_workspace{{
+      {"app/helper.draft", helper},
+      {"app/package.draft", candidate},
+  }};
+  const draft::CodexEditorExpansionRequest feedback_request{
+      "app/package.draft",
+      feedback_workspace,
+      draft::CodexEditorExpansionPhase::CompilerFeedback,
+      "//!",
+      400,
+      420,
+      9,
+      512,
+      "repair-answer",
+      "app/package.draft:2:38: error: unknown name 'Missing'\n",
+  };
+  draft::DiagnosticSink feedback_diagnostics;
+  draft::CodexEditorExpansion repaired;
+  EXPECT(state, draft::expand_editor_comment_with_codex(
+                    options, feedback_request, repaired,
+                    feedback_diagnostics));
+  EXPECT(state, repaired.source ==
+      "package app\n"
+      "Answer :: 42\n"
+      "main :: proc() -> int { return Answer }\n");
+  EXPECT(state, !feedback_diagnostics.has_errors());
 }
 
 void test_adapter_contract_and_identity(TestState &state) {

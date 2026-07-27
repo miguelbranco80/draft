@@ -22,4 +22,7 @@ Comment expansion instead reports elapsed time and the byte count of one
 complete active-file replacement. The replacement and error strings have a
 separate copy lifetime, so a failed convenience request cannot overwrite the
 latest semantic Diagnostics. The request's selected marker range is an authored
-anchor for the model, not an editor insertion boundary.
+anchor for the model, not an editor insertion boundary. The current host may
+privately check a first candidate and make one advisory provider
+reconsideration, but that scratch state is not observable through this ABI and
+the copied final source has no validity guarantee.

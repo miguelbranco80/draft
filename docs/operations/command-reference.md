@@ -233,15 +233,19 @@ an honest TODO, minimal compiling scaffold/no-op, retained annotation, or
 unchanged behavior when a cross-file dependency prevents a complete single-file
 implementation. `//?` is intended to remain as persistent intent. Codex may
 remove, retain, or convert `//!` into an ordinary comment; DraftIDE does not
-enforce either policy. It applies the returned bytes verbatim without saving or
-compiling, and ordinary Ctrl-Z restores the exact prior document as one
-transaction. This operation creates no workspace file or resolution pin and
-does not replace semantic Diagnostics on failure. The status bar animates while
-the synchronous Codex invocation runs on one Draft-owned worker. During that
-interval DraftIDE consumes input without dispatch, pauses disk polling, and
-makes no other call on the borrowed compiler session. Its removable private
-request tree is transport for that invocation only. Returned source is not
-automatically parsed or compiler-validated.
+enforce either policy. DraftIDE privately runs a provider-free compiler check
+on the first returned file. If that check reports errors, it gives the first
+candidate and compact workspace-relative diagnostics to Codex for exactly one
+advisory reconsideration. Errors may predate the selected work; the second
+response is applied verbatim without another check or validity gate. Ordinary
+Ctrl-Z restores the exact prior document as one transaction. This operation
+does not save, create a workspace file or resolution pin, or replace semantic
+Diagnostics with its scratch check. The status bar animates while the
+synchronous callback, including a possible second Codex invocation, runs on one
+Draft-owned worker. During that interval DraftIDE consumes input without
+dispatch, pauses disk polling, and makes no other call on the borrowed compiler
+session. Its removable private request trees are transport for those
+invocations only.
 
 The executable and `draft_compiler_service` shared library must remain
 discoverable as siblings. The build records a loader-relative lookup on macOS
