@@ -942,10 +942,14 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
                     std::string::npos);
   EXPECT(state, report.find("package assembly tasks: 2") !=
                     std::string::npos);
+  // The counter aggregates both dependency-ordered ready waves. Each wave has
+  // one direct-effect task and one package-assembly task, so worker creation
+  // degradation can select one or two slots per wave for a total of two to
+  // four. A host-wide worker maximum is not an upper bound on this accumulated
+  // counter.
   EXPECT(state,
          report_has_worker_count_in_range(
-             report, "direct semantic worker slots: ", 1,
-             maximum_workers));
+             report, "direct semantic worker slots: ", 2, 4));
   EXPECT(state, report.find("MIR procedure tasks: 2") != std::string::npos);
   EXPECT(state, report.find("package LLVM unit tasks: 2") !=
                     std::string::npos);
