@@ -45,6 +45,15 @@ set(configure_command
   -DSUPPORT_TRACELOG=OFF
   -DCMAKE_BUILD_TYPE=Release
 )
+if(UNIX AND NOT APPLE)
+  # Raylib's normal Linux desktop configuration links libm publicly. Its
+  # headless PLATFORM_MEMORY configuration omits that row even though the same
+  # raymath and software-renderer objects use the C math API. Supply libm as a
+  # standard C link input so the resulting shared provider records its own
+  # dependency instead of asking Draft's final link to guess provider-private
+  # libraries.
+  list(APPEND configure_command -DCMAKE_C_STANDARD_LIBRARIES=-lm)
+endif()
 if(WIN32)
   list(APPEND configure_command -A x64)
 endif()
