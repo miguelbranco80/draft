@@ -787,14 +787,18 @@ install(
 
 get_filename_component(DRAFT_LLVM_ROOT "${LLVM_TOOLS_BINARY_DIR}" DIRECTORY)
 
-# Upstream LLVM archives and Homebrew keep LICENSE.TXT at the distribution
-# root. Debian-family packages instead place the package copyright notice under
-# /usr/share/doc, outside LLVM's versioned lib directory. Both are authoritative
-# inputs for the exact LLVM distribution whose binaries we copy. Select the
-# first existing candidate explicitly so a release archive can never silently
-# omit the corresponding legal notice merely because the host packaged LLVM in
-# a different conventional layout.
-set(DRAFT_LLVM_LICENSE_CANDIDATES "${DRAFT_LLVM_ROOT}/LICENSE.TXT")
+# Homebrew and the Unix LLVM archives keep LICENSE.TXT at the distribution
+# root. The official Windows development archive installs the same notice with
+# LLVM's public Support headers. Debian-family packages instead place their
+# package copyright notice under /usr/share/doc, outside LLVM's versioned lib
+# directory. Each is an authoritative input for the exact LLVM distribution
+# whose binaries we copy. Select the first existing candidate explicitly so a
+# release archive can never silently omit the notice merely because the host
+# packaged LLVM in a different conventional layout.
+set(DRAFT_LLVM_LICENSE_CANDIDATES
+  "${DRAFT_LLVM_ROOT}/LICENSE.TXT"
+  "${DRAFT_LLVM_ROOT}/include/llvm/Support/LICENSE.TXT"
+)
 if(UNIX AND NOT APPLE)
   get_filename_component(DRAFT_LLVM_LIBRARY_PARENT "${DRAFT_LLVM_ROOT}" DIRECTORY)
   get_filename_component(DRAFT_LLVM_SYSTEM_PREFIX "${DRAFT_LLVM_LIBRARY_PARENT}" DIRECTORY)
