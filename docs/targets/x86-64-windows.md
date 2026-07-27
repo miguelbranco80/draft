@@ -122,6 +122,10 @@ builtins shipped with the matching Clang distribution. LLVM may lower an
 operation without one native instruction—notably ordinary Draft `i128` and
 `u128` division—to helpers such as `__divti3` and `__udivti3`; the Universal
 CRT does not define those compiler-owned operations.
+An independent Clang C consumer that performs `_Float16` conversions has the
+same closure requirement: its final link must select `compiler-rt` so helpers
+such as `__extendhfsf2` come from the matching toolchain rather than being
+mistaken for UCRT functions.
 
 COFF has no relocatable partial-link operation equivalent to ELF/Mach-O `-r`.
 `--kind object` therefore publishes an exact `.obj` only when the complete

@@ -50,6 +50,12 @@ implemented Draft targets. Parsed inline assembly is
 available only on AArch64; x86-64 still supports ordinary native code and exact
 target-qualified package assembly.
 
+On Windows, final Clang links that contain compiler-lowered helpers select
+`compiler-rt`; UCRT does not provide operations such as 128-bit division or
+`_Float16` conversions. `draftc` does this for its executable and DLL links.
+An independent Clang C consumer must likewise use `--rtlib=compiler-rt` when
+its own source needs those helpers.
+
 Do not turn a current target absence into a language restriction. Put machine
 facts in versioned target profiles, platform implementations in exact tagged
 files, and temporary backend limitations in implementation-limit docs.

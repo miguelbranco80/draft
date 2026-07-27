@@ -206,9 +206,14 @@ foreach(companion IN ITEMS "${dll}" "${import_library}" "${artifact_root}/draft-
     message(FATAL_ERROR "Windows DLL build did not publish ${companion}")
   endif()
 endforeach()
+# The client itself converts `_Float16` constants while checking the generated
+# ABI. Clang lowers those conversions to compiler-owned helpers on Win64, so its
+# final link needs the matching builtins archive just as Draft's DLL link does.
+# UCRT deliberately does not provide `__extendhfsf2`.
 run_checked(
   "Windows C client compile"
   "${CLANG}" -target x86_64-pc-windows-msvc -std=c11
+    --rtlib=compiler-rt
     -Wall -Wextra -Werror "-I${artifact_root}"
     "${SOURCE_ROOT}/examples/c-library/client.c" "${import_library}"
     -o "${client}"
