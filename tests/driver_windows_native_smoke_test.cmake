@@ -195,8 +195,12 @@ run_checked(
 run_checked(
   "Windows Draft DLL build"
   "${DRAFTC}" build "${TEST_ROOT}/examples/c-library"
-    --target "${target_selector}" --kind dynamic-library -o "${dll}"
+    --target "${target_selector}" --kind dynamic-library --debug-symbols
+    -o "${dll}"
 )
+# This invocation deliberately opts into debug information. The ordinary fast
+# path omits a PDB by contract; requiring one without --debug-symbols would test
+# the opposite of the public CLI policy rather than qualify Windows publication.
 foreach(companion IN ITEMS "${dll}" "${import_library}" "${artifact_root}/draft-c-library.pdb")
   if(NOT EXISTS "${companion}")
     message(FATAL_ERROR "Windows DLL build did not publish ${companion}")
