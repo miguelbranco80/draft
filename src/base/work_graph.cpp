@@ -28,6 +28,7 @@
 #include <vector>
 
 #if defined(_WIN32)
+#define NOMINMAX
 #include <process.h>
 #include <windows.h>
 #else

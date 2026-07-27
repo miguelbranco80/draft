@@ -667,6 +667,30 @@ void abandon_assembly_output(
   return message;
 }
 
+// Copies one optional process environment value into command-owned storage.
+// SDKROOT is only a host-tool hint, so absence and an empty value deliberately
+// have the same result. POSIX getenv returns borrowed process storage; MSVC's
+// secure CRT instead allocates a stable copy which this operation frees before
+// returning. No pointer to mutable process environment state escapes.
+[[nodiscard]] std::string read_environment_value(const char *name) {
+#if defined(_WIN32)
+  char *value = nullptr;
+  std::size_t size = 0;
+  const errno_t status = _dupenv_s(&value, &size, name);
+  if (status != 0 || value == nullptr || size == 0) {
+    std::free(value);
+    return {};
+  }
+  assert(size != 0 && value[size - 1] == '\0');
+  std::string result(value, size - 1);
+  std::free(value);
+  return result;
+#else
+  const char *value = std::getenv(name);
+  return value == nullptr ? std::string{} : std::string(value);
+#endif
+}
+
 // A relocated Homebrew Clang no longer sees Homebrew's absolute SDK config
 // file. Resolve the active macOS SDK once for the complete native build and
 // pass it to every Clang operation. SDKROOT avoids a child process in an Xcode
@@ -677,8 +701,8 @@ void abandon_assembly_output(
     std::string &sdk_path,
     DiagnosticSink &diagnostics) {
   sdk_path.clear();
-  if (const char *environment = std::getenv("SDKROOT");
-      environment != nullptr && environment[0] != '\0') {
+  const std::string environment = read_environment_value("SDKROOT");
+  if (!environment.empty()) {
     std::error_code error;
     const std::filesystem::path candidate(environment);
     if (candidate.is_absolute() &&

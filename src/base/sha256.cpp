@@ -173,14 +173,17 @@ Sha256Digest Sha256::finalize() {
   const std::uint64_t bit_count = total_bytes_ * 8U;
   pending_[pending_size_++] = 0x80U;
   if (pending_size_ > 56) {
-    std::fill(pending_.begin() + static_cast<std::ptrdiff_t>(pending_size_), pending_.end(), 0);
+    std::fill(
+        pending_.begin() + static_cast<std::ptrdiff_t>(pending_size_),
+        pending_.end(),
+        std::uint8_t{0});
     compress(pending_.data());
     pending_size_ = 0;
   }
   std::fill(
       pending_.begin() + static_cast<std::ptrdiff_t>(pending_size_),
       pending_.begin() + 56,
-      0);
+      std::uint8_t{0});
   for (std::size_t index = 0; index < 8; ++index) {
     pending_[63 - index] = static_cast<std::uint8_t>(bit_count >> (index * 8U));
   }
