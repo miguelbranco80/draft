@@ -737,17 +737,50 @@ install(FILES examples/README.md DESTINATION "${CMAKE_INSTALL_DATADIR}/draft/exa
 install(
   DIRECTORY examples/hello examples/language-tour
   DESTINATION "${CMAKE_INSTALL_DATADIR}/draft/examples"
+  # A developer may have built either source example in place. Those ignored
+  # .draft directories contain target-specific objects and manifests, not
+  # source distribution inputs, so exclude them at the install boundary.
+  PATTERN ".draft" EXCLUDE
 )
 
 get_filename_component(DRAFT_LLVM_ROOT "${LLVM_TOOLS_BINARY_DIR}" DIRECTORY)
-if(EXISTS "${DRAFT_LLVM_ROOT}/LICENSE.TXT")
+
+# Upstream LLVM archives and Homebrew keep LICENSE.TXT at the distribution
+# root. Debian-family packages instead place the package copyright notice under
+# /usr/share/doc, outside LLVM's versioned lib directory. Both are authoritative
+# inputs for the exact LLVM distribution whose binaries we copy. Select the
+# first existing candidate explicitly so a release archive can never silently
+# omit the corresponding legal notice merely because the host packaged LLVM in
+# a different conventional layout.
+set(DRAFT_LLVM_LICENSE_CANDIDATES "${DRAFT_LLVM_ROOT}/LICENSE.TXT")
+if(UNIX AND NOT APPLE)
+  get_filename_component(DRAFT_LLVM_LIBRARY_PARENT "${DRAFT_LLVM_ROOT}" DIRECTORY)
+  get_filename_component(DRAFT_LLVM_SYSTEM_PREFIX "${DRAFT_LLVM_LIBRARY_PARENT}" DIRECTORY)
+  list(APPEND DRAFT_LLVM_LICENSE_CANDIDATES
+    "${DRAFT_LLVM_SYSTEM_PREFIX}/share/doc/llvm-${LLVM_VERSION_MAJOR}/copyright"
+    "${DRAFT_LLVM_SYSTEM_PREFIX}/share/doc/libllvm${LLVM_VERSION_MAJOR}/copyright"
+  )
+endif()
+
+set(DRAFT_LLVM_LICENSE_FILE "")
+foreach(DRAFT_LLVM_LICENSE_CANDIDATE IN LISTS DRAFT_LLVM_LICENSE_CANDIDATES)
+  if(EXISTS "${DRAFT_LLVM_LICENSE_CANDIDATE}")
+    set(DRAFT_LLVM_LICENSE_FILE "${DRAFT_LLVM_LICENSE_CANDIDATE}")
+    break()
+  endif()
+endforeach()
+
+if(DRAFT_LLVM_LICENSE_FILE)
   install(
-    FILES "${DRAFT_LLVM_ROOT}/LICENSE.TXT"
+    FILES "${DRAFT_LLVM_LICENSE_FILE}"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/draft/licenses/llvm"
+    RENAME LLVM-LICENSE.txt
   )
 else()
+  list(JOIN DRAFT_LLVM_LICENSE_CANDIDATES "\n  " DRAFT_LLVM_LICENSE_CANDIDATE_LIST)
   message(FATAL_ERROR
-    "LLVM distribution has no LICENSE.TXT at ${DRAFT_LLVM_ROOT}"
+    "LLVM distribution has no discoverable license notice. Checked:\n"
+    "  ${DRAFT_LLVM_LICENSE_CANDIDATE_LIST}"
   )
 endif()
 

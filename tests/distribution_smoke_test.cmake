@@ -20,14 +20,30 @@ endif()
 set(draftc "${DRAFT_ROOT}/bin/draftc${executable_suffix}")
 set(draftide "${DRAFT_ROOT}/bin/draftide${executable_suffix}")
 set(example_source "${DRAFT_ROOT}/share/draft/examples/hello")
+set(draft_license "${DRAFT_ROOT}/LICENSE")
+set(third_party_notices "${DRAFT_ROOT}/THIRD_PARTY_NOTICES.md")
+set(llvm_license
+    "${DRAFT_ROOT}/share/draft/licenses/llvm/LLVM-LICENSE.txt")
 set(example "${TEST_ROOT}/hello")
 set(program "${TEST_ROOT}/hello-program${executable_suffix}")
 
-foreach(path IN ITEMS "${draftc}" "${draftide}" "${example_source}")
+foreach(path IN ITEMS
+    "${draftc}"
+    "${draftide}"
+    "${example_source}"
+    "${draft_license}"
+    "${third_party_notices}"
+    "${llvm_license}"
+)
   if(NOT EXISTS "${path}")
     message(FATAL_ERROR "Distribution is missing ${path}")
   endif()
 endforeach()
+if(EXISTS "${example_source}/.draft")
+  message(FATAL_ERROR
+    "Distribution contains derived example state at ${example_source}/.draft"
+  )
+endif()
 
 file(REMOVE_RECURSE "${TEST_ROOT}")
 file(MAKE_DIRECTORY "${TEST_ROOT}")
