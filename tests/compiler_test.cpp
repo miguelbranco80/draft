@@ -2,6 +2,7 @@
 
 #include "compile/compiler.h"
 #include "base/timing.h"
+#include "base/work_graph.h"
 #include "source/diagnostic.h"
 #include "source/source.h"
 #include "target/profile.h"
@@ -43,6 +44,18 @@ struct TestState {
     const draft::CompiledPackage &package) {
   return package.llvm_module.text;
 }
+
+// Compiler integration uses the production command executor, whose capacity
+// is bounded by the host's reported hardware concurrency. Explicit semantic
+// worker counts are upper bounds, not permission to oversubscribe that host.
+// Timing assertions therefore derive the same effective bound through the
+// executor API instead of assuming every CI runner exposes four processors.
+[[nodiscard]] std::size_t effective_test_worker_count(
+    std::size_t requested) {
+  const draft::WorkExecutor executor;
+  return std::min(requested, executor.maximum_workers());
+}
+
 void test_procedure_demands_are_canonical_and_exact(TestState &state) {
   draft::ProcedureInstantiationDemand first;
   first.public_template_name = "render";
@@ -696,21 +709,31 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
   }
   const std::string sequential_report = sequential_timings.render();
   const std::string parallel_report = parallel_timings.render();
+  const std::size_t parallel_worker_count = effective_test_worker_count(4);
   EXPECT(state,
          parallel_report.find("declaration tasks in shared ready waves:") !=
              std::string::npos);
   EXPECT(state, sequential_report.find("procedure body worker slots: 2") !=
                     std::string::npos);
-  EXPECT(state, parallel_report.find("procedure body worker slots: 5") !=
-                    std::string::npos);
+  EXPECT(
+      state,
+      parallel_report.find(
+          "procedure body worker slots: " +
+          std::to_string(parallel_worker_count + 1)) != std::string::npos);
   EXPECT(state, sequential_report.find("direct semantic worker slots: 1") !=
                     std::string::npos);
-  EXPECT(state, parallel_report.find("direct semantic worker slots: 4") !=
-                    std::string::npos);
+  EXPECT(
+      state,
+      parallel_report.find(
+          "direct semantic worker slots: " +
+          std::to_string(parallel_worker_count)) != std::string::npos);
   EXPECT(state, sequential_report.find("denial worker slots: 1") !=
                     std::string::npos);
-  EXPECT(state, parallel_report.find("denial worker slots: 4") !=
-                    std::string::npos);
+  EXPECT(
+      state,
+      parallel_report.find(
+          "denial worker slots: " + std::to_string(parallel_worker_count)) !=
+          std::string::npos);
   EXPECT(state, sequential_report.find("package assembly tasks: 1") !=
                     std::string::npos);
   EXPECT(state, parallel_report.find("package assembly tasks: 1") !=
@@ -719,8 +742,9 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
          sequential_report.find("native lowering worker slots: 1") !=
              std::string::npos);
   EXPECT(state,
-         parallel_report.find("native lowering worker slots: 4") !=
-             std::string::npos);
+         parallel_report.find(
+             "native lowering worker slots: " +
+             std::to_string(parallel_worker_count)) != std::string::npos);
 }
 
 // A broad authored package guards the scheduler's asymptotic shape and gives
@@ -728,8 +752,8 @@ void test_procedure_body_worker_counts_are_deterministic(TestState &state) {
 // signature and body is independent, so the declaration and body coordinators
 // should each expose a wide ready set rather than accidentally constructing a
 // source-order task chain. Wall time is deliberately not asserted; exact graph
-// rows, diagnostics, task counts, ready-wave counts, and worker-slot counts are
-// stable across machines.
+// rows, diagnostics, task counts, and ready-wave counts are stable across
+// machines. Worker slots follow the documented host-capacity bound.
 void test_large_source_worker_counts_are_deterministic(TestState &state) {
   constexpr std::size_t procedure_count = 256;
   draft::test::TemporaryDirectory temporary_directory{
@@ -812,6 +836,7 @@ void test_large_source_worker_counts_are_deterministic(TestState &state) {
   const std::string task_count = std::to_string(procedure_count + 1);
   const std::string sequential_report = sequential_timings.render();
   const std::string parallel_report = parallel_timings.render();
+  const std::size_t parallel_worker_count = effective_test_worker_count(4);
   EXPECT(state,
          sequential_report.find(
              "procedure body tasks scheduled: " + task_count) !=
@@ -830,8 +855,9 @@ void test_large_source_worker_counts_are_deterministic(TestState &state) {
          sequential_report.find("procedure body worker slots: 1") !=
              std::string::npos);
   EXPECT(state,
-         parallel_report.find("procedure body worker slots: 4") !=
-             std::string::npos);
+         parallel_report.find(
+             "procedure body worker slots: " +
+             std::to_string(parallel_worker_count)) != std::string::npos);
   EXPECT(state,
          parallel_report.find("declaration tasks in shared ready waves:") !=
              std::string::npos);
@@ -887,6 +913,7 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
   EXPECT(state, compiled.packages.size() == 2);
 
   const std::string report = timings.render();
+  const std::size_t worker_count = effective_test_worker_count(4);
   EXPECT(state, report.find("procedure body ready waves: 1") !=
                     std::string::npos);
   EXPECT(state, report.find("procedure body tasks scheduled: 2") !=
@@ -899,8 +926,10 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
                     std::string::npos);
   EXPECT(state, report.find("package assembly tasks: 2") !=
                     std::string::npos);
-  EXPECT(state, report.find("direct semantic worker slots: 4") !=
-                    std::string::npos);
+  EXPECT(state,
+         report.find(
+             "direct semantic worker slots: " +
+             std::to_string(worker_count)) != std::string::npos);
   EXPECT(state, report.find("MIR procedure tasks: 2") != std::string::npos);
   EXPECT(state, report.find("package LLVM unit tasks: 2") !=
                     std::string::npos);
@@ -912,8 +941,10 @@ void test_independent_packages_share_one_body_ready_wave(TestState &state) {
                     std::string::npos);
   EXPECT(state, report.find("native lowering ready waves: 3") !=
                     std::string::npos);
-  EXPECT(state, report.find("native lowering worker slots: 4") !=
-                    std::string::npos);
+  EXPECT(state,
+         report.find(
+             "native lowering worker slots: " +
+             std::to_string(worker_count)) != std::string::npos);
 }
 
 // Final effect interfaces impose a true dependency edge, but sibling imported
@@ -3504,6 +3535,7 @@ void test_native_pipeline_overlaps_empty_unit_with_other_mir(
     EXPECT(state, result.packages[1]->artifact_layout.ok);
   }
   const std::string report = timings.render();
+  const std::size_t worker_count = effective_test_worker_count(4);
   EXPECT(state, report.find("MIR procedure tasks: 1") != std::string::npos);
   EXPECT(state,
          report.find("native lowering initial ready tasks: 2") !=
@@ -3512,8 +3544,9 @@ void test_native_pipeline_overlaps_empty_unit_with_other_mir(
          report.find("package LLVM units initially ready: 1") !=
              std::string::npos);
   EXPECT(state,
-         report.find("native lowering worker slots: 4") !=
-             std::string::npos);
+         report.find(
+             "native lowering worker slots: " +
+             std::to_string(worker_count)) != std::string::npos);
 }
 
 // Proves the semantic/native split at the complete compiler boundary. Every

@@ -65,7 +65,10 @@ void test_dependency_execution(TestState &state) {
   DependencyContext context(graph.tasks.size());
   draft::WorkGraphRunOptions options;
   options.worker_count = 4;
-  draft::WorkExecutor executor;
+  // This test asserts the selected worker count rather than host scheduling
+  // policy. Give the executor an explicit capacity so a smaller CI machine
+  // cannot legitimately cap the request below four.
+  draft::WorkExecutor executor(4);
   const draft::WorkGraphRunResult run = executor.run(
       graph, options, run_dependency_task, &context);
   EXPECT(state, run.ok);
@@ -114,7 +117,7 @@ void test_independent_tasks_run_concurrently(TestState &state) {
   ParallelContext context;
   draft::WorkGraphRunOptions options;
   options.worker_count = 4;
-  draft::WorkExecutor executor;
+  draft::WorkExecutor executor(4);
   const draft::WorkGraphRunResult run = executor.run(
       graph, options, run_parallel_task, &context);
   EXPECT(state, run.ok);
@@ -259,7 +262,9 @@ bool record_reused_worker(
 void test_executor_reuses_workers(TestState &state) {
   draft::WorkGraph graph;
   graph.tasks.resize(4);
-  draft::WorkExecutor executor;
+  // The four-way barrier is the test oracle, so this focused executor must
+  // admit all four workers even on a host which reports fewer hardware slots.
+  draft::WorkExecutor executor(4);
   draft::WorkGraphRunOptions options;
   options.worker_count = 4;
 
