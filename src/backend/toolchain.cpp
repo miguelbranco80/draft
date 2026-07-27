@@ -1697,6 +1697,15 @@ NativeBuildResult build_native_artifact(
         link_arguments.push_back(provider.path.string());
       }
     }
+    if (target.facts.object_format == "coff") {
+      // Microsoft x64 has no native 128-bit division instruction, so LLVM may
+      // lower ordinary Draft i128/u128 division to compiler-runtime helpers
+      // such as __divti3 and __udivti3. The MSVC C runtime does not own those
+      // compiler-generated operations. Select the matching compiler-rt archive
+      // through Clang rather than naming one versioned resource path ourselves;
+      // installed Draft distributions retain that exact Clang resource tree.
+      link_arguments.push_back("--rtlib=compiler-rt");
+    }
     if (options.instrumentation ==
         NativeInstrumentationProfile::AddressSanitizer) {
       // Let the selected LLVM Clang driver locate and link the sanitizer runtime

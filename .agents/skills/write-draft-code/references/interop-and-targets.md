@@ -487,6 +487,10 @@ package dependencies or resolution-manifest inputs.
 Windows uses matching Clang/lld-link and `llvm-lib`, with `.exe`, `.obj`,
 `.lib`, and `.dll` defaults. Linked PE outputs built with `--debug-symbols`
 publish a sibling PDB; a DLL also publishes its import `.lib` companion. Its
+final executable and DLL links select the matching compiler-rt builtins because
+LLVM may lower operations such as `i128`/`u128` division to compiler-owned
+helpers absent from the Universal CRT. A relocatable object or static library
+consumer must likewise use the matching compiler runtime at its final link. Its
 bootstrap links the static LLVM LTO and AArch64/X86 component closure because
 LLVM's monolithic libLLVM dylib is unavailable on Windows and the C-only DLL
 does not expose ThinLTO's summary and resolution APIs.

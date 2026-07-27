@@ -230,6 +230,15 @@ Executables, dynamic/static libraries, and assembly bundles include it.
 That later graph is intentionally edgeless: package bytes are already complete,
 and each selected assembly input can be assembled without another package.
 Final linking combines package and assembly objects.
+
+PE executable and DLL links also ask the matching Clang driver for
+`compiler-rt`. LLVM may legalize ordinary 128-bit integer division and other
+non-native scalar operations into compiler-owned helper calls which the MSVC
+C runtime does not provide. The driver selects the exact builtins archive from
+its resource tree; Draft neither hard-codes a versioned library pathname nor
+duplicates those routines in its hosted runtime object. Relocatable objects
+and static archives retain the ordinary unresolved compiler-runtime contract
+for their eventual final link.
 The layout row retains the exact semantic producer for every native input.
 LLVM owns section and relocation placement inside one isolated object; its
 verified object bytes are the task result. The coordinator owns only the

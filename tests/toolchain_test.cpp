@@ -644,6 +644,8 @@ void test_windows_toolchain_arguments(TestState &state) {
   EXPECT(state, arguments.find("\nx86_64-pc-windows-msvc\n") !=
       std::string::npos);
   EXPECT(state, arguments.find("\n-fuse-ld=lld\n") != std::string::npos);
+  EXPECT(state,
+      arguments.find("\n--rtlib=compiler-rt\n") != std::string::npos);
   EXPECT(state, arguments.find("\n-Wl,/Brepro\n") != std::string::npos);
   EXPECT(state, arguments.find("\n-Wl,/debug:full\n") != std::string::npos);
   EXPECT(state, arguments.find("\n/pdbaltpath:%_PDB%\n") !=
