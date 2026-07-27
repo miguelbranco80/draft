@@ -2905,7 +2905,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       std::span<const std::size_t> task_indices;
       bool collect_task_timings = false;
     };
-    InterfaceWaveExecution execution{
+    InterfaceWaveExecution wave_execution{
         &sources,
         &options,
         &schedule,
@@ -2920,32 +2920,32 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
     const auto execute_interface_task = [](
         void *opaque, WorkTaskId scheduled_task,
         std::string &failure) -> bool {
-      auto &execution = *static_cast<InterfaceWaveExecution *>(opaque);
-      SourceManager &sources = *execution.sources;
-      const CompileWorkspaceOptions &options = *execution.options;
-      const WorkspaceDependencyIndex &schedule = *execution.schedule;
-      const SemanticReadyWave &wave = *execution.wave;
-      const CompileWorkspaceResult &result = *execution.result;
-      auto &retained_validation = *execution.retained_validation;
-      auto &retained_validation_is_typed =
-          *execution.retained_validation_is_typed;
-      auto &slots = *execution.slots;
+      auto &worker = *static_cast<InterfaceWaveExecution *>(opaque);
+      SourceManager &worker_sources = *worker.sources;
+      const CompileWorkspaceOptions &worker_options = *worker.options;
+      const WorkspaceDependencyIndex &worker_schedule = *worker.schedule;
+      const SemanticReadyWave &worker_wave = *worker.wave;
+      const CompileWorkspaceResult &worker_result = *worker.result;
+      auto &worker_retained_validation = *worker.retained_validation;
+      auto &worker_retained_validation_is_typed =
+          *worker.retained_validation_is_typed;
+      auto &worker_slots = *worker.slots;
       if (static_cast<std::size_t>(scheduled_task) >=
-          execution.task_indices.size()) {
+          worker.task_indices.size()) {
         failure = "interface worker received an invalid task projection";
         return false;
       }
       const std::size_t task_index =
-          execution.task_indices[static_cast<std::size_t>(scheduled_task)];
-      WorkspaceInterfaceTaskSlot &slot = slots[task_index];
+          worker.task_indices[static_cast<std::size_t>(scheduled_task)];
+      WorkspaceInterfaceTaskSlot &slot = worker_slots[task_index];
       AccumulatedPhaseTimer task_timing(
-          execution.collect_task_timings
+          worker.collect_task_timings
               ? &slot.elapsed_nanoseconds
               : nullptr);
       do {
-      const SemanticProductId product = wave.products[task_index];
+      const SemanticProductId product = worker_wave.products[task_index];
       if (static_cast<std::size_t>(product.value) >=
-          result.semantic_products.package_by_product.size()) {
+          worker_result.semantic_products.package_by_product.size()) {
         slot.outcome.kind = SemanticProductOutcomeKind::Error;
         slot.outcome.failure = "semantic product has no package owner row";
         slot.outcome.diagnostics.error(SourceRange::invalid(),
@@ -2953,9 +2953,9 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         continue;
       }
       const PackageId owner =
-          result.semantic_products.package_by_product[product.value];
+          worker_result.semantic_products.package_by_product[product.value];
       if (!owner.is_valid() ||
-          static_cast<std::size_t>(owner.value) >= result.packages.size()) {
+          static_cast<std::size_t>(owner.value) >= worker_result.packages.size()) {
         slot.outcome.kind = SemanticProductOutcomeKind::Error;
         slot.outcome.failure = "semantic package product has no valid owner";
         slot.outcome.diagnostics.error(SourceRange::invalid(),
@@ -2964,11 +2964,11 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
       }
       const std::size_t package_index = owner.value;
       const SemanticProductKind kind =
-          result.semantic_graph.products[product.value].kind;
+          worker_result.semantic_graph.products[product.value].kind;
       if (kind == SemanticProductKind::TypeIdentity ||
           kind == SemanticProductKind::TypeMembers ||
           kind == SemanticProductKind::TypeMemberTypes) {
-        if (!result.packages[package_index].has_value()) {
+        if (!worker_result.packages[package_index].has_value()) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure =
               "declaration type product ran before eager package discovery";
@@ -2977,11 +2977,11 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           continue;
         }
         const SymbolId root =
-            result.semantic_products.declaration_by_product[product.value];
+            worker_result.semantic_products.declaration_by_product[product.value];
         const SemanticPackage &canonical_package =
-            result.packages[package_index]->declaration_discovery.package;
+            worker_result.packages[package_index]->declaration_discovery.package;
         const ConstantTable &canonical_constants =
-            result.packages[package_index]
+            worker_result.packages[package_index]
                 ->declaration_discovery.published_constants;
         const SemanticTaskPrefix prefix = capture_semantic_task_prefix(
             canonical_package, canonical_constants);
@@ -2989,7 +2989,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
             canonical_package.fork_declaration_task_view();
         ConstantTable task_constants = canonical_constants.fork_append_only();
         if (!import_completed_generic_dependencies(
-                result, product, task_package, slot.outcome.diagnostics)) {
+                worker_result, product, task_package, slot.outcome.diagnostics)) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure =
               "declaration generic dependency import failed";
@@ -2997,10 +2997,11 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         }
         if (kind == SemanticProductKind::TypeMembers) {
           slot.declaration_type = resolve_package_type_members_product(
-              sources, result.graph.packages[package_index].loaded, task_package,
-              result.packages[package_index]
+              worker_sources,
+              worker_result.graph.packages[package_index].loaded, task_package,
+              worker_result.packages[package_index]
                   ->declaration_discovery.selections,
-              root, compile_time_synthesis_mode(options.stage),
+              root, compile_time_synthesis_mode(worker_options.stage),
               slot.outcome.diagnostics);
         } else {
           // A valid payload in the frozen prefix is not proof that this task
@@ -3009,14 +3010,16 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           // therefore blocks once, records its exact product edge, and becomes
           // available on the retry.
           const std::vector<SymbolId> completed_declarations =
-              completed_declaration_dependencies(result, owner, product);
+              completed_declaration_dependencies(worker_result, owner, product);
           slot.declaration_type = resolve_package_declaration_type_product(
-              sources, result.graph.packages[package_index].loaded, task_package,
-              result.packages[package_index]
+              worker_sources,
+              worker_result.graph.packages[package_index].loaded, task_package,
+              worker_result.packages[package_index]
                   ->declaration_discovery.selections,
               root, completed_declarations,
               task_constants,
-              options.target.facts, compile_time_synthesis_mode(options.stage),
+              worker_options.target.facts,
+              compile_time_synthesis_mode(worker_options.stage),
               slot.outcome.diagnostics);
         }
         if (slot.declaration_type->status == TypeProductStatus::Complete) {
@@ -3041,7 +3044,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         for (SymbolId dependency :
              slot.declaration_type->declaration_dependencies) {
           const std::optional<SemanticProductId> blocker =
-              package_declaration_product(result, owner, dependency);
+              package_declaration_product(worker_result, owner, dependency);
           if (!blocker.has_value()) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure = "declaration type dependency has no product";
@@ -3054,7 +3057,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         for (SymbolId dependency :
              slot.declaration_type->constant_dependencies) {
           const std::optional<SemanticProductId> blocker =
-              package_constant_product(result, owner, dependency);
+              package_constant_product(worker_result, owner, dependency);
           if (!blocker.has_value()) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure =
@@ -3068,7 +3071,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         for (TypeFacetDependency dependency :
              slot.declaration_type->type_dependencies) {
           const std::optional<SemanticProductId> blocker =
-              package_type_facet_product(result, owner, dependency);
+              package_type_facet_product(worker_result, owner, dependency);
           if (!blocker.has_value()) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure =
@@ -3082,7 +3085,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         for (SyntaxReference dependency :
              slot.declaration_type->condition_dependencies) {
           const std::optional<SemanticProductId> blocker =
-              package_condition_product(result, owner, dependency);
+              package_condition_product(worker_result, owner, dependency);
           if (!blocker.has_value()) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure =
@@ -3099,7 +3102,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         continue;
       }
       if (kind == SemanticProductKind::TypeNaturalLayout) {
-        if (!result.packages[package_index].has_value()) {
+        if (!worker_result.packages[package_index].has_value()) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure =
               "natural-layout product ran before package discovery";
@@ -3108,11 +3111,11 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           continue;
         }
         const GenericTypeDemandId demand_id =
-            result.semantic_products
+            worker_result.semantic_products
                 .generic_type_demand_by_product[product.value];
         if (demand_id.is_valid()) {
           if (demand_id.value >=
-              result.semantic_products.generic_type_demands.size()) {
+              worker_result.semantic_products.generic_type_demands.size()) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure =
                 "generic layout product names an invalid demand";
@@ -3120,7 +3123,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
                                            slot.outcome.failure);
             continue;
           }
-          if (!result.packages[package_index]->declarations.ok) {
+          if (!worker_result.packages[package_index]->declarations.ok) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure =
                 "generic owner product ran before its package interface";
@@ -3129,11 +3132,11 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
             continue;
           }
           const GenericTypeDemand &demand =
-              result.semantic_products.generic_type_demands[demand_id.value];
+              worker_result.semantic_products.generic_type_demands[demand_id.value];
           const SemanticPackage &canonical_package =
-              result.packages[package_index]->declarations.package;
+              worker_result.packages[package_index]->declarations.package;
           const ConstantTable &canonical_constants =
-              result.packages[package_index]->declarations.constants;
+              worker_result.packages[package_index]->declarations.constants;
           const SemanticTaskPrefix prefix = capture_semantic_task_prefix(
               canonical_package, canonical_constants);
           SemanticPackage task_package =
@@ -3141,7 +3144,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           ConstantTable task_constants =
               canonical_constants.fork_append_only();
           if (!import_completed_generic_dependencies(
-                  result, product, task_package, slot.outcome.diagnostics)) {
+                  worker_result, product, task_package, slot.outcome.diagnostics)) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure = "generic layout dependency import failed";
             continue;
@@ -3152,12 +3155,12 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
               task_package.imported_type_instantiation_requests_for_read()
                   .size();
           const TypeId concrete = instantiate_parametric_type_application(
-              sources, result.graph.packages[package_index].loaded,
+              worker_sources, worker_result.graph.packages[package_index].loaded,
               task_package,
-              result.packages[package_index]->declarations.selections,
+              worker_result.packages[package_index]->declarations.selections,
               demand.source, demand.arguments, source_symbol.name_range,
               &task_constants,
-              options.target.facts, slot.outcome.diagnostics);
+              worker_options.target.facts, slot.outcome.diagnostics);
           if (!concrete.is_valid() ||
               task_package.types.type(concrete).kind == TypeKind::Invalid) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
@@ -3166,7 +3169,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           }
           slot.generic_type = concrete;
           slot.generic_result = export_interface_type_application(
-              result.packages[package_index]->identity, task_package, concrete,
+              worker_result.packages[package_index]->identity, task_package, concrete,
               demand.source, demand.arguments, slot.outcome.diagnostics);
           const AppendOnlyTableView<ImportedTypeInstantiationRequest> requests =
               task_package.imported_type_instantiation_requests_for_read();
@@ -3183,7 +3186,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           if (!owner_result_is_concrete(*slot.generic_result)) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure =
-                "generic layout product produced no concrete owner result";
+                "generic layout product produced no concrete owner worker_result";
             slot.outcome.diagnostics.error(source_symbol.name_range,
                                            slot.outcome.failure);
             continue;
@@ -3193,9 +3196,9 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           continue;
         }
         const TypeId nominal =
-            result.semantic_products.type_by_product[product.value];
+            worker_result.semantic_products.type_by_product[product.value];
         slot.natural_layout = evaluate_natural_layout_product(
-            result.packages[package_index]->declaration_discovery.package.types,
+            worker_result.packages[package_index]->declaration_discovery.package.types,
             nominal, slot.outcome.diagnostics);
         if (slot.natural_layout->status == TypeProductStatus::Complete) {
           continue;
@@ -3208,7 +3211,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         for (TypeFacetDependency dependency :
              slot.natural_layout->dependencies) {
           const std::optional<SemanticProductId> blocker =
-              package_type_facet_product(result, owner, dependency);
+              package_type_facet_product(worker_result, owner, dependency);
           if (!blocker.has_value()) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure =
@@ -3228,14 +3231,14 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         if (slot.package.has_value() &&
             !slot.package->declaration_discovery.terminal &&
             package_has_unindexed_declaration_work(
-                result, owner, *slot.package)) {
+                worker_result, owner, *slot.package)) {
           continue;
         }
         if (!analyze_workspace_package_names(
-                sources, options, schedule, package_index,
-                std::move(retained_validation[package_index]),
-                retained_validation_is_typed[package_index], slot.package,
-                result, slot.outcome.diagnostics)) {
+                worker_sources, worker_options, worker_schedule, package_index,
+                std::move(worker_retained_validation[package_index]),
+                worker_retained_validation_is_typed[package_index], slot.package,
+                worker_result, slot.outcome.diagnostics)) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure = "package name-set analysis failed";
           if (!slot.outcome.diagnostics.has_errors()) {
@@ -3246,7 +3249,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         continue;
       }
       if (kind == SemanticProductKind::ConstantValue) {
-        if (!result.packages[package_index].has_value()) {
+        if (!worker_result.packages[package_index].has_value()) {
           slot.outcome.kind = SemanticProductOutcomeKind::Error;
           slot.outcome.failure =
               "constant product ran before its package name set";
@@ -3254,9 +3257,9 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
               SourceRange::invalid(), slot.outcome.failure);
           continue;
         }
-        const CompiledPackage &package = *result.packages[package_index];
+        const CompiledPackage &package = *worker_result.packages[package_index];
         const SyntaxReference condition_syntax =
-            result.semantic_products.condition_by_product[product.value];
+            worker_result.semantic_products.condition_by_product[product.value];
         if (condition_syntax.node.is_valid()) {
           const SemanticSite *site = find_semantic_site(
               package.declaration_discovery.package, condition_syntax);
@@ -3271,10 +3274,10 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
               package.declaration_discovery.package
                   .fork_declaration_task_view();
           slot.condition = evaluate_conditional_product(
-              sources, result.graph.packages[package_index].loaded,
-              task_package, options.target.facts, *site,
+              worker_sources, worker_result.graph.packages[package_index].loaded,
+              task_package, worker_options.target.facts, *site,
               package.declaration_discovery.published_constants,
-              compile_time_synthesis_mode(options.stage),
+              compile_time_synthesis_mode(worker_options.stage),
               slot.outcome.diagnostics);
           if (slot.condition->status == CompileTimeProductStatus::Complete) {
             continue;
@@ -3292,7 +3295,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           }
           for (SymbolId dependency : slot.condition->declaration_dependencies) {
             const std::optional<SemanticProductId> blocker =
-                package_declaration_product(result, owner, dependency);
+                package_declaration_product(worker_result, owner, dependency);
             if (!blocker.has_value()) {
               slot.outcome.kind = SemanticProductOutcomeKind::Error;
               slot.outcome.failure =
@@ -3305,7 +3308,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           }
           for (SymbolId dependency : slot.condition->constant_dependencies) {
             const std::optional<SemanticProductId> blocker =
-                package_constant_product(result, owner, dependency);
+                package_constant_product(worker_result, owner, dependency);
             if (!blocker.has_value()) {
               slot.outcome.kind = SemanticProductOutcomeKind::Error;
               slot.outcome.failure =
@@ -3319,7 +3322,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           for (TypeFacetDependency dependency :
                slot.condition->type_dependencies) {
             const std::optional<SemanticProductId> blocker =
-                package_type_facet_product(result, owner, dependency);
+                package_type_facet_product(worker_result, owner, dependency);
             if (!blocker.has_value()) {
               slot.outcome.kind = SemanticProductOutcomeKind::Error;
               slot.outcome.failure =
@@ -3336,7 +3339,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           continue;
         }
         const SymbolId root =
-            result.semantic_products.constant_by_product[product.value];
+            worker_result.semantic_products.constant_by_product[product.value];
         // The declaration prerequisite may have resolved an ambiguous `::`
         // row as a type alias. The provisional ConstantValue product then has
         // the terminal answer "not a constant" and publishes no value. This
@@ -3351,13 +3354,13 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         slot.constant_shared_type_count =
             task_package.types.size();
         slot.constant = evaluate_package_constant_product(
-            sources,
-            result.graph.packages[package_index].loaded,
+            worker_sources,
+            worker_result.graph.packages[package_index].loaded,
             task_package,
-            options.target.facts,
+            worker_options.target.facts,
             root,
             package.declaration_discovery.published_constants,
-            compile_time_synthesis_mode(options.stage),
+            compile_time_synthesis_mode(worker_options.stage),
             slot.outcome.diagnostics);
         if (slot.constant->status == CompileTimeProductStatus::Complete) {
           slot.constant_types = std::move(task_package.types);
@@ -3381,7 +3384,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         }
         for (SymbolId dependency : slot.constant->declaration_dependencies) {
           const std::optional<SemanticProductId> blocker =
-              package_declaration_product(result, owner, dependency);
+              package_declaration_product(worker_result, owner, dependency);
           if (!blocker.has_value()) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure =
@@ -3394,7 +3397,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         }
         for (SymbolId dependency : slot.constant->constant_dependencies) {
           const std::optional<SemanticProductId> blocker =
-              package_constant_product(result, owner, dependency);
+              package_constant_product(worker_result, owner, dependency);
           if (!blocker.has_value()) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure =
@@ -3408,7 +3411,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         for (TypeFacetDependency dependency :
              slot.constant->type_dependencies) {
           const std::optional<SemanticProductId> blocker =
-              package_type_facet_product(result, owner, dependency);
+              package_type_facet_product(worker_result, owner, dependency);
           if (!blocker.has_value()) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
             slot.outcome.failure = "constant type dependency has no product";
@@ -3437,9 +3440,9 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           continue;
         }
         const PackageSemanticProducts &products =
-            result.semantic_products.packages[package_index];
+            worker_result.semantic_products.packages[package_index];
         for (SemanticProductId constant : products.constants) {
-          if (result.semantic_graph.products[constant.value].state !=
+          if (worker_result.semantic_graph.products[constant.value].state !=
               SemanticProductState::Complete) {
             slot.outcome.dependencies.push_back(constant);
           }
@@ -3450,9 +3453,9 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
         }
         if (slot.package->declaration_discovery.terminal) {
           if (!finalize_workspace_package_interface(
-                  sources,
-                  options,
-                  result.graph.packages[package_index],
+                  worker_sources,
+                  worker_options,
+                  worker_result.graph.packages[package_index],
                   *slot.package,
                   slot.outcome.diagnostics)) {
             slot.outcome.kind = SemanticProductOutcomeKind::Error;
@@ -3521,7 +3524,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
     // source-task order directly on the coordinator thread. This removes two
     // complete CompiledPackage copies per package and avoids launching idle
     // workers for a deliberately serial chain.
-    execution.task_indices = safe_tasks;
+    wave_execution.task_indices = safe_tasks;
     WorkGraph execution_graph;
     execution_graph.tasks.resize(safe_tasks.size());
     preparation_timing.finish();
@@ -3535,7 +3538,7 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           execution_graph,
           WorkGraphRunOptions{options.semantic_worker_count},
           execute_interface_task,
-          &execution);
+          &wave_execution);
       if (scheduled.ok) {
         for (std::size_t task_index : source_mutating_tasks) {
           const SemanticProductId product = wave.products[task_index];
@@ -3547,9 +3550,9 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
             result.packages[owner.value].reset();
           }
           const std::array projection{task_index};
-          execution.task_indices = projection;
+          wave_execution.task_indices = projection;
           std::string failure;
-          if (!execute_interface_task(&execution, 0, failure)) {
+          if (!execute_interface_task(&wave_execution, 0, failure)) {
             source_execution_ok = false;
             source_execution_failure = failure.empty()
                 ? "source-mutating interface task execution failed"

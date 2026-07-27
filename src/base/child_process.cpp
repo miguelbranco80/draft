@@ -24,6 +24,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
+#if defined(__APPLE__)
+#include <AvailabilityMacros.h>
+#endif
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -295,7 +298,12 @@ ChildProcessResult run_child_process(const ChildProcessOptions &options) {
   }
   if (options.working_directory.has_value()) {
     const std::string directory = options.working_directory->string();
-#if defined(__APPLE__)
+    // Darwin 26 promoted the operation to the unsuffixed spelling and deprecated
+    // its historical `_np` entry point. Earlier Apple SDKs expose only `_np`, as
+    // does glibc. Select from the compile SDK rather than the runtime OS: both
+    // Darwin symbols remain deployment-compatible, while this keeps warnings as
+    // errors clean on the oldest and newest supported bootstrap SDKs.
+#if defined(__APPLE__) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
     action_error =
         posix_spawn_file_actions_addchdir(&actions, directory.c_str());
 #else

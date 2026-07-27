@@ -391,9 +391,9 @@ void collect_constant_procedures(
     }
     const ConstantValue *constant = constants.find(*declaration);
     if (constant == nullptr) return;
-    std::vector<SymbolId> procedures;
-    collect_constant_procedures(package, *constant, procedures);
-    for (SymbolId procedure : procedures) {
+    std::vector<SymbolId> constant_procedures;
+    collect_constant_procedures(package, *constant, constant_procedures);
+    for (SymbolId procedure : constant_procedures) {
       add_procedure_reference(procedure);
     }
   };
