@@ -59,6 +59,11 @@ namespace {
     const TargetProfile &target,
     DiagnosticSink &diagnostics) {
 #if defined(_WIN32)
+  // Windows validation execution is not qualified yet, so this branch rejects
+  // the request before a target-specific identity can be constructed. Keep the
+  // host-independent helper signature while making that deliberate non-use
+  // visible to warning-clean MSVC builds.
+  static_cast<void>(target);
   diagnostics.error(
       SourceRange::invalid(),
       "validation environment identity is not implemented on this host");
