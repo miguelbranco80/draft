@@ -744,8 +744,8 @@ private:
       const auto position = std::lower_bound(
           discovery_.published_constants.bindings.begin(),
           discovery_.published_constants.bindings.end(), product.root.value,
-          [](const ConstantBinding &binding, std::uint32_t value) {
-            return binding.symbol.value < value;
+          [](const ConstantBinding &binding, std::uint32_t symbol_value) {
+            return binding.symbol.value < symbol_value;
           });
       discovery_.published_constants.bindings.insert(
           position, {product.root, std::move(value.value), value.type});
