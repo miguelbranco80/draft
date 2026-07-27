@@ -18,6 +18,20 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
+
+#if defined(_MSC_VER)
+// LLVM 22.1.6's public C++ headers contain four inline conversions from their
+// 64-bit intermediate IDs to explicitly narrower stored IDs. MSVC attributes
+// those conversions to std::pair while parsing ModuleSummaryIndex,
+// ScaledNumber, and FunctionImport, even when both LLVM and the standard
+// library are external headers. The LLVM types themselves establish the range
+// invariant; Draft neither supplies nor converts these values. Suppress only
+// that dependency-owned diagnostic while parsing the C++ API, then restore the
+// repository's /W4 /WX policy before this adapter's implementation begins.
+#pragma warning(push)
+#pragma warning(disable : 4244)
+#endif
+
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Analysis/ModuleSummaryAnalysis.h>
 #include <llvm/Analysis/ProfileSummaryInfo.h>
@@ -33,6 +47,10 @@
 #include <llvm/Support/MemoryBufferRef.h>
 #include <llvm/Support/Threading.h>
 #include <llvm/Support/raw_ostream.h>
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 #include <algorithm>
 #include <cassert>

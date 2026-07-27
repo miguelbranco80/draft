@@ -148,7 +148,6 @@ jobs:
         shell: pwsh
         run: |
           cmake -S . -B build -A x64 `
-            -DCMAKE_BUILD_TYPE=Release `
             -DLLVM_DIR="$env:LLVM_ROOT\lib\cmake\llvm" `
             -DDRAFT_BUILD_COMMIT=${{ github.sha }} `
             -DDRAFT_WARNINGS_AS_ERRORS=ON `

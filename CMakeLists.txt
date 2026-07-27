@@ -341,11 +341,11 @@ target_include_directories(
 target_compile_options(draft_llvm_backend PRIVATE ${LLVM_DEFINITIONS_LIST})
 if(MSVC)
   # LLVM and the MSVC standard library are separately built dependencies with
-  # their own warning policies. LLVM's C++ LTO headers instantiate standard-
-  # library templates, so marking only LLVM_INCLUDE_DIRS as SYSTEM still lets
-  # MSVC attribute some dependency diagnostics to the standard header. Draft
-  # headers use quoted includes; treating angle-bracket headers as external
-  # therefore keeps /WX fully active for adapter code and repository headers.
+  # their own warning policies. Draft headers use quoted includes, so treating
+  # angle-bracket headers as external keeps /WX fully active for adapter code
+  # and repository headers. llvm_thinlto.cpp separately brackets one narrowing
+  # warning forced by LLVM 22.1.6's inline C++ API; that exception ends before
+  # any Draft implementation is parsed.
   target_compile_options(
     draft_llvm_backend PRIVATE /external:anglebrackets /external:W0
   )
