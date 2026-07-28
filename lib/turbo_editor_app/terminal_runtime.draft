@@ -133,6 +133,23 @@ run_smoke :: proc() -> int {
 // bounded stack buffer receives a complete prefix and is never retained.
 report_host_smoke_failure :: proc(app: ^App, reason: string) -> int {
     report_error(reason)
+    report_error("status: ")
+    if app^.status_bytes_active {
+        _ = os.write_all(
+            os.standard_error,
+            app^.status_storage[:app^.status_length],
+        )
+    } else {
+        report_error(app^.status)
+    }
+    report_error("\nbuild output:\n")
+    if app^.build_output_length != 0 {
+        _ = os.write_all(
+            os.standard_error,
+            app^.build_output[:app^.build_output_length],
+        )
+    }
+    report_error("diagnostics:\n")
     if app^.host.copy_diagnostics == nil {
         return 1
     }
