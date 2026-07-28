@@ -192,7 +192,11 @@ larger differences and additions are:
 
 - Packages are private by default and resolve from one canonical workspace.
   There is no registry or dependency solver: download source and keep it with
-  the program.
+  the program. This is vendoring in the plain sense: copy dependency source
+  into the workspace and version it with the program.
+- The exact version of `core` is embedded byte-for-byte in `draftc`. Imported
+  core and library packages are checked with the program, while native emission
+  includes only code reachable from the selected artifact.
 - Parametrics use explicit type/value parameters, closed constraints and
   modest inference. Structural type inspection, static packs and `when`
   refinement remain compile-time and produce fixed signatures.
@@ -261,15 +265,23 @@ friendly details and current limitations.
 The compiler is trying to be fast by construction, not by depending on a
 persistent cache. One command owns one semantic work graph: discovery is eager,
 completion is demand-driven, independent work runs in parallel, and publication
-stays deterministic. Larger examples already caused several earlier compiler
-paths to be deleted and rebuilt. The present bootstrap emits through LLVM in
-process, avoids unreachable native code, and uses package-level ThinLTO at O2.
+stays deterministic. After profiling the larger examples, the coding agents
+followed architectural guidance to replace several early broad passes with that
+demand-driven graph and parallel ready sets. The present bootstrap emits through
+LLVM in process, avoids unreachable native code, and uses package-level ThinLTO
+at O2.
 
-On the qualification Mac, one O2 hello-world build measured 84 ms. Three fresh
-O0 DraftIDE builds measured 209–213 ms. These are dated observations from one
-machine, not performance promises. The actual design and measurements live in
-the [semantic work graph](docs/implementation/semantic-work-graph.md) and
-[native qualification](docs/releases/native-host-qualification.md) documents.
+On the qualification Mac:
+
+- An O2 hello-world build measured 84 ms.
+- Three fresh O0 DraftIDE builds measured 209–213 ms. That build checked 463
+  runtime procedures across 26 packages—including imported core and library
+  source—and emitted 398 reachable procedures.
+
+These are dated observations from one machine, not performance promises. The
+actual design and measurements live in the [semantic work
+graph](docs/implementation/semantic-work-graph.md) and [native
+qualification](docs/releases/native-host-qualification.md) documents.
 
 ## DraftIDE
 
