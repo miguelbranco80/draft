@@ -138,7 +138,7 @@ struct TemporaryWorkspace {
 
 [[nodiscard]] std::filesystem::path artifact_directory(
     const TemporaryWorkspace &workspace,
-  std::string_view root) {
+    std::string_view root) {
   std::filesystem::path result = workspace.root / ".draft" / "build" /
       native_host_profile().facts.file_tag;
   result /= "packages";
