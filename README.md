@@ -123,6 +123,12 @@ For a graphical test, [raylib Asteroids](examples/raylib-asteroids/README.md)
 needs one additional CMake build of the vendored raylib library before
 `draftc run`.
 
+## DraftIDE
+
+Release archives also include `bin/draftide`, a mostly-Draft terminal IDE
+inspired by the classic blue Turbo Pascal/C environments. It works over SSH and
+combines editing, semantic navigation and Build/Run.
+
 ## A little code
 
 The ordinary side should feel familiar to an Odin programmer:
@@ -279,14 +285,6 @@ These are dated observations from one machine, not performance promises. The
 actual design and measurements live in the [semantic work
 graph](docs/implementation/semantic-work-graph.md) and [native
 qualification](docs/releases/native-host-qualification.md) documents.
-
-## DraftIDE
-
-DraftIDE is a mostly-Draft terminal IDE inspired by the old blue Turbo
-Pascal/C environments. It works over SSH and combines a real editor, semantic
-navigation and Build/Run with the compiler in process; it is also a useful
-stress test for the language and its small reusable terminal UI.
-Downloaded release archives include it beside `draftc` under `bin/`.
 
 ## Documentation
 
