@@ -22,11 +22,11 @@ deterministic parallel work.
 built a real language through years of serious work. Draft is not a replacement
 or a competitor.*
 
-*Casey Muratori's [work](https://caseymuratori.com/)—from Handmade Hero to his
-uncompromising arguments against accepted complexity—was another influence.
-The agent rules owe much to that spirit.*
+*Casey Muratori's work and uncompromising arguments against accepted complexity
+is another influence. Some of those principles made it to the agent rules that
+drove this implementation.*
 
-*There is an even bigger debt to Jonathan Blow and Jai: in particular, the idea
+*There is an even bigger debt to Jonathan Blow: in particular, the idea
 of building a language together with the programs and tools one actually wants
 to build, rather than designing it only in the abstract. What he is doing is
 artisan work in the true sense, and “amateur” work in the oldest and best sense
