@@ -6800,38 +6800,50 @@ private:
         if (const std::optional<std::uint64_t> length =
               compile_time_length(base_id)) {
           std::size_t operand_index = 1;
-          std::optional<std::uint64_t> low = 0;
-          std::optional<std::uint64_t> high = length;
+          std::uint64_t low = 0;
+          std::uint64_t high = *length;
+          bool bounds_are_constant = true;
           if (expression.slice_has_low) {
             const std::optional<BigInteger> value =
                 constant_integer_expression(expression.operands[operand_index++]);
-            // Spell the absent branch as reset rather than assigning a
-            // temporary nullopt. GCC 13 otherwise reports the engaged storage
-            // of std::optional<uint64_t> as maybe-uninitialized in optimized
-            // builds even though the optional operation is well-defined.
             if (value.has_value()) {
-              low = value->to_u64();
+              const std::optional<std::uint64_t> converted = value->to_u64();
+              if (converted.has_value()) {
+                low = *converted;
+              } else {
+                bounds_are_constant = false;
+              }
             } else {
-              low.reset();
+              bounds_are_constant = false;
             }
           }
           if (expression.slice_has_high) {
             const std::optional<BigInteger> value =
                 constant_integer_expression(expression.operands[operand_index]);
             if (value.has_value()) {
-              high = value->to_u64();
+              const std::optional<std::uint64_t> converted = value->to_u64();
+              if (converted.has_value()) {
+                high = *converted;
+              } else {
+                bounds_are_constant = false;
+              }
             } else {
-              high.reset();
+              bounds_are_constant = false;
             }
           }
-          if (low.has_value() && high.has_value()) {
-            if (*low <= *high && *high <= *length) {
+          // Bounds checking is useful only when every written bound is a
+          // constant. Keep that fact separate from the values: the omitted
+          // low and high bounds still have the concrete defaults zero and the
+          // base length, while a runtime bound suppresses this compile-time
+          // proof without manufacturing a sentinel value.
+          if (bounds_are_constant) {
+            if (low <= high && high <= *length) {
               expression.bounds_proven = true;
             } else {
               diagnostics_.error(
                   node.range,
-                  "constant slice bounds [" + std::to_string(*low) + ":" +
-                      std::to_string(*high) + "] are invalid for length " +
+                  "constant slice bounds [" + std::to_string(low) + ":" +
+                      std::to_string(high) + "] are invalid for length " +
                       std::to_string(*length));
             }
           }
