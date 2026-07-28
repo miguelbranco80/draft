@@ -12,6 +12,35 @@ foreach(required IN ITEMS DRAFT_ROOT TEST_ROOT DRAFT_TARGET DRAFT_RELEASE_VERSIO
   endif()
 endforeach()
 
+# A Windows build job adds its development LLVM bin directory to PATH before
+# configuration. The installed tools are intentionally self-contained, so an
+# archive smoke must not let that ambient entry satisfy a missing public DLL or
+# private tool. Remove only the exact caller-supplied directory and retain the
+# Visual Studio, Windows SDK, and system entries established by VsDevCmd.
+if(WIN32 AND DEFINED DRAFT_AMBIENT_LLVM_BIN
+    AND NOT DRAFT_AMBIENT_LLVM_BIN STREQUAL "")
+  cmake_path(
+    CONVERT "$ENV{PATH}" TO_CMAKE_PATH_LIST path_entries NORMALIZE
+  )
+  set(ambient_llvm_bin "${DRAFT_AMBIENT_LLVM_BIN}")
+  cmake_path(NORMAL_PATH ambient_llvm_bin)
+  string(TOLOWER "${ambient_llvm_bin}" ambient_llvm_bin_key)
+  set(isolated_path_entries)
+  foreach(path_entry IN LISTS path_entries)
+    set(normalized_path_entry "${path_entry}")
+    cmake_path(NORMAL_PATH normalized_path_entry)
+    string(TOLOWER "${normalized_path_entry}" path_entry_key)
+    if(NOT path_entry_key STREQUAL ambient_llvm_bin_key)
+      list(APPEND isolated_path_entries "${path_entry}")
+    endif()
+  endforeach()
+  cmake_path(
+    CONVERT "${isolated_path_entries}" TO_NATIVE_PATH_LIST isolated_path
+    NORMALIZE
+  )
+  set(ENV{PATH} "${isolated_path}")
+endif()
+
 if(WIN32)
   set(executable_suffix ".exe")
 else()

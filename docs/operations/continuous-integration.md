@@ -38,7 +38,9 @@ macOS/Linux CTest suite installs to a clean prefix; Windows performs the same
 step after its focused native gate. The common smoke checks that both version
 reports select `toolchain: bundled`, builds and runs an installed example with
 no checkout-relative core or LLVM path, and launches installed DraftIDE against
-its sibling compiler service.
+its sibling compiler service. Windows removes the development LLVM `bin` entry
+from `PATH` before that smoke, so a missing bundled DLL or private executable
+cannot be supplied accidentally by the toolchain used to build the archive.
 
 The x86-64 row additionally enables GCC AddressSanitizer and
 UndefinedBehaviorSanitizer with leak detection and immediate failure. Those
