@@ -9,6 +9,7 @@
 
 #include "target/profile.h"
 
+#include "draft/version.h"
 #include "test_directory.h"
 
 #include <cerrno>
@@ -115,11 +116,31 @@ struct TemporaryWorkspace {
 #endif
 }
 
+// Resolves the same CMake-owned host fact that initializes the driver under
+// test. The fixture needs the resulting file tag only to locate default output;
+// copying the host-to-target mapping here would let the assertion drift from
+// draftc again. Published test configurations always provide a supported
+// selector, so failure is a broken build configuration rather than a source
+// diagnostic and terminates the fixture immediately.
+[[nodiscard]] const draft::TargetProfile &native_host_profile() {
+  static const draft::TargetProfile profile = [] {
+    draft::TargetProfile selected;
+    std::string reason;
+    if (!draft::select_builtin_target_profile(
+            DRAFT_NATIVE_HOST_TARGET, selected, reason)) {
+      std::cerr << "cannot select test host target: " << reason << '\n';
+      std::exit(EXIT_FAILURE);
+    }
+    return selected;
+  }();
+  return profile;
+}
+
 [[nodiscard]] std::filesystem::path artifact_directory(
     const TemporaryWorkspace &workspace,
-    std::string_view root) {
+  std::string_view root) {
   std::filesystem::path result = workspace.root / ".draft" / "build" /
-      draft::make_aarch64_macos_profile().facts.file_tag;
+      native_host_profile().facts.file_tag;
   result /= "packages";
   result /= root;
   return result;
@@ -187,7 +208,7 @@ void test_discovery_selection_and_failures(TestState &state) {
   EXPECT(state,
       std::filesystem::is_directory(
           workspace.root / ".draft" / "build" /
-          draft::make_aarch64_macos_profile().facts.file_tag /
+          native_host_profile().facts.file_tag /
           "workspace" / "root_runner-assembly"));
 
   std::error_code error;
@@ -217,18 +238,23 @@ void test_discovery_selection_and_failures(TestState &state) {
 void test_aggregate_program_configuration(TestState &state) {
   TemporaryWorkspace workspace;
 
-  // The admin root exists on every target but declares main only for x86-64
-  // Linux. Aggregate discovery must therefore inspect that exact package under
-  // its named program target instead of applying the workspace's macOS default
-  // to every root. Distinct explicit outputs also prove that configuration is
-  // resolved before any artifact is published rather than after a common build
-  // loop has already selected one path and kind.
+  // The admin root exists on every target but declares main only for a profile
+  // deliberately different from this test binary's native host. Aggregate
+  // discovery must therefore inspect that exact package under its named
+  // program target instead of applying the workspace default to every root.
+  // Distinct explicit outputs also prove that configuration is resolved before
+  // any artifact is published rather than after a common build loop has
+  // already selected one path and kind.
+  const std::string alternate_target =
+      native_host_profile().facts.file_tag == "x86_64-linux"
+          ? "aarch64-macos"
+          : "x86_64-linux";
   TemporaryWorkspace::write_package(
       workspace.root / "tools" / "admin", "runner", false, false);
   {
     std::ofstream source(
         workspace.root / "tools" / "admin" /
-            "entry@x86_64-linux.draft",
+            ("entry@" + alternate_target + ".draft"),
         std::ios::binary);
     source << "package runner\n\nmain :: proc() {}\n";
     source.close();
@@ -246,7 +272,7 @@ void test_aggregate_program_configuration(TestState &state) {
         "output = configured-app-assembly\n"
         "[program admin]\n"
         "root = tools/admin\n"
-        "target = x86_64-linux\n"
+        "target = " << alternate_target << "\n"
         "output = configured-admin-assembly\n";
     marker.close();
     EXPECT(state, static_cast<bool>(marker));
