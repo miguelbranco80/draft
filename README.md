@@ -204,12 +204,53 @@ larger differences and additions are:
 - Draft has no methods, traits, exceptions, closures, operator overloading,
   implicit moves/destructors, runtime `any`, or AST macro system. Growable
   arrays, maps, `Option` and `Result` are ordinary core-library types.
-- `docs` carries durable design context; `deny` enforces transitive boundaries;
-  `judge` records agent review evidence; and typed `...` can synthesize ordinary
-  inspectable source. Builds remain provider-free once that source is resolved.
 - The current target profiles are Apple Silicon macOS, AArch64 Linux, x86-64
   Linux and x86-64 Windows. The core library already supports real programs,
   including Tetris, editors, a terminal UI and raylib Asteroids.
+
+### The more radical experiments
+
+Then there are `docs`, `deny`, `judge` and `...`. These are deliberately
+optional, stranger ideas. `docs` carries design context as part of the program;
+`deny` makes a restriction such as “no allocation, assembly or unchecked
+access” transitive through everything a region can call; `judge` asks an agent
+to review a claim at one exact typed program point; and `...` asks an agent to
+write source for one exact grammar and type-shaped hole. A judgment is evidence,
+not proof.
+
+That permits things like this:
+
+```draft
+package protocol
+
+docs "The packet layout and decoder contract."
+    file "PROTOCOL.md"
+
+import core/heap
+
+Packet :: struct {
+    ... "Declare the wire fields described in PROTOCOL.md."
+}
+
+decode :: proc(input: []u8) -> Packet {
+    deny heap, asm, unchecked, context.allocator {
+        judge "Every input offset used below is checked against len(input)."
+        return ... "Decode one Packet without allocating."
+    }
+}
+```
+
+Yes: Codex may generate the fields of a type and the body of its decoder, while
+the compiler checks the result as ordinary Draft source, including the return
+type and the transitive denials around it. A synthesis hole can also stand for
+package declarations, statements or even one assembly instruction.
+
+In the current bootstrap, fresh `...` resolution and `judge` runs use the Codex
+CLI, so those commands need Codex installed and authenticated. `docs`, `deny`
+and ordinary handwritten Draft do not. Accepted generated source is pinned;
+normal builds never call Codex. Is all of this sane? Maybe not. It is a fun
+exploration of what happens when the coding agent becomes an explicit part of
+the language while the compiler still sets the hard boundaries.
 
 See the [language tour](examples/language-tour/package.draft), [examples by
 feature](examples/README.md), and [specification](docs/README.md) for the less
