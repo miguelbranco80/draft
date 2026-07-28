@@ -54,6 +54,8 @@ evidence, yes; the same as people really using it, no.*
 [Draft 0.1.0-alpha.4](https://github.com/miguelbranco80/draft/releases/tag/v0.1.0-alpha.4)
 is the current prerelease. Each platform section clones the matching source;
 `draftc run` builds and runs the language tour and Tetris.
+Release archives can be verified against
+[`SHA256SUMS`](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.4/SHA256SUMS).
 
 ### Apple Silicon macOS
 
@@ -115,12 +117,7 @@ Expand-Archive .\draft-0.1.0-alpha.4-x86_64-windows.zip
   .\draft-source\examples\tetris -O2
 ```
 
-The archive also contains the experimental DraftIDE; the checkout contains the
-examples, documentation and Draft coding skill. Verify the download against
-[`SHA256SUMS`](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.4/SHA256SUMS).
-
-Open `draft-source` in a coding agent; the checkout contains `AGENTS.md` and the
-`write-draft-code` skill it needs to modify and run Draft programs.
+### Raylib Asteroids
 
 For a graphical test, [raylib Asteroids](examples/raylib-asteroids/README.md)
 needs one additional CMake build of the vendored raylib library before
@@ -289,6 +286,7 @@ DraftIDE is a mostly-Draft terminal IDE inspired by the old blue Turbo
 Pascal/C environments. It works over SSH and combines a real editor, semantic
 navigation and Build/Run with the compiler in process; it is also a useful
 stress test for the language and its small reusable terminal UI.
+Downloaded release archives include it beside `draftc` under `bin/`.
 
 ## Documentation
 

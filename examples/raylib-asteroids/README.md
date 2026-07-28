@@ -23,6 +23,11 @@ vendored tree.
 - `R` restarts after game over.
 - Escape or the window close control quits.
 
+The commands below use a source-built `build/draftc` (or
+`build/Release/draftc.exe` on Windows). If you followed the top-level
+downloaded-release setup, use the extracted release's `bin/draftc` or
+`bin/draftc.exe` instead.
+
 ## Build on macOS or Linux
 
 From the repository root, first build the vendored library as a shared desktop
