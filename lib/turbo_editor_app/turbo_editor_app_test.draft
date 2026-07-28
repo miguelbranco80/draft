@@ -1777,6 +1777,35 @@ test_collects_all_open_workspace_overlays :: proc(test: ^testing.Test) {
     )
 }
 
+// A compiler boundary rejection is a complete status transition. Check may
+// have left a byte-formatted elapsed-time message active immediately before a
+// reachable-source mismatch is discovered; assigning only the fallback string
+// would keep painting the stale Check result and hide the actual reason Build
+// did not call its host callback.
+test_rejected_host_overlay_replaces_stale_status :: proc(test: ^testing.Test) {
+    app: App
+    init_windows(&app)
+    testing.expect(test, init_one_buffer(&app, "outside-active-root.draft"))
+    defer destroy_app(&app)
+
+    app.host.source_count = fake_source_count
+    app.host.build = fake_build
+    app.status_bytes_active = true
+    app.status_length = 1
+    app.status_storage[0] = cast[u8]('x')
+
+    testing.expect(test, !build_active(&app))
+    testing.expect(test, !app.status_bytes_active)
+    testing.expect(test, app.status_length == 0)
+    testing.expect(
+        test,
+        text_equal(
+            app.status,
+            "Active file is not part of the active root package",
+        ),
+    )
+}
+
 // An authored edit must never enter package semantics on the event/render
 // thread. Semantic navigation is an explicit command and therefore performs
 // exactly one current-byte check before it asks the service for a location.

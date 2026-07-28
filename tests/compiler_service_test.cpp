@@ -758,6 +758,29 @@ void test_service_transactions_and_native_build(TestState &state) {
                     source_name_bytes.size()) == 17);
   EXPECT(state, std::string_view(reinterpret_cast<const char *>(
                     source_name_bytes.data())) == "app/package.draft");
+  const std::filesystem::path canonical_library =
+      std::filesystem::canonical(library / source_name);
+  const std::string canonical_library_text = canonical_library.string();
+
+  // Check replaces the discovery-only source table with the complete reachable
+  // graph. That publication must retain the exact canonical host spelling of
+  // every file: DraftIDE compares the returned bytes to its open-buffer path,
+  // and Windows otherwise permits slash spellings for the same file to drift
+  // across this transaction boundary.
+  std::array<std::uint8_t, 4096> reachable_path_bytes{};
+  const std::size_t reachable_app_path_size =
+      draft_compiler_session_copy_source_path_at(
+          session, 0, reachable_path_bytes.data(), reachable_path_bytes.size());
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(reachable_path_bytes.data()),
+                    reachable_app_path_size) == canonical_source_text);
+  reachable_path_bytes.fill(0);
+  const std::size_t reachable_library_path_size =
+      draft_compiler_session_copy_source_path_at(
+          session, 1, reachable_path_bytes.data(), reachable_path_bytes.size());
+  EXPECT(state, std::string_view(
+                    reinterpret_cast<const char *>(reachable_path_bytes.data()),
+                    reachable_library_path_size) == canonical_library_text);
 
   // Both unsaved files enter one semantic transaction. The app refers to a
   // declaration that exists only in the library overlay, proving the service
@@ -771,9 +794,6 @@ void test_service_transactions_and_native_build(TestState &state) {
                               "pub answer_two :: proc() -> int {\n"
                               "    return 42\n"
                               "}\n";
-  const std::filesystem::path canonical_library =
-      std::filesystem::canonical(library / source_name);
-  const std::string canonical_library_text = canonical_library.string();
   const std::array<DraftCompilerServiceOverlay, 2> multi_overlays{
       overlay(canonical_source_text, multi_app),
       overlay(canonical_library_text, multi_library),

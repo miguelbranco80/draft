@@ -1186,7 +1186,7 @@ build_active :: proc(
     artifact_output: ^memory.Owned_String = nil,
 ) -> bool {
     if app.host.build == nil {
-        app.status = "No compiler host is attached"
+        set_plain_status(app, "No compiler host is attached")
         return false
     }
     overlays: [Maximum_Buffers]draft_compiler_api.Overlay
@@ -1195,7 +1195,10 @@ build_active :: proc(
         overlays[:],
     )
     if !valid_overlays {
-        app.status = "Active file is not part of the active root package"
+        set_plain_status(
+            app,
+            "Active file is not part of the active root package",
+        )
         return false
     }
     result: draft_compiler_api.Result

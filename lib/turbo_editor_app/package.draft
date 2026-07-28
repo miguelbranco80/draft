@@ -1214,7 +1214,10 @@ refresh_host :: proc(app: ^App) -> bool {
     )
     if !valid_overlays {
         app.syntax_span_count = 0
-        app.status = "Active file is not part of the active root package"
+        set_plain_status(
+            app,
+            "Active file is not part of the active root package",
+        )
         return false
     }
     result: draft_compiler_api.Result

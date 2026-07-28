@@ -43,6 +43,24 @@ namespace {
 constexpr std::size_t kMaximumEditorCompilerFeedbackBytes = 1024U * 1024U;
 constexpr std::size_t kMaximumEditorCompilerMessageBytes = 16U * 1024U;
 
+// Produces the one process-facing spelling used for every editable source path
+// published by the compiler service. On Windows, two paths can identify the
+// same file while retaining different slash spellings; Draft code receives
+// paths as bytes and therefore cannot safely recover that filesystem identity
+// with bytewise comparison. Canonicalize while the file exists and select the
+// host's preferred separators here, before either the initial root inventory or
+// a post-Check reachable-graph inventory crosses the service ABI.
+[[nodiscard]] std::filesystem::path
+canonical_physical_path(const std::filesystem::path &path) {
+  std::error_code error;
+  std::filesystem::path canonical =
+      std::filesystem::weakly_canonical(path, error);
+  if (error)
+    canonical = path.lexically_normal();
+  canonical.make_preferred();
+  return canonical;
+}
+
 [[nodiscard]] bool is_keyword(TokenKind kind) {
   return kind >= TokenKind::KeywordPackage && kind <= TokenKind::KeywordNil;
 }
@@ -448,8 +466,9 @@ same_program_policy(const EffectiveProgramConfiguration &left,
 CompilerSession::CompilerSession(CompilerConfiguration configuration)
     : configuration_(std::move(configuration)),
       fallback_target_(configuration_.target) {
-  source_path_ = configuration_.root_package_directory /
-                 configuration_.source_relative_name;
+  source_path_ = canonical_physical_path(
+      configuration_.root_package_directory /
+      configuration_.source_relative_name);
 }
 
 CompilerSession::~CompilerSession() {
@@ -714,7 +733,8 @@ bool CompilerSession::refresh_root_options(const WorkspaceManifest &manifest,
       }
       source_options.push_back({
           std::move(display_name),
-          selection.physical_directory / file.relative_name,
+          canonical_physical_path(selection.physical_directory /
+                                  file.relative_name),
           selection.identity,
           file.relative_name,
       });
@@ -772,7 +792,8 @@ bool CompilerSession::initialize(DiagnosticSink &diagnostics) {
   configuration_.root_relative_path = selected.root_relative_path;
   configuration_.root_package_directory = selected.physical_directory;
   configuration_.source_relative_name = selected.source_relative_name;
-  source_path_ = selected.physical_directory / selected.source_relative_name;
+  source_path_ = canonical_physical_path(
+      selected.physical_directory / selected.source_relative_name);
   select_root_sources(selected);
   return create_build_directory(diagnostics);
 }
@@ -794,7 +815,8 @@ bool CompilerSession::refresh_configuration(DiagnosticSink &diagnostics) {
     configuration_.root_relative_path = selected.root_relative_path;
     configuration_.root_package_directory = selected.physical_directory;
     configuration_.source_relative_name = selected.source_relative_name;
-    source_path_ = selected.physical_directory / selected.source_relative_name;
+    source_path_ = canonical_physical_path(
+        selected.physical_directory / selected.source_relative_name);
     reset_checked_program();
     select_root_sources(selected);
     return true;
@@ -934,8 +956,9 @@ void CompilerSession::rebuild_source_options() {
       }
       sources.push_back({
           std::move(display_name),
-          std::filesystem::path(package.loaded.physical_directory) /
-              file.relative_name,
+          canonical_physical_path(
+              std::filesystem::path(package.loaded.physical_directory) /
+              file.relative_name),
           package.identity,
           file.relative_name,
       });
@@ -971,7 +994,8 @@ bool CompilerSession::select_root(std::size_t index,
   configuration_.root_relative_path = root.root_relative_path;
   configuration_.root_package_directory = root.physical_directory;
   configuration_.source_relative_name = root.source_relative_name;
-  source_path_ = root.physical_directory / root.source_relative_name;
+  source_path_ = canonical_physical_path(
+      root.physical_directory / root.source_relative_name);
   selected_root_ = index;
   reset_checked_program();
   select_root_sources(root);
@@ -1004,7 +1028,8 @@ bool CompilerSession::select_target(TargetProfile target,
   configuration_.root_relative_path = selected.root_relative_path;
   configuration_.root_package_directory = selected.physical_directory;
   configuration_.source_relative_name = selected.source_relative_name;
-  source_path_ = selected.physical_directory / selected.source_relative_name;
+  source_path_ = canonical_physical_path(
+      selected.physical_directory / selected.source_relative_name);
   reset_checked_program();
   select_root_sources(selected);
   return true;
@@ -1065,7 +1090,7 @@ CompilerSession::source_overrides(std::span<const SourceOverlay> overlays,
   result.reserve(overlays.size());
   for (const SourceOverlay &overlay : overlays) {
     std::error_code error;
-    const std::filesystem::path canonical =
+    std::filesystem::path canonical =
         std::filesystem::weakly_canonical(overlay.physical_path, error);
     if (error) {
       diagnostics.error(SourceRange::invalid(),
@@ -1073,6 +1098,7 @@ CompilerSession::source_overrides(std::span<const SourceOverlay> overlays,
                             error.message());
       return std::nullopt;
     }
+    canonical.make_preferred();
     const auto option =
         std::find_if(source_options_.begin(), source_options_.end(),
                      [&canonical](const SourceOption &source) {
@@ -1453,6 +1479,7 @@ bool CompilerSession::prepare_source_transaction(
       overlays[active_overlay].physical_path, active_error);
   if (active_error)
     source_path_ = overlays[active_overlay].physical_path;
+  source_path_.make_preferred();
   collect_syntax_spans(overlays[active_overlay]);
   return true;
 }
