@@ -787,9 +787,16 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   endif()
   list(REMOVE_DUPLICATES DRAFT_LLVM_RUNTIME_LIBRARIES)
   list(SORT DRAFT_LLVM_RUNTIME_LIBRARIES)
+  # Ubuntu's versioned LLVM directory contains links whose final objects live
+  # in the architecture-specific system library directory. Installing those
+  # links alone preserves paths such as ../../x86_64-linux-gnu/libLLVM.so.22.1,
+  # which point outside their original tree and become broken after relocation.
+  # FOLLOW_SYMLINK_CHAIN copies each terminal file as well as its loader-facing
+  # link names, so the distribution owns the complete runtime closure.
   install(
     FILES ${DRAFT_LLVM_RUNTIME_LIBRARIES}
     DESTINATION "${DRAFT_DISTRIBUTION_LIBRARY_DIRECTORY}"
+    FOLLOW_SYMLINK_CHAIN
   )
 elseif(WIN32)
   file(GLOB DRAFT_LLVM_RUNTIME_LIBRARIES CONFIGURE_DEPENDS

@@ -81,6 +81,39 @@ foreach(path IN ITEMS
     message(FATAL_ERROR "Distribution is missing ${path}")
   endif()
 endforeach()
+
+# A relocatable distribution cannot contain a link that reaches back into the
+# build host. This is checked before executing draftc because the ELF loader may
+# otherwise ignore a broken private link and satisfy the same SONAME from an
+# installed system LLVM package, giving the smoke test a false success.
+file(
+  GLOB_RECURSE distribution_entries
+  LIST_DIRECTORIES TRUE
+  "${DRAFT_ROOT}/*"
+)
+foreach(distribution_entry IN LISTS distribution_entries)
+  if(IS_SYMLINK "${distribution_entry}" AND NOT EXISTS "${distribution_entry}")
+    file(READ_SYMLINK "${distribution_entry}" link_target)
+    message(FATAL_ERROR
+      "Distribution contains broken symlink ${distribution_entry} -> ${link_target}"
+    )
+  endif()
+endforeach()
+
+# LLVM 22.1's Linux SONAMEs are direct runtime dependencies of draftc and its
+# private Clang driver. Requiring their resolved paths makes the intended
+# runtime closure explicit even if a future install layout stops using links.
+if(DRAFT_TARGET MATCHES "-linux$")
+  foreach(runtime_name IN ITEMS libLLVM.so.22.1 libclang-cpp.so.22.1)
+    set(runtime_path "${DRAFT_ROOT}/libexec/draft/lib/${runtime_name}")
+    if(NOT EXISTS "${runtime_path}")
+      message(FATAL_ERROR
+        "Linux distribution is missing resolved runtime ${runtime_path}"
+      )
+    endif()
+  endforeach()
+endif()
+
 if(EXISTS "${example_source}/.draft")
   message(FATAL_ERROR
     "Distribution contains derived example state at ${example_source}/.draft"

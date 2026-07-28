@@ -29,6 +29,11 @@ LLVM installation. `draftc --version` and `draftide --version` report
 version, exact source commit, LLVM version, embedded core identity, and target
 set.
 
+Linux packaging follows each LLVM shared-library link through to its terminal
+file and installs the complete link chain under `libexec/draft/lib`. The
+distribution smoke rejects broken links before launching a binary, so a hosted
+runner's system LLVM cannot conceal an incomplete archive.
+
 The platform SDK is deliberately not redistributed. The macOS archive requires
 Xcode Command Line Tools and discovers the active SDK once per native build
 through `SDKROOT` or `xcrun`. Linux archives use the selected Ubuntu 24.04-class
