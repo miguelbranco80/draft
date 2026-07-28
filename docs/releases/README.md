@@ -3,6 +3,9 @@
 Release records state what has actually been exercised; they do not add
 language semantics.
 
+- [Draft 0.1.0-alpha.3 qualification](0.1.0-alpha.3.md) records the current
+  published prerelease, all four native qualification paths, and the
+  independent post-publication artifact audit.
 - [Draft 0.1.0-alpha.2 release record](0.1.0-alpha.2.md) records the published
   but superseded prerelease, including the post-publication Linux archive defect
   that invalidated its otherwise-green qualification.

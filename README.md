@@ -48,9 +48,10 @@ the [language tour](examples/language-tour/package.draft), then read the
 
 ## Try it
 
-Tagged releases publish self-contained archives for Apple Silicon macOS,
-AArch64 Linux, x86-64 Linux, and x86-64 Windows. Extract one, put its `bin`
-directory on `PATH`, and check the exact build:
+[Draft 0.1.0-alpha.3](https://github.com/miguelbranco80/draft/releases/tag/v0.1.0-alpha.3)
+is the current published alpha. It provides self-contained archives for Apple
+Silicon macOS, AArch64 Linux, x86-64 Linux, and x86-64 Windows. Extract one,
+put its `bin` directory on `PATH`, and check the exact build:
 
 ```sh
 draftc --version
