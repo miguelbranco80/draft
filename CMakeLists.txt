@@ -16,7 +16,7 @@ include(GNUInstallDirs)
 # release workflow supplies the exact full commit. Source builds discover it at
 # configure time when Git is available and otherwise report the honest `source`
 # sentinel rather than manufacturing provenance.
-set(DRAFT_RELEASE_SUFFIX "alpha.1")
+set(DRAFT_RELEASE_SUFFIX "alpha.2")
 set(DRAFT_RELEASE_VERSION "${PROJECT_VERSION}-${DRAFT_RELEASE_SUFFIX}")
 set(
   DRAFT_BUILD_COMMIT "" CACHE STRING

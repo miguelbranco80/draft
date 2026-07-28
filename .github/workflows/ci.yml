@@ -242,5 +242,5 @@ jobs:
           if errorlevel 1 exit /b 1
           cmake --install "%CD%\build" --config Release --prefix "%CD%\build\distribution"
           if errorlevel 1 exit /b 1
-          cmake -DDRAFT_ROOT="%CD%\build\distribution" -DTEST_ROOT="%CD%\build\distribution-smoke" -DDRAFT_TARGET=x86_64-windows -DDRAFT_RELEASE_VERSION=0.1.0-alpha.1 -DDRAFT_AMBIENT_LLVM_BIN="%LLVM_ROOT%\bin" -P "%CD%\tests\distribution_smoke_test.cmake"
+          cmake -DDRAFT_ROOT="%CD%\build\distribution" -DTEST_ROOT="%CD%\build\distribution-smoke" -DDRAFT_TARGET=x86_64-windows -DDRAFT_RELEASE_VERSION=0.1.0-alpha.2 -DDRAFT_AMBIENT_LLVM_BIN="%LLVM_ROOT%\bin" -P "%CD%\tests\distribution_smoke_test.cmake"
           if errorlevel 1 exit /b 1
