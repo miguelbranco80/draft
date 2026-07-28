@@ -774,30 +774,43 @@ if(APPLE)
     DESTINATION "${DRAFT_DISTRIBUTION_LIBRARY_DIRECTORY}"
   )
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  file(GLOB DRAFT_LLVM_RUNTIME_LIBRARIES CONFIGURE_DEPENDS
-    "${LLVM_LIBRARY_DIRS}/libLLVM.so*"
-    "${LLVM_LIBRARY_DIRS}/libLLVM-${LLVM_VERSION_MAJOR}.so*"
-    "${LLVM_LIBRARY_DIRS}/libclang-cpp.so*"
-    "${LLVM_LIBRARY_DIRS}/libclang-cpp.so.${LLVM_VERSION_MAJOR}*"
+  # The two ELF SONAMEs below are the complete non-system shared-library
+  # closure of draftc and the private Clang driver in the supported LLVM build.
+  # Install the terminal file behind each development-tree link under that
+  # SONAME. This deliberately creates ordinary files in the distribution:
+  # Ubuntu's links reach outside LLVM_LIBRARY_DIRS, so copying the links would
+  # leave a relocatable archive dependent on the build host's /usr/lib tree.
+  set(DRAFT_LLVM_RUNTIME_NAMES
+    "libLLVM.so.${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}"
+    "libclang-cpp.so.${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}"
   )
-  if(NOT DRAFT_LLVM_RUNTIME_LIBRARIES)
-    message(FATAL_ERROR
-      "LLVM ${LLVM_PACKAGE_VERSION} has no distributable shared runtime"
+  foreach(DRAFT_LLVM_RUNTIME_NAME IN LISTS DRAFT_LLVM_RUNTIME_NAMES)
+    set(DRAFT_LLVM_RUNTIME_SOURCE "")
+    foreach(DRAFT_LLVM_LIBRARY_DIRECTORY IN LISTS LLVM_LIBRARY_DIRS)
+      set(
+        DRAFT_LLVM_RUNTIME_CANDIDATE
+        "${DRAFT_LLVM_LIBRARY_DIRECTORY}/${DRAFT_LLVM_RUNTIME_NAME}"
+      )
+      if(EXISTS "${DRAFT_LLVM_RUNTIME_CANDIDATE}")
+        set(DRAFT_LLVM_RUNTIME_SOURCE "${DRAFT_LLVM_RUNTIME_CANDIDATE}")
+        break()
+      endif()
+    endforeach()
+    if(DRAFT_LLVM_RUNTIME_SOURCE STREQUAL "")
+      message(FATAL_ERROR
+        "LLVM ${LLVM_PACKAGE_VERSION} has no ${DRAFT_LLVM_RUNTIME_NAME}"
+      )
+    endif()
+    file(
+      REAL_PATH "${DRAFT_LLVM_RUNTIME_SOURCE}"
+      DRAFT_LLVM_RUNTIME_RESOLVED
     )
-  endif()
-  list(REMOVE_DUPLICATES DRAFT_LLVM_RUNTIME_LIBRARIES)
-  list(SORT DRAFT_LLVM_RUNTIME_LIBRARIES)
-  # Ubuntu's versioned LLVM directory contains links whose final objects live
-  # in the architecture-specific system library directory. Installing those
-  # links alone preserves paths such as ../../x86_64-linux-gnu/libLLVM.so.22.1,
-  # which point outside their original tree and become broken after relocation.
-  # FOLLOW_SYMLINK_CHAIN copies each terminal file as well as its loader-facing
-  # link names, so the distribution owns the complete runtime closure.
-  install(
-    FILES ${DRAFT_LLVM_RUNTIME_LIBRARIES}
-    DESTINATION "${DRAFT_DISTRIBUTION_LIBRARY_DIRECTORY}"
-    FOLLOW_SYMLINK_CHAIN
-  )
+    install(
+      FILES "${DRAFT_LLVM_RUNTIME_RESOLVED}"
+      DESTINATION "${DRAFT_DISTRIBUTION_LIBRARY_DIRECTORY}"
+      RENAME "${DRAFT_LLVM_RUNTIME_NAME}"
+    )
+  endforeach()
 elseif(WIN32)
   file(GLOB DRAFT_LLVM_RUNTIME_LIBRARIES CONFIGURE_DEPENDS
     "${LLVM_TOOLS_BINARY_DIR}/*.dll"
