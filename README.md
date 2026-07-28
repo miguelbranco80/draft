@@ -30,8 +30,7 @@ The agent rules owe much to that spirit.*
 of building a language together with the programs and tools one actually wants
 to build, rather than designing it only in the abstract. What he is doing is
 artisan work in the true sense, and “amateur” work in the oldest and best sense
-of that word: work moved by love and care for the craft. I think there is
-something very deep in that.*
+of that word: work moved by love and care for the craft.*
 
 *Draft is not comparable to any of this work. It is an experiment, a study, an
 evaluation of sorts, made as a side project over a few days. Apart from
