@@ -184,12 +184,13 @@ jobs:
           $archive = Get-ChildItem build\packages\draft-*.zip | Select-Object -First 1
           if ($null -eq $archive) { throw "CPack produced no Draft zip" }
           $rootName = [System.IO.Path]::GetFileNameWithoutExtension($archive.Name)
+          $releaseVersion = $env:GITHUB_REF_NAME.Substring(1)
           Expand-Archive -Path $archive.FullName -DestinationPath build\extracted
           cmake `
             -DDRAFT_ROOT="$PWD\build\extracted\$rootName" `
             -DTEST_ROOT="$PWD\build\archive-smoke" `
             -DDRAFT_TARGET=x86_64-windows `
-            -DDRAFT_RELEASE_VERSION=$($env:GITHUB_REF_NAME.Substring(1)) `
+            "-DDRAFT_RELEASE_VERSION=$releaseVersion" `
             -DDRAFT_AMBIENT_LLVM_BIN="$env:LLVM_ROOT\bin" `
             -P tests\distribution_smoke_test.cmake
           if ($LASTEXITCODE -ne 0) { throw "Archive smoke failed" }

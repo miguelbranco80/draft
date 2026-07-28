@@ -734,6 +734,16 @@ execute_process(
   OUTPUT_VARIABLE DRAFT_CLANG_RESOURCE_DIRECTORY
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
+# Clang prints native Windows separators. CMake later writes this configure-time
+# value into cmake_install.cmake, where a path such as `D:\a\...` would be
+# reparsed as a quoted CMake string and `\a` would become an invalid escape.
+# Store the resource directory in CMake's portable slash form before generating
+# the install program; Windows system calls accept that form unchanged.
+file(
+  TO_CMAKE_PATH
+  "${DRAFT_CLANG_RESOURCE_DIRECTORY}"
+  DRAFT_CLANG_RESOURCE_DIRECTORY
+)
 if(
   NOT DRAFT_CLANG_RESOURCE_RESULT EQUAL 0
   OR NOT IS_DIRECTORY "${DRAFT_CLANG_RESOURCE_DIRECTORY}"
