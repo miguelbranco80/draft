@@ -68,10 +68,12 @@ override for every selected root.
 
 All package commands accept
 `--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows` where shown.
-macOS remains the compatibility default. A manifest target supplies the default
-when present, and an explicit CLI target wins. The workspace, selected root, and
-target determine persistent namespaces. Generated source objects are shared by
-content identity, while manifests and derived build artifacts are isolated as:
+Without a target setting, `draftc` selects the supported target matching the
+host on which that compiler binary was built. A workspace or named-program
+target replaces the native default, and an explicit CLI target wins. The
+workspace, selected root, and target determine persistent namespaces. Generated
+source objects are shared by content identity, while manifests and derived
+build artifacts are isolated as:
 
 ```text
 <workspace>/.draft/generated/<hash>.draft

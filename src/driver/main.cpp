@@ -264,6 +264,23 @@ select_command_package(const std::string &package_spelling,
   return true;
 }
 
+// Selects the target represented by the machine on which this particular
+// draftc binary was built. CMake derives the selector once from host facts and
+// writes it into the generated version header; keeping that policy out of the
+// target-profile table prevents an empty selector from becoming a second name
+// for one concrete target. Published Draft compilers are built only for
+// supported hosts. A source build on an unknown host still supports version
+// and syntax commands, but target-consuming commands fail explicitly because
+// there is no truthful native target to choose.
+[[nodiscard]] bool select_native_host_target(draft::TargetProfile &target) {
+  constexpr std::string_view selector = DRAFT_NATIVE_HOST_TARGET;
+  if (selector.empty()) {
+    std::cerr << "error: this draftc build has no supported native host target\n";
+    return false;
+  }
+  return select_command_target(selector, target);
+}
+
 // Parses one argument already known to begin with `-O`. Draft exposes only two
 // levels, so every other spelling receives a specific usage error instead of
 // falling through to the full command synopsis. `seen` enforces one explicit
@@ -300,6 +317,7 @@ select_command_package(const std::string &package_spelling,
     const CommandManifestContext &context,
     const draft::ProgramConfiguration *program,
     const BuildCommandOverrides &overrides,
+    const draft::TargetProfile &native_host_target,
     draft::ResolvedBuildPolicy &result,
     std::string &reason) {
   draft::BuildDefaults defaults = context.manifest.build;
@@ -311,7 +329,7 @@ select_command_package(const std::string &package_spelling,
   // final scalar value, so suppress the manifest spelling and make the parsed
   // profile the resolver default; changing only ResolvedBuildPolicy::target
   // afterward would retain inputs selected for the manifest/default target.
-  draft::TargetProfile default_target = draft::make_aarch64_macos_profile();
+  draft::TargetProfile default_target = native_host_target;
   if (overrides.target.has_value()) {
     defaults.target.reset();
     default_target = *overrides.target;
@@ -821,6 +839,7 @@ int build_selected_package(
 // is rejected for a multi-program build without writing an artifact.
 int build_workspace(const CommandManifestContext &context,
                     const BuildCommandOverrides &overrides,
+                    const draft::TargetProfile &native_host_target,
                     draft::TimingRecorder *timings) {
   // Root discovery, every selected compilation, and final native emission are
   // all phases of this one user command. Create its executor before discovery
@@ -846,7 +865,7 @@ int build_workspace(const CommandManifestContext &context,
   draft::ResolvedBuildPolicy base_configuration;
   std::string configuration_error;
   if (!resolve_effective_build_configuration(
-          context, nullptr, overrides, base_configuration,
+          context, nullptr, overrides, native_host_target, base_configuration,
           configuration_error)) {
     std::cerr << "error: " << configuration_error << '\n';
     return 2;
@@ -892,7 +911,8 @@ int build_workspace(const CommandManifestContext &context,
 
     draft::ResolvedBuildPolicy configured;
     if (!resolve_effective_build_configuration(
-            context, program, overrides, configured, configuration_error)) {
+            context, program, overrides, native_host_target, configured,
+            configuration_error)) {
       std::cerr << "error: program '" << program->name
                 << "': " << configuration_error << '\n';
       return 2;
@@ -950,7 +970,8 @@ int build_workspace(const CommandManifestContext &context,
               manifest, root.identity.root_relative_path);
       draft::ResolvedBuildPolicy exact_configuration;
       if (!resolve_effective_build_configuration(
-              context, program, overrides, exact_configuration,
+              context, program, overrides, native_host_target,
+              exact_configuration,
               configuration_error)) {
         std::cerr << "error: " << configuration_error << '\n';
         return 2;
@@ -988,7 +1009,8 @@ int build_workspace(const CommandManifestContext &context,
             manifest, root.identity.root_relative_path);
     draft::ResolvedBuildPolicy build;
     if (!resolve_effective_build_configuration(
-            context, program, overrides, build, configuration_error)) {
+            context, program, overrides, native_host_target, build,
+            configuration_error)) {
       std::cerr << "error: root '" << root.identity.root_relative_path
                 << "': " << configuration_error << '\n';
       return 2;
@@ -1685,11 +1707,14 @@ int main(int argc, char **argv) {
       ? &timing_report.recorder
       : nullptr;
 
-  // macOS remains the compatibility default, but every command that consumes
-  // a package accepts the same explicit selector.  Keeping one value in main
-  // makes it mechanically difficult for a branch to parse the option and then
-  // forget to pass the chosen profile into its operation.
-  draft::TargetProfile target = draft::make_aarch64_macos_profile();
+  // Every target-consuming command starts with the native host profile.
+  // Workspace/program policy may replace it, and an explicit CLI selector may
+  // replace that in the individual command branch. Keeping one value in main
+  // makes the precedence visible and makes it mechanically difficult for a
+  // branch to parse an option without passing the selected profile onward.
+  draft::TargetProfile native_host_target;
+  if (!select_native_host_target(native_host_target)) return 2;
+  draft::TargetProfile target = native_host_target;
   std::optional<std::string> configured_target =
       command_context.manifest.build.target;
   if (command_context.program != nullptr &&
@@ -2154,8 +2179,8 @@ int main(int argc, char **argv) {
     draft::ResolvedBuildPolicy build;
     std::string build_error;
     if (!resolve_effective_build_configuration(
-            command_context, command_context.program, overrides, build,
-            build_error)) {
+            command_context, command_context.program, overrides,
+            native_host_target, build, build_error)) {
       std::cerr << "error: " << build_error << '\n';
       return 2;
     }
@@ -2333,7 +2358,8 @@ int main(int argc, char **argv) {
         return 2;
       }
     }
-    return build_workspace(command_context, overrides, timings);
+    return build_workspace(command_context, overrides, native_host_target,
+                           timings);
   }
   if (argc >= 2 && std::string_view(argv[1]) == "target") {
     bool target_set = false;

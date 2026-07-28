@@ -56,10 +56,11 @@ used by the compiler runtime and first core packages.
 
 The current core source tree selects Linux file/open flags, anonymous-mapping
 bits, glibc pthread handle/storage types, and `clock_gettime` with the profile's
-`aarch64-linux` file tag. Every package command now accepts
-`--target aarch64-linux` and carries this profile through compilation, C-header
-emission, validation, resolution, and judgment; macOS remains the compatibility
-default. The root LLVM runtime now emits glibc's 32-bit `pthread_once_t` and
+`aarch64-linux` file tag. An AArch64 Linux build of `draftc` selects this profile
+when `--target` and workspace policy are both absent. Every package command also
+accepts explicit `--target aarch64-linux` and carries the profile through
+compilation, C-header emission, validation, resolution, and judgment. The root
+LLVM runtime now emits glibc's 32-bit `pthread_once_t` and
 `pthread_key_t` layouts. The native adapter emits ELF relocatable objects,
 deterministic archives, `.so` files with SONAMEs, and PIE executables using the
 host glibc development files and `ld.lld`. `--debug-symbols` retains DWARF in

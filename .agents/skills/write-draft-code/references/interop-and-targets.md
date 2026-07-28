@@ -43,9 +43,10 @@ platform. C aggregate rules, narrow scalar extension, enum ABI, thread and
 terminal records, readiness count types, open flags, object/linker behavior,
 page size, and assembly profile identity differ.
 
-macOS is the CLI compatibility default. Portable code should be checked
-explicitly against all four profiles; native execution requires the matching
-host toolchain and runtime. Other libcs and other operating systems are not
+Omitting `--target` selects the supported profile matching the host on which
+that `draftc` binary was built. Portable code should be checked explicitly
+against all four profiles; native execution requires the matching host
+toolchain and runtime. Other libcs and other operating systems are not
 implemented Draft targets. Parsed inline assembly is
 available only on AArch64; x86-64 still supports ordinary native code and exact
 target-qualified package assembly.

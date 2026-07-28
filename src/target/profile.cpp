@@ -401,7 +401,7 @@ bool select_builtin_target_profile(std::string_view selector,
                                    TargetProfile &profile,
                                    std::string &reason) {
   reason.clear();
-  if (selector.empty() || selector == "aarch64-macos") {
+  if (selector == "aarch64-macos") {
     profile = make_aarch64_macos_profile();
     return true;
   }

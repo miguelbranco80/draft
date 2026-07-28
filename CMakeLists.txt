@@ -18,6 +18,31 @@ include(GNUInstallDirs)
 # sentinel rather than manufacturing provenance.
 set(DRAFT_RELEASE_SUFFIX "alpha.3")
 set(DRAFT_RELEASE_VERSION "${PROJECT_VERSION}-${DRAFT_RELEASE_SUFFIX}")
+
+# One bootstrap binary has one native host target even though it can compile
+# all built-in profiles. Record that build fact once and reuse it for draftc's
+# omitted-target policy, DraftIDE's own build, native tests, and release
+# packaging. An empty value is honest on an unsupported host: version and
+# syntax-only commands can still build, but a target-consuming draftc command
+# reports that the compiler has no native default instead of silently
+# pretending to run on one of the supported machines.
+set(DRAFT_NATIVE_HOST_TARGET "")
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+  set(DRAFT_NATIVE_HOST_TARGET aarch64-macos)
+elseif(
+  CMAKE_SYSTEM_NAME STREQUAL "Linux"
+  AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$"
+)
+  set(DRAFT_NATIVE_HOST_TARGET aarch64-linux)
+elseif(
+  CMAKE_SYSTEM_NAME STREQUAL "Linux"
+  AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$"
+)
+  set(DRAFT_NATIVE_HOST_TARGET x86_64-linux)
+elseif(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+  set(DRAFT_NATIVE_HOST_TARGET x86_64-windows)
+endif()
+
 set(
   DRAFT_BUILD_COMMIT "" CACHE STRING
   "Source commit recorded by Draft binaries"
@@ -603,21 +628,7 @@ file(GLOB_RECURSE DRAFTIDE_DRAFT_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/lib/turbo_editor_app/*.draft"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/draftide/*.draft"
 )
-if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
-  set(DRAFTIDE_HOST_TARGET aarch64-macos)
-elseif(
-  CMAKE_SYSTEM_NAME STREQUAL "Linux"
-  AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$"
-)
-  set(DRAFTIDE_HOST_TARGET aarch64-linux)
-elseif(
-  CMAKE_SYSTEM_NAME STREQUAL "Linux"
-  AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$"
-)
-  set(DRAFTIDE_HOST_TARGET x86_64-linux)
-elseif(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
-  set(DRAFTIDE_HOST_TARGET x86_64-windows)
-endif()
+set(DRAFTIDE_HOST_TARGET "${DRAFT_NATIVE_HOST_TARGET}")
 
 if(DRAFTIDE_HOST_TARGET)
   if(WIN32)

@@ -291,8 +291,9 @@ and is an independent compiler input. Unreachable authored bodies are still
 checked; they simply do not become MIR or native definitions. Module granularity
 is an internal compiler invariant; there is no CLI option to change it.
 
-Pass an explicit target for target-sensitive work. A default-macOS check alone
-does not establish portability.
+Pass an explicit target for target-sensitive or cross-target work. The omitted
+target selects only the compiler binary's native host and does not establish
+portability.
 
 `expand` performs a normal provider-free check and writes final selected source
 plus generated-to-surface `.draft-map` sidecars. Its destination must not

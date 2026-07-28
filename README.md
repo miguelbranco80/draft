@@ -65,9 +65,9 @@ git clone --branch v0.1.0-alpha.3 --depth 1 \
   https://github.com/miguelbranco80/draft.git draft-source
 tar -xf draft-0.1.0-alpha.3-aarch64-macos.tar.xz
 draft-0.1.0-alpha.3-aarch64-macos/bin/draftc run \
-  draft-source/examples/language-tour --target aarch64-macos
+  draft-source/examples/language-tour
 draft-0.1.0-alpha.3-aarch64-macos/bin/draftc run \
-  draft-source/examples/tetris --target aarch64-macos -O2
+  draft-source/examples/tetris -O2
 ```
 
 ### AArch64 Linux
@@ -80,9 +80,9 @@ git clone --branch v0.1.0-alpha.3 --depth 1 \
   https://github.com/miguelbranco80/draft.git draft-source
 tar -xf draft-0.1.0-alpha.3-aarch64-linux.tar.xz
 draft-0.1.0-alpha.3-aarch64-linux/bin/draftc run \
-  draft-source/examples/language-tour --target aarch64-linux
+  draft-source/examples/language-tour
 draft-0.1.0-alpha.3-aarch64-linux/bin/draftc run \
-  draft-source/examples/tetris --target aarch64-linux -O2
+  draft-source/examples/tetris -O2
 ```
 
 ### x86-64 Linux
@@ -95,9 +95,9 @@ git clone --branch v0.1.0-alpha.3 --depth 1 \
   https://github.com/miguelbranco80/draft.git draft-source
 tar -xf draft-0.1.0-alpha.3-x86_64-linux.tar.xz
 draft-0.1.0-alpha.3-x86_64-linux/bin/draftc run \
-  draft-source/examples/language-tour --target x86_64-linux
+  draft-source/examples/language-tour
 draft-0.1.0-alpha.3-x86_64-linux/bin/draftc run \
-  draft-source/examples/tetris --target x86_64-linux -O2
+  draft-source/examples/tetris -O2
 ```
 
 ### x86-64 Windows
@@ -110,9 +110,9 @@ git clone --branch v0.1.0-alpha.3 --depth 1 `
   https://github.com/miguelbranco80/draft.git draft-source
 Expand-Archive .\draft-0.1.0-alpha.3-x86_64-windows.zip
 .\draft-0.1.0-alpha.3-x86_64-windows\bin\draftc.exe run `
-  .\draft-source\examples\language-tour --target x86_64-windows
+  .\draft-source\examples\language-tour
 .\draft-0.1.0-alpha.3-x86_64-windows\bin\draftc.exe run `
-  .\draft-source\examples\tetris --target x86_64-windows -O2
+  .\draft-source\examples\tetris -O2
 ```
 
 The archive also contains the experimental DraftIDE; the checkout contains the

@@ -35,10 +35,12 @@ probes.
 
 Every native host also exercises the relocatable install contract. The
 macOS/Linux CTest suite installs to a clean prefix; Windows performs the same
-step after its focused native gate. The common smoke checks that both version
-reports select `toolchain: bundled`, builds and runs an installed example with
-no checkout-relative core or LLVM path, and launches installed DraftIDE against
-its sibling compiler service. Windows removes the development LLVM `bin` entry
+step after its focused native gate. The common smoke invokes `draftc target`,
+`check`, and `build` without `--target` and verifies that the compiler selects
+the job's native profile. It also checks that both version reports select
+`toolchain: bundled`, runs the installed example with no checkout-relative core
+or LLVM path, and launches installed DraftIDE against its sibling compiler
+service. Windows removes the development LLVM `bin` entry
 from `PATH` before that smoke, so a missing bundled DLL or private executable
 cannot be supplied accidentally by the toolchain used to build the archive.
 

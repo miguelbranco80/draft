@@ -118,10 +118,13 @@ struct TargetProfile {
 // exact package assembly remains a separately supported input kind.
 [[nodiscard]] TargetProfile make_x86_64_windows_profile();
 
-// Resolves the stable command-line selector for a built-in profile.  The
-// default remains aarch64-macos for compatibility.  Returning a value rather
-// than a reference keeps profiles immutable-by-convention and lets tests alter
-// a copy without process-global state.
+// Resolves one nonempty stable command-line selector to a built-in profile.
+// Omitted-target policy belongs to the process-facing driver because it may
+// use the compiler distribution's native-host build fact or a workspace
+// manifest; target construction itself never assigns meaning to an absent
+// selector. Returning a value rather than a reference keeps profiles
+// immutable-by-convention and lets tests alter a copy without process-global
+// state.
 [[nodiscard]] bool select_builtin_target_profile(
     std::string_view selector, TargetProfile &profile, std::string &reason);
 

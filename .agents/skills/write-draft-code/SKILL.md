@@ -122,9 +122,9 @@ consumer commands never contact a provider and correctly reject a missing pin.
 into native emission, so it is the shortest first-run path when an artifact is
 also wanted.
 
-Pass `--target aarch64-linux`, `--target x86_64-linux`, or
-`--target x86_64-windows` when selecting those profiles; macOS is the
-compatibility default. Run all four target checks for portable code. Matching
+Omitting `--target` selects the profile matching the host on which `draftc` was
+built. Pass an explicit selector for cross-target work, and run all four target
+checks for portable code. Matching
 Apple Silicon, AArch64 Linux, x86-64 Linux, and x86-64 Windows hosts can execute
 current Draft artifacts. Windows has the hosted runtime/core and a native
 example/C-client/provider gate; its bootstrap validation runner is not yet

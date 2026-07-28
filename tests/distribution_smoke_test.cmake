@@ -156,10 +156,22 @@ if(NOT DRAFT_LAST_OUTPUT MATCHES "toolchain: bundled")
   message(FATAL_ERROR "draftide did not select bundled tools:\n${DRAFT_LAST_OUTPUT}")
 endif()
 
-run_checked("Draft check" "${draftc}" check "${example}" --target "${DRAFT_TARGET}")
+# Omit --target deliberately. Every native CI and release job runs this same
+# smoke test, so the reported file tag proves that its installed draftc derives
+# the default from the actual host rather than retaining one bootstrap-era
+# profile. DRAFT_TARGET remains an oracle supplied by the job, not an input to
+# the compiler command under test.
+run_checked("native target default" "${draftc}" target)
+if(NOT DRAFT_LAST_OUTPUT MATCHES "file-tag ${DRAFT_TARGET}")
+  message(FATAL_ERROR
+    "draftc selected the wrong native target:\n${DRAFT_LAST_OUTPUT}"
+  )
+endif()
+
+run_checked("Draft check" "${draftc}" check "${example}")
 run_checked(
   "Draft build"
-  "${draftc}" build "${example}" --target "${DRAFT_TARGET}" -o "${program}"
+  "${draftc}" build "${example}" -o "${program}"
 )
 run_checked("built Draft program" "${program}")
 run_checked("DraftIDE smoke" ${draftide_command} "${example}" --smoke)

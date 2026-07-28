@@ -2,10 +2,13 @@
 //
 // CMake is the sole writer of these strings. The release version describes the
 // public distribution contract; the commit identifies the exact source tree
-// used to build one archive. Neither value participates in Draft program
-// identity, source resolution, or native artifact determinism.
+// used to build one archive; and the native-host selector supplies draftc's
+// lowest-precedence target default. None participates in Draft program
+// identity, source resolution, or native artifact determinism: the selected
+// target profile itself remains the explicit build input.
 
 #pragma once
 
 #define DRAFT_RELEASE_VERSION "@DRAFT_RELEASE_VERSION@"
 #define DRAFT_BUILD_COMMIT "@DRAFT_BUILD_COMMIT@"
+#define DRAFT_NATIVE_HOST_TARGET "@DRAFT_NATIVE_HOST_TARGET@"

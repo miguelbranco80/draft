@@ -35,9 +35,9 @@ build/draftc test examples/agent-acceptance/app
 build/draftc bench examples/agent-acceptance/app --verify
 ```
 
-These commands use the macOS compatibility default. Pass
-`--target aarch64-linux` or `--target x86_64-linux` to select the corresponding
-independently committed Linux manifest.
+On the recorded Apple Silicon host these commands select AArch64 macOS as the
+native default. Pass `--target aarch64-linux` or `--target x86_64-linux` to
+select the corresponding independently committed Linux manifest.
 
 All four commands load the committed generated source without contacting
 Codex. `build` uses the host native toolchain and does not require test,

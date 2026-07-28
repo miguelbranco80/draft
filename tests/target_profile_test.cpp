@@ -122,6 +122,9 @@ void test_x86_64_linux_profile(TestState &state) {
       "x86_64-linux", selected, reason));
   EXPECT(state, selected.facts.identity == profile.facts.identity);
   EXPECT(state, !draft::select_builtin_target_profile(
+      "", selected, reason));
+  EXPECT(state, reason.find("unknown target") != std::string::npos);
+  EXPECT(state, !draft::select_builtin_target_profile(
       "mips-linux", selected, reason));
   EXPECT(state, reason.find("unknown target") != std::string::npos);
 }
