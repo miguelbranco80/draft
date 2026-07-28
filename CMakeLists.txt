@@ -16,7 +16,7 @@ include(GNUInstallDirs)
 # release workflow supplies the exact full commit. Source builds discover it at
 # configure time when Git is available and otherwise report the honest `source`
 # sentinel rather than manufacturing provenance.
-set(DRAFT_RELEASE_SUFFIX "alpha.3")
+set(DRAFT_RELEASE_SUFFIX "alpha.4")
 set(DRAFT_RELEASE_VERSION "${PROJECT_VERSION}-${DRAFT_RELEASE_SUFFIX}")
 
 # One bootstrap binary has one native host target even though it can compile
@@ -1096,6 +1096,14 @@ if(BUILD_TESTING)
     )
     target_link_libraries(
       draft_compiler_service_tests PRIVATE draft_compiler_service
+    )
+    # The service report must carry the one CMake-owned release identity. Give
+    # the black-box test that expected value directly rather than duplicating a
+    # prerelease spelling in test source or exposing the service's private
+    # generated header through its public C ABI include path.
+    target_compile_definitions(
+      draft_compiler_service_tests
+      PRIVATE DRAFT_TEST_RELEASE_VERSION="${DRAFT_RELEASE_VERSION}"
     )
     add_test(
       NAME draft_compiler_service_tests

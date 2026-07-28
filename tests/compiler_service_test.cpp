@@ -69,7 +69,9 @@ void test_version_report(TestState &state) {
   const std::string_view text(reinterpret_cast<const char *>(report.data()),
                               size);
   EXPECT(state, size < report.size());
-  EXPECT(state, text.starts_with("draftide 0.1.0-alpha.3\n"));
+  const std::string expected_prefix =
+      std::string("draftide ") + DRAFT_TEST_RELEASE_VERSION + '\n';
+  EXPECT(state, text.starts_with(expected_prefix));
   EXPECT(state, text.find("\ncommit: ") != std::string_view::npos);
   EXPECT(state, text.find("\nllvm: 22.") != std::string_view::npos);
   EXPECT(state, text.find("\ntoolchain: ") != std::string_view::npos);

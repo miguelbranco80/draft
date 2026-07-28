@@ -51,73 +51,73 @@ evidence, yes; the same as people really using it, no.*
 
 ## Getting started
 
-[Draft 0.1.0-alpha.3](https://github.com/miguelbranco80/draft/releases/tag/v0.1.0-alpha.3)
+[Draft 0.1.0-alpha.4](https://github.com/miguelbranco80/draft/releases/tag/v0.1.0-alpha.4)
 is the current prerelease. Each platform section clones the matching source;
 `draftc run` builds and runs the language tour and Tetris.
 
 ### Apple Silicon macOS
 
 Install Xcode Command Line Tools, then download the [macOS ARM64
-archive](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.3/draft-0.1.0-alpha.3-aarch64-macos.tar.xz):
+archive](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.4/draft-0.1.0-alpha.4-aarch64-macos.tar.xz):
 
 ```sh
-git clone --branch v0.1.0-alpha.3 --depth 1 \
+git clone --branch v0.1.0-alpha.4 --depth 1 \
   https://github.com/miguelbranco80/draft.git draft-source
-tar -xf draft-0.1.0-alpha.3-aarch64-macos.tar.xz
-draft-0.1.0-alpha.3-aarch64-macos/bin/draftc run \
+tar -xf draft-0.1.0-alpha.4-aarch64-macos.tar.xz
+draft-0.1.0-alpha.4-aarch64-macos/bin/draftc run \
   draft-source/examples/language-tour
-draft-0.1.0-alpha.3-aarch64-macos/bin/draftc run \
+draft-0.1.0-alpha.4-aarch64-macos/bin/draftc run \
   draft-source/examples/tetris -O2
 ```
 
 ### AArch64 Linux
 
 On Ubuntu 24.04, install `build-essential`, then download the [Linux ARM64
-archive](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.3/draft-0.1.0-alpha.3-aarch64-linux.tar.xz):
+archive](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.4/draft-0.1.0-alpha.4-aarch64-linux.tar.xz):
 
 ```sh
-git clone --branch v0.1.0-alpha.3 --depth 1 \
+git clone --branch v0.1.0-alpha.4 --depth 1 \
   https://github.com/miguelbranco80/draft.git draft-source
-tar -xf draft-0.1.0-alpha.3-aarch64-linux.tar.xz
-draft-0.1.0-alpha.3-aarch64-linux/bin/draftc run \
+tar -xf draft-0.1.0-alpha.4-aarch64-linux.tar.xz
+draft-0.1.0-alpha.4-aarch64-linux/bin/draftc run \
   draft-source/examples/language-tour
-draft-0.1.0-alpha.3-aarch64-linux/bin/draftc run \
+draft-0.1.0-alpha.4-aarch64-linux/bin/draftc run \
   draft-source/examples/tetris -O2
 ```
 
 ### x86-64 Linux
 
 On Ubuntu 24.04, install `build-essential`, then download the [Linux x86-64
-archive](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.3/draft-0.1.0-alpha.3-x86_64-linux.tar.xz):
+archive](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.4/draft-0.1.0-alpha.4-x86_64-linux.tar.xz):
 
 ```sh
-git clone --branch v0.1.0-alpha.3 --depth 1 \
+git clone --branch v0.1.0-alpha.4 --depth 1 \
   https://github.com/miguelbranco80/draft.git draft-source
-tar -xf draft-0.1.0-alpha.3-x86_64-linux.tar.xz
-draft-0.1.0-alpha.3-x86_64-linux/bin/draftc run \
+tar -xf draft-0.1.0-alpha.4-x86_64-linux.tar.xz
+draft-0.1.0-alpha.4-x86_64-linux/bin/draftc run \
   draft-source/examples/language-tour
-draft-0.1.0-alpha.3-x86_64-linux/bin/draftc run \
+draft-0.1.0-alpha.4-x86_64-linux/bin/draftc run \
   draft-source/examples/tetris -O2
 ```
 
 ### x86-64 Windows
 
 Open a Visual Studio 2022 x64 developer shell and download the [Windows x86-64
-archive](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.3/draft-0.1.0-alpha.3-x86_64-windows.zip):
+archive](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.4/draft-0.1.0-alpha.4-x86_64-windows.zip):
 
 ```powershell
-git clone --branch v0.1.0-alpha.3 --depth 1 `
+git clone --branch v0.1.0-alpha.4 --depth 1 `
   https://github.com/miguelbranco80/draft.git draft-source
-Expand-Archive .\draft-0.1.0-alpha.3-x86_64-windows.zip
-.\draft-0.1.0-alpha.3-x86_64-windows\bin\draftc.exe run `
+Expand-Archive .\draft-0.1.0-alpha.4-x86_64-windows.zip
+.\draft-0.1.0-alpha.4-x86_64-windows\bin\draftc.exe run `
   .\draft-source\examples\language-tour
-.\draft-0.1.0-alpha.3-x86_64-windows\bin\draftc.exe run `
+.\draft-0.1.0-alpha.4-x86_64-windows\bin\draftc.exe run `
   .\draft-source\examples\tetris -O2
 ```
 
 The archive also contains the experimental DraftIDE; the checkout contains the
 examples, documentation and Draft coding skill. Verify the download against
-[`SHA256SUMS`](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.3/SHA256SUMS).
+[`SHA256SUMS`](https://github.com/miguelbranco80/draft/releases/download/v0.1.0-alpha.4/SHA256SUMS).
 
 Open `draft-source` in a coding agent; the checkout contains `AGENTS.md` and the
 `write-draft-code` skill it needs to modify and run Draft programs.
