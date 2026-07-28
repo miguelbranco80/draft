@@ -1,6 +1,6 @@
 # Building and releasing Draft
 
-Status: `0.1.0-alpha.2` distribution contract.
+Status: `0.1.0-alpha.3` distribution contract.
 
 Draft has one CMake install manifest for local installation, distribution
 smoke tests, and release archives. A package is not a bootstrap binary which
@@ -66,10 +66,10 @@ cpack --config build/CPackConfig.cmake -C Release -B build/packages
 
 The supported filenames are:
 
-- `draft-0.1.0-alpha.2-aarch64-macos.tar.xz`
-- `draft-0.1.0-alpha.2-aarch64-linux.tar.xz`
-- `draft-0.1.0-alpha.2-x86_64-linux.tar.xz`
-- `draft-0.1.0-alpha.2-x86_64-windows.zip`
+- `draft-0.1.0-alpha.3-aarch64-macos.tar.xz`
+- `draft-0.1.0-alpha.3-aarch64-linux.tar.xz`
+- `draft-0.1.0-alpha.3-x86_64-linux.tar.xz`
+- `draft-0.1.0-alpha.3-x86_64-windows.zip`
 
 CPack also creates an individual SHA-256 file for a local archive. Published
 GitHub releases contain one canonical `SHA256SUMS` covering all four archives.
@@ -85,7 +85,7 @@ gate.
 
 ## Tag-triggered publication
 
-Pushing a tag such as `v0.1.0-alpha.2` starts the separate release workflow.
+Pushing a tag such as `v0.1.0-alpha.3` starts the separate release workflow.
 Each native host builds a Release bootstrap with the tagged commit embedded,
 runs its qualification gates, creates its own archive, extracts it again, and
 reruns the common distribution smoke against the extracted tree. Publication
