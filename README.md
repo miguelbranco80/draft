@@ -127,7 +127,8 @@ needs one additional CMake build of the vendored raylib library before
 
 Release archives also include `bin/draftide`, a mostly-Draft terminal IDE
 inspired by the classic blue Turbo Pascal/C environments. It works over SSH and
-combines editing, semantic navigation and Build/Run.
+combines editing, semantic navigation and Build/Run. It also has very
+experimental Codex integration for generating code from editor comments.
 
 ## A little code
 
