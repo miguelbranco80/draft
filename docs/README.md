@@ -55,6 +55,7 @@ specification.
 - [Continuous integration](operations/continuous-integration.md)
 - [Building and releasing Draft](operations/releases.md)
 - [Current release notes](releases/README.md)
+- [Draft 0.1.0-alpha.4 qualification](releases/0.1.0-alpha.4.md)
 - [Draft 0.1.0-alpha.3 qualification](releases/0.1.0-alpha.3.md)
 - [Draft 0.1.0-alpha.2 release record](releases/0.1.0-alpha.2.md)
 - [Native host qualification](releases/native-host-qualification.md)
