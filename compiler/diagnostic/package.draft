@@ -1,10 +1,12 @@
 // Structured self-hosted-frontend diagnostics and deterministic rendering.
 //
-// Lexer stages append exact source ranges and closed message identities to one
-// Sink. Messages are represented as an enum because the lexer vocabulary is
-// fixed; this avoids per-error string allocation without weakening the public
-// spelling contract. render appends to caller-owned compiler text and performs
-// all byte-to-line conversion at that final presentation boundary.
+// Frontend stages append exact source ranges and process-lifetime message text
+// to one Sink. The lexer retains a closed Message enum because its vocabulary
+// is fixed; the parser uses literal text because recovery sites have many
+// grammar-specific contracts and no value is gained by duplicating that grammar
+// as a second enum. Neither route allocates per diagnostic. render appends to
+// caller-owned compiler text and performs all byte-to-line conversion at that
+// final presentation boundary.
 //
 // The Sink owns only its diagnostic rows and borrows Source_File during render.
 // It may depend on compiler source/text foundations and core arrays, but not on
@@ -15,8 +17,8 @@ import core/array
 import compiler/source as compiler_source
 import compiler/text as compiler_text
 
-// Severity is deliberately complete even though the first lexer slice emits
-// only errors. Later frontend stages can preserve the same row representation.
+// Severity is deliberately complete even though current lexer/parser slices
+// emit only errors. Later frontend stages preserve the same row representation.
 pub Severity :: enum u8 {
     error,
     warning,
@@ -48,15 +50,17 @@ pub Message :: enum u8 {
     unexpected_character,
 }
 
-// Diagnostic is one immutable row in insertion order. Ranges are always valid
-// for this first source-backed stage; pre-source I/O errors remain driver facts.
+// Diagnostic is one immutable row in insertion order. text borrows a compiler
+// string literal with process lifetime; source bytes and generated dynamic text
+// must not be stored here. Ranges are always valid for the source-backed
+// frontend; pre-source I/O errors remain driver facts.
 pub Diagnostic :: struct {
     severity: Severity,
     range: compiler_source.Source_Range,
-    message: Message,
+    text: string,
 }
 
-// Sink owns an append-only diagnostic sequence for one lexer invocation.
+// Sink owns one append-only frontend diagnostic sequence for one source.
 pub Sink :: struct {
     diagnostics: array.Dynamic[Diagnostic],
     error_count: usize,
@@ -86,7 +90,26 @@ pub report :: proc(
     array.append(&sink.diagnostics, Diagnostic{
         severity = severity,
         range = range,
-        message = message,
+        text = message_text(message),
+    })
+}
+
+// report_text is the parser-facing counterpart to report. text must be a
+// process-lifetime compiler literal; accepting arbitrary borrowed source text
+// here would make Sink ownership unsound.
+pub report_text :: proc(
+    sink: ^Sink,
+    severity: Severity,
+    range: compiler_source.Source_Range,
+    text: string,
+) {
+    if severity == .error {
+        sink.error_count += 1
+    }
+    array.append(&sink.diagnostics, Diagnostic{
+        severity = severity,
+        range = range,
+        text = text,
     })
 }
 
@@ -97,6 +120,15 @@ pub error :: proc(
     message: Message,
 ) {
     report(sink, .error, range, message)
+}
+
+// error_text records one parser error whose spelling is a compiler literal.
+pub error_text :: proc(
+    sink: ^Sink,
+    range: compiler_source.Source_Range,
+    text: string,
+) {
+    report_text(sink, .error, range, text)
 }
 
 // has_errors is true exactly when an error row has been appended.
@@ -187,7 +219,7 @@ pub render :: proc(
         compiler_text.append_text(output, ": ")
         compiler_text.append_text(output, severity_text(diagnostic.severity))
         compiler_text.append_text(output, ": ")
-        compiler_text.append_text(output, message_text(diagnostic.message))
+        compiler_text.append_text(output, diagnostic.text)
         compiler_text.append_byte(output, cast[u8]('\n'))
 
         compiler_text.append_bytes(

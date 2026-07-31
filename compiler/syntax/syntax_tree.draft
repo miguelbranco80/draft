@@ -1,0 +1,504 @@
+// Concrete surface syntax storage for the self-hosted frontend parser.
+//
+// Syntax_Tree owns the semicolon-normalized token stream, an append-only node
+// arena, and one append-only table of immediate child IDs. A Syntax_Node names
+// its children with a contiguous half-open span into that table. Tokens retain
+// punctuation and source spelling; nodes add only grammar structure and token
+// spans, so this remains concrete syntax rather than typed HIR.
+//
+// Nodes and children are appended only after their nested productions finish.
+// Their integer IDs and table offsets are therefore stable until destroy, but
+// they are process-local and must not enter manifests or content hashes. The
+// parser owns one reusable Node_Id_Buffer while constructing nodes, avoiding a
+// heap allocation for every small child list. Relevant specification: sections
+// 3-4, plus the syntax constructs in sections 8-10 and 13.
+package compiler_syntax
+
+import core/memory
+import core/runtime
+import compiler/source as compiler_source
+import compiler/text as compiler_text
+
+Invalid_Node_Value :: ~cast[u32](0)
+
+// Node_Id is an index into one Syntax_Tree node table. The all-ones value is
+// invalid; zero is the first valid node. IDs remain stable only for the tree's
+// lifetime and equality is structural table identity, not source identity.
+pub Node_Id :: struct {
+    value: u32,
+}
+
+// node_id_valid distinguishes arena IDs from the invalid sentinel used by an
+// unrooted tree and by parser recovery before a node is published.
+pub node_id_valid :: proc(id: Node_Id) -> bool {
+    return id.value != Invalid_Node_Value
+}
+
+invalid_node_id :: proc() -> Node_Id {
+    return Node_Id{value = Invalid_Node_Value}
+}
+
+// Node_Kind names grammar concepts rather than resolved semantic concepts.
+// The declaration order mirrors the bootstrap tree so node_kind_name and the
+// syntax dump have one directly auditable compatibility mapping.
+pub Node_Kind :: enum u16 {
+    error,
+    source_file,
+    package_clause,
+    import_clause,
+    import_path,
+    declaration_list,
+    declaration,
+    name_list,
+    binding_pattern,
+    tuple_pattern,
+    parametric_parameter_list,
+    parametric_parameter,
+    c_representation_specifier,
+    alignment_specifier,
+    link_name_clause,
+    foreign_block,
+    export_declaration,
+    documentation,
+    judgment,
+    attachment,
+    synthesis_declaration,
+    synthesis_member,
+    synthesis_statement,
+    synthesis_expression,
+    synthesis_assembly,
+    procedure,
+    parameter_list,
+    parameter,
+    parameter_default,
+    static_pack_type,
+    c_variadic_tail,
+    result_clause,
+    member_list,
+    packed_field_specifier,
+    bit_field_specifier,
+    field_member,
+    enum_member,
+    variant_alternative,
+    named_type,
+    pointer_type,
+    multi_pointer_type,
+    slice_type,
+    array_type,
+    simd_type,
+    tuple_type,
+    procedure_type,
+    distinct_type,
+    struct_type,
+    enum_type,
+    variant_type,
+    union_type,
+    block,
+    statement_list,
+    declaration_statement,
+    expression_statement,
+    assignment_statement,
+    return_statement,
+    break_statement,
+    continue_statement,
+    defer_statement,
+    if_statement,
+    for_statement,
+    iteration_header,
+    for_clause,
+    switch_statement,
+    switch_case,
+    when_declaration,
+    when_member,
+    when_statement,
+    deny_declaration,
+    deny_member,
+    deny_statement,
+    deny_expression,
+    unchecked_statement,
+    asm_statement,
+    asm_expression,
+    asm_input,
+    asm_output,
+    asm_clobber,
+    asm_instruction,
+    name_expression,
+    literal_expression,
+    uninitialized_expression,
+    group_expression,
+    tuple_expression,
+    unary_expression,
+    binary_expression,
+    conditional_expression,
+    call_expression,
+    named_argument,
+    bracket_expression,
+    slice_expression,
+    member_expression,
+    dereference_expression,
+    composite_expression,
+    composite_element,
+    contextual_alternative_expression,
+}
+
+// Syntax_Node covers tokens [token_begin,token_end). child_begin and
+// child_count address Syntax_Tree.children and preserve immediate grammatical
+// source order. range is derived from the token span; an empty recovery node is
+// a valid zero-width source boundary.
+pub Syntax_Node :: struct {
+    kind: Node_Kind,
+    range: compiler_source.Source_Range,
+    token_begin: u32,
+    token_end: u32,
+    child_begin: u32,
+    child_count: u32,
+}
+
+// Node_Id_Buffer is the exact growable representation shared by the tree's
+// permanent child table and the parser's reusable scratch stack. Each live
+// buffer owns its allocation and captures the allocator used at initialization.
+// Appending can move storage and invalidates borrowed views.
+Node_Id_Buffer :: struct {
+    data: [^]Node_Id,
+    length: usize,
+    capacity: usize,
+    allocator: runtime.Allocator,
+}
+
+node_id_buffer_init :: proc(buffer: ^Node_Id_Buffer) {
+    assert(buffer.data == nil && buffer.length == 0 && buffer.capacity == 0,
+        "node ID buffer is not empty before initialization")
+    assert(context.allocator.procedure != nil,
+        "node ID buffer allocator is nil")
+    buffer.allocator = context.allocator
+}
+
+node_id_buffer_destroy :: proc(buffer: ^Node_Id_Buffer) {
+    if buffer.data != nil {
+        memory.free_bytes_with_allocator(
+            cast[rawptr](buffer.data),
+            buffer.capacity * size_of(Node_Id),
+            align_of(Node_Id),
+            buffer.allocator,
+        )
+    }
+    buffer.data = nil
+    buffer.length = 0
+    buffer.capacity = 0
+}
+
+// node_id_buffer_reserve grows to one exact caller-selected capacity while
+// preserving order. Parser scratch setup may use it for known bulk demand.
+node_id_buffer_reserve :: proc(buffer: ^Node_Id_Buffer, minimum: usize) {
+    if minimum <= buffer.capacity {
+        return
+    }
+    storage := memory.resize_with_allocator(
+        cast[rawptr](buffer.data),
+        buffer.capacity * size_of(Node_Id),
+        minimum * size_of(Node_Id),
+        align_of(Node_Id),
+        buffer.allocator,
+    )
+    buffer.data = cast[[^]Node_Id](storage)
+    buffer.capacity = minimum
+}
+
+// node_id_buffer_append adds one ID with geometric growth, keeping total work
+// linear for token-proportional syntax trees.
+node_id_buffer_append :: proc(buffer: ^Node_Id_Buffer, id: Node_Id) {
+    if buffer.length == buffer.capacity {
+        next := buffer.capacity * 2
+        if next < 64 {
+            next = 64
+        }
+        node_id_buffer_reserve(buffer, next)
+    }
+    buffer.data[buffer.length] = id
+    buffer.length += 1
+}
+
+// Syntax_Tree owns tokens, nodes, and child IDs for one complete source file.
+// The node and child tables never shrink during parsing, so published IDs and
+// child spans remain stable even when backing allocations move.
+pub Syntax_Tree :: struct {
+    tokens: Token_List,
+    nodes: [^]Syntax_Node,
+    node_count: usize,
+    node_capacity: usize,
+    children: Node_Id_Buffer,
+    root: Node_Id,
+    allocator: runtime.Allocator,
+}
+
+// syntax_tree_init establishes all owners and an invalid root. The lexer fills
+// tokens before the first node is added.
+pub syntax_tree_init :: proc(tree: ^Syntax_Tree) {
+    assert(tree.nodes == nil && tree.node_count == 0 &&
+        tree.node_capacity == 0, "syntax tree is not empty")
+    assert(context.allocator.procedure != nil,
+        "syntax tree allocator is nil")
+    token_list_init(&tree.tokens)
+    node_id_buffer_init(&tree.children)
+    tree.root = invalid_node_id()
+    tree.allocator = context.allocator
+}
+
+// syntax_tree_destroy releases every arena and invalidates all IDs, node
+// pointers, token pointers, and child views obtained from this tree.
+pub syntax_tree_destroy :: proc(tree: ^Syntax_Tree) {
+    node_id_buffer_destroy(&tree.children)
+    if tree.nodes != nil {
+        memory.free_bytes_with_allocator(
+            cast[rawptr](tree.nodes),
+            tree.node_capacity * size_of(Syntax_Node),
+            align_of(Syntax_Node),
+            tree.allocator,
+        )
+    }
+    tree.nodes = nil
+    tree.node_count = 0
+    tree.node_capacity = 0
+    tree.root = invalid_node_id()
+    token_list_destroy(&tree.tokens)
+}
+
+// syntax_tree_reserve_nodes grows the node arena without changing logical IDs.
+// Existing node pointers are invalidated, while integer IDs remain stable.
+syntax_tree_reserve_nodes :: proc(tree: ^Syntax_Tree, minimum: usize) {
+    if minimum <= tree.node_capacity {
+        return
+    }
+    storage := memory.resize_with_allocator(
+        cast[rawptr](tree.nodes),
+        tree.node_capacity * size_of(Syntax_Node),
+        minimum * size_of(Syntax_Node),
+        align_of(Syntax_Node),
+        tree.allocator,
+    )
+    tree.nodes = cast[[^]Syntax_Node](storage)
+    tree.node_capacity = minimum
+}
+
+// syntax_tree_add_node publishes one completed node and copies its immediate
+// child IDs into permanent contiguous storage. The token indices must be in
+// source order and may identify an empty recovery boundary.
+syntax_tree_add_node :: proc(
+    tree: ^Syntax_Tree,
+    kind: Node_Kind,
+    token_begin, token_end: u32,
+    children: []Node_Id,
+) -> Node_Id {
+    assert(token_begin <= token_end, "syntax node token span is reversed")
+    assert(cast[usize](token_end) <= tree.tokens.length,
+        "syntax node token span exceeds token table")
+    assert(tree.node_count < cast[usize](Invalid_Node_Value),
+        "syntax node table exceeds u32 identity space")
+    assert(tree.children.length <= cast[usize](Invalid_Node_Value) - len(children),
+        "syntax child table exceeds u32 offset space")
+
+    range: compiler_source.Source_Range
+    if token_begin < token_end {
+        range.begin = tree.tokens.data[cast[usize](token_begin)].range.begin
+        range.end = tree.tokens.data[cast[usize](token_end - 1)].range.end
+    } else {
+        position := tree.tokens.data[tree.tokens.length - 1].range.end
+        if cast[usize](token_begin) < tree.tokens.length {
+            position = tree.tokens.data[cast[usize](token_begin)].range.begin
+        }
+        range.begin = position
+        range.end = position
+    }
+
+    child_begin := cast[u32](tree.children.length)
+    for child in children {
+        // Use the buffer's geometric growth policy. Reserving each node's exact
+        // suffix would make a source with many one-child nodes quadratic.
+        node_id_buffer_append(&tree.children, child)
+    }
+
+    if tree.node_count == tree.node_capacity {
+        next := tree.node_capacity * 2
+        if next < 128 {
+            next = 128
+        }
+        syntax_tree_reserve_nodes(tree, next)
+    }
+    id := Node_Id{value = cast[u32](tree.node_count)}
+    tree.nodes[tree.node_count] = Syntax_Node{
+        kind = kind,
+        range = range,
+        token_begin = token_begin,
+        token_end = token_end,
+        child_begin = child_begin,
+        child_count = cast[u32](len(children)),
+    }
+    tree.node_count += 1
+    return id
+}
+
+// syntax_tree_node returns one immutable logical node. The pointer remains
+// valid only until another node append can move the arena; callers that parse
+// further must copy fields they need across that operation.
+pub syntax_tree_node :: proc(tree: ^Syntax_Tree, id: Node_Id) -> ^Syntax_Node {
+    assert(node_id_valid(id), "invalid syntax node ID")
+    assert(cast[usize](id.value) < tree.node_count,
+        "syntax node ID exceeds node table")
+    return &tree.nodes[cast[usize](id.value)]
+}
+
+// syntax_tree_children borrows one node's immediate child sequence until the
+// next child append or tree destruction.
+pub syntax_tree_children :: proc(
+    tree: ^Syntax_Tree,
+    id: Node_Id,
+) -> []Node_Id {
+    node := syntax_tree_node(tree, id)
+    start := cast[usize](node.child_begin)
+    count := cast[usize](node.child_count)
+    if count == 0 {
+        empty: []Node_Id
+        return empty
+    }
+    first := ptr_offset(tree.children.data, cast[isize](start))
+    return first[:count]
+}
+
+// node_kind_name is the stable tooling spelling shared with the bootstrap
+// syntax dump. It is exhaustive over the closed Draft 1 concrete grammar.
+pub node_kind_name :: proc(kind: Node_Kind) -> string {
+    switch kind {
+    case .error: return "Error"
+    case .source_file: return "SourceFile"
+    case .package_clause: return "PackageClause"
+    case .import_clause: return "ImportClause"
+    case .import_path: return "ImportPath"
+    case .declaration_list: return "DeclarationList"
+    case .declaration: return "Declaration"
+    case .name_list: return "NameList"
+    case .binding_pattern: return "BindingPattern"
+    case .tuple_pattern: return "TuplePattern"
+    case .parametric_parameter_list: return "ParametricParameterList"
+    case .parametric_parameter: return "ParametricParameter"
+    case .c_representation_specifier: return "CRepresentationSpecifier"
+    case .alignment_specifier: return "AlignmentSpecifier"
+    case .link_name_clause: return "LinkNameClause"
+    case .foreign_block: return "ForeignBlock"
+    case .export_declaration: return "ExportDeclaration"
+    case .documentation: return "Documentation"
+    case .judgment: return "Judgment"
+    case .attachment: return "Attachment"
+    case .synthesis_declaration: return "SynthesisDeclaration"
+    case .synthesis_member: return "SynthesisMember"
+    case .synthesis_statement: return "SynthesisStatement"
+    case .synthesis_expression: return "SynthesisExpression"
+    case .synthesis_assembly: return "SynthesisAssembly"
+    case .procedure: return "Procedure"
+    case .parameter_list: return "ParameterList"
+    case .parameter: return "Parameter"
+    case .parameter_default: return "ParameterDefault"
+    case .static_pack_type: return "StaticPackType"
+    case .c_variadic_tail: return "CVariadicTail"
+    case .result_clause: return "ResultClause"
+    case .member_list: return "MemberList"
+    case .packed_field_specifier: return "PackedFieldSpecifier"
+    case .bit_field_specifier: return "BitFieldSpecifier"
+    case .field_member: return "FieldMember"
+    case .enum_member: return "EnumMember"
+    case .variant_alternative: return "VariantAlternative"
+    case .named_type: return "NamedType"
+    case .pointer_type: return "PointerType"
+    case .multi_pointer_type: return "MultiPointerType"
+    case .slice_type: return "SliceType"
+    case .array_type: return "ArrayType"
+    case .simd_type: return "SimdType"
+    case .tuple_type: return "TupleType"
+    case .procedure_type: return "ProcedureType"
+    case .distinct_type: return "DistinctType"
+    case .struct_type: return "StructType"
+    case .enum_type: return "EnumType"
+    case .variant_type: return "VariantType"
+    case .union_type: return "UnionType"
+    case .block: return "Block"
+    case .statement_list: return "StatementList"
+    case .declaration_statement: return "DeclarationStatement"
+    case .expression_statement: return "ExpressionStatement"
+    case .assignment_statement: return "AssignmentStatement"
+    case .return_statement: return "ReturnStatement"
+    case .break_statement: return "BreakStatement"
+    case .continue_statement: return "ContinueStatement"
+    case .defer_statement: return "DeferStatement"
+    case .if_statement: return "IfStatement"
+    case .for_statement: return "ForStatement"
+    case .iteration_header: return "IterationHeader"
+    case .for_clause: return "ForClause"
+    case .switch_statement: return "SwitchStatement"
+    case .switch_case: return "SwitchCase"
+    case .when_declaration: return "WhenDeclaration"
+    case .when_member: return "WhenMember"
+    case .when_statement: return "WhenStatement"
+    case .deny_declaration: return "DenyDeclaration"
+    case .deny_member: return "DenyMember"
+    case .deny_statement: return "DenyStatement"
+    case .deny_expression: return "DenyExpression"
+    case .unchecked_statement: return "UncheckedStatement"
+    case .asm_statement: return "AsmStatement"
+    case .asm_expression: return "AsmExpression"
+    case .asm_input: return "AsmInput"
+    case .asm_output: return "AsmOutput"
+    case .asm_clobber: return "AsmClobber"
+    case .asm_instruction: return "AsmInstruction"
+    case .name_expression: return "NameExpression"
+    case .literal_expression: return "LiteralExpression"
+    case .uninitialized_expression: return "UninitializedExpression"
+    case .group_expression: return "GroupExpression"
+    case .tuple_expression: return "TupleExpression"
+    case .unary_expression: return "UnaryExpression"
+    case .binary_expression: return "BinaryExpression"
+    case .conditional_expression: return "ConditionalExpression"
+    case .call_expression: return "CallExpression"
+    case .named_argument: return "NamedArgument"
+    case .bracket_expression: return "BracketExpression"
+    case .slice_expression: return "SliceExpression"
+    case .member_expression: return "MemberExpression"
+    case .dereference_expression: return "DereferenceExpression"
+    case .composite_expression: return "CompositeExpression"
+    case .composite_element: return "CompositeElement"
+    case .contextual_alternative_expression:
+        return "ContextualAlternativeExpression"
+    }
+    return "UnknownNode"
+}
+
+// dump_node appends one preorder subtree. Parser nesting is bounded at 512, so
+// this diagnostic-only recursive walk has a fixed host-stack bound as well.
+dump_node :: proc(
+    tree: ^Syntax_Tree,
+    id: Node_Id,
+    depth: usize,
+    output: ^compiler_text.Builder,
+) {
+    node := syntax_tree_node(tree, id)
+    compiler_text.append_repeated(output, cast[u8](' '), depth * 2)
+    compiler_text.append_text(output, node_kind_name(node.kind))
+    compiler_text.append_text(output, " [")
+    compiler_text.append_unsigned(output, cast[usize](node.token_begin))
+    compiler_text.append_byte(output, cast[u8](','))
+    compiler_text.append_unsigned(output, cast[usize](node.token_end))
+    compiler_text.append_text(output, ")\n")
+    children := syntax_tree_children(tree, id)
+    for child in children {
+        dump_node(tree, child, depth + 1, output)
+    }
+}
+
+// dump_syntax_tree appends the stable preorder hierarchy used by parser tests
+// and both syntax CLIs. An unrooted tree emits no bytes.
+pub dump_syntax_tree :: proc(
+    tree: ^Syntax_Tree,
+    output: ^compiler_text.Builder,
+) {
+    if node_id_valid(tree.root) {
+        dump_node(tree, tree.root, 0, output)
+    }
+}

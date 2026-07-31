@@ -274,6 +274,19 @@ build/draftc emit-c-header path/to/package [-o output.h] \
 build/draftc target [--target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows]
 ```
 
+On supported native development hosts, the build tree also contains the
+non-installed self-hosting stage driver. It exposes only the frontend phases
+which have reached exact bootstrap parity:
+
+```sh
+build/draftc-next lex path/to/file.draft
+build/draftc-next syntax path/to/file.draft
+```
+
+This is qualification tooling rather than the public compiler. Package and
+later commands continue to use `build/draftc` until their own replacement gates
+are complete.
+
 `check` runs the provider-free front end and semantic pipeline. If the program
 contains saved `...` expansions, it loads and revalidates them. It never starts
 a provider. Target-specific parsed assembly is checked and retained with its

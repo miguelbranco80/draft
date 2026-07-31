@@ -1,10 +1,10 @@
-# Isolated native test runner for the Draft-written lexer package.
+# Isolated native test runner for the Draft-written frontend packages.
 #
 # `draftc test` stores native artifacts and content-addressed evidence below the
 # selected workspace. Copying compiler sources into process-unique CMake binary
 # storage keeps the checkout clean and lets simultaneous worktrees run this
 # test without sharing state. Core imports continue to use draftc's embedded
-# distribution; only the sibling compiler packages must be copied together.
+# distribution; all sibling compiler packages are copied together.
 
 foreach(required DRAFTC SOURCE_ROOT TEST_ROOT TARGET_SELECTOR)
   if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
@@ -29,9 +29,9 @@ execute_process(
   ERROR_VARIABLE standard_error
 )
 if(NOT status EQUAL 0 OR
-   NOT standard_output MATCHES "test passed: 4 selected procedures")
+   NOT standard_output MATCHES "test passed: 8 selected procedures")
   message(FATAL_ERROR
-    "self-hosted lexer unit tests failed (${status})\n"
+    "self-hosted frontend unit tests failed (${status})\n"
     "stdout:\n${standard_output}stderr:\n${standard_error}")
 endif()
 

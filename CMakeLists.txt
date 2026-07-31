@@ -662,11 +662,11 @@ if(DRAFTIDE_HOST_TARGET)
   add_custom_target(draftide ALL DEPENDS "${DRAFTIDE_BUILD_STAMP}")
 endif()
 
-# The first self-hosted compiler slice is a separate Draft executable. The C++
-# draftc remains the bootstrap and semantic oracle; it compiles draftc-next for
-# the native host, while the next-stage driver currently exposes only `lex`.
-# Keeping the output out of the install set prevents a partial command surface
-# from being mistaken for the released compiler contract.
+# The self-hosted frontend is a separate Draft executable. The C++ draftc
+# remains the bootstrap and semantic oracle; it compiles draftc-next for the
+# native host, while the next-stage driver exposes the replaced `lex` and
+# `syntax` phases. Keeping the output out of the install set prevents a partial
+# command surface from being mistaken for the released compiler contract.
 file(GLOB_RECURSE DRAFTC_NEXT_DRAFT_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/core/*.draft"
   "${CMAKE_CURRENT_SOURCE_DIR}/compiler/*.draft"
@@ -710,7 +710,7 @@ if(DRAFT_NATIVE_HOST_TARGET)
       draftc
       ${DRAFTC_NEXT_DRAFT_SOURCES}
       "${CMAKE_CURRENT_SOURCE_DIR}/draft.workspace"
-    COMMENT "Building the Draft-written draftc-next lexer driver"
+    COMMENT "Building the Draft-written draftc-next frontend driver"
     VERBATIM
   )
   add_custom_target(
@@ -1146,23 +1146,23 @@ if(BUILD_TESTING)
   add_test(NAME draft_lexer_tests COMMAND draft_lexer_tests)
 
   if(DRAFT_NATIVE_HOST_TARGET)
-    # Same-package Draft tests catch focused algorithm failures. The companion
-    # process test is the migration gate: stdout, stderr, and exit status must
+    # Same-package Draft tests catch focused lexical and parser failures. The
+    # two process tests are the migration gates: stdout, stderr, and exit status
     # remain byte-for-byte equal to the C++ bootstrap over repository sources
-    # and deliberately malformed input.
+    # and deliberately malformed input at each replaced phase boundary.
     add_test(
-      NAME draft_self_hosted_lexer_units
+      NAME draft_self_hosted_frontend_units
       COMMAND
         "${CMAKE_COMMAND}"
         "-DDRAFTC=$<TARGET_FILE:draftc>"
         "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
-        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/self-hosted-lexer-unit-tests"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/self-hosted-frontend-unit-tests"
         "-DTARGET_SELECTOR=${DRAFT_NATIVE_HOST_TARGET}"
         -P
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_self_hosted_lexer_unit_test.cmake"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_self_hosted_frontend_unit_test.cmake"
     )
     set_tests_properties(
-      draft_self_hosted_lexer_units
+      draft_self_hosted_frontend_units
       PROPERTIES LABELS "frontend;self-hosting"
     )
     add_test(
@@ -1178,6 +1178,21 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
       draft_self_hosted_lexer_differential
+      PROPERTIES LABELS "frontend;self-hosting;integration"
+    )
+    add_test(
+      NAME draft_self_hosted_parser_differential
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DDRAFTC_NEXT=${DRAFTC_NEXT_EXECUTABLE}"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/self-hosted-parser-tests"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_self_hosted_parser_test.cmake"
+    )
+    set_tests_properties(
+      draft_self_hosted_parser_differential
       PROPERTIES LABELS "frontend;self-hosting;integration"
     )
   endif()

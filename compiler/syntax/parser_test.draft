@@ -1,0 +1,210 @@
+// Focused same-package tests for the Draft-written concrete parser.
+//
+// These fixtures exercise the major grammar categories and recovery ownership
+// without process I/O. They complement, rather than replace, the repository-wide
+// CLI differential gate which compares every dump and diagnostic byte against
+// the C++ bootstrap. Each test explicitly owns and destroys source, diagnostics,
+// and tree storage.
+package compiler_syntax
+
+import core/testing
+import compiler/diagnostic as compiler_diagnostic
+import compiler/source as compiler_source
+
+// count_kind scans the append-only node table. Node order is incidental; only
+// the number of concrete grammar productions is asserted by these focused tests.
+count_kind :: proc(tree: ^Syntax_Tree, kind: Node_Kind) -> usize {
+    count: usize
+    for index: usize = 0; index < tree.node_count; index += 1 {
+        if tree.nodes[index].kind == kind {
+            count += 1
+        }
+    }
+    return count
+}
+
+// expect_clean_tree fixes the public postconditions shared by every valid
+// fixture: no diagnostics, one valid root, and a SourceFile root production.
+expect_clean_tree :: proc(test: ^testing.Test, tree: ^Syntax_Tree,
+    diagnostics: ^compiler_diagnostic.Sink) {
+    testing.expect_message(test, !compiler_diagnostic.has_errors(diagnostics),
+        "valid parser fixture must not report diagnostics")
+    testing.expect_message(test, node_id_valid(tree.root),
+        "parser must publish a valid root")
+    if node_id_valid(tree.root) {
+        testing.expect_message(test,
+            syntax_tree_node(tree, tree.root).kind == .source_file,
+            "parser root must be SourceFile")
+    }
+}
+
+// test_parser_declarations_and_types covers package/import headers, parametric
+// declarations, layout modifiers, aggregate members, procedure signatures, and
+// the neutral named/bracket type syntax retained for semantic resolution.
+test_parser_declarations_and_types :: proc(test: ^testing.Test) {
+    source: compiler_source.Source_File
+    diagnostics: compiler_diagnostic.Sink
+    tree: Syntax_Tree
+    testing.expect(test, compiler_source.init_from_text(
+        &source,
+        "declarations.draft",
+        `package declarations
+docs "package intent" file "DESIGN.md"
+import core/memory as memory
+Box[T: type, N: usize] :: c align(16) struct {
+    packed value: u32,
+    bits(3) mode: u8,
+    when true { selected: [N]T, } else { fallback: []T, }
+    deny asm { generated: ^T, }
+}
+Choice :: variant u8 { none, some: u32, }
+Callback :: c proc(value: u32, ..) -> u32
+Applied :: Box[u32, 4]
+`,
+    ) == .none)
+    compiler_diagnostic.init(&diagnostics)
+    parse_source_file(&source, &diagnostics, &tree)
+    defer syntax_tree_destroy(&tree)
+    defer compiler_diagnostic.destroy(&diagnostics)
+    defer compiler_source.destroy(&source)
+
+    expect_clean_tree(test, &tree, &diagnostics)
+    testing.expect(test, count_kind(&tree, .struct_type) == 1)
+    testing.expect(test, count_kind(&tree, .variant_type) == 1)
+    testing.expect(test, count_kind(&tree, .parameter_list) == 1)
+    testing.expect(test, count_kind(&tree, .c_variadic_tail) == 1)
+    testing.expect(test, count_kind(&tree, .when_member) == 1)
+    testing.expect(test, count_kind(&tree, .deny_member) == 1)
+    testing.expect(test, count_kind(&tree, .packed_field_specifier) == 1)
+    testing.expect(test, count_kind(&tree, .bit_field_specifier) == 1)
+}
+
+// test_parser_control_flow_and_expressions covers statement selection,
+// iteration-pattern structure, precedence, postfix forms, assignment, and the
+// conditional expression without asking semantic analysis to type them.
+test_parser_control_flow_and_expressions :: proc(test: ^testing.Test) {
+    source: compiler_source.Source_File
+    diagnostics: compiler_diagnostic.Sink
+    tree: Syntax_Tree
+    testing.expect(test, compiler_source.init_from_text(
+        &source,
+        "control.draft",
+        `package control
+run :: proc(values: [2]u32, pointer: ^u32) -> u32 {
+    result := values[0] + pointer^ if values[1] > 0 else 1
+    for value, index in values {
+        result += value + cast[u32](index)
+    }
+    for i: usize = 0; i < len(values); i += 1 {
+        values[i] = result
+    }
+    switch .some(result) {
+    case .some(value):
+        result = value
+    case:
+        result = 0
+    }
+    if result > 0 {
+        return result
+    } else {
+        return 0
+    }
+}
+`,
+    ) == .none)
+    compiler_diagnostic.init(&diagnostics)
+    parse_source_file(&source, &diagnostics, &tree)
+    defer syntax_tree_destroy(&tree)
+    defer compiler_diagnostic.destroy(&diagnostics)
+    defer compiler_source.destroy(&source)
+
+    expect_clean_tree(test, &tree, &diagnostics)
+    testing.expect(test, count_kind(&tree, .for_statement) == 2)
+    testing.expect(test, count_kind(&tree, .iteration_header) == 1)
+    testing.expect(test, count_kind(&tree, .for_clause) == 1)
+    testing.expect(test, count_kind(&tree, .switch_statement) == 1)
+    testing.expect(test, count_kind(&tree, .if_statement) == 1)
+    testing.expect(test, count_kind(&tree, .conditional_expression) == 1)
+    testing.expect(test, count_kind(&tree, .dereference_expression) == 1)
+    testing.expect(test, count_kind(&tree, .assignment_statement) >= 3)
+}
+
+// test_parser_agent_denial_and_assembly_regions proves that context-sensitive
+// source positions select different synthesis/denial/assembly node categories.
+test_parser_agent_denial_and_assembly_regions :: proc(test: ^testing.Test) {
+    source: compiler_source.Source_File
+    diagnostics: compiler_diagnostic.Sink
+    tree: Syntax_Tree
+    testing.expect(test, compiler_source.init_from_text(
+        &source,
+        "regions.draft",
+        `package regions
+... "declarations"
+Record :: struct {
+    ... "members"
+}
+run :: proc(value: u64) -> u64 {
+    generated := ... "expression"
+    deny asm {
+        ... "statements"
+    }
+    asm aarch64 {
+        clobber memory
+        ... "assembly"
+        dmb ish
+    }
+    return asm aarch64 -> u64 {
+        in x0 = value
+        out x0
+        add x0, x0, #1
+    }
+}
+`,
+    ) == .none)
+    compiler_diagnostic.init(&diagnostics)
+    parse_source_file(&source, &diagnostics, &tree)
+    defer syntax_tree_destroy(&tree)
+    defer compiler_diagnostic.destroy(&diagnostics)
+    defer compiler_source.destroy(&source)
+
+    expect_clean_tree(test, &tree, &diagnostics)
+    testing.expect(test, count_kind(&tree, .synthesis_declaration) == 1)
+    testing.expect(test, count_kind(&tree, .synthesis_member) == 1)
+    testing.expect(test, count_kind(&tree, .synthesis_statement) == 1)
+    testing.expect(test, count_kind(&tree, .synthesis_expression) == 1)
+    testing.expect(test, count_kind(&tree, .synthesis_assembly) == 1)
+    testing.expect(test, count_kind(&tree, .deny_statement) == 1)
+    testing.expect(test, count_kind(&tree, .asm_statement) == 1)
+    testing.expect(test, count_kind(&tree, .asm_expression) == 1)
+}
+
+// test_parser_recovery_retains_root feeds independent malformed declaration,
+// member, expression, and statement regions. User errors must remain ordinary
+// diagnostics and the tree must stay inspectable rather than crashing.
+test_parser_recovery_retains_root :: proc(test: ^testing.Test) {
+    source: compiler_source.Source_File
+    diagnostics: compiler_diagnostic.Sink
+    tree: Syntax_Tree
+    testing.expect(test, compiler_source.init_from_text(
+        &source,
+        "recovery.draft",
+        `not_package broken
+Record :: struct { field u32 other: [] }
+run :: proc(value u32) {
+    if true return
+    switch value { value: return }
+}
+`,
+    ) == .none)
+    compiler_diagnostic.init(&diagnostics)
+    parse_source_file(&source, &diagnostics, &tree)
+    defer syntax_tree_destroy(&tree)
+    defer compiler_diagnostic.destroy(&diagnostics)
+    defer compiler_source.destroy(&source)
+
+    testing.expect(test, compiler_diagnostic.has_errors(&diagnostics))
+    testing.expect_message(test, diagnostics.error_count >= 4,
+        "malformed regions must report independent parser errors")
+    testing.expect(test, node_id_valid(tree.root))
+    testing.expect(test, count_kind(&tree, .error) >= 1)
+}

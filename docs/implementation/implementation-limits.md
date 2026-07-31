@@ -190,30 +190,35 @@ boundary and no alternate-emitter fallback for unsupported operations.
 
 ## Self-hosted frontend staging limits
 
-Status: build-tree lexer replacement; not a Draft language or public CLI limit.
+Status: build-tree lexer and parser replacement; not a Draft language or public
+CLI limit.
 
 On a supported native host, the build graph uses C++ `draftc` to produce an O2
-Draft executable named `draftc-next`. Its only accepted command is
-`draftc-next lex <file.draft>`. It is not installed or included in release
-archives, and no syntax, package, semantic, elaboration, MIR, LLVM, artifact,
-or linking command has moved to it yet. The C++ driver remains the public
-compiler and compatibility oracle.
+Draft executable named `draftc-next`. Its accepted commands are
+`draftc-next lex <file.draft>` and `draftc-next syntax <file.draft>`. It is not
+installed or included in release archives, and no package, semantic,
+elaboration, MIR, LLVM, artifact, or linking command has moved to it yet. The
+C++ driver remains the public compiler and compatibility oracle.
 
 The Draft lexer has the same token spellings, ranges, semicolon insertion,
 diagnostic rendering, stdout/stderr bytes, and exit behavior as the bootstrap
-over the registered differential corpus. That corpus is compatibility evidence
-for lexing, not proof that later frontend phases are self-hosted. Each later
-phase must add its own focused tests and complete process-level oracle before
-the corresponding C++ path can be removed.
+over its registered differential corpus. The Draft parser likewise has the
+same concrete node hierarchy, token spans, recovery diagnostics, nesting-limit
+failure, stdout/stderr bytes, and exit behavior over its own registered corpus.
+Those are compatibility evidence for lexing and concrete parsing, not proof
+that package or semantic phases are self-hosted. Each later phase must add its
+own focused tests and complete process-level oracle before the corresponding
+C++ path can be removed.
 
-`compiler_syntax.Token_List` currently implements its contiguous allocation
-directly. The bootstrap rejects an embedded `core/array.Dynamic[Token]` used
-across the syntax package's source files with a pointer type-identity
-diagnostic, including when the generic argument is explicit. This is a
-bootstrap generic-instantiation limitation, not missing array semantics or a
-Draft 1 ownership rule. The direct list preserves the intended data layout and
-explicit allocator lifetime; it can return to the ordinary core container after
-that compiler limitation is repaired and qualified.
+`compiler_syntax.Token_List` and the syntax tree's typed node/child tables
+currently implement their contiguous allocation directly. The bootstrap rejects
+an embedded `core/array.Dynamic[Token]` used across the syntax package's source
+files with a pointer type-identity diagnostic, including when the generic
+argument is explicit. This is a bootstrap generic-instantiation limitation, not
+missing array semantics or a Draft 1 ownership rule. The direct tables preserve
+the intended data layout, stable integer IDs, and explicit allocator lifetime;
+they can return to ordinary core containers after that compiler limitation is
+repaired and qualified.
 
 ## Native host and instrumentation limits
 

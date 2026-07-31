@@ -1,11 +1,11 @@
 // Draft-written staging driver for the self-hosted compiler frontend.
 //
-// This executable currently owns exactly one command, `lex`: it loads one
-// source file, invokes compiler_syntax.lex, and renders the same stdout/stderr
-// bytes and exit status as the C++ bootstrap driver. Keeping the command narrow
-// makes the bootstrap replacement measurable and reversible at a phase seam;
-// later parser and semantic slices can join this driver without placing LLVM or
-// native-linker behavior in the frontend packages.
+// This executable owns the replaced lexical and concrete-syntax phases. `lex`
+// and `syntax` load one source file and render the same stdout/stderr bytes and
+// exit status as the C++ bootstrap driver. Keeping the commands phase-bounded
+// makes the bootstrap replacement measurable and reversible; later semantic
+// slices can join this driver without placing LLVM or native-linker behavior in
+// the frontend packages.
 //
 // main owns all process-facing sources, token storage, diagnostics, and output
 // builders until the final writes complete. The imported compiler packages do
@@ -158,16 +158,70 @@ run_lex :: proc(path: string) -> int {
     return 1 if compiler_diagnostic.has_errors(&diagnostics) else 0
 }
 
-// main accepts only the implemented phase so an unimplemented command cannot
+// run_syntax owns one source-to-concrete-tree transaction. The tree dump is
+// emitted even when recovery reported errors; diagnostics follow on stderr and
+// determine status, exactly like the bootstrap inspection command.
+run_syntax :: proc(path: string) -> int {
+    source: compiler_source.Source_File
+    load_error := compiler_source.load(&source, path)
+    defer compiler_source.destroy(&source)
+    if load_error != .none {
+        error_output: compiler_text.Builder
+        compiler_text.init(&error_output)
+        defer compiler_text.destroy(&error_output)
+        render_load_error(&error_output, path, load_error)
+        if os.write_all(
+            os.standard_error,
+            compiler_text.view(&error_output),
+        ) != .none {
+            return 1
+        }
+        return 1
+    }
+
+    diagnostics: compiler_diagnostic.Sink
+    tree: compiler_syntax.Syntax_Tree
+    syntax_output: compiler_text.Builder
+    diagnostic_output: compiler_text.Builder
+    compiler_diagnostic.init(&diagnostics)
+    compiler_text.init(&syntax_output)
+    compiler_text.init(&diagnostic_output)
+    compiler_syntax.parse_source_file(&source, &diagnostics, &tree)
+    defer compiler_syntax.syntax_tree_destroy(&tree)
+    defer compiler_text.destroy(&diagnostic_output)
+    defer compiler_text.destroy(&syntax_output)
+    defer compiler_diagnostic.destroy(&diagnostics)
+
+    compiler_syntax.dump_syntax_tree(&tree, &syntax_output)
+    compiler_diagnostic.render(&source, &diagnostics, &diagnostic_output)
+    if os.write_all(
+        os.standard_output,
+        compiler_text.view(&syntax_output),
+    ) != .none {
+        return 1
+    }
+    if os.write_all(
+        os.standard_error,
+        compiler_text.view(&diagnostic_output),
+    ) != .none {
+        return 1
+    }
+    return 1 if compiler_diagnostic.has_errors(&diagnostics) else 0
+}
+
+// main accepts only implemented phases so an unimplemented command cannot
 // silently fall back to the bootstrap or claim self-hosted coverage.
 main :: proc() -> int {
     arguments := os.args()
     if len(arguments) == 3 && text_equal(arguments[1], "lex") {
         return run_lex(arguments[2])
     }
+    if len(arguments) == 3 && text_equal(arguments[1], "syntax") {
+        return run_syntax(arguments[2])
+    }
     write_error := os.write_text_all(
         os.standard_error,
-        "usage:\n  draftc-next lex <file.draft>\n",
+        "usage:\n  draftc-next lex <file.draft>\n  draftc-next syntax <file.draft>\n",
     )
     if write_error != .none {
         return 1

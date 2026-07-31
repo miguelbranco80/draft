@@ -1,0 +1,2095 @@
+// Recursive-descent and precedence parser for the complete Draft 1 surface.
+//
+// The parser selects every braced grammar category from source position rather
+// than resolved names: declarations, members, statements, denied expressions,
+// switch cases, and assembly rows remain distinct concrete nodes. Neutral
+// syntax such as bracket application/indexing is intentionally left for later
+// semantic phases.
+//
+// Error recovery consumes through local semicolon, comma, delimiter, or brace
+// boundaries and always makes progress. One shared nesting budget covers every
+// recursive grammar path, so malicious source cannot turn the host stack into
+// an unbounded resource. Parser owns a reusable child-ID scratch buffer and
+// publishes only completed nodes to Syntax_Tree. Relevant specification:
+// sections 3-4, 8-10, 11 assembly syntax, and 13 denials.
+package compiler_syntax
+
+import compiler/diagnostic as compiler_diagnostic
+import compiler/source as compiler_source
+
+Maximum_Nesting_Depth :: 512
+
+Member_Mode :: enum u8 {
+    struct_members,
+    union_members,
+    enum_members,
+    variant_members,
+}
+
+Synthesis_Position :: enum u8 {
+    declaration,
+    member,
+    statement,
+    expression,
+    assembly,
+}
+
+// Parser borrows source-independent token storage owned by tree and the caller's
+// diagnostic sink. scratch is one stack of immediate child IDs: every nested
+// parse frame truncates back to its entry mark before returning its completed
+// node, leaving its caller's pending children intact.
+Parser :: struct {
+    tree: ^Syntax_Tree,
+    diagnostics: ^compiler_diagnostic.Sink,
+    scratch: Node_Id_Buffer,
+    position: u32,
+    nesting_depth: u32,
+    parsing_aborted: bool,
+}
+
+// begin_children records one scratch frame boundary. A caller appends only the
+// immediate grammar children returned by nested parse operations.
+begin_children :: proc(parser: ^Parser) -> usize {
+    return parser.scratch.length
+}
+
+append_child :: proc(parser: ^Parser, child: Node_Id) {
+    node_id_buffer_append(&parser.scratch, child)
+}
+
+// finish_node copies the frame's child suffix to permanent tree storage and
+// restores the scratch stack. Every frame must finish exactly once.
+finish_node :: proc(
+    parser: ^Parser,
+    kind: Node_Kind,
+    token_begin: u32,
+    child_mark: usize,
+) -> Node_Id {
+    assert(child_mark <= parser.scratch.length,
+        "parser child frame exceeds scratch buffer")
+    child_count := parser.scratch.length - child_mark
+    children: []Node_Id
+    if child_count != 0 {
+        first := ptr_offset(parser.scratch.data, cast[isize](child_mark))
+        children = first[:child_count]
+    }
+    id := syntax_tree_add_node(
+        parser.tree,
+        kind,
+        token_begin,
+        parser.position,
+        children,
+    )
+    parser.scratch.length = child_mark
+    return id
+}
+
+finish_leaf :: proc(
+    parser: ^Parser,
+    kind: Node_Kind,
+    token_begin: u32,
+) -> Node_Id {
+    return finish_node(parser, kind, token_begin, parser.scratch.length)
+}
+
+// The token cursor helpers below borrow the finalized token table. lookahead
+// clamps beyond EOF to the unique EOF token; advance never moves past it. These
+// invariants let recovery inspect malformed suffixes without unchecked access.
+current_token :: proc(parser: ^Parser) -> ^Token {
+    return &parser.tree.tokens.data[cast[usize](parser.position)]
+}
+
+lookahead_kind :: proc(parser: ^Parser, distance: u32) -> Token_Kind {
+    index := cast[usize](parser.position) + cast[usize](distance)
+    if index >= parser.tree.tokens.length {
+        return parser.tree.tokens.data[parser.tree.tokens.length - 1].kind
+    }
+    return parser.tree.tokens.data[index].kind
+}
+
+at :: proc(parser: ^Parser, kind: Token_Kind) -> bool {
+    return current_token(parser).kind == kind
+}
+
+parser_at_end :: proc(parser: ^Parser) -> bool {
+    return at(parser, .end_of_file)
+}
+
+match :: proc(parser: ^Parser, kind: Token_Kind) -> bool {
+    if !at(parser, kind) {
+        return false
+    }
+    parser.position += 1
+    return true
+}
+
+advance :: proc(parser: ^Parser) {
+    if !parser_at_end(parser) {
+        parser.position += 1
+    }
+}
+
+current_range :: proc(parser: ^Parser) -> compiler_source.Source_Range {
+    return current_token(parser).range
+}
+
+// error_here reports at the current token boundary unless the nesting budget
+// already aborted parsing. Suppressing secondary messages after that one
+// bounded failure keeps adversarial deep input linear and useful.
+error_here :: proc(parser: ^Parser, message: string) {
+    if parser.parsing_aborted {
+        return
+    }
+    compiler_diagnostic.error_text(
+        parser.diagnostics,
+        current_range(parser),
+        message,
+    )
+}
+
+expect :: proc(
+    parser: ^Parser,
+    kind: Token_Kind,
+    message: string,
+) -> bool {
+    if match(parser, kind) {
+        return true
+    }
+    error_here(parser, message)
+    return false
+}
+
+// is_contextual_name preserves `c`, compiler constraint names, and assembly
+// directive spellings as ordinary names outside the grammar positions which
+// assign their special meanings.
+is_contextual_name :: proc(kind: Token_Kind) -> bool {
+    switch kind {
+    case .identifier, .keyword_c, .keyword_type, .keyword_integer,
+        .keyword_float, .keyword_number, .keyword_flags, .keyword_memory,
+        .keyword_bits:
+        return true
+    case:
+        return false
+    }
+}
+
+at_name :: proc(parser: ^Parser) -> bool {
+    return is_contextual_name(current_token(parser).kind)
+}
+
+expect_name :: proc(parser: ^Parser, message: string) -> bool {
+    if at_name(parser) {
+        advance(parser)
+        return true
+    }
+    error_here(parser, message)
+    return false
+}
+
+// expect_alternative_name is deliberately broader only after a leading dot so
+// compiler Type_Kind members such as `.struct` remain expressible without
+// admitting structural keywords as general declaration names.
+expect_alternative_name :: proc(parser: ^Parser, message: string) -> bool {
+    if token_is_contextual_alternative_name(current_token(parser).kind) {
+        advance(parser)
+        return true
+    }
+    error_here(parser, message)
+    return false
+}
+
+// skip_semicolons consumes explicit or inserted empty items between list rows.
+skip_semicolons :: proc(parser: ^Parser) {
+    for match(parser, .semicolon) {
+    }
+}
+
+// finish_item consumes a required semicolon or advances to the nearest item
+// recovery boundary. A right brace remains for the list parser which owns it.
+finish_item :: proc(parser: ^Parser, message: string) {
+    if match(parser, .semicolon) {
+        return
+    }
+    error_here(parser, message)
+    for !parser_at_end(parser) && !at(parser, .semicolon) &&
+        !at(parser, .right_brace) {
+        advance(parser)
+    }
+    _ := match(parser, .semicolon)
+}
+
+// finish_member accepts the comma convention and semicolon insertion. Recovery
+// consumes no enclosing right brace.
+finish_member :: proc(parser: ^Parser, message: string) {
+    if match(parser, .comma) || match(parser, .semicolon) {
+        return
+    }
+    error_here(parser, message)
+    for !parser_at_end(parser) && !at(parser, .comma) &&
+        !at(parser, .semicolon) && !at(parser, .right_brace) {
+        advance(parser)
+    }
+    if !match(parser, .comma) {
+        _ := match(parser, .semicolon)
+    }
+}
+
+// error_node reports one local expression/declaration failure, consumes at most
+// one non-delimiter token to guarantee progress, and publishes the exact
+// consumed recovery span as an Error node.
+error_node :: proc(
+    parser: ^Parser,
+    token_begin: u32,
+    message: string,
+) -> Node_Id {
+    error_here(parser, message)
+    if !parser_at_end(parser) && !at(parser, .semicolon) &&
+        !at(parser, .right_brace) && !at(parser, .right_paren) &&
+        !at(parser, .right_bracket) && !at(parser, .comma) {
+        advance(parser)
+    }
+    return finish_leaf(parser, .error, token_begin)
+}
+
+// enter_nested and leave_nested implement one budget shared by all recursive
+// grammar categories. The first overflow reports once, aborts further descent,
+// and unwinds through ordinary deferred leave calls.
+enter_nested :: proc(parser: ^Parser) -> bool {
+    if parser.parsing_aborted {
+        return false
+    }
+    if parser.nesting_depth >= Maximum_Nesting_Depth {
+        compiler_diagnostic.error_text(
+            parser.diagnostics,
+            current_range(parser),
+            "source nesting exceeds the parser limit of 512",
+        )
+        parser.parsing_aborted = true
+        return false
+    }
+    parser.nesting_depth += 1
+    return true
+}
+
+leave_nested :: proc(parser: ^Parser) {
+    assert(parser.nesting_depth != 0, "parser nesting depth underflows")
+    parser.nesting_depth -= 1
+}
+
+aborted_node :: proc(parser: ^Parser) -> Node_Id {
+    return finish_leaf(parser, .error, parser.position)
+}
+
+// parse_package_clause always publishes the source file's first required child.
+// Missing package syntax recovers through the first item boundary so later
+// declarations remain available to tooling.
+parse_package_clause :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    if !expect(
+        parser,
+        .keyword_package,
+        "source file must begin with a package declaration",
+    ) {
+        for !parser_at_end(parser) && !at(parser, .semicolon) {
+            advance(parser)
+        }
+    } else {
+        _ := expect_name(parser, "expected package name after 'package'")
+    }
+    finish_item(parser, "expected semicolon after package declaration")
+    return finish_leaf(parser, .package_clause, start)
+}
+
+// parse_import_clause retains the slash-delimited path as one ImportPath child
+// and leaves alias spelling in the enclosing token span. Local errors recover
+// through the import terminator.
+parse_import_clause :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+
+    path_start := parser.position
+    if !expect_name(parser, "expected package path after 'import'") {
+        finish_item(parser, "expected semicolon after import")
+        return finish_node(parser, .import_clause, start, mark)
+    }
+    for match(parser, .slash) {
+        if !expect_name(
+            parser,
+            "expected package path component after '/'",
+        ) {
+            break
+        }
+    }
+    append_child(parser, finish_leaf(parser, .import_path, path_start))
+
+    if match(parser, .keyword_as) {
+        _ := expect_name(parser, "expected local package alias after 'as'")
+    }
+    finish_item(parser, "expected semicolon after import")
+    return finish_node(parser, .import_clause, start, mark)
+}
+
+// parse_declaration_list consumes source-ordered declaration-category items up
+// to its caller-owned terminator. The terminator is not consumed here.
+parse_declaration_list :: proc(
+    parser: ^Parser,
+    terminator: Token_Kind,
+) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    skip_semicolons(parser)
+    for !parser.parsing_aborted && !parser_at_end(parser) &&
+        !at(parser, terminator) {
+        before := parser.position
+        append_child(parser, parse_declaration_item(parser))
+        if parser.position == before {
+            error_here(parser, "parser made no progress in declaration list")
+            advance(parser)
+        }
+        skip_semicolons(parser)
+    }
+    return finish_node(parser, .declaration_list, start, mark)
+}
+
+// parse_attachment consumes one file/folder keyword and one required quoted
+// path. A raw string is consumed only for recovery after reporting that paths
+// use the quoted-string form.
+parse_attachment :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    advance(parser)
+    if !expect(
+        parser,
+        .string_literal,
+        "attachment path must be a quoted string",
+    ) {
+        if at(parser, .raw_string_literal) {
+            advance(parser)
+        }
+    }
+    return finish_leaf(parser, .attachment, start)
+}
+
+// parse_documentation records optional inline text and every following
+// attachment as one semicolon-normalized attachment group.
+parse_documentation :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    has_content := false
+    if at(parser, .string_literal) || at(parser, .raw_string_literal) {
+        advance(parser)
+        has_content = true
+    }
+    for at(parser, .keyword_file) || at(parser, .keyword_folder) {
+        append_child(parser, parse_attachment(parser))
+        has_content = true
+    }
+    if !has_content {
+        error_here(
+            parser,
+            "docs requires an inline string, file, or folder attachment",
+        )
+    }
+    finish_item(parser, "expected semicolon after docs attachment group")
+    return finish_node(parser, .documentation, start, mark)
+}
+
+// parse_judgment requires one claim string and retains each optional evidence
+// attachment as an immediate child. Placement legality is semantic.
+parse_judgment :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    if at(parser, .string_literal) || at(parser, .raw_string_literal) {
+        advance(parser)
+    } else {
+        error_here(parser, "judge requires a claim string")
+    }
+    for at(parser, .keyword_file) || at(parser, .keyword_folder) {
+        append_child(parser, parse_attachment(parser))
+    }
+    finish_item(parser, "expected semicolon after judge")
+    return finish_node(parser, .judgment, start, mark)
+}
+
+// parse_synthesis selects the node kind from the caller's grammar category and
+// records optional intent/attachment syntax without deriving a type obligation.
+parse_synthesis :: proc(
+    parser: ^Parser,
+    position: Synthesis_Position,
+    finish: bool,
+) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    if at(parser, .string_literal) || at(parser, .raw_string_literal) {
+        advance(parser)
+    }
+    for at(parser, .keyword_file) || at(parser, .keyword_folder) {
+        append_child(parser, parse_attachment(parser))
+    }
+    if finish {
+        finish_item(parser, "expected semicolon after synthesis site")
+    }
+
+    kind: Node_Kind = .synthesis_expression
+    switch position {
+    case .declaration: kind = .synthesis_declaration
+    case .member: kind = .synthesis_member
+    case .statement: kind = .synthesis_statement
+    case .expression: kind = .synthesis_expression
+    case .assembly: kind = .synthesis_assembly
+    }
+    return finish_node(parser, kind, start, mark)
+}
+
+// parse_declaration_region wraps a braced DeclarationList as the governed child
+// used by when, deny, and foreign constructs. Missing braces are diagnosed at
+// exact current-token boundaries.
+parse_declaration_region :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    _ := expect(parser, .left_brace, "expected '{' to begin declaration region")
+    append_child(parser, parse_declaration_list(parser, .right_brace))
+    _ := expect(parser, .right_brace, "expected '}' to end declaration region")
+    return finish_node(parser, .declaration_list, start, mark)
+}
+
+// parse_when_declaration recursively retains else-when chains. Both branches
+// are parsed; compile-time selection belongs to later semantic analysis.
+parse_when_declaration :: proc(parser: ^Parser) -> Node_Id {
+    if !enter_nested(parser) {
+        return aborted_node(parser)
+    }
+    defer leave_nested(parser)
+
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    append_child(parser, parse_expression(parser, 1, false))
+    append_child(parser, parse_declaration_region(parser))
+    if match(parser, .keyword_else) {
+        if at(parser, .keyword_when) {
+            append_child(parser, parse_when_declaration(parser))
+        } else {
+            append_child(parser, parse_declaration_region(parser))
+        }
+    }
+    _ := match(parser, .semicolon)
+    return finish_node(parser, .when_declaration, start, mark)
+}
+
+// parse_deny_selector treats asm/unchecked as builtin selector names and uses
+// ordinary non-composite expression syntax for every resolved-name selector.
+parse_deny_selector :: proc(parser: ^Parser) -> Node_Id {
+    if at(parser, .keyword_asm) || at(parser, .keyword_unchecked) {
+        start := parser.position
+        advance(parser)
+        return finish_leaf(parser, .name_expression, start)
+    }
+    return parse_expression(parser, 1, false)
+}
+
+// parse_deny_selectors appends its one-or-more selector nodes directly to the
+// active caller frame; the governed region is appended by the caller after it.
+parse_deny_selectors :: proc(parser: ^Parser) {
+    append_child(parser, parse_deny_selector(parser))
+    for match(parser, .comma) {
+        append_child(parser, parse_deny_selector(parser))
+    }
+}
+
+// parse_deny_declaration appends selector expressions followed by one governed
+// declaration region; that child ordering is the semantic phase contract.
+parse_deny_declaration :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    parse_deny_selectors(parser)
+    append_child(parser, parse_declaration_region(parser))
+    _ := match(parser, .semicolon)
+    return finish_node(parser, .deny_declaration, start, mark)
+}
+
+// parse_foreign_block retains the provider name in its token span and one
+// declaration region child. Provider resolution is intentionally absent here.
+parse_foreign_block :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    _ := expect_name(parser, "expected link-provider name after 'foreign'")
+    append_child(parser, parse_declaration_region(parser))
+    _ := match(parser, .semicolon)
+    return finish_node(parser, .foreign_block, start, mark)
+}
+
+// parse_name_list consumes one or more comma-separated contextual names. It is
+// reused only where comma means grouped bindings, never assignment operands.
+parse_name_list :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    if !expect_name(parser, "expected declaration name") {
+        return finish_leaf(parser, .name_list, start)
+    }
+    for match(parser, .comma) {
+        if !expect_name(parser, "expected declaration name after ','") {
+            break
+        }
+    }
+    return finish_leaf(parser, .name_list, start)
+}
+
+// parse_binding_pattern distinguishes grouped names from one flat parenthesized
+// tuple destructuring pattern before any type information is available.
+parse_binding_pattern :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    if !match(parser, .left_paren) {
+        append_child(parser, parse_name_list(parser))
+        return finish_node(parser, .binding_pattern, start, mark)
+    }
+
+    names_start := parser.position
+    _ := expect_name(parser, "expected binding name in tuple pattern")
+    for match(parser, .comma) {
+        if at(parser, .right_paren) {
+            break
+        }
+        _ := expect_name(parser, "expected binding name after ',' in tuple pattern")
+    }
+    append_child(parser, finish_leaf(parser, .name_list, names_start))
+    _ := expect(parser, .right_paren, "expected ')' after tuple binding pattern")
+    return finish_node(parser, .tuple_pattern, start, mark)
+}
+
+// parse_iteration_binding_pattern wraps exactly one unparenthesized binding, or
+// delegates the element position's optional tuple pattern to declaration syntax.
+parse_iteration_binding_pattern :: proc(
+    parser: ^Parser,
+    diagnostic: string,
+    allow_tuple: bool,
+) -> Node_Id {
+    if allow_tuple && at(parser, .left_paren) {
+        return parse_binding_pattern(parser)
+    }
+    start := parser.position
+    mark := begin_children(parser)
+    name_start := parser.position
+    _ := expect_name(parser, diagnostic)
+    append_child(parser, finish_leaf(parser, .name_list, name_start))
+    return finish_node(parser, .binding_pattern, start, mark)
+}
+
+// parse_parametric_parameters retains each name/type pair as a dedicated child.
+// Constraint interpretation and duplicate-name checks occur after parsing.
+parse_parametric_parameters :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    _ := expect(parser, .left_bracket, "expected '['")
+    for !parser_at_end(parser) && !at(parser, .right_bracket) {
+        parameter_start := parser.position
+        parameter_mark := begin_children(parser)
+        _ := expect_name(parser, "expected parametric parameter name")
+        _ := expect(
+            parser,
+            .colon,
+            "expected ':' after parametric parameter name",
+        )
+        append_child(parser, parse_type(parser))
+        parameter := finish_node(
+            parser,
+            .parametric_parameter,
+            parameter_start,
+            parameter_mark,
+        )
+        append_child(parser, parameter)
+        if !match(parser, .comma) {
+            break
+        }
+    }
+    _ := expect(
+        parser,
+        .right_bracket,
+        "expected ']' after parametric parameters",
+    )
+    return finish_node(parser, .parametric_parameter_list, start, mark)
+}
+
+// begins_type recognizes only reserved structural constructors and contextual
+// C modifiers. Ordinary names remain the fallback handled by parse_type.
+begins_type :: proc(parser: ^Parser) -> bool {
+    switch current_token(parser).kind {
+    case .caret, .left_bracket, .keyword_align, .keyword_proc,
+        .keyword_struct, .keyword_enum, .keyword_variant, .keyword_union,
+        .keyword_distinct, .keyword_simd:
+        return true
+    case .keyword_c:
+        next := lookahead_kind(parser, 1)
+        return next == .keyword_proc || next == .keyword_align ||
+            next == .keyword_struct || next == .keyword_enum ||
+            next == .keyword_variant || next == .keyword_union
+    case:
+        return false
+    }
+}
+
+// parse_declaration records the binding pattern, optional linker/parametric
+// clauses, type, and initializer/procedure child in source order. finish=false
+// is used only by the first clause of a three-clause for header.
+parse_declaration :: proc(
+    parser: ^Parser,
+    finish: bool = true,
+) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    _ := match(parser, .keyword_pub)
+    _ := match(parser, .keyword_thread_local)
+
+    if !at_name(parser) && !at(parser, .left_paren) {
+        invalid := error_node(parser, start, "expected declaration")
+        if finish {
+            finish_item(parser, "expected semicolon after invalid declaration")
+        }
+        parser.scratch.length = mark
+        return invalid
+    }
+    pattern := parse_binding_pattern(parser)
+    append_child(parser, pattern)
+    if at(parser, .keyword_as) {
+        clause_start := parser.position
+        advance(parser)
+        _ := expect(
+            parser,
+            .string_literal,
+            "expected exact linker symbol string after 'as'",
+        )
+        append_child(parser, finish_leaf(parser, .link_name_clause, clause_start))
+    }
+    if syntax_tree_node(parser.tree, pattern).kind == .binding_pattern &&
+        at(parser, .left_bracket) {
+        append_child(parser, parse_parametric_parameters(parser))
+    }
+
+    if match(parser, .colon) {
+        if !at(parser, .equal) && !at(parser, .semicolon) {
+            append_child(parser, parse_type(parser))
+        }
+        if match(parser, .equal) {
+            append_child(parser, parse_expression(parser))
+        }
+    } else if match(parser, .colon_equal) {
+        append_child(parser, parse_expression(parser))
+    } else if match(parser, .colon_colon) {
+        if at(parser, .keyword_proc) ||
+            (at(parser, .keyword_c) &&
+                lookahead_kind(parser, 1) == .keyword_proc) {
+            append_child(parser, parse_procedure(parser, true))
+        } else if begins_type(parser) {
+            append_child(parser, parse_type(parser))
+        } else {
+            append_child(parser, parse_expression(parser))
+        }
+    } else {
+        error_here(parser, "expected ':', ':=', or '::' after declaration name")
+    }
+
+    if finish {
+        finish_item(parser, "expected semicolon after declaration")
+    }
+    return finish_node(parser, .declaration, start, mark)
+}
+
+// parse_export_declaration wraps one ordinary declaration; export-specific
+// semantic restrictions do not change the nested declaration grammar.
+parse_export_declaration :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    append_child(parser, parse_declaration(parser))
+    return finish_node(parser, .export_declaration, start, mark)
+}
+
+// parse_declaration_item selects the closed declaration-position grammar and
+// charges one shared recursion-budget unit before descending.
+parse_declaration_item :: proc(parser: ^Parser) -> Node_Id {
+    if !enter_nested(parser) {
+        return aborted_node(parser)
+    }
+    defer leave_nested(parser)
+
+    if at(parser, .keyword_docs) {
+        return parse_documentation(parser)
+    }
+    if at(parser, .keyword_judge) {
+        return parse_judgment(parser)
+    }
+    if at(parser, .ellipsis) {
+        return parse_synthesis(parser, .declaration, true)
+    }
+    if at(parser, .keyword_when) {
+        return parse_when_declaration(parser)
+    }
+    if at(parser, .keyword_deny) {
+        return parse_deny_declaration(parser)
+    }
+    if at(parser, .keyword_foreign) {
+        return parse_foreign_block(parser)
+    }
+    if at(parser, .keyword_export) {
+        return parse_export_declaration(parser)
+    }
+    return parse_declaration(parser)
+}
+
+// parse_parameter_list retains fixed parameters, defaults, named static packs,
+// and the distinct unnamed C variadic tail. It recovers a nonfinal bare tail by
+// consuming to the caller-owned closing parenthesis.
+parse_parameter_list :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    _ := expect(parser, .left_paren, "expected '('")
+    for !parser_at_end(parser) && !at(parser, .right_paren) {
+        if at(parser, .dot_dot) {
+            tail_start := parser.position
+            advance(parser)
+            append_child(parser, finish_leaf(parser, .c_variadic_tail, tail_start))
+            if match(parser, .comma) && at(parser, .right_paren) {
+                break
+            }
+            if !at(parser, .right_paren) {
+                error_here(
+                    parser,
+                    "C variadic tail must be the final procedure parameter",
+                )
+                for !parser_at_end(parser) && !at(parser, .right_paren) {
+                    advance(parser)
+                }
+            }
+            break
+        }
+
+        parameter_start := parser.position
+        parameter_mark := begin_children(parser)
+        append_child(parser, parse_name_list(parser))
+        _ := expect(parser, .colon, "expected ':' after parameter name")
+        if at(parser, .dot_dot) {
+            pack_start := parser.position
+            pack_mark := begin_children(parser)
+            advance(parser)
+            append_child(parser, parse_type(parser))
+            pack := finish_node(
+                parser,
+                .static_pack_type,
+                pack_start,
+                pack_mark,
+            )
+            append_child(parser, pack)
+        } else {
+            append_child(parser, parse_type(parser))
+        }
+        if match(parser, .equal) {
+            default_start := parser.position - 1
+            default_mark := begin_children(parser)
+            append_child(parser, parse_expression(parser))
+            default_node := finish_node(
+                parser,
+                .parameter_default,
+                default_start,
+                default_mark,
+            )
+            append_child(parser, default_node)
+        }
+        parameter := finish_node(
+            parser,
+            .parameter,
+            parameter_start,
+            parameter_mark,
+        )
+        append_child(parser, parameter)
+        if !match(parser, .comma) {
+            break
+        }
+    }
+    _ := expect(parser, .right_paren, "expected ')' after parameters")
+    return finish_node(parser, .parameter_list, start, mark)
+}
+
+// parse_procedure opens a fresh child frame at the procedure constructor. A
+// body is parsed only when the declaration position explicitly allows one.
+parse_procedure :: proc(parser: ^Parser, allow_body: bool) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    return parse_procedure_with_prefix(parser, allow_body, start, mark)
+}
+
+// parse_procedure_with_prefix consumes a possibly C-qualified procedure after
+// the caller has already opened a child frame. parse_type uses that seam to
+// retain preceding C-representation/alignment children in its own frame while
+// still giving the procedure node the complete constructor token span.
+parse_procedure_with_prefix :: proc(
+    parser: ^Parser,
+    allow_body: bool,
+    token_begin: u32,
+    child_mark: usize,
+) -> Node_Id {
+    _ := match(parser, .keyword_c)
+    _ := expect(parser, .keyword_proc, "expected 'proc'")
+    append_child(parser, parse_parameter_list(parser))
+    if match(parser, .arrow) {
+        result_start := parser.position - 1
+        result_mark := begin_children(parser)
+        append_child(parser, parse_type(parser))
+        result := finish_node(
+            parser,
+            .result_clause,
+            result_start,
+            result_mark,
+        )
+        append_child(parser, result)
+    }
+    if allow_body && at(parser, .left_brace) {
+        append_child(parser, parse_block(parser))
+        return finish_node(parser, .procedure, token_begin, child_mark)
+    }
+    return finish_node(parser, .procedure_type, token_begin, child_mark)
+}
+
+// parse_alignment_specifier retains one ordinary expression child for later
+// constant evaluation and diagnoses the structurally empty form immediately.
+parse_alignment_specifier :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    _ := expect(parser, .left_paren, "expected '(' after 'align'")
+    if at(parser, .right_paren) {
+        error_here(parser, "align requires one compile-time usize expression")
+    } else {
+        append_child(parser, parse_expression(parser))
+    }
+    _ := expect(
+        parser,
+        .right_paren,
+        "expected ')' after alignment expression",
+    )
+    return finish_node(parser, .alignment_specifier, start, mark)
+}
+
+// parse_type selects the complete structural type grammar. Qualified names and
+// bracket arguments remain neutral syntax, while aggregate constructors select
+// their member grammar before semantic resolution.
+parse_type :: proc(parser: ^Parser) -> Node_Id {
+    if !enter_nested(parser) {
+        return aborted_node(parser)
+    }
+    defer leave_nested(parser)
+
+    start := parser.position
+    mark := begin_children(parser)
+
+    if at(parser, .keyword_c) {
+        next := lookahead_kind(parser, 1)
+        if next == .keyword_align || next == .keyword_struct ||
+            next == .keyword_enum || next == .keyword_variant ||
+            next == .keyword_union {
+            modifier_start := parser.position
+            advance(parser)
+            append_child(
+                parser,
+                finish_leaf(
+                    parser,
+                    .c_representation_specifier,
+                    modifier_start,
+                ),
+            )
+        }
+    }
+    if at(parser, .keyword_align) {
+        append_child(parser, parse_alignment_specifier(parser))
+    }
+    if match(parser, .caret) {
+        append_child(parser, parse_type(parser))
+        return finish_node(parser, .pointer_type, start, mark)
+    }
+    if match(parser, .left_bracket) {
+        if match(parser, .caret) {
+            _ := expect(
+                parser,
+                .right_bracket,
+                "expected ']' in multi-pointer type",
+            )
+            append_child(parser, parse_type(parser))
+            return finish_node(parser, .multi_pointer_type, start, mark)
+        }
+        if match(parser, .right_bracket) {
+            append_child(parser, parse_type(parser))
+            return finish_node(parser, .slice_type, start, mark)
+        }
+        append_child(parser, parse_expression(parser))
+        _ := expect(parser, .right_bracket, "expected ']' after array length")
+        append_child(parser, parse_type(parser))
+        return finish_node(parser, .array_type, start, mark)
+    }
+    if match(parser, .keyword_simd) {
+        _ := expect(
+            parser,
+            .left_bracket,
+            "expected '[' before SIMD lane count",
+        )
+        append_child(parser, parse_expression(parser))
+        _ := expect(
+            parser,
+            .right_bracket,
+            "expected ']' after SIMD lane count",
+        )
+        append_child(parser, parse_type(parser))
+        return finish_node(parser, .simd_type, start, mark)
+    }
+    if at(parser, .keyword_proc) ||
+        (at(parser, .keyword_c) && lookahead_kind(parser, 1) == .keyword_proc) {
+        return parse_procedure_with_prefix(parser, false, start, mark)
+    }
+    if match(parser, .keyword_distinct) {
+        append_child(parser, parse_type(parser))
+        return finish_node(parser, .distinct_type, start, mark)
+    }
+    if match(parser, .left_paren) {
+        append_child(parser, parse_type(parser))
+        if !match(parser, .comma) {
+            _ := expect(parser, .right_paren, "expected ')' after grouped type")
+            return finish_node(parser, .named_type, start, mark)
+        }
+        for {
+            append_child(parser, parse_type(parser))
+            if !match(parser, .comma) || at(parser, .right_paren) {
+                break
+            }
+        }
+        _ := expect(parser, .right_paren, "expected ')' after tuple type")
+        return finish_node(parser, .tuple_type, start, mark)
+    }
+
+    aggregate_kind: Node_Kind = .error
+    member_mode: Member_Mode = .struct_members
+    if match(parser, .keyword_struct) {
+        aggregate_kind = .struct_type
+        member_mode = .struct_members
+    } else if match(parser, .keyword_enum) {
+        aggregate_kind = .enum_type
+        member_mode = .enum_members
+        if !at(parser, .left_brace) {
+            append_child(parser, parse_type(parser))
+        }
+    } else if match(parser, .keyword_variant) {
+        aggregate_kind = .variant_type
+        member_mode = .variant_members
+        if !at(parser, .left_brace) {
+            append_child(parser, parse_type(parser))
+        }
+    } else if match(parser, .keyword_union) {
+        aggregate_kind = .union_type
+        member_mode = .union_members
+    }
+    if aggregate_kind != .error {
+        append_child(parser, parse_member_list(parser, member_mode))
+        return finish_node(parser, aggregate_kind, start, mark)
+    }
+
+    if !at_name(parser) {
+        parser.scratch.length = mark
+        return error_node(parser, start, "expected type")
+    }
+    advance(parser)
+    for match(parser, .dot) {
+        _ := expect_name(parser, "expected type name after '.'")
+    }
+    if match(parser, .left_bracket) {
+        if !at(parser, .right_bracket) {
+            append_child(parser, parse_expression(parser))
+            for match(parser, .comma) {
+                append_child(parser, parse_expression(parser))
+            }
+        }
+        _ := expect(
+            parser,
+            .right_bracket,
+            "expected ']' after type arguments",
+        )
+    }
+    return finish_node(parser, .named_type, start, mark)
+}
+
+// parse_member_region preserves the active aggregate mode when a when/deny
+// construct contributes members to its surrounding type.
+parse_member_region :: proc(parser: ^Parser, mode: Member_Mode) -> Node_Id {
+    return parse_member_list(parser, mode)
+}
+
+// parse_when_member parses both compile-time branches under the same aggregate
+// member grammar and retains recursive else-when chains.
+parse_when_member :: proc(parser: ^Parser, mode: Member_Mode) -> Node_Id {
+    if !enter_nested(parser) {
+        return aborted_node(parser)
+    }
+    defer leave_nested(parser)
+
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    append_child(parser, parse_expression(parser, 1, false))
+    append_child(parser, parse_member_region(parser, mode))
+    if match(parser, .keyword_else) {
+        if at(parser, .keyword_when) {
+            append_child(parser, parse_when_member(parser, mode))
+        } else {
+            append_child(parser, parse_member_region(parser, mode))
+        }
+    }
+    _ := match(parser, .semicolon)
+    return finish_node(parser, .when_member, start, mark)
+}
+
+// parse_deny_member orders selector expressions before the governed member
+// region while preserving the surrounding aggregate's member mode.
+parse_deny_member :: proc(parser: ^Parser, mode: Member_Mode) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    parse_deny_selectors(parser)
+    append_child(parser, parse_member_region(parser, mode))
+    _ := match(parser, .semicolon)
+    return finish_node(parser, .deny_member, start, mark)
+}
+
+// parse_member selects field, enum-member, or variant-alternative grammar from
+// the aggregate constructor. Field modifiers remain dedicated children before
+// the field type, and union-only misuse is diagnosed at the modifier range.
+parse_member :: proc(parser: ^Parser, mode: Member_Mode) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+
+    is_storage := mode == .struct_members || mode == .union_members
+    if is_storage && match(parser, .keyword_packed) {
+        modifier := finish_leaf(parser, .packed_field_specifier, start)
+        append_child(parser, modifier)
+        if mode == .union_members {
+            compiler_diagnostic.error_text(
+                parser.diagnostics,
+                syntax_tree_node(parser.tree, modifier).range,
+                "packed is valid only on struct fields",
+            )
+        }
+    } else if is_storage && at(parser, .keyword_bits) &&
+        lookahead_kind(parser, 1) == .left_paren {
+        advance(parser)
+        modifier_mark := begin_children(parser)
+        if expect(parser, .left_paren, "expected '(' after bits") {
+            append_child(parser, parse_expression(parser))
+            _ := expect(
+                parser,
+                .right_paren,
+                "expected ')' after bit-field width",
+            )
+        }
+        modifier := finish_node(
+            parser,
+            .bit_field_specifier,
+            start,
+            modifier_mark,
+        )
+        append_child(parser, modifier)
+        if mode == .union_members {
+            compiler_diagnostic.error_text(
+                parser.diagnostics,
+                syntax_tree_node(parser.tree, modifier).range,
+                "bits(N) is valid only on struct fields",
+            )
+        }
+    }
+
+    if !expect_name(parser, "expected type member name") {
+        parser.scratch.length = mark
+        invalid := error_node(parser, start, "invalid type member")
+        finish_item(parser, "expected semicolon after invalid member")
+        return invalid
+    }
+
+    if is_storage {
+        for match(parser, .comma) {
+            _ := expect_name(parser, "expected field name after ','")
+        }
+        _ := expect(parser, .colon, "expected ':' after field name")
+        append_child(parser, parse_type(parser))
+        finish_member(parser, "expected ',' or semicolon after field")
+        return finish_node(parser, .field_member, start, mark)
+    }
+    if mode == .enum_members {
+        if match(parser, .equal) {
+            append_child(parser, parse_expression(parser))
+        }
+        finish_member(parser, "expected ',' or semicolon after enum member")
+        return finish_node(parser, .enum_member, start, mark)
+    }
+
+    if match(parser, .colon) {
+        append_child(parser, parse_type(parser))
+    }
+    finish_member(
+        parser,
+        "expected ',' or semicolon after variant alternative",
+    )
+    return finish_node(parser, .variant_alternative, start, mark)
+}
+
+// parse_member_list consumes one braced aggregate region in source order. Its
+// progress guard converts malformed input into a diagnostic rather than a loop.
+parse_member_list :: proc(parser: ^Parser, mode: Member_Mode) -> Node_Id {
+    if !enter_nested(parser) {
+        return aborted_node(parser)
+    }
+    defer leave_nested(parser)
+
+    start := parser.position
+    mark := begin_children(parser)
+    _ := expect(parser, .left_brace, "expected '{' to begin type members")
+    skip_semicolons(parser)
+    for !parser.parsing_aborted && !parser_at_end(parser) &&
+        !at(parser, .right_brace) {
+        before := parser.position
+        if at(parser, .keyword_docs) {
+            append_child(parser, parse_documentation(parser))
+        } else if at(parser, .keyword_judge) {
+            append_child(parser, parse_judgment(parser))
+        } else if at(parser, .ellipsis) {
+            append_child(parser, parse_synthesis(parser, .member, true))
+        } else if at(parser, .keyword_when) {
+            append_child(parser, parse_when_member(parser, mode))
+        } else if at(parser, .keyword_deny) {
+            append_child(parser, parse_deny_member(parser, mode))
+        } else {
+            append_child(parser, parse_member(parser, mode))
+        }
+        if parser.position == before {
+            error_here(parser, "parser made no progress in type member list")
+            advance(parser)
+        }
+        skip_semicolons(parser)
+    }
+    _ := expect(parser, .right_brace, "expected '}' after type members")
+    return finish_node(parser, .member_list, start, mark)
+}
+
+// binary_precedence maps the specification's closed binary vocabulary to
+// monotonically increasing binding powers; zero means not a binary operator.
+binary_precedence :: proc(kind: Token_Kind) -> int {
+    switch kind {
+    case .star, .slash, .percent, .shift_left, .shift_right, .ampersand:
+        return 7
+    case .plus, .minus, .pipe, .tilde:
+        return 6
+    case .equal_equal, .bang_equal, .less, .less_equal, .greater,
+        .greater_equal:
+        return 5
+    case .logical_and:
+        return 4
+    case .logical_or:
+        return 3
+    case:
+        return 0
+    }
+}
+
+// parse_unary_expression builds right-associated prefix chains before handing
+// the operand to the postfix parser. It shares the global recursion budget.
+parse_unary_expression :: proc(
+    parser: ^Parser,
+    allow_composite: bool,
+) -> Node_Id {
+    if !enter_nested(parser) {
+        return aborted_node(parser)
+    }
+    defer leave_nested(parser)
+
+    start := parser.position
+    kind := current_token(parser).kind
+    if kind == .plus || kind == .minus || kind == .bang ||
+        kind == .tilde || kind == .ampersand {
+        mark := begin_children(parser)
+        advance(parser)
+        append_child(parser, parse_unary_expression(parser, allow_composite))
+        return finish_node(parser, .unary_expression, start, mark)
+    }
+    return parse_postfix_expression(parser, allow_composite)
+}
+
+// parse_expression performs precedence climbing and then the right-associated
+// conditional form at the lowest level. Comparison chaining reports an error
+// but retains a deterministic binary tree for recovery tooling.
+parse_expression :: proc(
+    parser: ^Parser,
+    minimum_precedence: int = 1,
+    allow_composite: bool = true,
+) -> Node_Id {
+    if !enter_nested(parser) {
+        return aborted_node(parser)
+    }
+    defer leave_nested(parser)
+
+    start := parser.position
+    left := parse_unary_expression(parser, allow_composite)
+    consumed_comparison := false
+
+    for {
+        precedence := binary_precedence(current_token(parser).kind)
+        if precedence < minimum_precedence {
+            break
+        }
+        if precedence == 5 && consumed_comparison {
+            error_here(
+                parser,
+                "comparison operators do not associate; parenthesize the intended comparison",
+            )
+        }
+        if precedence == 5 {
+            consumed_comparison = true
+        }
+        advance(parser)
+        right := parse_expression(parser, precedence + 1, allow_composite)
+        mark := begin_children(parser)
+        append_child(parser, left)
+        append_child(parser, right)
+        left = finish_node(parser, .binary_expression, start, mark)
+    }
+
+    if minimum_precedence <= 1 && match(parser, .keyword_if) {
+        condition := parse_expression(parser, 1, false)
+        _ := expect(
+            parser,
+            .keyword_else,
+            "conditional expression requires 'else'",
+        )
+        alternative := parse_expression(parser, 1, allow_composite)
+        mark := begin_children(parser)
+        append_child(parser, left)
+        append_child(parser, condition)
+        append_child(parser, alternative)
+        left = finish_node(parser, .conditional_expression, start, mark)
+    }
+    return left
+}
+
+// parse_call_argument recognizes `name = value` only in call-argument position;
+// assignment remains a statement everywhere else.
+parse_call_argument :: proc(parser: ^Parser) -> Node_Id {
+    if at_name(parser) && lookahead_kind(parser, 1) == .equal {
+        start := parser.position
+        mark := begin_children(parser)
+        advance(parser)
+        advance(parser)
+        append_child(parser, parse_expression(parser))
+        return finish_node(parser, .named_argument, start, mark)
+    }
+    return parse_expression(parser)
+}
+
+// parse_composite_expression extends an already parsed type-like expression
+// with source-ordered positional or named elements. Names remain in token spans.
+parse_composite_expression :: proc(
+    parser: ^Parser,
+    token_begin: u32,
+    type_expression: Node_Id,
+) -> Node_Id {
+    mark := begin_children(parser)
+    append_child(parser, type_expression)
+    _ := expect(parser, .left_brace, "expected '{' in composite literal")
+    for !parser.parsing_aborted && !parser_at_end(parser) &&
+        !at(parser, .right_brace) {
+        element_start := parser.position
+        element_mark := begin_children(parser)
+        if at_name(parser) && lookahead_kind(parser, 1) == .equal {
+            advance(parser)
+            advance(parser)
+        }
+        append_child(parser, parse_expression(parser))
+        element := finish_node(
+            parser,
+            .composite_element,
+            element_start,
+            element_mark,
+        )
+        append_child(parser, element)
+        if !match(parser, .comma) {
+            break
+        }
+    }
+    _ := expect(parser, .right_brace, "expected '}' after composite literal")
+    return finish_node(parser, .composite_expression, token_begin, mark)
+}
+
+// parse_postfix_expression repeatedly extends one primary with calls, brackets,
+// member selection, dereference, and context-permitted composite literals.
+parse_postfix_expression :: proc(
+    parser: ^Parser,
+    allow_composite: bool,
+) -> Node_Id {
+    start := parser.position
+    expression := parse_primary_expression(parser)
+    for {
+        if match(parser, .left_paren) {
+            mark := begin_children(parser)
+            append_child(parser, expression)
+            if !at(parser, .right_paren) {
+                append_child(parser, parse_call_argument(parser))
+                for match(parser, .comma) {
+                    if at(parser, .right_paren) {
+                        break
+                    }
+                    append_child(parser, parse_call_argument(parser))
+                }
+            }
+            _ := expect(parser, .right_paren, "expected ')' after call arguments")
+            expression = finish_node(parser, .call_expression, start, mark)
+            continue
+        }
+        if match(parser, .left_bracket) {
+            mark := begin_children(parser)
+            append_child(parser, expression)
+            slice := false
+            if !at(parser, .colon) && !at(parser, .right_bracket) {
+                append_child(parser, parse_expression(parser))
+            }
+            if match(parser, .colon) {
+                slice = true
+                if !at(parser, .right_bracket) {
+                    append_child(parser, parse_expression(parser))
+                }
+            } else {
+                for match(parser, .comma) {
+                    append_child(parser, parse_expression(parser))
+                }
+            }
+            _ := expect(
+                parser,
+                .right_bracket,
+                "expected ']' after bracket expression",
+            )
+            node_kind: Node_Kind = .bracket_expression
+            if slice {
+                node_kind = .slice_expression
+            }
+            expression = finish_node(parser, node_kind, start, mark)
+            continue
+        }
+        if match(parser, .dot) {
+            if at(parser, .integer_literal) {
+                advance(parser)
+            } else {
+                _ := expect_name(
+                    parser,
+                    "expected member name or tuple index after '.'",
+                )
+            }
+            mark := begin_children(parser)
+            append_child(parser, expression)
+            expression = finish_node(parser, .member_expression, start, mark)
+            continue
+        }
+        if match(parser, .caret) {
+            mark := begin_children(parser)
+            append_child(parser, expression)
+            expression = finish_node(
+                parser,
+                .dereference_expression,
+                start,
+                mark,
+            )
+            continue
+        }
+        if allow_composite && at(parser, .left_brace) {
+            expression = parse_composite_expression(parser, start, expression)
+            continue
+        }
+        break
+    }
+    return expression
+}
+
+// parse_deny_expression retains selector children followed by exactly one value
+// expression inside its brace-delimited non-scoping region.
+parse_deny_expression :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    parse_deny_selectors(parser)
+    _ := expect(parser, .left_brace, "expected '{' before denied expression")
+    append_child(parser, parse_expression(parser))
+    _ := expect(parser, .right_brace, "expected '}' after denied expression")
+    return finish_node(parser, .deny_expression, start, mark)
+}
+
+// parse_primary_expression selects literal/name/synthesis/asm/deny/contextual
+// alternatives and parenthesized forms. Invalid input consumes locally through
+// error_node so every caller can continue from a known delimiter.
+parse_primary_expression :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    if at_name(parser) {
+        advance(parser)
+        return finish_leaf(parser, .name_expression, start)
+    }
+    if token_is_literal(current_token(parser).kind) {
+        advance(parser)
+        return finish_leaf(parser, .literal_expression, start)
+    }
+    if match(parser, .uninitialized) {
+        return finish_leaf(parser, .uninitialized_expression, start)
+    }
+    if at(parser, .ellipsis) {
+        return parse_synthesis(parser, .expression, false)
+    }
+    if at(parser, .keyword_asm) {
+        return parse_asm(parser, false)
+    }
+    if at(parser, .keyword_deny) {
+        return parse_deny_expression(parser)
+    }
+    if match(parser, .dot) {
+        _ := expect_alternative_name(
+            parser,
+            "expected alternative name after '.'",
+        )
+        mark := begin_children(parser)
+        if match(parser, .left_paren) {
+            if !at(parser, .right_paren) {
+                append_child(parser, parse_expression(parser))
+            }
+            _ := expect(
+                parser,
+                .right_paren,
+                "expected ')' after alternative payload",
+            )
+        }
+        return finish_node(
+            parser,
+            .contextual_alternative_expression,
+            start,
+            mark,
+        )
+    }
+    if match(parser, .left_paren) {
+        mark := begin_children(parser)
+        append_child(parser, parse_expression(parser))
+        if !match(parser, .comma) {
+            _ := expect(parser, .right_paren, "expected ')' after expression")
+            return finish_node(parser, .group_expression, start, mark)
+        }
+        for {
+            append_child(parser, parse_expression(parser))
+            if !match(parser, .comma) || at(parser, .right_paren) {
+                break
+            }
+        }
+        _ := expect(parser, .right_paren, "expected ')' after tuple expression")
+        return finish_node(parser, .tuple_expression, start, mark)
+    }
+    if begins_type(parser) {
+        return parse_type(parser)
+    }
+    return error_node(parser, start, "expected expression")
+}
+
+// looks_like_declaration performs bounded token lookahead for the statement
+// grammar's only prefix ambiguity. It balances tuple patterns and parametric
+// brackets but never consumes tokens or resolves a name.
+looks_like_declaration :: proc(parser: ^Parser) -> bool {
+    distance: u32
+    if lookahead_kind(parser, distance) == .left_paren {
+        depth: u32 = 1
+        distance += 1
+        for depth != 0 && lookahead_kind(parser, distance) != .end_of_file {
+            if lookahead_kind(parser, distance) == .left_paren {
+                depth += 1
+            }
+            if lookahead_kind(parser, distance) == .right_paren {
+                depth -= 1
+            }
+            distance += 1
+        }
+        after_pattern := lookahead_kind(parser, distance)
+        return after_pattern == .colon || after_pattern == .colon_equal
+    }
+    if !is_contextual_name(lookahead_kind(parser, distance)) {
+        return false
+    }
+    distance += 1
+    for lookahead_kind(parser, distance) == .comma &&
+        is_contextual_name(lookahead_kind(parser, distance + 1)) {
+        distance += 2
+    }
+    if lookahead_kind(parser, distance) == .left_bracket {
+        depth: u32 = 1
+        distance += 1
+        for depth != 0 && lookahead_kind(parser, distance) != .end_of_file {
+            if lookahead_kind(parser, distance) == .left_bracket {
+                depth += 1
+            }
+            if lookahead_kind(parser, distance) == .right_bracket {
+                depth -= 1
+            }
+            distance += 1
+        }
+    }
+    next := lookahead_kind(parser, distance)
+    return next == .colon || next == .colon_equal || next == .colon_colon
+}
+
+// is_assignment_operator names the closed statement-only assignment family.
+is_assignment_operator :: proc(kind: Token_Kind) -> bool {
+    switch kind {
+    case .equal, .plus_equal, .minus_equal, .star_equal, .slash_equal,
+        .percent_equal, .ampersand_equal, .pipe_equal, .tilde_equal,
+        .shift_left_equal, .shift_right_equal:
+        return true
+    case:
+        return false
+    }
+}
+
+// parse_expression_or_assignment_statement first records comma-separated left
+// expressions, then optionally an assignment operator and equal-number checking
+// candidates. Arity and lvalue validity are semantic responsibilities.
+parse_expression_or_assignment_statement :: proc(
+    parser: ^Parser,
+    finish: bool,
+    allow_composite: bool = true,
+) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    append_child(parser, parse_expression(parser, 1, allow_composite))
+    for match(parser, .comma) {
+        append_child(parser, parse_expression(parser, 1, allow_composite))
+    }
+    kind: Node_Kind = .expression_statement
+    if is_assignment_operator(current_token(parser).kind) {
+        kind = .assignment_statement
+        advance(parser)
+        append_child(parser, parse_expression(parser, 1, allow_composite))
+        for match(parser, .comma) {
+            append_child(parser, parse_expression(parser, 1, allow_composite))
+        }
+    }
+    if finish {
+        finish_item(parser, "expected semicolon after statement")
+    }
+    return finish_node(parser, kind, start, mark)
+}
+
+// parse_simple_statement consumes one break/continue keyword and its required
+// terminator; target legality belongs to control-flow checking.
+parse_simple_statement :: proc(
+    parser: ^Parser,
+    kind: Node_Kind,
+) -> Node_Id {
+    start := parser.position
+    advance(parser)
+    finish_item(parser, "expected semicolon after control-flow statement")
+    return finish_leaf(parser, kind, start)
+}
+
+// parse_return_statement retains an optional result expression and consumes the
+// item terminator. Result arity/type checks are intentionally deferred.
+parse_return_statement :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    if !at(parser, .semicolon) {
+        append_child(parser, parse_expression(parser))
+    }
+    finish_item(parser, "expected semicolon after return")
+    return finish_node(parser, .return_statement, start, mark)
+}
+
+// parse_defer_statement parses one ordinary expression child; the later body
+// checker enforces that the expression is a valid call.
+parse_defer_statement :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    append_child(parser, parse_expression(parser))
+    finish_item(parser, "expected semicolon after defer")
+    return finish_node(parser, .defer_statement, start, mark)
+}
+
+// parse_block wraps a StatementList whose token span begins at the opening brace
+// and excludes the closing brace. The outer Block includes both delimiters.
+parse_block :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    _ := expect(parser, .left_brace, "expected '{' to begin block")
+    list_start := start
+    list_mark := begin_children(parser)
+    skip_semicolons(parser)
+    for !parser.parsing_aborted && !parser_at_end(parser) &&
+        !at(parser, .right_brace) {
+        before := parser.position
+        append_child(parser, parse_statement(parser))
+        if parser.position == before {
+            error_here(parser, "parser made no progress in statement block")
+            advance(parser)
+        }
+        skip_semicolons(parser)
+    }
+    list := finish_node(parser, .statement_list, list_start, list_mark)
+    append_child(parser, list)
+    _ := expect(parser, .right_brace, "expected '}' to end block")
+    return finish_node(parser, .block, start, mark)
+}
+
+// parse_if_statement disables unparenthesized composite literals in its header,
+// then retains optional else-if/else branches as source-ordered children.
+parse_if_statement :: proc(parser: ^Parser) -> Node_Id {
+    if !enter_nested(parser) {
+        return aborted_node(parser)
+    }
+    defer leave_nested(parser)
+
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    append_child(parser, parse_expression(parser, 1, false))
+    append_child(parser, parse_block(parser))
+    if match(parser, .keyword_else) {
+        if at(parser, .keyword_if) {
+            append_child(parser, parse_if_statement(parser))
+        } else {
+            append_child(parser, parse_block(parser))
+        }
+    }
+    _ := match(parser, .semicolon)
+    return finish_node(parser, .if_statement, start, mark)
+}
+
+// begins_iteration_header distinguishes binding `in` forms from conditional
+// loops without consuming source. Parentheses are balanced so a conditional
+// call cannot accidentally become a tuple iteration pattern.
+begins_iteration_header :: proc(parser: ^Parser) -> bool {
+    distance: u32
+    if is_contextual_name(lookahead_kind(parser, distance)) {
+        distance += 1
+    } else if lookahead_kind(parser, distance) == .left_paren {
+        parenthesis_depth: u32
+        for {
+            kind := lookahead_kind(parser, distance)
+            if kind == .end_of_file || kind == .left_brace ||
+                kind == .semicolon {
+                return false
+            }
+            if kind == .left_paren {
+                parenthesis_depth += 1
+            } else if kind == .right_paren {
+                if parenthesis_depth == 0 {
+                    return false
+                }
+                parenthesis_depth -= 1
+            }
+            distance += 1
+            if parenthesis_depth == 0 {
+                break
+            }
+        }
+    } else {
+        return false
+    }
+    if lookahead_kind(parser, distance) == .comma {
+        distance += 1
+        if !is_contextual_name(lookahead_kind(parser, distance)) {
+            return false
+        }
+        distance += 1
+    }
+    return lookahead_kind(parser, distance) == .keyword_in
+}
+
+// parse_for_statement selects infinite, iteration, conditional, or three-clause
+// syntax from tokens alone. Only the semicolon-bearing form receives a ForClause
+// wrapper; a conditional header remains a direct ForStatement child.
+parse_for_statement :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    if at(parser, .left_brace) {
+        append_child(parser, parse_block(parser))
+    } else if begins_iteration_header(parser) {
+        header_start := parser.position
+        header_mark := begin_children(parser)
+        append_child(
+            parser,
+            parse_iteration_binding_pattern(
+                parser,
+                "expected iteration value binding",
+                true,
+            ),
+        )
+        if match(parser, .comma) {
+            append_child(
+                parser,
+                parse_iteration_binding_pattern(
+                    parser,
+                    "expected index binding after ','",
+                    false,
+                ),
+            )
+        }
+        _ := expect(parser, .keyword_in, "expected 'in' in iteration header")
+        append_child(parser, parse_expression(parser, 1, false))
+        header := finish_node(
+            parser,
+            .iteration_header,
+            header_start,
+            header_mark,
+        )
+        append_child(parser, header)
+        append_child(parser, parse_block(parser))
+    } else {
+        header_start := parser.position
+        header_mark := begin_children(parser)
+        if looks_like_declaration(parser) {
+            append_child(parser, parse_declaration(parser, false))
+        } else {
+            append_child(
+                parser,
+                parse_expression_or_assignment_statement(
+                    parser,
+                    false,
+                    false,
+                ),
+            )
+        }
+        if match(parser, .semicolon) {
+            if !at(parser, .semicolon) {
+                append_child(parser, parse_expression(parser, 1, false))
+            }
+            _ := expect(
+                parser,
+                .semicolon,
+                "expected second ';' in for clause",
+            )
+            if !at(parser, .left_brace) {
+                append_child(
+                    parser,
+                    parse_expression_or_assignment_statement(
+                        parser,
+                        false,
+                        false,
+                    ),
+                )
+            }
+            clause := finish_node(
+                parser,
+                .for_clause,
+                header_start,
+                header_mark,
+            )
+            append_child(parser, clause)
+        } else {
+            // A conditional loop has no ForClause wrapper. Its one parsed
+            // header child belongs directly to ForStatement, so retain the
+            // scratch suffix instead of finalizing a separate node.
+        }
+        append_child(parser, parse_block(parser))
+    }
+    _ := match(parser, .semicolon)
+    return finish_node(parser, .for_statement, start, mark)
+}
+
+// parse_switch_statement retains one subject and source-ordered SwitchCase
+// children. Each case owns label expressions followed by one StatementList.
+parse_switch_statement :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    append_child(parser, parse_expression(parser, 1, false))
+    _ := expect(parser, .left_brace, "expected '{' after switch subject")
+    skip_semicolons(parser)
+    for !parser.parsing_aborted && !parser_at_end(parser) &&
+        !at(parser, .right_brace) {
+        case_start := parser.position
+        case_mark := begin_children(parser)
+        _ := expect(parser, .keyword_case, "expected 'case' in switch")
+        if !at(parser, .colon) {
+            append_child(parser, parse_expression(parser))
+            for match(parser, .comma) {
+                append_child(parser, parse_expression(parser))
+            }
+        }
+        _ := expect(
+            parser,
+            .colon,
+            "expected ':' after switch case labels",
+        )
+        list_mark := begin_children(parser)
+        skip_semicolons(parser)
+        for !parser.parsing_aborted && !parser_at_end(parser) &&
+            !at(parser, .keyword_case) && !at(parser, .right_brace) {
+            append_child(parser, parse_statement(parser))
+            skip_semicolons(parser)
+        }
+        list := finish_node(parser, .statement_list, case_start, list_mark)
+        append_child(parser, list)
+        case_node := finish_node(parser, .switch_case, case_start, case_mark)
+        append_child(parser, case_node)
+    }
+    _ := expect(parser, .right_brace, "expected '}' after switch cases")
+    _ := match(parser, .semicolon)
+    return finish_node(parser, .switch_statement, start, mark)
+}
+
+// parse_when_statement parses both compile-time branches as statement blocks
+// and retains else-when recursion without selecting a target-dependent branch.
+parse_when_statement :: proc(parser: ^Parser) -> Node_Id {
+    if !enter_nested(parser) {
+        return aborted_node(parser)
+    }
+    defer leave_nested(parser)
+
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    append_child(parser, parse_expression(parser, 1, false))
+    append_child(parser, parse_block(parser))
+    if match(parser, .keyword_else) {
+        if at(parser, .keyword_when) {
+            append_child(parser, parse_when_statement(parser))
+        } else {
+            append_child(parser, parse_block(parser))
+        }
+    }
+    _ := match(parser, .semicolon)
+    return finish_node(parser, .when_statement, start, mark)
+}
+
+// parse_deny_statement orders selectors before one governed lexical block.
+parse_deny_statement :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    parse_deny_selectors(parser)
+    append_child(parser, parse_block(parser))
+    _ := match(parser, .semicolon)
+    return finish_node(parser, .deny_statement, start, mark)
+}
+
+// parse_unchecked_statement records one governed block; bounds-policy meaning
+// is assigned only after semantic analysis.
+parse_unchecked_statement :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    append_child(parser, parse_block(parser))
+    _ := match(parser, .semicolon)
+    return finish_node(parser, .unchecked_statement, start, mark)
+}
+
+// parse_asm separates language-owned input/output/clobber directives from raw
+// target instruction rows. Ordinary expressions parse input values; target
+// instruction grammar is deliberately left to the profile-specific assembler.
+parse_asm :: proc(parser: ^Parser, statement_position: bool) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    advance(parser)
+    _ := expect_name(
+        parser,
+        "expected assembly architecture after 'asm'",
+    )
+    has_result := false
+    if match(parser, .arrow) {
+        has_result = true
+        append_child(parser, parse_type(parser))
+    }
+    _ := expect(
+        parser,
+        .left_brace,
+        "expected '{' before assembly instructions",
+    )
+
+    for !parser.parsing_aborted && !parser_at_end(parser) &&
+        !at(parser, .right_brace) {
+        if match(parser, .semicolon) {
+            continue
+        }
+        if at(parser, .ellipsis) {
+            append_child(parser, parse_synthesis(parser, .assembly, false))
+            continue
+        }
+        row_start := parser.position
+        if at(parser, .keyword_in) {
+            advance(parser)
+            _ := expect_name(
+                parser,
+                "expected fixed register after assembly 'in'",
+            )
+            _ := expect(
+                parser,
+                .equal,
+                "expected '=' before assembly input value",
+            )
+            row_mark := begin_children(parser)
+            append_child(parser, parse_expression(parser, 1, false))
+            _ := match(parser, .semicolon)
+            row := finish_node(parser, .asm_input, row_start, row_mark)
+            append_child(parser, row)
+            continue
+        }
+        if at(parser, .keyword_out) {
+            advance(parser)
+            _ := expect_name(
+                parser,
+                "expected fixed register after assembly 'out'",
+            )
+            for !parser_at_end(parser) && !at(parser, .semicolon) &&
+                !at(parser, .right_brace) {
+                advance(parser)
+            }
+            _ := match(parser, .semicolon)
+            append_child(parser, finish_leaf(parser, .asm_output, row_start))
+            continue
+        }
+        if at(parser, .keyword_clobber) {
+            advance(parser)
+            for !parser_at_end(parser) && !at(parser, .semicolon) &&
+                !at(parser, .right_brace) {
+                advance(parser)
+            }
+            _ := match(parser, .semicolon)
+            append_child(parser, finish_leaf(parser, .asm_clobber, row_start))
+            continue
+        }
+        for !parser_at_end(parser) && !at(parser, .semicolon) &&
+            !at(parser, .right_brace) && !at(parser, .ellipsis) {
+            advance(parser)
+        }
+        if parser.position == row_start {
+            error_here(parser, "expected assembly directive or instruction")
+            advance(parser)
+        } else {
+            _ := match(parser, .semicolon)
+            append_child(
+                parser,
+                finish_leaf(parser, .asm_instruction, row_start),
+            )
+        }
+    }
+    _ := expect(
+        parser,
+        .right_brace,
+        "expected '}' after assembly instructions",
+    )
+    if !parser.parsing_aborted && statement_position && has_result {
+        compiler_diagnostic.error_text(
+            parser.diagnostics,
+            parser.tree.tokens.data[cast[usize](start)].range,
+            "value-producing asm expression cannot be used as an asm statement",
+        )
+    }
+    kind: Node_Kind = .asm_statement
+    if has_result {
+        kind = .asm_expression
+    }
+    return finish_node(parser, kind, start, mark)
+}
+
+// parse_statement dispatches the closed statement-position grammar and charges
+// one shared recursion-budget unit. Declaration lookahead is the only ambiguous
+// prefix; every keyword construct has a direct branch.
+parse_statement :: proc(parser: ^Parser) -> Node_Id {
+    if !enter_nested(parser) {
+        return aborted_node(parser)
+    }
+    defer leave_nested(parser)
+
+    if at(parser, .left_brace) {
+        return parse_block(parser)
+    }
+    if at(parser, .keyword_if) {
+        return parse_if_statement(parser)
+    }
+    if at(parser, .keyword_for) {
+        return parse_for_statement(parser)
+    }
+    if at(parser, .keyword_switch) {
+        return parse_switch_statement(parser)
+    }
+    if at(parser, .keyword_when) {
+        return parse_when_statement(parser)
+    }
+    if at(parser, .keyword_deny) {
+        return parse_deny_statement(parser)
+    }
+    if at(parser, .keyword_unchecked) {
+        return parse_unchecked_statement(parser)
+    }
+    if at(parser, .keyword_judge) {
+        return parse_judgment(parser)
+    }
+    if at(parser, .ellipsis) {
+        return parse_synthesis(parser, .statement, true)
+    }
+    if at(parser, .keyword_return) {
+        return parse_return_statement(parser)
+    }
+    if at(parser, .keyword_break) {
+        return parse_simple_statement(parser, .break_statement)
+    }
+    if at(parser, .keyword_continue) {
+        return parse_simple_statement(parser, .continue_statement)
+    }
+    if at(parser, .keyword_defer) {
+        return parse_defer_statement(parser)
+    }
+    if at(parser, .keyword_asm) {
+        assembly := parse_asm(parser, true)
+        finish_item(parser, "expected semicolon after assembly statement")
+        return assembly
+    }
+    if looks_like_declaration(parser) {
+        start := parser.position
+        mark := begin_children(parser)
+        append_child(parser, parse_declaration(parser))
+        return finish_node(parser, .declaration_statement, start, mark)
+    }
+    return parse_expression_or_assignment_statement(parser, true)
+}
+
+// parse_source_root fixes the complete-file order: package, package docs,
+// imports, then one declaration list through EOF. EOF itself is not consumed.
+parse_source_root :: proc(parser: ^Parser) -> Node_Id {
+    start := parser.position
+    mark := begin_children(parser)
+    append_child(parser, parse_package_clause(parser))
+    for at(parser, .keyword_docs) {
+        append_child(parser, parse_documentation(parser))
+    }
+    for at(parser, .keyword_import) {
+        append_child(parser, parse_import_clause(parser))
+    }
+    append_child(parser, parse_declaration_list(parser, .end_of_file))
+    return finish_node(parser, .source_file, start, mark)
+}
+
+// parse_source_file lexes and parses one complete source into an initialized
+// caller-owned Syntax_Tree. Recoverable lexical and parser errors still produce
+// a rooted tree. The caller must destroy tree after all dumps and diagnostics.
+pub parse_source_file :: proc(
+    source: ^compiler_source.Source_File,
+    diagnostics: ^compiler_diagnostic.Sink,
+    tree: ^Syntax_Tree,
+) {
+    syntax_tree_init(tree)
+    lex(source, diagnostics, &tree.tokens)
+
+    parser := Parser{
+        tree = tree,
+        diagnostics = diagnostics,
+    }
+    node_id_buffer_init(&parser.scratch)
+    tree.root = parse_source_root(&parser)
+    node_id_buffer_destroy(&parser.scratch)
+}
