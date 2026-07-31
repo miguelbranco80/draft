@@ -70,6 +70,47 @@ test_basic_semicolon_insertion :: proc(test: ^testing.Test) {
     testing.expect(test, !compiler_diagnostic.has_errors(&diagnostics))
 }
 
+// test_keyword_vocabulary keeps the length-grouped production lookup honest.
+// The trailing plus prevents EOF semicolon insertion so the fixed expected
+// sequence contains exactly one row for every reserved/contextual spelling,
+// followed by that sentinel operator and EOF.
+test_keyword_vocabulary :: proc(test: ^testing.Test) {
+    source: compiler_source.Source_File
+    diagnostics: compiler_diagnostic.Sink
+    tokens: Token_List
+    testing.expect(test, compiler_source.init_from_text(
+        &source,
+        "keywords.draft",
+        "package import as pub proc c align struct enum variant union distinct simd packed bits thread_local foreign export if else for in out switch case break continue return defer when unchecked deny asm clobber flags memory docs judge file folder type integer float number true false nil +",
+    ) == .none)
+    compiler_diagnostic.init(&diagnostics)
+    token_list_init(&tokens)
+    defer token_list_destroy(&tokens)
+    defer compiler_diagnostic.destroy(&diagnostics)
+    defer compiler_source.destroy(&source)
+
+    lex(&source, &diagnostics, &tokens)
+    expected := [49]Token_Kind{
+        .keyword_package, .keyword_import, .keyword_as, .keyword_pub,
+        .keyword_proc, .keyword_c, .keyword_align, .keyword_struct,
+        .keyword_enum, .keyword_variant, .keyword_union, .keyword_distinct,
+        .keyword_simd, .keyword_packed, .keyword_bits, .keyword_thread_local,
+        .keyword_foreign, .keyword_export, .keyword_if, .keyword_else,
+        .keyword_for, .keyword_in, .keyword_out, .keyword_switch,
+        .keyword_case, .keyword_break, .keyword_continue, .keyword_return,
+        .keyword_defer, .keyword_when, .keyword_unchecked, .keyword_deny,
+        .keyword_asm, .keyword_clobber, .keyword_flags, .keyword_memory,
+        .keyword_docs, .keyword_judge, .keyword_file, .keyword_folder,
+        .keyword_type, .keyword_integer, .keyword_float, .keyword_number,
+        .keyword_true, .keyword_false, .keyword_nil, .plus, .end_of_file,
+    }
+    testing.expect(test, tokens.length == len(expected))
+    for kind, index in expected {
+        expect_kind(test, &tokens, index, kind)
+    }
+    testing.expect(test, !compiler_diagnostic.has_errors(&diagnostics))
+}
+
 // test_delimiters_and_attachments proves newlines inside parentheses/brackets
 // do not terminate statements and a docs/file attachment group terminates only
 // once after its final attachment.

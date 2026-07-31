@@ -29,7 +29,7 @@ execute_process(
   ERROR_VARIABLE standard_error
 )
 if(NOT status EQUAL 0 OR
-   NOT standard_output MATCHES "test passed: 8 selected procedures")
+   NOT standard_output MATCHES "test passed: 9 selected procedures")
   message(FATAL_ERROR
     "self-hosted frontend unit tests failed (${status})\n"
     "stdout:\n${standard_output}stderr:\n${standard_error}")

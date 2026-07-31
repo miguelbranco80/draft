@@ -51,18 +51,6 @@ peek :: proc(lexer: ^Raw_Lexer, lookahead: u32) -> u8 {
     return lexer.bytes[cast[usize](lexer.offset + lookahead)]
 }
 
-starts_with :: proc(lexer: ^Raw_Lexer, spelling: string) -> bool {
-    if len(spelling) > len(lexer.bytes) - cast[usize](lexer.offset) {
-        return false
-    }
-    for index: usize = 0; index < len(spelling); index += 1 {
-        if lexer.bytes[cast[usize](lexer.offset) + index] != spelling[index] {
-            return false
-        }
-    }
-    return true
-}
-
 add :: proc(lexer: ^Raw_Lexer, kind: Token_Kind, begin, end: u32) {
     token_list_append(lexer.raw, Token{
         kind = kind,
@@ -184,149 +172,73 @@ bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
     return true
 }
 
-// keyword_kind is intentionally a direct, closed spelling table. The scanner
-// calls it once per identifier; no hash state or locale participates.
+// keyword_kind first selects the only keyword group with the identifier's byte
+// length, then performs exact byte comparisons inside that small group. Length
+// is already a complete rejection for every other keyword, so repeating that
+// check through all 47 spellings adds work without adding clarity or safety.
+// The closed groups remain auditable, allocation-free, and locale-independent.
 keyword_kind :: proc(spelling: []u8) -> Token_Kind {
-    if bytes_equal_text(spelling, "package") {
-        return .keyword_package
-    }
-    if bytes_equal_text(spelling, "import") {
-        return .keyword_import
-    }
-    if bytes_equal_text(spelling, "as") {
-        return .keyword_as
-    }
-    if bytes_equal_text(spelling, "pub") {
-        return .keyword_pub
-    }
-    if bytes_equal_text(spelling, "proc") {
-        return .keyword_proc
-    }
-    if bytes_equal_text(spelling, "c") {
-        return .keyword_c
-    }
-    if bytes_equal_text(spelling, "align") {
-        return .keyword_align
-    }
-    if bytes_equal_text(spelling, "struct") {
-        return .keyword_struct
-    }
-    if bytes_equal_text(spelling, "enum") {
-        return .keyword_enum
-    }
-    if bytes_equal_text(spelling, "variant") {
-        return .keyword_variant
-    }
-    if bytes_equal_text(spelling, "union") {
-        return .keyword_union
-    }
-    if bytes_equal_text(spelling, "distinct") {
-        return .keyword_distinct
-    }
-    if bytes_equal_text(spelling, "simd") {
-        return .keyword_simd
-    }
-    if bytes_equal_text(spelling, "packed") {
-        return .keyword_packed
-    }
-    if bytes_equal_text(spelling, "bits") {
-        return .keyword_bits
-    }
-    if bytes_equal_text(spelling, "thread_local") {
-        return .keyword_thread_local
-    }
-    if bytes_equal_text(spelling, "foreign") {
-        return .keyword_foreign
-    }
-    if bytes_equal_text(spelling, "export") {
-        return .keyword_export
-    }
-    if bytes_equal_text(spelling, "if") {
-        return .keyword_if
-    }
-    if bytes_equal_text(spelling, "else") {
-        return .keyword_else
-    }
-    if bytes_equal_text(spelling, "for") {
-        return .keyword_for
-    }
-    if bytes_equal_text(spelling, "in") {
-        return .keyword_in
-    }
-    if bytes_equal_text(spelling, "out") {
-        return .keyword_out
-    }
-    if bytes_equal_text(spelling, "switch") {
-        return .keyword_switch
-    }
-    if bytes_equal_text(spelling, "case") {
-        return .keyword_case
-    }
-    if bytes_equal_text(spelling, "break") {
-        return .keyword_break
-    }
-    if bytes_equal_text(spelling, "continue") {
-        return .keyword_continue
-    }
-    if bytes_equal_text(spelling, "return") {
-        return .keyword_return
-    }
-    if bytes_equal_text(spelling, "defer") {
-        return .keyword_defer
-    }
-    if bytes_equal_text(spelling, "when") {
-        return .keyword_when
-    }
-    if bytes_equal_text(spelling, "unchecked") {
-        return .keyword_unchecked
-    }
-    if bytes_equal_text(spelling, "deny") {
-        return .keyword_deny
-    }
-    if bytes_equal_text(spelling, "asm") {
-        return .keyword_asm
-    }
-    if bytes_equal_text(spelling, "clobber") {
-        return .keyword_clobber
-    }
-    if bytes_equal_text(spelling, "flags") {
-        return .keyword_flags
-    }
-    if bytes_equal_text(spelling, "memory") {
-        return .keyword_memory
-    }
-    if bytes_equal_text(spelling, "docs") {
-        return .keyword_docs
-    }
-    if bytes_equal_text(spelling, "judge") {
-        return .keyword_judge
-    }
-    if bytes_equal_text(spelling, "file") {
-        return .keyword_file
-    }
-    if bytes_equal_text(spelling, "folder") {
-        return .keyword_folder
-    }
-    if bytes_equal_text(spelling, "type") {
-        return .keyword_type
-    }
-    if bytes_equal_text(spelling, "integer") {
-        return .keyword_integer
-    }
-    if bytes_equal_text(spelling, "float") {
-        return .keyword_float
-    }
-    if bytes_equal_text(spelling, "number") {
-        return .keyword_number
-    }
-    if bytes_equal_text(spelling, "true") {
-        return .keyword_true
-    }
-    if bytes_equal_text(spelling, "false") {
-        return .keyword_false
-    }
-    if bytes_equal_text(spelling, "nil") {
-        return .keyword_nil
+    switch len(spelling) {
+    case 1:
+        if bytes_equal_text(spelling, "c") { return .keyword_c; }
+    case 2:
+        if bytes_equal_text(spelling, "as") { return .keyword_as; }
+        if bytes_equal_text(spelling, "if") { return .keyword_if; }
+        if bytes_equal_text(spelling, "in") { return .keyword_in; }
+    case 3:
+        if bytes_equal_text(spelling, "asm") { return .keyword_asm; }
+        if bytes_equal_text(spelling, "for") { return .keyword_for; }
+        if bytes_equal_text(spelling, "nil") { return .keyword_nil; }
+        if bytes_equal_text(spelling, "out") { return .keyword_out; }
+        if bytes_equal_text(spelling, "pub") { return .keyword_pub; }
+    case 4:
+        if bytes_equal_text(spelling, "bits") { return .keyword_bits; }
+        if bytes_equal_text(spelling, "case") { return .keyword_case; }
+        if bytes_equal_text(spelling, "deny") { return .keyword_deny; }
+        if bytes_equal_text(spelling, "docs") { return .keyword_docs; }
+        if bytes_equal_text(spelling, "else") { return .keyword_else; }
+        if bytes_equal_text(spelling, "enum") { return .keyword_enum; }
+        if bytes_equal_text(spelling, "file") { return .keyword_file; }
+        if bytes_equal_text(spelling, "proc") { return .keyword_proc; }
+        if bytes_equal_text(spelling, "simd") { return .keyword_simd; }
+        if bytes_equal_text(spelling, "true") { return .keyword_true; }
+        if bytes_equal_text(spelling, "type") { return .keyword_type; }
+        if bytes_equal_text(spelling, "when") { return .keyword_when; }
+    case 5:
+        if bytes_equal_text(spelling, "align") { return .keyword_align; }
+        if bytes_equal_text(spelling, "break") { return .keyword_break; }
+        if bytes_equal_text(spelling, "defer") { return .keyword_defer; }
+        if bytes_equal_text(spelling, "false") { return .keyword_false; }
+        if bytes_equal_text(spelling, "flags") { return .keyword_flags; }
+        if bytes_equal_text(spelling, "float") { return .keyword_float; }
+        if bytes_equal_text(spelling, "judge") { return .keyword_judge; }
+        if bytes_equal_text(spelling, "union") { return .keyword_union; }
+    case 6:
+        if bytes_equal_text(spelling, "export") { return .keyword_export; }
+        if bytes_equal_text(spelling, "folder") { return .keyword_folder; }
+        if bytes_equal_text(spelling, "import") { return .keyword_import; }
+        if bytes_equal_text(spelling, "memory") { return .keyword_memory; }
+        if bytes_equal_text(spelling, "number") { return .keyword_number; }
+        if bytes_equal_text(spelling, "packed") { return .keyword_packed; }
+        if bytes_equal_text(spelling, "return") { return .keyword_return; }
+        if bytes_equal_text(spelling, "struct") { return .keyword_struct; }
+        if bytes_equal_text(spelling, "switch") { return .keyword_switch; }
+    case 7:
+        if bytes_equal_text(spelling, "clobber") { return .keyword_clobber; }
+        if bytes_equal_text(spelling, "foreign") { return .keyword_foreign; }
+        if bytes_equal_text(spelling, "integer") { return .keyword_integer; }
+        if bytes_equal_text(spelling, "package") { return .keyword_package; }
+        if bytes_equal_text(spelling, "variant") { return .keyword_variant; }
+    case 8:
+        if bytes_equal_text(spelling, "continue") { return .keyword_continue; }
+        if bytes_equal_text(spelling, "distinct") { return .keyword_distinct; }
+    case 9:
+        if bytes_equal_text(spelling, "unchecked") { return .keyword_unchecked; }
+    case 12:
+        if bytes_equal_text(spelling, "thread_local") {
+            return .keyword_thread_local
+        }
+    case:
     }
     return .identifier
 }
@@ -382,7 +294,8 @@ scan_block_comment :: proc(lexer: ^Raw_Lexer) {
     begin := lexer.offset
     lexer.offset += 2
     for !at_end(lexer) {
-        if starts_with(lexer, "*/") {
+        if current(lexer) == cast[u8]('*') && has(lexer, 1) &&
+            peek(lexer, 1) == cast[u8]('/') {
             lexer.offset += 2
             return
         }
@@ -492,7 +405,7 @@ scan_number :: proc(lexer: ^Raw_Lexer) {
     scan_digit_sequence(lexer, 10, true, .integer_requires_digit)
     is_float := false
     if !at_end(lexer) && current(lexer) == cast[u8]('.') &&
-        !starts_with(lexer, "..") {
+        !(has(lexer, 1) && peek(lexer, 1) == cast[u8]('.')) {
         is_float = true
         lexer.offset += 1
         scan_digit_sequence(
@@ -655,97 +568,23 @@ scan_raw_string :: proc(lexer: ^Raw_Lexer) {
     add(lexer, .raw_string_literal, begin, lexer.offset)
 }
 
-consume_fixed :: proc(
-    lexer: ^Raw_Lexer,
-    spelling: string,
-    kind: Token_Kind,
-    begin: u32,
-) -> bool {
-    if !starts_with(lexer, spelling) {
-        return false
-    }
-    lexer.offset += cast[u32](len(spelling))
-    add(lexer, kind, begin, lexer.offset)
-    return true
-}
-
+// scan_punctuation_or_invalid dispatches first on the current byte, then reads
+// only the one or two lookahead bytes which can extend that spelling. The
+// vocabulary is closed and longest-match remains explicit in each branch. This
+// avoids probing every multi-byte operator for every punctuation token—a cost
+// which is particularly visible in Draft because each failed slice/string
+// comparison retains its own checked accesses.
 scan_punctuation_or_invalid :: proc(lexer: ^Raw_Lexer) {
     begin := lexer.offset
-    if consume_fixed(lexer, "<<=", .shift_left_equal, begin) {
-        return
+    byte := current(lexer)
+    next: u8
+    has_next := has(lexer, 1)
+    if has_next {
+        next = peek(lexer, 1)
     }
-    if consume_fixed(lexer, ">>=", .shift_right_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "...", .ellipsis, begin) {
-        return
-    }
-    if consume_fixed(lexer, "..", .dot_dot, begin) {
-        return
-    }
-    if consume_fixed(lexer, "---", .uninitialized, begin) {
-        return
-    }
-    if consume_fixed(lexer, "::", .colon_colon, begin) {
-        return
-    }
-    if consume_fixed(lexer, ":=", .colon_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "->", .arrow, begin) {
-        return
-    }
-    if consume_fixed(lexer, "+=", .plus_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "-=", .minus_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "*=", .star_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "/=", .slash_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "%=", .percent_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "&=", .ampersand_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "|=", .pipe_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "~=", .tilde_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "==", .equal_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "!=", .bang_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "<=", .less_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, ">=", .greater_equal, begin) {
-        return
-    }
-    if consume_fixed(lexer, "<<", .shift_left, begin) {
-        return
-    }
-    if consume_fixed(lexer, ">>", .shift_right, begin) {
-        return
-    }
-    if consume_fixed(lexer, "&&", .logical_and, begin) {
-        return
-    }
-    if consume_fixed(lexer, "||", .logical_or, begin) {
-        return
-    }
-
     kind: Token_Kind = .invalid
-    switch current(lexer) {
+    width: u32 = 1
+    switch byte {
     case '(': kind = .left_paren
     case ')': kind = .right_paren
     case '[': kind = .left_bracket
@@ -754,32 +593,137 @@ scan_punctuation_or_invalid :: proc(lexer: ^Raw_Lexer) {
     case '}': kind = .right_brace
     case ',': kind = .comma
     case ';': kind = .semicolon
-    case ':': kind = .colon
-    case '.': kind = .dot
+    case ':':
+        if has_next && next == cast[u8](':') {
+            kind = .colon_colon
+            width = 2
+        } else if has_next && next == cast[u8]('=') {
+            kind = .colon_equal
+            width = 2
+        } else {
+            kind = .colon
+        }
+    case '.':
+        if has_next && next == cast[u8]('.') {
+            kind = .dot_dot
+            width = 2
+            if has(lexer, 2) && peek(lexer, 2) == cast[u8]('.') {
+                kind = .ellipsis
+                width = 3
+            }
+        } else {
+            kind = .dot
+        }
     case '#': kind = .hash
-    case '+': kind = .plus
-    case '-': kind = .minus
-    case '*': kind = .star
-    case '/': kind = .slash
-    case '%': kind = .percent
-    case '&': kind = .ampersand
-    case '|': kind = .pipe
+    case '+':
+        kind = .plus
+        if has_next && next == cast[u8]('=') {
+            kind = .plus_equal
+            width = 2
+        }
+    case '-':
+        kind = .minus
+        if has_next && next == cast[u8]('-') && has(lexer, 2) &&
+            peek(lexer, 2) == cast[u8]('-') {
+            kind = .uninitialized
+            width = 3
+        } else if has_next && next == cast[u8]('>') {
+            kind = .arrow
+            width = 2
+        } else if has_next && next == cast[u8]('=') {
+            kind = .minus_equal
+            width = 2
+        }
+    case '*':
+        kind = .star
+        if has_next && next == cast[u8]('=') {
+            kind = .star_equal
+            width = 2
+        }
+    case '/':
+        kind = .slash
+        if has_next && next == cast[u8]('=') {
+            kind = .slash_equal
+            width = 2
+        }
+    case '%':
+        kind = .percent
+        if has_next && next == cast[u8]('=') {
+            kind = .percent_equal
+            width = 2
+        }
+    case '&':
+        kind = .ampersand
+        if has_next && next == cast[u8]('=') {
+            kind = .ampersand_equal
+            width = 2
+        } else if has_next && next == cast[u8]('&') {
+            kind = .logical_and
+            width = 2
+        }
+    case '|':
+        kind = .pipe
+        if has_next && next == cast[u8]('=') {
+            kind = .pipe_equal
+            width = 2
+        } else if has_next && next == cast[u8]('|') {
+            kind = .logical_or
+            width = 2
+        }
     case '^': kind = .caret
-    case '!': kind = .bang
-    case '~': kind = .tilde
-    case '=': kind = .equal
-    case '<': kind = .less
-    case '>': kind = .greater
+    case '!':
+        kind = .bang
+        if has_next && next == cast[u8]('=') {
+            kind = .bang_equal
+            width = 2
+        }
+    case '~':
+        kind = .tilde
+        if has_next && next == cast[u8]('=') {
+            kind = .tilde_equal
+            width = 2
+        }
+    case '=':
+        kind = .equal
+        if has_next && next == cast[u8]('=') {
+            kind = .equal_equal
+            width = 2
+        }
+    case '<':
+        kind = .less
+        if has_next && next == cast[u8]('<') {
+            kind = .shift_left
+            width = 2
+            if has(lexer, 2) && peek(lexer, 2) == cast[u8]('=') {
+                kind = .shift_left_equal
+                width = 3
+            }
+        } else if has_next && next == cast[u8]('=') {
+            kind = .less_equal
+            width = 2
+        }
+    case '>':
+        kind = .greater
+        if has_next && next == cast[u8]('>') {
+            kind = .shift_right
+            width = 2
+            if has(lexer, 2) && peek(lexer, 2) == cast[u8]('=') {
+                kind = .shift_right_equal
+                width = 3
+            }
+        } else if has_next && next == cast[u8]('=') {
+            kind = .greater_equal
+            width = 2
+        }
     case:
     }
     if kind != .invalid {
-        lexer.offset += 1
+        lexer.offset += width
         add(lexer, kind, begin, lexer.offset)
         return
     }
 
-    byte := current(lexer)
-    width: u32 = 1
+    width = 1
     if byte >= 0x80 {
         decoded_width := utf8_scalar_width(lexer.bytes, lexer.offset)
         if decoded_width != 0 {
@@ -810,13 +754,16 @@ scan_one :: proc(lexer: ^Raw_Lexer) {
         scan_newline(lexer)
         return
     }
-    if starts_with(lexer, "//") {
-        scan_line_comment(lexer)
-        return
-    }
-    if starts_with(lexer, "/*") {
-        scan_block_comment(lexer)
-        return
+    if byte == cast[u8]('/') && has(lexer, 1) {
+        next := peek(lexer, 1)
+        if next == cast[u8]('/') {
+            scan_line_comment(lexer)
+            return
+        }
+        if next == cast[u8]('*') {
+            scan_block_comment(lexer)
+            return
+        }
     }
     if is_identifier_start(byte) {
         scan_identifier(lexer)
