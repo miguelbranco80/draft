@@ -61,6 +61,31 @@ The semantic and native pipeline is complete without the elaborator. The
 elaborator closes typed holes in an otherwise ordinary program; it is not the
 foundation on which ordinary parsing, checking, or code generation depends.
 
+### Self-hosted frontend replacement boundary
+
+The first self-hosted slice lives under `compiler/` and is compiled by the C++
+bootstrap into the build-tree-only `draftc-next` executable. It owns source
+bytes and coordinates, structured lexical diagnostics, token storage, and the
+complete production lexer including semicolon insertion. `draftc-next` accepts
+only `lex <file.draft>`; it is deliberately absent from the install set until a
+coherent public compiler command surface exists.
+
+Replacement proceeds at phase boundaries rather than by mixing C++ and Draft
+inside one lexer. The C++ `draftc lex` remains the oracle while both
+implementations exist. A registered differential test supplies every Draft
+source under `core`, `compiler`, `examples`, `lib`, and `tools`, plus malformed
+and missing inputs, to both processes and compares stdout, stderr, and exit
+status exactly. Focused same-package Draft tests separately exercise scanner
+and semicolon-insertion invariants. The next frontend slice can therefore
+consume the proven Draft token table directly, while the C++ parser remains
+authoritative until its own replacement reaches the same gate.
+
+This boundary does not couple the self-hosted frontend to LLVM. LLVM 22 remains
+part of the C++ bootstrap and native backend; the Draft source, diagnostic, and
+syntax packages depend only on ordinary core allocation, formatting, and OS
+facilities. Backend migration can happen later behind MIR/target interfaces
+without delaying source-to-token self-hosting.
+
 ```text
  Source/package loader
           |

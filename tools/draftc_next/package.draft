@@ -1,0 +1,176 @@
+// Draft-written staging driver for the self-hosted compiler frontend.
+//
+// This executable currently owns exactly one command, `lex`: it loads one
+// source file, invokes compiler_syntax.lex, and renders the same stdout/stderr
+// bytes and exit status as the C++ bootstrap driver. Keeping the command narrow
+// makes the bootstrap replacement measurable and reversible at a phase seam;
+// later parser and semantic slices can join this driver without placing LLVM or
+// native-linker behavior in the frontend packages.
+//
+// main owns all process-facing sources, token storage, diagnostics, and output
+// builders until the final writes complete. The imported compiler packages do
+// not observe arguments or standard streams. Relevant specification: section
+// 4, "Source text and literals".
+package draftc_next
+
+import core/os
+import compiler/diagnostic as compiler_diagnostic
+import compiler/source as compiler_source
+import compiler/syntax as compiler_syntax
+import compiler/text as compiler_text
+
+// text_equal performs exact command spelling comparison without locale or
+// normalization. Process arguments are borrowed for the process lifetime.
+text_equal :: proc(left, right: string) -> bool {
+    if len(left) != len(right) {
+        return false
+    }
+    for index: usize = 0; index < len(left); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
+}
+
+// append_escaped_token copies one token spelling under the bootstrap dump
+// contract. LF, CR, tab, and backslash have readable escapes; printable ASCII
+// is retained; every other byte is a fixed question mark. This intentionally
+// does not decode UTF-8 or depend on terminal encoding.
+append_escaped_token :: proc(output: ^compiler_text.Builder, spelling: []u8) {
+    for byte in spelling {
+        switch byte {
+        case '\n': compiler_text.append_text(output, "\\n")
+        case '\r': compiler_text.append_text(output, "\\r")
+        case '\t': compiler_text.append_text(output, "\\t")
+        case '\\': compiler_text.append_text(output, "\\\\")
+        case:
+            if byte >= 0x20 && byte <= 0x7e {
+                compiler_text.append_byte(output, byte)
+            } else {
+                compiler_text.append_byte(output, cast[u8]('?'))
+            }
+        }
+    }
+}
+
+// render_tokens appends one line per public lexer token. Line and column are
+// one-based source coordinates; inserted semicolons have no quoted spelling;
+// EOF has neither an inserted marker nor source spelling.
+render_tokens :: proc(
+    source: ^compiler_source.Source_File,
+    tokens: ^compiler_syntax.Token_List,
+    output: ^compiler_text.Builder,
+) {
+    for token in compiler_syntax.token_list_view(tokens) {
+        coordinate := compiler_source.line_column(source, token.range.begin)
+        compiler_text.append_unsigned(output, cast[usize](coordinate.line))
+        compiler_text.append_byte(output, cast[u8](':'))
+        compiler_text.append_unsigned(output, cast[usize](coordinate.column))
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_text(
+            output,
+            compiler_syntax.token_kind_name(token.kind),
+        )
+        if token.inserted {
+            compiler_text.append_text(output, " [inserted]")
+        } else if token.kind != .end_of_file {
+            compiler_text.append_text(output, " \"")
+            append_escaped_token(
+                output,
+                compiler_source.bytes_in_range(source, token.range),
+            )
+            compiler_text.append_byte(output, cast[u8]('"'))
+        }
+        compiler_text.append_byte(output, cast[u8]('\n'))
+    }
+}
+
+// render_load_error maps the source owner's closed failure set to the current
+// bootstrap command spelling. Oversized source is a read failure at this
+// process boundary because no valid Source_File can be published from it.
+render_load_error :: proc(
+    output: ^compiler_text.Builder,
+    path: string,
+    error: compiler_source.Load_Error,
+) {
+    compiler_text.append_text(output, "error: ")
+    if error == .cannot_open {
+        compiler_text.append_text(output, "cannot open source file '")
+    } else {
+        compiler_text.append_text(output, "cannot read source file '")
+    }
+    compiler_text.append_text(output, path)
+    compiler_text.append_text(output, "'\n")
+}
+
+// run_lex owns one complete command transaction. Token output is written even
+// when lexical diagnostics exist, matching bootstrap inspection behavior; the
+// diagnostics follow on stderr and determine the nonzero status.
+run_lex :: proc(path: string) -> int {
+    source: compiler_source.Source_File
+    load_error := compiler_source.load(&source, path)
+    defer compiler_source.destroy(&source)
+    if load_error != .none {
+        error_output: compiler_text.Builder
+        compiler_text.init(&error_output)
+        defer compiler_text.destroy(&error_output)
+        render_load_error(&error_output, path, load_error)
+        write_error := os.write_all(
+            os.standard_error,
+            compiler_text.view(&error_output),
+        )
+        if write_error != .none {
+            return 1
+        }
+        return 1
+    }
+
+    diagnostics: compiler_diagnostic.Sink
+    tokens: compiler_syntax.Token_List
+    token_output: compiler_text.Builder
+    diagnostic_output: compiler_text.Builder
+    compiler_diagnostic.init(&diagnostics)
+    compiler_syntax.token_list_init(&tokens)
+    compiler_text.init(&token_output)
+    compiler_text.init(&diagnostic_output)
+    defer compiler_text.destroy(&diagnostic_output)
+    defer compiler_text.destroy(&token_output)
+    defer compiler_syntax.token_list_destroy(&tokens)
+    defer compiler_diagnostic.destroy(&diagnostics)
+
+    compiler_syntax.lex(&source, &diagnostics, &tokens)
+    render_tokens(&source, &tokens, &token_output)
+    compiler_diagnostic.render(&source, &diagnostics, &diagnostic_output)
+
+    if os.write_all(
+        os.standard_output,
+        compiler_text.view(&token_output),
+    ) != .none {
+        return 1
+    }
+    if os.write_all(
+        os.standard_error,
+        compiler_text.view(&diagnostic_output),
+    ) != .none {
+        return 1
+    }
+    return 1 if compiler_diagnostic.has_errors(&diagnostics) else 0
+}
+
+// main accepts only the implemented phase so an unimplemented command cannot
+// silently fall back to the bootstrap or claim self-hosted coverage.
+main :: proc() -> int {
+    arguments := os.args()
+    if len(arguments) == 3 && text_equal(arguments[1], "lex") {
+        return run_lex(arguments[2])
+    }
+    write_error := os.write_text_all(
+        os.standard_error,
+        "usage:\n  draftc-next lex <file.draft>\n",
+    )
+    if write_error != .none {
+        return 1
+    }
+    return 1
+}

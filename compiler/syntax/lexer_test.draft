@@ -1,0 +1,170 @@
+// Focused self-hosted lexer tests.
+//
+// These same-package tests exercise raw scanning, semicolon insertion, literal
+// validation, and malformed UTF-8 without invoking either compiler driver.
+// Every test owns one source, diagnostic sink, and token list and releases them
+// explicitly. The repository-wide differential test remains the stronger
+// compatibility oracle because it compares the complete textual CLI contract
+// against the C++ bootstrap over real Draft packages.
+package compiler_syntax
+
+import core/testing
+import compiler/diagnostic as compiler_diagnostic
+import compiler/source as compiler_source
+
+// expect_kind checks one stable token-table position while keeping each test's
+// assertions readable. The index must be in range; a shorter token list first
+// records a failed expectation and then returns without indexing it.
+expect_kind :: proc(
+    test: ^testing.Test,
+    tokens: ^Token_List,
+    index: usize,
+    expected: Token_Kind,
+) {
+    testing.expect_message(test, index < tokens.length,
+        "lexer must produce the expected token position")
+    if index >= tokens.length {
+        return
+    }
+    testing.expect_message(test, tokens.data[index].kind == expected,
+        "token kind must match the expected lexical sequence")
+}
+
+// test_basic_semicolon_insertion fixes ordinary newline/EOF boundaries and the
+// zero-width inserted marker used by the parser and token dump.
+test_basic_semicolon_insertion :: proc(test: ^testing.Test) {
+    source: compiler_source.Source_File
+    diagnostics: compiler_diagnostic.Sink
+    tokens: Token_List
+    testing.expect(test, compiler_source.init_from_text(
+        &source,
+        "test.draft",
+        "package demo\nvalue := 42\nreturn\n",
+    ) == .none)
+    compiler_diagnostic.init(&diagnostics)
+    token_list_init(&tokens)
+    defer token_list_destroy(&tokens)
+    defer compiler_diagnostic.destroy(&diagnostics)
+    defer compiler_source.destroy(&source)
+
+    lex(&source, &diagnostics, &tokens)
+    expected := [10]Token_Kind{
+        .keyword_package,
+        .identifier,
+        .semicolon,
+        .identifier,
+        .colon_equal,
+        .integer_literal,
+        .semicolon,
+        .keyword_return,
+        .semicolon,
+        .end_of_file,
+    }
+    testing.expect(test, tokens.length == len(expected))
+    for kind, index in expected {
+        expect_kind(test, &tokens, index, kind)
+    }
+    testing.expect(test, tokens.data[2].inserted)
+    testing.expect(test, tokens.data[6].inserted)
+    testing.expect(test, tokens.data[8].inserted)
+    testing.expect(test, !compiler_diagnostic.has_errors(&diagnostics))
+}
+
+// test_delimiters_and_attachments proves newlines inside parentheses/brackets
+// do not terminate statements and a docs/file attachment group terminates only
+// once after its final attachment.
+test_delimiters_and_attachments :: proc(test: ^testing.Test) {
+    source: compiler_source.Source_File
+    diagnostics: compiler_diagnostic.Sink
+    tokens: Token_List
+    testing.expect(test, compiler_source.init_from_text(
+        &source,
+        "attachments.draft",
+        "call(\nfirst,\nsecond\n)\narray[\n0\n]\ndocs \"intent\"\n    file \"DESIGN.md\"\n",
+    ) == .none)
+    compiler_diagnostic.init(&diagnostics)
+    token_list_init(&tokens)
+    defer token_list_destroy(&tokens)
+    defer compiler_diagnostic.destroy(&diagnostics)
+    defer compiler_source.destroy(&source)
+
+    lex(&source, &diagnostics, &tokens)
+    inserted: usize
+    for token in token_list_view(&tokens) {
+        if token.kind == .semicolon && token.inserted {
+            inserted += 1
+        }
+    }
+    testing.expect_message(test, inserted == 3,
+        "call, array, and complete attachment group must terminate once each")
+    testing.expect(test, !compiler_diagnostic.has_errors(&diagnostics))
+}
+
+// test_literals_and_longest_punctuation covers each literal family and proves
+// multi-byte punctuation wins over its prefixes.
+test_literals_and_longest_punctuation :: proc(test: ^testing.Test) {
+    source: compiler_source.Source_File
+    diagnostics: compiler_diagnostic.Sink
+    tokens: Token_List
+    testing.expect(test, compiler_source.init_from_text(
+        &source,
+        "literals.draft",
+        "0b1010 0xCA_FE 1_000 1.25 2e10 \"text\\n\" 'é' `raw` ... .. :: := -> --- <<= >>= && ||\n",
+    ) == .none)
+    compiler_diagnostic.init(&diagnostics)
+    token_list_init(&tokens)
+    defer token_list_destroy(&tokens)
+    defer compiler_diagnostic.destroy(&diagnostics)
+    defer compiler_source.destroy(&source)
+
+    lex(&source, &diagnostics, &tokens)
+    integers: usize
+    floats: usize
+    strings: usize
+    runes: usize
+    for token in token_list_view(&tokens) {
+        switch token.kind {
+        case .integer_literal: integers += 1
+        case .float_literal: floats += 1
+        case .string_literal, .raw_string_literal: strings += 1
+        case .rune_literal: runes += 1
+        case:
+        }
+    }
+    testing.expect(test, integers == 3)
+    testing.expect(test, floats == 2)
+    testing.expect(test, strings == 2)
+    testing.expect(test, runes == 1)
+    testing.expect(test, !compiler_diagnostic.has_errors(&diagnostics))
+}
+
+// test_malformed_input records independent numeric, escape, rune, identifier,
+// and invalid-encoding diagnostics. The byte constructor is required for 0xff,
+// which cannot appear in an immutable valid UTF-8 Draft string literal.
+test_malformed_input :: proc(test: ^testing.Test) {
+    malformed := [18]u8{
+        '0', 'b', '1', '0', '2', ' ',
+        '1', '_', '_', '2', ' ',
+        '\'', 'a', 'b', '\'', ' ',
+        0xff, '\n',
+    }
+    source: compiler_source.Source_File
+    diagnostics: compiler_diagnostic.Sink
+    tokens: Token_List
+    testing.expect(test, compiler_source.init_from_bytes(
+        &source,
+        "malformed.draft",
+        malformed[:],
+    ) == .none)
+    compiler_diagnostic.init(&diagnostics)
+    token_list_init(&tokens)
+    defer token_list_destroy(&tokens)
+    defer compiler_diagnostic.destroy(&diagnostics)
+    defer compiler_source.destroy(&source)
+
+    lex(&source, &diagnostics, &tokens)
+    testing.expect_message(test, diagnostics.error_count >= 4,
+        "independent malformed lexical forms must each be diagnosed")
+    testing.expect(test, compiler_diagnostic.has_errors(&diagnostics))
+    testing.expect(test, tokens.data[tokens.length - 1].kind == .end_of_file)
+}

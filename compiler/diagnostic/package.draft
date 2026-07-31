@@ -1,0 +1,228 @@
+// Structured self-hosted-frontend diagnostics and deterministic rendering.
+//
+// Lexer stages append exact source ranges and closed message identities to one
+// Sink. Messages are represented as an enum because the lexer vocabulary is
+// fixed; this avoids per-error string allocation without weakening the public
+// spelling contract. render appends to caller-owned compiler text and performs
+// all byte-to-line conversion at that final presentation boundary.
+//
+// The Sink owns only its diagnostic rows and borrows Source_File during render.
+// It may depend on compiler source/text foundations and core arrays, but not on
+// syntax. Relevant specification: section 4, "Source text and literals".
+package compiler_diagnostic
+
+import core/array
+import compiler/source as compiler_source
+import compiler/text as compiler_text
+
+// Severity is deliberately complete even though the first lexer slice emits
+// only errors. Later frontend stages can preserve the same row representation.
+pub Severity :: enum u8 {
+    error,
+    warning,
+    note,
+}
+
+// Message names every diagnostic emitted by the Draft lexer. Each case maps to
+// one stable bootstrap-compatible byte spelling in message_text.
+pub Message :: enum u8 {
+    source_not_utf8,
+    unterminated_block_comment,
+    underscore_between_digits,
+    base_integer_requires_digit,
+    integer_requires_digit,
+    fractional_part_requires_digit,
+    floating_exponent_requires_digit,
+    invalid_integer_base_digit,
+    incomplete_escape,
+    hex_escape_digits,
+    unicode_escape_open,
+    unicode_escape_close,
+    unicode_escape_scalar,
+    unknown_escape,
+    quoted_literal_newline,
+    unterminated_quoted_literal,
+    rune_scalar_count,
+    unterminated_raw_string,
+    non_ascii_identifier,
+    unexpected_character,
+}
+
+// Diagnostic is one immutable row in insertion order. Ranges are always valid
+// for this first source-backed stage; pre-source I/O errors remain driver facts.
+pub Diagnostic :: struct {
+    severity: Severity,
+    range: compiler_source.Source_Range,
+    message: Message,
+}
+
+// Sink owns an append-only diagnostic sequence for one lexer invocation.
+pub Sink :: struct {
+    diagnostics: array.Dynamic[Diagnostic],
+    error_count: usize,
+}
+
+// init establishes row ownership; the zero destination must not be live.
+pub init :: proc(sink: ^Sink) {
+    array.init(&sink.diagnostics)
+}
+
+// destroy releases all rows and clears the count.
+pub destroy :: proc(sink: ^Sink) {
+    array.destroy(&sink.diagnostics)
+    sink.error_count = 0
+}
+
+// report appends one diagnostic and updates the explicit error count.
+pub report :: proc(
+    sink: ^Sink,
+    severity: Severity,
+    range: compiler_source.Source_Range,
+    message: Message,
+) {
+    if severity == .error {
+        sink.error_count += 1
+    }
+    array.append(&sink.diagnostics, Diagnostic{
+        severity = severity,
+        range = range,
+        message = message,
+    })
+}
+
+// error is the lexer-facing shorthand for an error row.
+pub error :: proc(
+    sink: ^Sink,
+    range: compiler_source.Source_Range,
+    message: Message,
+) {
+    report(sink, .error, range, message)
+}
+
+// has_errors is true exactly when an error row has been appended.
+pub has_errors :: proc(sink: ^Sink) -> bool {
+    return sink.error_count != 0
+}
+
+severity_text :: proc(severity: Severity) -> string {
+    switch severity {
+    case .error:
+        return "error"
+    case .warning:
+        return "warning"
+    case .note:
+        return "note"
+    }
+    return "unknown"
+}
+
+// message_text is the single spelling authority shared by CLI rendering and
+// focused tests. These bytes intentionally match the C++ bootstrap.
+pub message_text :: proc(message: Message) -> string {
+    switch message {
+    case .source_not_utf8:
+        return "source is not valid UTF-8"
+    case .unterminated_block_comment:
+        return "unterminated block comment"
+    case .underscore_between_digits:
+        return "underscore must separate two digits"
+    case .base_integer_requires_digit:
+        return "base-prefixed integer literal requires at least one digit"
+    case .integer_requires_digit:
+        return "integer literal requires at least one digit"
+    case .fractional_part_requires_digit:
+        return "fractional part requires at least one digit"
+    case .floating_exponent_requires_digit:
+        return "floating exponent requires at least one digit"
+    case .invalid_integer_base_digit:
+        return "digit is not valid for this integer base"
+    case .incomplete_escape:
+        return "incomplete escape sequence"
+    case .hex_escape_digits:
+        return "\\x escape requires exactly two hexadecimal digits"
+    case .unicode_escape_open:
+        return "\\u escape requires '{' followed by hexadecimal digits"
+    case .unicode_escape_close:
+        return "\\u escape requires hexadecimal digits and a closing '}'"
+    case .unicode_escape_scalar:
+        return "\\u escape does not name a Unicode scalar value"
+    case .unknown_escape:
+        return "unknown escape sequence"
+    case .quoted_literal_newline:
+        return "quoted literal cannot contain a newline"
+    case .unterminated_quoted_literal:
+        return "unterminated quoted literal"
+    case .rune_scalar_count:
+        return "rune literal must contain exactly one Unicode scalar"
+    case .unterminated_raw_string:
+        return "unterminated raw string literal"
+    case .non_ascii_identifier:
+        return "non-ASCII character is not valid in a Draft identifier"
+    case .unexpected_character:
+        return "unexpected character in Draft source"
+    }
+    return "unknown diagnostic"
+}
+
+// render appends every row using the bootstrap's stable path:line:column form,
+// source line, and bounded underline. The destination retains earlier bytes;
+// callers may compose diagnostics with other output deliberately.
+pub render :: proc(
+    source: ^compiler_source.Source_File,
+    sink: ^Sink,
+    output: ^compiler_text.Builder,
+) {
+    for index: usize = 0; index < sink.diagnostics.length; index += 1 {
+        diagnostic := sink.diagnostics.data[index]
+        coordinate := compiler_source.line_column(source, diagnostic.range.begin)
+
+        compiler_text.append_bytes(
+            output,
+            compiler_source.display_path_bytes(source),
+        )
+        compiler_text.append_byte(output, cast[u8](':'))
+        compiler_text.append_unsigned(output, cast[usize](coordinate.line))
+        compiler_text.append_byte(output, cast[u8](':'))
+        compiler_text.append_unsigned(output, cast[usize](coordinate.column))
+        compiler_text.append_text(output, ": ")
+        compiler_text.append_text(output, severity_text(diagnostic.severity))
+        compiler_text.append_text(output, ": ")
+        compiler_text.append_text(output, message_text(diagnostic.message))
+        compiler_text.append_byte(output, cast[u8]('\n'))
+
+        compiler_text.append_bytes(
+            output,
+            compiler_source.line_bytes(source, coordinate.line),
+        )
+        compiler_text.append_byte(output, cast[u8]('\n'))
+        compiler_text.append_repeated(
+            output,
+            cast[u8](' '),
+            cast[usize](coordinate.column - 1),
+        )
+
+        width: u32 = 1
+        if diagnostic.range.end > diagnostic.range.begin {
+            end_coordinate := compiler_source.line_column(
+                source,
+                diagnostic.range.end,
+            )
+            if end_coordinate.line == coordinate.line &&
+                end_coordinate.column > coordinate.column {
+                width = end_coordinate.column - coordinate.column
+                if width > 80 {
+                    width = 80
+                }
+            }
+        }
+        compiler_text.append_byte(output, cast[u8]('^'))
+        if width > 1 {
+            compiler_text.append_repeated(
+                output,
+                cast[u8]('~'),
+                cast[usize](width - 1),
+            )
+        }
+        compiler_text.append_byte(output, cast[u8]('\n'))
+    }
+}

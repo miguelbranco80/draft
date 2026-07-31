@@ -1,0 +1,371 @@
+// Draft lexical token vocabulary and source-range relationships.
+//
+// Token_Kind contains every fixed spelling accepted by the Draft 1 surface
+// grammar. Tokens retain byte ranges into one compiler_source.Source_File; the
+// lexer deliberately leaves literal decoding to later syntax and semantic
+// stages. Newline is private staging vocabulary for semicolon insertion and is
+// absent from the public result. Inserted semicolons have zero-width ranges.
+//
+// Individual tokens own no storage. Token_List is the explicit contiguous
+// owner used by callers and must be initialized and destroyed exactly once.
+// Relevant specification: section 4, "Source text and literals".
+package compiler_syntax
+
+import core/memory
+import core/runtime
+import compiler/source as compiler_source
+
+// Token_Kind order is stable within the self-hosted compiler. Names returned by
+// token_kind_name form the tooling-visible dump contract shared with bootstrap
+// draftc lex.
+pub Token_Kind :: enum u16 {
+    invalid,
+    end_of_file,
+    newline,
+
+    identifier,
+    integer_literal,
+    float_literal,
+    string_literal,
+    raw_string_literal,
+    rune_literal,
+
+    keyword_package,
+    keyword_import,
+    keyword_as,
+    keyword_pub,
+    keyword_proc,
+    keyword_c,
+    keyword_align,
+    keyword_struct,
+    keyword_enum,
+    keyword_variant,
+    keyword_union,
+    keyword_distinct,
+    keyword_simd,
+    keyword_packed,
+    keyword_bits,
+    keyword_thread_local,
+    keyword_foreign,
+    keyword_export,
+    keyword_if,
+    keyword_else,
+    keyword_for,
+    keyword_in,
+    keyword_out,
+    keyword_switch,
+    keyword_case,
+    keyword_break,
+    keyword_continue,
+    keyword_return,
+    keyword_defer,
+    keyword_when,
+    keyword_unchecked,
+    keyword_deny,
+    keyword_asm,
+    keyword_clobber,
+    keyword_flags,
+    keyword_memory,
+    keyword_docs,
+    keyword_judge,
+    keyword_file,
+    keyword_folder,
+    keyword_type,
+    keyword_integer,
+    keyword_float,
+    keyword_number,
+    keyword_true,
+    keyword_false,
+    keyword_nil,
+
+    left_paren,
+    right_paren,
+    left_bracket,
+    right_bracket,
+    left_brace,
+    right_brace,
+    comma,
+    semicolon,
+    colon,
+    colon_colon,
+    colon_equal,
+    dot,
+    dot_dot,
+    ellipsis,
+    hash,
+
+    plus,
+    minus,
+    star,
+    slash,
+    percent,
+    ampersand,
+    pipe,
+    caret,
+    bang,
+    tilde,
+    equal,
+    less,
+    greater,
+
+    plus_equal,
+    minus_equal,
+    star_equal,
+    slash_equal,
+    percent_equal,
+    ampersand_equal,
+    pipe_equal,
+    tilde_equal,
+    shift_left_equal,
+    shift_right_equal,
+    equal_equal,
+    bang_equal,
+    less_equal,
+    greater_equal,
+    shift_left,
+    shift_right,
+    logical_and,
+    logical_or,
+    arrow,
+    uninitialized,
+}
+
+// Token is a lightweight immutable reference into source. inserted is true
+// only for semicolons synthesized at newline or EOF.
+pub Token :: struct {
+    kind: Token_Kind,
+    range: compiler_source.Source_Range,
+    inserted: bool,
+}
+
+// Token_List owns one contiguous append-only token table. The parser will later
+// take ownership of this same representation rather than translating it. This
+// is written directly instead of embedding core/array.Dynamic: the bootstrap
+// compiler currently gives generic record instantiations distinct pointer
+// identities when the record is consumed from another file in the package.
+// Keeping the elementary allocation here makes that bootstrap boundary visible
+// and removable once the generic type-identity limitation is fixed.
+pub Token_List :: struct {
+    data: [^]Token,
+    length: usize,
+    capacity: usize,
+    allocator: runtime.Allocator,
+}
+
+// token_list_init establishes allocation policy for one empty list.
+pub token_list_init :: proc(list: ^Token_List) {
+    assert(list.data == nil && list.length == 0 && list.capacity == 0,
+        "token list is not empty before initialization")
+    assert(context.allocator.procedure != nil,
+        "token list allocator is nil")
+    list.allocator = context.allocator
+}
+
+// token_list_destroy releases all tokens and invalidates borrowed views.
+pub token_list_destroy :: proc(list: ^Token_List) {
+    if list.data != nil {
+        memory.free_bytes_with_allocator(
+            cast[rawptr](list.data),
+            list.capacity * size_of(Token),
+            align_of(Token),
+            list.allocator,
+        )
+    }
+    list.data = nil
+    list.length = 0
+    list.capacity = 0
+}
+
+// token_list_reserve grows storage to at least minimum elements. Existing
+// element order is preserved; all earlier token pointers become invalid when
+// growth moves the allocation.
+pub token_list_reserve :: proc(list: ^Token_List, minimum: usize) {
+    if minimum <= list.capacity {
+        return
+    }
+    storage := memory.resize_with_allocator(
+        cast[rawptr](list.data),
+        list.capacity * size_of(Token),
+        minimum * size_of(Token),
+        align_of(Token),
+        list.allocator,
+    )
+    list.data = cast[[^]Token](storage)
+    list.capacity = minimum
+}
+
+// token_list_append adds one value in deterministic source order. Capacity
+// grows geometrically so a linear token stream remains linear-time overall.
+pub token_list_append :: proc(list: ^Token_List, token: Token) {
+    if list.length == list.capacity {
+        next := list.capacity * 2
+        if next < 64 {
+            next = 64
+        }
+        token_list_reserve(list, next)
+    }
+    list.data[list.length] = token
+    list.length += 1
+}
+
+// token_list_view borrows all initialized tokens until append or destruction.
+pub token_list_view :: proc(list: ^Token_List) -> []Token {
+    return list.data[:list.length]
+}
+
+// token_kind_name returns the stable token-dump spelling used by both compiler
+// CLIs. It allocates nothing and is exhaustive over the closed vocabulary.
+pub token_kind_name :: proc(kind: Token_Kind) -> string {
+    switch kind {
+    case .invalid: return "invalid"
+    case .end_of_file: return "end of file"
+    case .newline: return "newline"
+    case .identifier: return "identifier"
+    case .integer_literal: return "integer literal"
+    case .float_literal: return "floating literal"
+    case .string_literal: return "string literal"
+    case .raw_string_literal: return "raw string literal"
+    case .rune_literal: return "rune literal"
+    case .keyword_package: return "package"
+    case .keyword_import: return "import"
+    case .keyword_as: return "as"
+    case .keyword_pub: return "pub"
+    case .keyword_proc: return "proc"
+    case .keyword_c: return "c"
+    case .keyword_align: return "align"
+    case .keyword_struct: return "struct"
+    case .keyword_enum: return "enum"
+    case .keyword_variant: return "variant"
+    case .keyword_union: return "union"
+    case .keyword_distinct: return "distinct"
+    case .keyword_simd: return "simd"
+    case .keyword_packed: return "packed"
+    case .keyword_bits: return "bits"
+    case .keyword_thread_local: return "thread_local"
+    case .keyword_foreign: return "foreign"
+    case .keyword_export: return "export"
+    case .keyword_if: return "if"
+    case .keyword_else: return "else"
+    case .keyword_for: return "for"
+    case .keyword_in: return "in"
+    case .keyword_out: return "out"
+    case .keyword_switch: return "switch"
+    case .keyword_case: return "case"
+    case .keyword_break: return "break"
+    case .keyword_continue: return "continue"
+    case .keyword_return: return "return"
+    case .keyword_defer: return "defer"
+    case .keyword_when: return "when"
+    case .keyword_unchecked: return "unchecked"
+    case .keyword_deny: return "deny"
+    case .keyword_asm: return "asm"
+    case .keyword_clobber: return "clobber"
+    case .keyword_flags: return "flags"
+    case .keyword_memory: return "memory"
+    case .keyword_docs: return "docs"
+    case .keyword_judge: return "judge"
+    case .keyword_file: return "file"
+    case .keyword_folder: return "folder"
+    case .keyword_type: return "type"
+    case .keyword_integer: return "integer"
+    case .keyword_float: return "float"
+    case .keyword_number: return "number"
+    case .keyword_true: return "true"
+    case .keyword_false: return "false"
+    case .keyword_nil: return "nil"
+    case .left_paren: return "("
+    case .right_paren: return ")"
+    case .left_bracket: return "["
+    case .right_bracket: return "]"
+    case .left_brace: return "{"
+    case .right_brace: return "}"
+    case .comma: return ","
+    case .semicolon: return ";"
+    case .colon: return ":"
+    case .colon_colon: return "::"
+    case .colon_equal: return ":="
+    case .dot: return "."
+    case .dot_dot: return ".."
+    case .ellipsis: return "..."
+    case .hash: return "#"
+    case .plus: return "+"
+    case .minus: return "-"
+    case .star: return "*"
+    case .slash: return "/"
+    case .percent: return "%"
+    case .ampersand: return "&"
+    case .pipe: return "|"
+    case .caret: return "^"
+    case .bang: return "!"
+    case .tilde: return "~"
+    case .equal: return "="
+    case .less: return "<"
+    case .greater: return ">"
+    case .plus_equal: return "+="
+    case .minus_equal: return "-="
+    case .star_equal: return "*="
+    case .slash_equal: return "/="
+    case .percent_equal: return "%="
+    case .ampersand_equal: return "&="
+    case .pipe_equal: return "|="
+    case .tilde_equal: return "~="
+    case .shift_left_equal: return "<<="
+    case .shift_right_equal: return ">>="
+    case .equal_equal: return "=="
+    case .bang_equal: return "!="
+    case .less_equal: return "<="
+    case .greater_equal: return ">="
+    case .shift_left: return "<<"
+    case .shift_right: return ">>"
+    case .logical_and: return "&&"
+    case .logical_or: return "||"
+    case .arrow: return "->"
+    case .uninitialized: return "---"
+    }
+    return "unknown token"
+}
+
+// token_is_literal implements the literal half of semicolon eligibility.
+pub token_is_literal :: proc(kind: Token_Kind) -> bool {
+    switch kind {
+    case .integer_literal, .float_literal, .string_literal,
+        .raw_string_literal, .rune_literal, .keyword_true,
+        .keyword_false, .keyword_nil:
+        return true
+    case:
+        return false
+    }
+}
+
+// token_can_end_statement implements the context-free half of semicolon
+// insertion. Delimiter depth, attachments, and dot-prefixed contextual enum
+// alternatives are handled by the second lexer pass.
+pub token_can_end_statement :: proc(kind: Token_Kind) -> bool {
+    if kind == .identifier || token_is_literal(kind) {
+        return true
+    }
+    switch kind {
+    case .keyword_c, .keyword_type, .keyword_integer, .keyword_float,
+        .keyword_number, .keyword_flags, .keyword_memory, .keyword_bits,
+        .keyword_break, .keyword_continue, .keyword_return, .right_paren,
+        .right_bracket, .right_brace, .caret, .uninitialized:
+        return true
+    case:
+        return false
+    }
+}
+
+// token_is_contextual_alternative_name is deliberately narrower than general
+// declarations. It admits compiler enum members such as `.struct` without
+// turning type-constructor keywords into unconditional statement terminators.
+pub token_is_contextual_alternative_name :: proc(kind: Token_Kind) -> bool {
+    switch kind {
+    case .identifier, .keyword_c, .keyword_type, .keyword_integer,
+        .keyword_float, .keyword_number, .keyword_flags, .keyword_memory,
+        .keyword_bits, .keyword_struct, .keyword_variant, .keyword_union,
+        .keyword_distinct, .keyword_simd:
+        return true
+    case:
+        return false
+    }
+}

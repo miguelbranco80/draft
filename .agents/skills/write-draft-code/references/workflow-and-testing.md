@@ -545,6 +545,23 @@ ctest --test-dir build --output-on-failure
 Use `/usr/lib/llvm-22/lib/cmake/llvm` on the qualified Ubuntu layout. LLVM 22 is
 a bootstrap compiler component; it is not a Draft source-package dependency.
 
+On a supported native host, the default build also asks the bootstrap to build
+the Draft-written staging driver at O2. It currently implements only `lex` and
+is a build-tree development artifact, not an installed public command:
+
+```sh
+cmake --build build --target draftc_next --parallel
+build/draftc-next lex compiler/syntax/lexer.draft
+ctest --test-dir build --output-on-failure \
+  -R '^draft_self_hosted_lexer_(units|differential)$'
+```
+
+The differential test compares C++ `draftc lex` and Draft `draftc-next lex`
+over repository Draft sources plus malformed and missing inputs. It requires
+identical stdout, stderr, and exit status. Keep the bootstrap path until a
+replacement phase has this oracle; passing the Draft package's focused tests
+alone is not replacement evidence.
+
 List registered tests without executing:
 
 ```sh

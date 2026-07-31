@@ -1,0 +1,121 @@
+// Compiler-owned byte construction for deterministic textual output.
+//
+// This package belongs to the self-hosted compiler foundation. It owns no
+// process or file resource: Builder owns one growable byte array, and every
+// returned slice borrows that array until the next append, clear, or destroy.
+// The operations preserve byte order exactly and perform no Unicode, locale,
+// newline, or terminal transformation. The package may depend only on the
+// allocation-backed core array and allocation-free integer formatter.
+//
+// Relevant specification: section 5, arrays, slices, and strings; section 7,
+// ordinary core libraries.
+package compiler_text
+
+import core/array
+import core/format
+
+// Builder owns one contiguous output byte sequence. A live Builder must not be
+// copied because its Dynamic field owns allocation metadata. Appending may
+// reallocate and invalidates every view previously returned by view.
+pub Builder :: struct {
+    bytes: array.Dynamic[u8],
+}
+
+// init establishes the allocator captured by the underlying Dynamic array.
+// The destination must be its zero value and remains empty on return.
+pub init :: proc(builder: ^Builder) {
+    array.init(&builder.bytes)
+}
+
+// destroy releases the complete byte allocation. Every borrowed view becomes
+// invalid, and the Builder returns to an empty, non-owning state.
+pub destroy :: proc(builder: ^Builder) {
+    array.destroy(&builder.bytes)
+}
+
+// clear removes all constructed bytes without releasing capacity. Existing
+// views must still be treated as invalid because their logical contents ended.
+pub clear :: proc(builder: ^Builder) {
+    array.clear(&builder.bytes)
+}
+
+// reserve_for_append grows geometrically to cover additional bytes. The
+// explicit overflow assertion is a compiler invariant: source-driven sizes are
+// checked before reaching this construction layer.
+reserve_for_append :: proc(builder: ^Builder, additional: usize) {
+    assert(additional <= ~cast[usize](0) - builder.bytes.length,
+        "compiler text length overflows")
+    required := builder.bytes.length + additional
+    if required <= builder.bytes.capacity {
+        return
+    }
+
+    capacity := builder.bytes.capacity
+    if capacity < 64 {
+        capacity = 64
+    }
+    for capacity < required {
+        if capacity > ~cast[usize](0) / 2 {
+            capacity = required
+            break
+        }
+        capacity *= 2
+    }
+    array.reserve(&builder.bytes, capacity)
+}
+
+// append_byte adds one exact byte at the end of the sequence.
+pub append_byte :: proc(builder: ^Builder, value: u8) {
+    reserve_for_append(builder, 1)
+    builder.bytes.data[builder.bytes.length] = value
+    builder.bytes.length += 1
+}
+
+// append_bytes copies a borrowed byte view in order and retains no source
+// pointer. Source and destination must not overlap; compiler renderers append
+// only immutable source storage or fixed local formatting buffers.
+pub append_bytes :: proc(builder: ^Builder, values: []u8) {
+    reserve_for_append(builder, len(values))
+    start := builder.bytes.length
+    for value, index in values {
+        builder.bytes.data[start + index] = value
+    }
+    builder.bytes.length += len(values)
+}
+
+// append_text copies the exact bytes of an immutable Draft string. It does not
+// append a terminator or reinterpret UTF-8.
+pub append_text :: proc(builder: ^Builder, value: string) {
+    reserve_for_append(builder, len(value))
+    start := builder.bytes.length
+    for index: usize = 0; index < len(value); index += 1 {
+        builder.bytes.data[start + index] = value[index]
+    }
+    builder.bytes.length += len(value)
+}
+
+// append_unsigned writes the shortest decimal spelling of one usize. Every
+// current target is 64-bit, and the cast is therefore exact under the selected
+// target profiles.
+pub append_unsigned :: proc(builder: ^Builder, value: usize) {
+    storage: [20]u8
+    (digits, formatted) := format.unsigned_decimal(storage[:], cast[u64](value))
+    assert(formatted, "usize decimal formatting buffer is too small")
+    append_bytes(builder, digits)
+}
+
+// append_repeated adds count copies of one byte. Diagnostic indentation uses
+// this instead of manufacturing temporary strings.
+pub append_repeated :: proc(builder: ^Builder, value: u8, count: usize) {
+    reserve_for_append(builder, count)
+    start := builder.bytes.length
+    for index: usize = 0; index < count; index += 1 {
+        builder.bytes.data[start + index] = value
+    }
+    builder.bytes.length += count
+}
+
+// view borrows the complete constructed sequence until mutation or destroy.
+pub view :: proc(builder: ^Builder) -> []u8 {
+    return array.view(&builder.bytes)
+}

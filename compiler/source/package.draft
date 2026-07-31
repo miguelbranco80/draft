@@ -1,0 +1,226 @@
+// Byte-owned source files and byte-addressed display coordinates.
+//
+// This package is the first persistent layer of the self-hosted compiler. One
+// Source_File owns its diagnostic pathname, exact source bytes, and a table of
+// line-start byte offsets. Syntax and diagnostics retain only Source_Range
+// values, so the Source_File must outlive all such consumers. Physical paths
+// are retained solely for I/O and diagnostics and never become semantic
+// identity. The package depends only on core allocation and hosted file I/O.
+//
+// Ranges are half-open. Lines and columns are one-based; columns count UTF-8
+// scalar encodings by ignoring continuation bytes, matching the bootstrap even
+// for malformed source. Relevant specification: section 4, "Source text and
+// literals".
+package compiler_source
+
+import core/array
+import core/memory
+import core/os
+
+Read_Chunk_Size :: 16384
+
+// Source_Range identifies [begin,end) in the one Source_File supplied to a
+// lexer invocation. Offsets are u32 to preserve the bootstrap representation
+// and make an oversized input fail explicitly at the file boundary.
+pub Source_Range :: struct {
+    begin: u32,
+    end: u32,
+}
+
+// Line_Column is the user-facing position of one byte boundary. Both values are
+// one-based and remain display facts rather than semantic identity.
+pub Line_Column :: struct {
+    line: u32,
+    column: u32,
+}
+
+// Load_Error distinguishes an unavailable pathname from a failure after the
+// descriptor was opened. A close failure is a read failure because partially
+// acquired bytes must not be presented as a successful source transaction.
+pub Load_Error :: enum u8 {
+    none,
+    cannot_open,
+    cannot_read,
+    too_large,
+}
+
+// Source_File owns one immutable source after initialization finishes. The
+// byte and line arrays never mutate during lexing, so their views and all
+// Source_Range values remain stable until destroy. display_path is separately
+// owned and zero-terminated for core/os.
+pub Source_File :: struct {
+    display_path: memory.Owned_String,
+    bytes: array.Dynamic[u8],
+    line_starts: array.Dynamic[u32],
+}
+
+// init_empty establishes all three owners and the mandatory first line start.
+// The pathname is copied because process arguments will eventually be only one
+// of several possible source providers.
+init_empty :: proc(source: ^Source_File, display_path: string) {
+    memory.owned_string_copy(&source.display_path, display_path)
+    array.init(&source.bytes)
+    array.init(&source.line_starts)
+    array.append(&source.line_starts, 0)
+}
+
+// append_source_byte extends owned source while maintaining the byte-addressed
+// line table. The caller has already proved the resulting offset fits u32.
+append_source_byte :: proc(source: ^Source_File, value: u8) {
+    array.append(&source.bytes, value)
+    if value == cast[u8]('\n') {
+        array.append(&source.line_starts, cast[u32](source.bytes.length))
+    }
+}
+
+// init_from_text constructs an in-memory source by copying an immutable Draft
+// string. It is used by focused compiler tests and retains no borrowed content.
+pub init_from_text :: proc(
+    source: ^Source_File,
+    display_path, contents: string,
+) -> Load_Error {
+    init_empty(source, display_path)
+    if len(contents) > cast[usize](~cast[u32](0)) {
+        return .too_large
+    }
+    array.reserve(&source.bytes, len(contents))
+    for index: usize = 0; index < len(contents); index += 1 {
+        append_source_byte(source, contents[index])
+    }
+    return .none
+}
+
+// init_from_bytes is the mutable-view counterpart used by invalid-UTF-8 tests.
+// Exact bytes are copied before the caller may modify or release its storage.
+pub init_from_bytes :: proc(
+    source: ^Source_File,
+    display_path: string,
+    contents: []u8,
+) -> Load_Error {
+    init_empty(source, display_path)
+    if len(contents) > cast[usize](~cast[u32](0)) {
+        return .too_large
+    }
+    array.reserve(&source.bytes, len(contents))
+    for value in contents {
+        append_source_byte(source, value)
+    }
+    return .none
+}
+
+// load reads one pathname completely as binary bytes and closes its descriptor
+// before publishing success. On any failure Source_File remains a valid owner
+// which the caller destroys, but its partial bytes are not authoritative.
+pub load :: proc(source: ^Source_File, display_path: string) -> Load_Error {
+    init_empty(source, display_path)
+    native_path := memory.owned_string_cstring(&source.display_path)
+    (handle, open_error) := os.open_for_reading(native_path)
+    if open_error != .none {
+        return .cannot_open
+    }
+
+    storage: [Read_Chunk_Size]u8
+    result: Load_Error = .none
+    for {
+        (count, read_error) := os.read(handle, storage[:])
+        if read_error == .end_of_input {
+            break
+        }
+        if read_error != .none || count == 0 {
+            result = .cannot_read
+            break
+        }
+        if count > cast[usize](~cast[u32](0)) - source.bytes.length {
+            result = .too_large
+            break
+        }
+        for index: usize = 0; index < count; index += 1 {
+            append_source_byte(source, storage[index])
+        }
+    }
+    if !os.close(&handle) && result == .none {
+        result = .cannot_read
+    }
+    return result
+}
+
+// destroy ends every source, pathname, and line-table borrow and releases the
+// owners in reverse construction order.
+pub destroy :: proc(source: ^Source_File) {
+    array.destroy(&source.line_starts)
+    array.destroy(&source.bytes)
+    memory.owned_string_destroy(&source.display_path)
+}
+
+// contents borrows all source bytes until destroy.
+pub contents :: proc(source: ^Source_File) -> []u8 {
+    return array.view(&source.bytes)
+}
+
+// display_path_bytes borrows the exact path spelling supplied by the caller.
+pub display_path_bytes :: proc(source: ^Source_File) -> []u8 {
+    return memory.owned_string_bytes(&source.display_path)
+}
+
+// bytes_in_range borrows the exact bytes in a checked half-open range.
+pub bytes_in_range :: proc(source: ^Source_File, range: Source_Range) -> []u8 {
+    assert(range.begin <= range.end, "source range is reversed")
+    assert(cast[usize](range.end) <= source.bytes.length,
+        "source range exceeds file")
+    start := ptr_offset(source.bytes.data, cast[isize](range.begin))
+    return start[:cast[usize](range.end - range.begin)]
+}
+
+// line_column maps one valid byte boundary to a one-based line and scalar
+// column. Binary search finds the final line start not greater than offset.
+pub line_column :: proc(source: ^Source_File, offset: u32) -> Line_Column {
+    assert(cast[usize](offset) <= source.bytes.length,
+        "source location exceeds file")
+
+    low: usize
+    high := source.line_starts.length
+    for low < high {
+        middle := low + (high - low) / 2
+        if source.line_starts.data[middle] <= offset {
+            low = middle + 1
+        } else {
+            high = middle
+        }
+    }
+    line_index := low - 1
+    line_start := source.line_starts.data[line_index]
+
+    column: u32 = 1
+    cursor := line_start
+    for cursor < offset {
+        byte := source.bytes.data[cast[usize](cursor)]
+        if (byte & 0xc0) != 0x80 {
+            column += 1
+        }
+        cursor += 1
+    }
+    return Line_Column{
+        line = cast[u32](line_index + 1),
+        column = column,
+    }
+}
+
+// line_bytes returns one source line without its LF or a preceding CR. The
+// one-based line must have been obtained from line_column for this file.
+pub line_bytes :: proc(source: ^Source_File, one_based_line: u32) -> []u8 {
+    assert(one_based_line >= 1, "source line is zero")
+    line_index := cast[usize](one_based_line - 1)
+    assert(line_index < source.line_starts.length,
+        "source line exceeds file")
+    start := source.line_starts.data[line_index]
+    end := cast[u32](source.bytes.length)
+    if line_index + 1 < source.line_starts.length {
+        end = source.line_starts.data[line_index + 1] - 1
+    }
+    if end > start &&
+        source.bytes.data[cast[usize](end - 1)] == cast[u8]('\r') {
+        end -= 1
+    }
+    first := ptr_offset(source.bytes.data, cast[isize](start))
+    return first[:cast[usize](end - start)]
+}

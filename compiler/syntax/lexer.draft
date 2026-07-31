@@ -1,0 +1,1013 @@
+// Draft 1 raw scanning and semicolon insertion in the self-hosted frontend.
+//
+// Lexing is deliberately two direct passes. Raw_Lexer validates UTF-8, emits
+// source tokens plus explicit newline staging tokens, and discards comments and
+// horizontal trivia. insert_semicolons then consumes that stable sequence while
+// tracking parenthesis/bracket depth and the small attachment continuation
+// grammar. The public result ends with one EOF token and contains no newlines.
+//
+// The scanner validates literal spelling but never decodes literal values.
+// Tokens retain exact byte ranges into an immutable compiler_source.Source_File,
+// which must outlive the result. Diagnostics append in deterministic byte order.
+// This module depends only on compiler source/diagnostic tables and the direct
+// token storage owned beside the vocabulary. Relevant specification: section
+// 4, "Source text and literals".
+package compiler_syntax
+
+import compiler/diagnostic as compiler_diagnostic
+import compiler/source as compiler_source
+
+// Raw_Lexer borrows all state for one synchronous pass. offset is the next byte
+// to scan and is bounded by Source_File's u32 size contract. raw owns output in
+// its caller so moving the state never moves allocation ownership.
+Raw_Lexer :: struct {
+    source: ^compiler_source.Source_File,
+    bytes: []u8,
+    diagnostics: ^compiler_diagnostic.Sink,
+    raw: ^Token_List,
+    offset: u32,
+}
+
+// source_range constructs one checked half-open range in the borrowed source.
+source_range :: proc(begin, end: u32) -> compiler_source.Source_Range {
+    return compiler_source.Source_Range{begin = begin, end = end}
+}
+
+at_end :: proc(lexer: ^Raw_Lexer) -> bool {
+    return cast[usize](lexer.offset) >= len(lexer.bytes)
+}
+
+current :: proc(lexer: ^Raw_Lexer) -> u8 {
+    assert(!at_end(lexer), "lexer read past end of source")
+    return lexer.bytes[cast[usize](lexer.offset)]
+}
+
+has :: proc(lexer: ^Raw_Lexer, lookahead: u32) -> bool {
+    return cast[usize](lexer.offset) + cast[usize](lookahead) < len(lexer.bytes)
+}
+
+peek :: proc(lexer: ^Raw_Lexer, lookahead: u32) -> u8 {
+    assert(has(lexer, lookahead), "lexer lookahead exceeds source")
+    return lexer.bytes[cast[usize](lexer.offset + lookahead)]
+}
+
+starts_with :: proc(lexer: ^Raw_Lexer, spelling: string) -> bool {
+    if len(spelling) > len(lexer.bytes) - cast[usize](lexer.offset) {
+        return false
+    }
+    for index: usize = 0; index < len(spelling); index += 1 {
+        if lexer.bytes[cast[usize](lexer.offset) + index] != spelling[index] {
+            return false
+        }
+    }
+    return true
+}
+
+add :: proc(lexer: ^Raw_Lexer, kind: Token_Kind, begin, end: u32) {
+    token_list_append(lexer.raw, Token{
+        kind = kind,
+        range = source_range(begin, end),
+    })
+}
+
+lex_error :: proc(
+    lexer: ^Raw_Lexer,
+    begin, end: u32,
+    message: compiler_diagnostic.Message,
+) {
+    compiler_diagnostic.error(
+        lexer.diagnostics,
+        source_range(begin, end),
+        message,
+    )
+}
+
+is_ascii_letter :: proc(byte: u8) -> bool {
+    return (byte >= cast[u8]('A') && byte <= cast[u8]('Z')) ||
+        (byte >= cast[u8]('a') && byte <= cast[u8]('z'))
+}
+
+is_ascii_digit :: proc(byte: u8) -> bool {
+    return byte >= cast[u8]('0') && byte <= cast[u8]('9')
+}
+
+is_identifier_start :: proc(byte: u8) -> bool {
+    return is_ascii_letter(byte) || byte == cast[u8]('_')
+}
+
+is_identifier_continue :: proc(byte: u8) -> bool {
+    return is_identifier_start(byte) || is_ascii_digit(byte)
+}
+
+is_hex_digit :: proc(byte: u8) -> bool {
+    return is_ascii_digit(byte) ||
+        (byte >= cast[u8]('a') && byte <= cast[u8]('f')) ||
+        (byte >= cast[u8]('A') && byte <= cast[u8]('F'))
+}
+
+hex_value :: proc(byte: u8) -> u32 {
+    if byte >= cast[u8]('0') && byte <= cast[u8]('9') {
+        return cast[u32](byte - cast[u8]('0'))
+    }
+    if byte >= cast[u8]('a') && byte <= cast[u8]('f') {
+        return cast[u32](byte - cast[u8]('a')) + 10
+    }
+    return cast[u32](byte - cast[u8]('A')) + 10
+}
+
+is_digit_for_base :: proc(byte: u8, base: u32) -> bool {
+    if base <= 10 {
+        return byte >= cast[u8]('0') &&
+            byte < cast[u8]('0') + cast[u8](base)
+    }
+    return is_hex_digit(byte)
+}
+
+// utf8_scalar_width returns a canonical Unicode scalar's byte width or zero.
+// It rejects invalid leading bytes, incomplete/overlong forms, surrogates, and
+// values above U+10FFFF before any literal-specific scan relies on the width.
+utf8_scalar_width :: proc(bytes: []u8, offset: u32) -> u32 {
+    index := cast[usize](offset)
+    if index >= len(bytes) {
+        return 0
+    }
+    first := bytes[index]
+    if first < 0x80 {
+        return 1
+    }
+
+    width: u32
+    value: u32
+    minimum: u32
+    if first >= 0xc2 && first <= 0xdf {
+        width = 2
+        value = cast[u32](first & 0x1f)
+        minimum = 0x80
+    } else if first >= 0xe0 && first <= 0xef {
+        width = 3
+        value = cast[u32](first & 0x0f)
+        minimum = 0x800
+    } else if first >= 0xf0 && first <= 0xf4 {
+        width = 4
+        value = cast[u32](first & 0x07)
+        minimum = 0x10000
+    } else {
+        return 0
+    }
+
+    if index + cast[usize](width) > len(bytes) {
+        return 0
+    }
+    for byte_index: u32 = 1; byte_index < width; byte_index += 1 {
+        continuation := bytes[index + cast[usize](byte_index)]
+        if (continuation & 0xc0) != 0x80 {
+            return 0
+        }
+        value = (value << 6) | cast[u32](continuation & 0x3f)
+    }
+    if value < minimum || value > 0x10ffff ||
+        (value >= 0xd800 && value <= 0xdfff) {
+        return 0
+    }
+    return width
+}
+
+bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
+    if len(bytes) != len(text) {
+        return false
+    }
+    for index: usize = 0; index < len(bytes); index += 1 {
+        if bytes[index] != text[index] {
+            return false
+        }
+    }
+    return true
+}
+
+// keyword_kind is intentionally a direct, closed spelling table. The scanner
+// calls it once per identifier; no hash state or locale participates.
+keyword_kind :: proc(spelling: []u8) -> Token_Kind {
+    if bytes_equal_text(spelling, "package") {
+        return .keyword_package
+    }
+    if bytes_equal_text(spelling, "import") {
+        return .keyword_import
+    }
+    if bytes_equal_text(spelling, "as") {
+        return .keyword_as
+    }
+    if bytes_equal_text(spelling, "pub") {
+        return .keyword_pub
+    }
+    if bytes_equal_text(spelling, "proc") {
+        return .keyword_proc
+    }
+    if bytes_equal_text(spelling, "c") {
+        return .keyword_c
+    }
+    if bytes_equal_text(spelling, "align") {
+        return .keyword_align
+    }
+    if bytes_equal_text(spelling, "struct") {
+        return .keyword_struct
+    }
+    if bytes_equal_text(spelling, "enum") {
+        return .keyword_enum
+    }
+    if bytes_equal_text(spelling, "variant") {
+        return .keyword_variant
+    }
+    if bytes_equal_text(spelling, "union") {
+        return .keyword_union
+    }
+    if bytes_equal_text(spelling, "distinct") {
+        return .keyword_distinct
+    }
+    if bytes_equal_text(spelling, "simd") {
+        return .keyword_simd
+    }
+    if bytes_equal_text(spelling, "packed") {
+        return .keyword_packed
+    }
+    if bytes_equal_text(spelling, "bits") {
+        return .keyword_bits
+    }
+    if bytes_equal_text(spelling, "thread_local") {
+        return .keyword_thread_local
+    }
+    if bytes_equal_text(spelling, "foreign") {
+        return .keyword_foreign
+    }
+    if bytes_equal_text(spelling, "export") {
+        return .keyword_export
+    }
+    if bytes_equal_text(spelling, "if") {
+        return .keyword_if
+    }
+    if bytes_equal_text(spelling, "else") {
+        return .keyword_else
+    }
+    if bytes_equal_text(spelling, "for") {
+        return .keyword_for
+    }
+    if bytes_equal_text(spelling, "in") {
+        return .keyword_in
+    }
+    if bytes_equal_text(spelling, "out") {
+        return .keyword_out
+    }
+    if bytes_equal_text(spelling, "switch") {
+        return .keyword_switch
+    }
+    if bytes_equal_text(spelling, "case") {
+        return .keyword_case
+    }
+    if bytes_equal_text(spelling, "break") {
+        return .keyword_break
+    }
+    if bytes_equal_text(spelling, "continue") {
+        return .keyword_continue
+    }
+    if bytes_equal_text(spelling, "return") {
+        return .keyword_return
+    }
+    if bytes_equal_text(spelling, "defer") {
+        return .keyword_defer
+    }
+    if bytes_equal_text(spelling, "when") {
+        return .keyword_when
+    }
+    if bytes_equal_text(spelling, "unchecked") {
+        return .keyword_unchecked
+    }
+    if bytes_equal_text(spelling, "deny") {
+        return .keyword_deny
+    }
+    if bytes_equal_text(spelling, "asm") {
+        return .keyword_asm
+    }
+    if bytes_equal_text(spelling, "clobber") {
+        return .keyword_clobber
+    }
+    if bytes_equal_text(spelling, "flags") {
+        return .keyword_flags
+    }
+    if bytes_equal_text(spelling, "memory") {
+        return .keyword_memory
+    }
+    if bytes_equal_text(spelling, "docs") {
+        return .keyword_docs
+    }
+    if bytes_equal_text(spelling, "judge") {
+        return .keyword_judge
+    }
+    if bytes_equal_text(spelling, "file") {
+        return .keyword_file
+    }
+    if bytes_equal_text(spelling, "folder") {
+        return .keyword_folder
+    }
+    if bytes_equal_text(spelling, "type") {
+        return .keyword_type
+    }
+    if bytes_equal_text(spelling, "integer") {
+        return .keyword_integer
+    }
+    if bytes_equal_text(spelling, "float") {
+        return .keyword_float
+    }
+    if bytes_equal_text(spelling, "number") {
+        return .keyword_number
+    }
+    if bytes_equal_text(spelling, "true") {
+        return .keyword_true
+    }
+    if bytes_equal_text(spelling, "false") {
+        return .keyword_false
+    }
+    if bytes_equal_text(spelling, "nil") {
+        return .keyword_nil
+    }
+    return .identifier
+}
+
+// validate_utf8 reports each invalid start byte independently. Later scanning
+// consumes one byte for the corresponding invalid token and does not duplicate
+// the diagnostic.
+validate_utf8 :: proc(lexer: ^Raw_Lexer) {
+    cursor: u32
+    for cast[usize](cursor) < len(lexer.bytes) {
+        byte := lexer.bytes[cast[usize](cursor)]
+        if byte < 0x80 {
+            cursor += 1
+            continue
+        }
+        width := utf8_scalar_width(lexer.bytes, cursor)
+        if width == 0 {
+            lex_error(
+                lexer,
+                cursor,
+                cursor + 1,
+                .source_not_utf8,
+            )
+            cursor += 1
+        } else {
+            cursor += width
+        }
+    }
+}
+
+scan_newline :: proc(lexer: ^Raw_Lexer) {
+    begin := lexer.offset
+    if current(lexer) == cast[u8]('\r') && has(lexer, 1) &&
+        peek(lexer, 1) == cast[u8]('\n') {
+        lexer.offset += 2
+    } else {
+        lexer.offset += 1
+    }
+    add(lexer, .newline, begin, lexer.offset)
+}
+
+scan_line_comment :: proc(lexer: ^Raw_Lexer) {
+    lexer.offset += 2
+    for !at_end(lexer) && current(lexer) != cast[u8]('\n') &&
+        current(lexer) != cast[u8]('\r') {
+        lexer.offset += 1
+    }
+    // The newline is deliberately left for scan_newline so trailing comments
+    // cannot hide a statement boundary.
+}
+
+scan_block_comment :: proc(lexer: ^Raw_Lexer) {
+    begin := lexer.offset
+    lexer.offset += 2
+    for !at_end(lexer) {
+        if starts_with(lexer, "*/") {
+            lexer.offset += 2
+            return
+        }
+        if current(lexer) == cast[u8]('\n') ||
+            current(lexer) == cast[u8]('\r') {
+            scan_newline(lexer)
+        } else {
+            lexer.offset += 1
+        }
+    }
+    lex_error(lexer, begin, lexer.offset, .unterminated_block_comment)
+}
+
+scan_identifier :: proc(lexer: ^Raw_Lexer) {
+    begin := lexer.offset
+    lexer.offset += 1
+    for !at_end(lexer) && is_identifier_continue(current(lexer)) {
+        lexer.offset += 1
+    }
+    spelling := compiler_source.bytes_in_range(
+        lexer.source,
+        source_range(begin, lexer.offset),
+    )
+    add(lexer, keyword_kind(spelling), begin, lexer.offset)
+}
+
+scan_digit_sequence :: proc(
+    lexer: ^Raw_Lexer,
+    base: u32,
+    require_digit: bool,
+    missing_message: compiler_diagnostic.Message,
+) {
+    saw_digit := false
+    previous_was_digit := false
+    begin := lexer.offset
+    for !at_end(lexer) {
+        byte := current(lexer)
+        if is_digit_for_base(byte, base) {
+            saw_digit = true
+            previous_was_digit = true
+            lexer.offset += 1
+            continue
+        }
+        if byte == cast[u8]('_') {
+            if !previous_was_digit || !has(lexer, 1) ||
+                !is_digit_for_base(peek(lexer, 1), base) {
+                lex_error(
+                    lexer,
+                    lexer.offset,
+                    lexer.offset + 1,
+                    .underscore_between_digits,
+                )
+            }
+            previous_was_digit = false
+            lexer.offset += 1
+            continue
+        }
+        break
+    }
+    if require_digit && !saw_digit {
+        lex_error(lexer, begin, lexer.offset, missing_message)
+    }
+}
+
+scan_number :: proc(lexer: ^Raw_Lexer) {
+    begin := lexer.offset
+    if current(lexer) == cast[u8]('0') && has(lexer, 1) &&
+        (peek(lexer, 1) == cast[u8]('b') ||
+         peek(lexer, 1) == cast[u8]('o') ||
+         peek(lexer, 1) == cast[u8]('x')) {
+        prefix := peek(lexer, 1)
+        base: u32 = 16
+        if prefix == cast[u8]('b') {
+            base = 2
+        } else if prefix == cast[u8]('o') {
+            base = 8
+        }
+        lexer.offset += 2
+        scan_digit_sequence(
+            lexer,
+            base,
+            true,
+            .base_integer_requires_digit,
+        )
+
+        if !at_end(lexer) &&
+            (is_ascii_letter(current(lexer)) ||
+             is_ascii_digit(current(lexer))) {
+            invalid_begin := lexer.offset
+            for !at_end(lexer) &&
+                (is_ascii_letter(current(lexer)) ||
+                 is_ascii_digit(current(lexer)) ||
+                 current(lexer) == cast[u8]('_')) {
+                lexer.offset += 1
+            }
+            lex_error(
+                lexer,
+                invalid_begin,
+                lexer.offset,
+                .invalid_integer_base_digit,
+            )
+        }
+        add(lexer, .integer_literal, begin, lexer.offset)
+        return
+    }
+
+    scan_digit_sequence(lexer, 10, true, .integer_requires_digit)
+    is_float := false
+    if !at_end(lexer) && current(lexer) == cast[u8]('.') &&
+        !starts_with(lexer, "..") {
+        is_float = true
+        lexer.offset += 1
+        scan_digit_sequence(
+            lexer,
+            10,
+            true,
+            .fractional_part_requires_digit,
+        )
+    }
+    if !at_end(lexer) &&
+        (current(lexer) == cast[u8]('e') ||
+         current(lexer) == cast[u8]('E')) {
+        is_float = true
+        lexer.offset += 1
+        if !at_end(lexer) &&
+            (current(lexer) == cast[u8]('+') ||
+             current(lexer) == cast[u8]('-')) {
+            lexer.offset += 1
+        }
+        scan_digit_sequence(
+            lexer,
+            10,
+            true,
+            .floating_exponent_requires_digit,
+        )
+    }
+    kind: Token_Kind = .integer_literal
+    if is_float {
+        kind = .float_literal
+    }
+    add(lexer, kind, begin, lexer.offset)
+}
+
+// scan_escape consumes one escape after its leading backslash. Recovery stops
+// at a likely quote/newline boundary so the enclosing literal can continue.
+scan_escape :: proc(lexer: ^Raw_Lexer) {
+    slash := lexer.offset
+    lexer.offset += 1
+    if at_end(lexer) || current(lexer) == cast[u8]('\n') ||
+        current(lexer) == cast[u8]('\r') {
+        lex_error(lexer, slash, lexer.offset, .incomplete_escape)
+        return
+    }
+
+    escape := current(lexer)
+    if escape == cast[u8]('\\') || escape == cast[u8]('"') ||
+        escape == cast[u8]('\'') || escape == cast[u8]('n') ||
+        escape == cast[u8]('r') || escape == cast[u8]('t') ||
+        escape == cast[u8]('0') {
+        lexer.offset += 1
+        return
+    }
+    if escape == cast[u8]('x') {
+        lexer.offset += 1
+        for digit: u32 = 0; digit < 2; digit += 1 {
+            if at_end(lexer) || !is_hex_digit(current(lexer)) {
+                lex_error(lexer, slash, lexer.offset, .hex_escape_digits)
+                return
+            }
+            lexer.offset += 1
+        }
+        return
+    }
+    if escape == cast[u8]('u') {
+        lexer.offset += 1
+        if at_end(lexer) || current(lexer) != cast[u8]('{') {
+            lex_error(lexer, slash, lexer.offset, .unicode_escape_open)
+            return
+        }
+        lexer.offset += 1
+        scalar: u32
+        digits: u32
+        for !at_end(lexer) && is_hex_digit(current(lexer)) {
+            if digits < 8 {
+                scalar = (scalar << 4) | hex_value(current(lexer))
+            }
+            digits += 1
+            lexer.offset += 1
+        }
+        if digits == 0 || at_end(lexer) ||
+            current(lexer) != cast[u8]('}') {
+            lex_error(lexer, slash, lexer.offset, .unicode_escape_close)
+            return
+        }
+        lexer.offset += 1
+        if digits > 6 || scalar > 0x10ffff ||
+            (scalar >= 0xd800 && scalar <= 0xdfff) {
+            lex_error(lexer, slash, lexer.offset, .unicode_escape_scalar)
+        }
+        return
+    }
+
+    lexer.offset += 1
+    lex_error(lexer, slash, lexer.offset, .unknown_escape)
+}
+
+scan_quoted_literal :: proc(
+    lexer: ^Raw_Lexer,
+    delimiter: u8,
+    kind: Token_Kind,
+    require_one_scalar: bool,
+) {
+    begin := lexer.offset
+    lexer.offset += 1
+    scalar_count: u32
+    terminated := false
+
+    for !at_end(lexer) {
+        if current(lexer) == delimiter {
+            lexer.offset += 1
+            terminated = true
+            break
+        }
+        if current(lexer) == cast[u8]('\n') ||
+            current(lexer) == cast[u8]('\r') {
+            lex_error(lexer, begin, lexer.offset, .quoted_literal_newline)
+            break
+        }
+        if current(lexer) == cast[u8]('\\') {
+            scan_escape(lexer)
+            scalar_count += 1
+            continue
+        }
+
+        byte := current(lexer)
+        if byte < 0x80 {
+            lexer.offset += 1
+        } else {
+            width := utf8_scalar_width(lexer.bytes, lexer.offset)
+            if width == 0 {
+                lexer.offset += 1
+            } else {
+                lexer.offset += width
+            }
+        }
+        scalar_count += 1
+    }
+
+    if !terminated &&
+        (at_end(lexer) || current(lexer) != delimiter) {
+        lex_error(lexer, begin, lexer.offset, .unterminated_quoted_literal)
+    }
+    if require_one_scalar && scalar_count != 1 {
+        lex_error(lexer, begin, lexer.offset, .rune_scalar_count)
+    }
+    add(lexer, kind, begin, lexer.offset)
+}
+
+scan_raw_string :: proc(lexer: ^Raw_Lexer) {
+    begin := lexer.offset
+    lexer.offset += 1
+    for !at_end(lexer) && current(lexer) != cast[u8]('`') {
+        lexer.offset += 1
+    }
+    if at_end(lexer) {
+        lex_error(lexer, begin, lexer.offset, .unterminated_raw_string)
+    } else {
+        lexer.offset += 1
+    }
+    add(lexer, .raw_string_literal, begin, lexer.offset)
+}
+
+consume_fixed :: proc(
+    lexer: ^Raw_Lexer,
+    spelling: string,
+    kind: Token_Kind,
+    begin: u32,
+) -> bool {
+    if !starts_with(lexer, spelling) {
+        return false
+    }
+    lexer.offset += cast[u32](len(spelling))
+    add(lexer, kind, begin, lexer.offset)
+    return true
+}
+
+scan_punctuation_or_invalid :: proc(lexer: ^Raw_Lexer) {
+    begin := lexer.offset
+    if consume_fixed(lexer, "<<=", .shift_left_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, ">>=", .shift_right_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "...", .ellipsis, begin) {
+        return
+    }
+    if consume_fixed(lexer, "..", .dot_dot, begin) {
+        return
+    }
+    if consume_fixed(lexer, "---", .uninitialized, begin) {
+        return
+    }
+    if consume_fixed(lexer, "::", .colon_colon, begin) {
+        return
+    }
+    if consume_fixed(lexer, ":=", .colon_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "->", .arrow, begin) {
+        return
+    }
+    if consume_fixed(lexer, "+=", .plus_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "-=", .minus_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "*=", .star_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "/=", .slash_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "%=", .percent_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "&=", .ampersand_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "|=", .pipe_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "~=", .tilde_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "==", .equal_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "!=", .bang_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "<=", .less_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, ">=", .greater_equal, begin) {
+        return
+    }
+    if consume_fixed(lexer, "<<", .shift_left, begin) {
+        return
+    }
+    if consume_fixed(lexer, ">>", .shift_right, begin) {
+        return
+    }
+    if consume_fixed(lexer, "&&", .logical_and, begin) {
+        return
+    }
+    if consume_fixed(lexer, "||", .logical_or, begin) {
+        return
+    }
+
+    kind: Token_Kind = .invalid
+    switch current(lexer) {
+    case '(': kind = .left_paren
+    case ')': kind = .right_paren
+    case '[': kind = .left_bracket
+    case ']': kind = .right_bracket
+    case '{': kind = .left_brace
+    case '}': kind = .right_brace
+    case ',': kind = .comma
+    case ';': kind = .semicolon
+    case ':': kind = .colon
+    case '.': kind = .dot
+    case '#': kind = .hash
+    case '+': kind = .plus
+    case '-': kind = .minus
+    case '*': kind = .star
+    case '/': kind = .slash
+    case '%': kind = .percent
+    case '&': kind = .ampersand
+    case '|': kind = .pipe
+    case '^': kind = .caret
+    case '!': kind = .bang
+    case '~': kind = .tilde
+    case '=': kind = .equal
+    case '<': kind = .less
+    case '>': kind = .greater
+    case:
+    }
+    if kind != .invalid {
+        lexer.offset += 1
+        add(lexer, kind, begin, lexer.offset)
+        return
+    }
+
+    byte := current(lexer)
+    width: u32 = 1
+    if byte >= 0x80 {
+        decoded_width := utf8_scalar_width(lexer.bytes, lexer.offset)
+        if decoded_width != 0 {
+            width = decoded_width
+            lex_error(
+                lexer,
+                begin,
+                begin + width,
+                .non_ascii_identifier,
+            )
+        }
+        // Invalid UTF-8 was reported during validate_utf8.
+    } else {
+        lex_error(lexer, begin, begin + 1, .unexpected_character)
+    }
+    lexer.offset += width
+    add(lexer, .invalid, begin, lexer.offset)
+}
+
+scan_one :: proc(lexer: ^Raw_Lexer) {
+    byte := current(lexer)
+    if byte == cast[u8](' ') || byte == cast[u8]('\t') ||
+        byte == 0x0b || byte == 0x0c {
+        lexer.offset += 1
+        return
+    }
+    if byte == cast[u8]('\n') || byte == cast[u8]('\r') {
+        scan_newline(lexer)
+        return
+    }
+    if starts_with(lexer, "//") {
+        scan_line_comment(lexer)
+        return
+    }
+    if starts_with(lexer, "/*") {
+        scan_block_comment(lexer)
+        return
+    }
+    if is_identifier_start(byte) {
+        scan_identifier(lexer)
+        return
+    }
+    if is_ascii_digit(byte) {
+        scan_number(lexer)
+        return
+    }
+    if byte == cast[u8]('"') {
+        scan_quoted_literal(lexer, cast[u8]('"'), .string_literal, false)
+        return
+    }
+    if byte == cast[u8]('\'') {
+        scan_quoted_literal(lexer, cast[u8]('\''), .rune_literal, true)
+        return
+    }
+    if byte == cast[u8]('`') {
+        scan_raw_string(lexer)
+        return
+    }
+    scan_punctuation_or_invalid(lexer)
+}
+
+// scan_raw performs validation before tokenization and always appends EOF.
+scan_raw :: proc(lexer: ^Raw_Lexer) {
+    validate_utf8(lexer)
+    for !at_end(lexer) {
+        scan_one(lexer)
+    }
+    add(lexer, .end_of_file, lexer.offset, lexer.offset)
+}
+
+Attachment_State :: enum u8 {
+    none,
+    after_construct,
+    after_claim,
+    expect_path,
+    after_path,
+}
+
+is_attachment_keyword :: proc(kind: Token_Kind) -> bool {
+    return kind == .keyword_file || kind == .keyword_folder
+}
+
+is_attachment_string :: proc(kind: Token_Kind) -> bool {
+    return kind == .string_literal || kind == .raw_string_literal
+}
+
+// advance_attachment_state tracks only the surface fragment which affects
+// newline insertion. The future parser remains the authority for validity.
+advance_attachment_state :: proc(
+    state: ^Attachment_State,
+    kind: Token_Kind,
+) {
+    if kind == .keyword_docs || kind == .keyword_judge ||
+        kind == .ellipsis {
+        state^ = .after_construct
+        return
+    }
+    if state^ == .none {
+        return
+    }
+    if kind == .semicolon {
+        state^ = .none
+        return
+    }
+    if is_attachment_keyword(kind) &&
+        (state^ == .after_construct || state^ == .after_claim ||
+         state^ == .after_path) {
+        state^ = .expect_path
+        return
+    }
+    if is_attachment_string(kind) && state^ == .expect_path {
+        state^ = .after_path
+        return
+    }
+    if is_attachment_string(kind) && state^ == .after_construct {
+        state^ = .after_claim
+        return
+    }
+    state^ = .none
+}
+
+next_non_newline_kind :: proc(raw: ^Token_List, start: usize) -> Token_Kind {
+    for index := start; index < raw.length; index += 1 {
+        if raw.data[index].kind != .newline {
+            return raw.data[index].kind
+        }
+    }
+    return .end_of_file
+}
+
+token_sequence_can_end_statement :: proc(
+    before_previous, previous: Token_Kind,
+) -> bool {
+    if token_can_end_statement(previous) {
+        return true
+    }
+    return before_previous == .dot &&
+        token_is_contextual_alternative_name(previous)
+}
+
+// insert_semicolons consumes raw staging tokens and appends the exact public
+// token stream. Braces intentionally do not suppress insertion.
+insert_semicolons :: proc(raw, output: ^Token_List) {
+    token_list_reserve(output, raw.length)
+    paren_depth: u32
+    bracket_depth: u32
+    before_previous: Token_Kind = .invalid
+    previous: Token_Kind = .invalid
+    attachment: Attachment_State = .none
+
+    for index: usize = 0; index < raw.length; index += 1 {
+        token := raw.data[index]
+        if token.kind == .newline {
+            next := next_non_newline_kind(raw, index + 1)
+            continues_attachment := attachment != .none &&
+                is_attachment_keyword(next)
+            if paren_depth == 0 && bracket_depth == 0 &&
+                token_sequence_can_end_statement(before_previous, previous) &&
+                !continues_attachment {
+                token_list_append(output, Token{
+                    kind = .semicolon,
+                    range = source_range(token.range.begin, token.range.begin),
+                    inserted = true,
+                })
+                before_previous = previous
+                previous = .semicolon
+            }
+            if !continues_attachment {
+                attachment = .none
+            }
+            continue
+        }
+
+        if token.kind == .end_of_file {
+            if paren_depth == 0 && bracket_depth == 0 &&
+                token_sequence_can_end_statement(before_previous, previous) {
+                token_list_append(output, Token{
+                    kind = .semicolon,
+                    range = source_range(token.range.begin, token.range.begin),
+                    inserted = true,
+                })
+            }
+            token_list_append(output, token)
+            break
+        }
+
+        switch token.kind {
+        case .left_paren:
+            paren_depth += 1
+        case .right_paren:
+            if paren_depth > 0 {
+                paren_depth -= 1
+            }
+        case .left_bracket:
+            bracket_depth += 1
+        case .right_bracket:
+            if bracket_depth > 0 {
+                bracket_depth -= 1
+            }
+        case:
+        }
+
+        token_list_append(output, token)
+        before_previous = previous
+        previous = token.kind
+        advance_attachment_state(&attachment, token.kind)
+    }
+}
+
+// lex is the public source-to-token operation. output must be initialized and
+// empty; diagnostics may already contain earlier source rows but are only
+// appended. Temporary raw tokens are destroyed before return.
+pub lex :: proc(
+    source: ^compiler_source.Source_File,
+    diagnostics: ^compiler_diagnostic.Sink,
+    output: ^Token_List,
+) {
+    assert(output.length == 0, "lexer output list is not empty")
+    raw: Token_List
+    token_list_init(&raw)
+
+    lexer := Raw_Lexer{
+        source = source,
+        bytes = compiler_source.contents(source),
+        diagnostics = diagnostics,
+        raw = &raw,
+    }
+    scan_raw(&lexer)
+    insert_semicolons(&raw, output)
+    token_list_destroy(&raw)
+}

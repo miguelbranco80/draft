@@ -662,6 +662,62 @@ if(DRAFTIDE_HOST_TARGET)
   add_custom_target(draftide ALL DEPENDS "${DRAFTIDE_BUILD_STAMP}")
 endif()
 
+# The first self-hosted compiler slice is a separate Draft executable. The C++
+# draftc remains the bootstrap and semantic oracle; it compiles draftc-next for
+# the native host, while the next-stage driver currently exposes only `lex`.
+# Keeping the output out of the install set prevents a partial command surface
+# from being mistaken for the released compiler contract.
+file(GLOB_RECURSE DRAFTC_NEXT_DRAFT_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/core/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compiler/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/draftc_next/*.draft"
+)
+if(DRAFT_NATIVE_HOST_TARGET)
+  # draftc records derived native state below the selected workspace even when
+  # -o names the final executable. Stage the ordinary Draft packages inside
+  # this CMake binary directory so a default build never writes `.draft/` into
+  # the source checkout. CONFIGURE_DEPENDS reruns this cleanup when files are
+  # added or removed; the build command recopies changed contents before use.
+  set(DRAFTC_NEXT_SOURCE_ROOT
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/draftc-next-source")
+  file(REMOVE_RECURSE "${DRAFTC_NEXT_SOURCE_ROOT}")
+  file(MAKE_DIRECTORY "${DRAFTC_NEXT_SOURCE_ROOT}/tools")
+  file(WRITE "${DRAFTC_NEXT_SOURCE_ROOT}/draft.workspace"
+    "draft-workspace-v1\n")
+  set(DRAFTC_NEXT_EXECUTABLE
+    "${CMAKE_CURRENT_BINARY_DIR}/draftc-next${CMAKE_EXECUTABLE_SUFFIX}")
+  set(DRAFTC_NEXT_BUILD_STAMP
+    "${CMAKE_CURRENT_BINARY_DIR}/draftc-next-build.stamp")
+  # The configure step rebuilt the staging root from an empty state. Remove the
+  # generated stamp as part of that same transaction so the next build always
+  # repopulates sources before treating the executable as current.
+  file(REMOVE "${DRAFTC_NEXT_BUILD_STAMP}")
+  add_custom_command(
+    OUTPUT "${DRAFTC_NEXT_BUILD_STAMP}"
+    BYPRODUCTS "${DRAFTC_NEXT_EXECUTABLE}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+      "${CMAKE_CURRENT_SOURCE_DIR}/compiler"
+      "${DRAFTC_NEXT_SOURCE_ROOT}/compiler"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/draftc_next"
+      "${DRAFTC_NEXT_SOURCE_ROOT}/tools/draftc_next"
+    COMMAND $<TARGET_FILE:draftc> build
+      "${DRAFTC_NEXT_SOURCE_ROOT}/tools/draftc_next"
+      --target "${DRAFT_NATIVE_HOST_TARGET}" -O2
+      -o "${DRAFTC_NEXT_EXECUTABLE}"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${DRAFTC_NEXT_BUILD_STAMP}"
+    DEPENDS
+      draftc
+      ${DRAFTC_NEXT_DRAFT_SOURCES}
+      "${CMAKE_CURRENT_SOURCE_DIR}/draft.workspace"
+    COMMENT "Building the Draft-written draftc-next lexer driver"
+    VERBATIM
+  )
+  add_custom_target(
+    draftc_next ALL DEPENDS "${DRAFTC_NEXT_BUILD_STAMP}"
+  )
+endif()
+
 # A binary Draft distribution is a relocatable compiler, not a thin wrapper
 # around the LLVM installation which happened to build it. Keep the public
 # executables and compiler-service provider together in bin/, and keep the
@@ -1088,6 +1144,43 @@ if(BUILD_TESTING)
   add_executable(draft_lexer_tests tests/lexer_test.cpp)
   target_link_libraries(draft_lexer_tests PRIVATE draft_compiler)
   add_test(NAME draft_lexer_tests COMMAND draft_lexer_tests)
+
+  if(DRAFT_NATIVE_HOST_TARGET)
+    # Same-package Draft tests catch focused algorithm failures. The companion
+    # process test is the migration gate: stdout, stderr, and exit status must
+    # remain byte-for-byte equal to the C++ bootstrap over repository sources
+    # and deliberately malformed input.
+    add_test(
+      NAME draft_self_hosted_lexer_units
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/self-hosted-lexer-unit-tests"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_HOST_TARGET}"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_self_hosted_lexer_unit_test.cmake"
+    )
+    set_tests_properties(
+      draft_self_hosted_lexer_units
+      PROPERTIES LABELS "frontend;self-hosting"
+    )
+    add_test(
+      NAME draft_self_hosted_lexer_differential
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DDRAFTC_NEXT=${DRAFTC_NEXT_EXECUTABLE}"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/self-hosted-lexer-tests"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_self_hosted_lexer_test.cmake"
+    )
+    set_tests_properties(
+      draft_self_hosted_lexer_differential
+      PROPERTIES LABELS "frontend;self-hosting;integration"
+    )
+  endif()
 
   if(DRAFT_NATIVE_HOST)
     add_executable(
