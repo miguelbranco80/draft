@@ -1,0 +1,310 @@
+// Benchmark-only phase access for the Draft-written lexer and parser.
+//
+// Ordinary package builds exclude *_bench.draft, so draftc-next and future
+// consumers contain none of these clocks, checksums, loops, or entry points.
+// The standalone development benchmark stages this file under a non-benchmark
+// name and imports its public operations. Because the staged copy remains in
+// compiler_syntax, it invokes the exact private Raw_Lexer, semicolon insertion,
+// Parser, scratch buffer, and tree construction used by production.
+//
+// Each operation measures only the named phase. Source loading, preparation of
+// owned token copies, output checksums, and owner destruction happen outside
+// timed intervals. The clock is read once before and after each production call
+// so a separate clock-only result can quantify that measurement cost. Relevant
+// specification: section 4, "Source text and literals".
+package compiler_syntax
+
+import core/time
+import compiler/diagnostic as compiler_diagnostic
+import compiler/source as compiler_source
+
+Benchmark_Checksum_Seed :: cast[u64](1469598103934665603)
+Benchmark_Checksum_Multiplier :: cast[u64](1099511628211)
+
+// Frontend_Benchmark_Sample is one batched phase observation. elapsed includes
+// only clock-bracketed production calls. checksum and result sizes are computed
+// afterward; they keep results observable and let the comparison tool reject a
+// mismatched C++/Draft workload. ok is false when nominally valid input emitted
+// any diagnostic.
+pub Frontend_Benchmark_Sample :: struct {
+    elapsed: time.Duration,
+    checksum: u64,
+    tokens: usize,
+    nodes: usize,
+    ok: bool,
+}
+
+benchmark_mix_checksum :: proc(checksum, value: u64) -> u64 {
+    return (checksum ~ value) * Benchmark_Checksum_Multiplier
+}
+
+// benchmark_token_checksum observes both ends of one append-only token result
+// in constant time outside the measured region. A full hash would heat caches
+// between samples without improving phase timing.
+benchmark_token_checksum :: proc(tokens: ^Token_List) -> u64 {
+    checksum := benchmark_mix_checksum(
+        Benchmark_Checksum_Seed,
+        cast[u64](tokens.length),
+    )
+    if tokens.length == 0 {
+        return checksum
+    }
+
+    first := tokens.data[0]
+    last := tokens.data[tokens.length - 1]
+    checksum = benchmark_mix_checksum(
+        checksum,
+        cast[u64](cast[u16](first.kind)),
+    )
+    checksum = benchmark_mix_checksum(checksum, cast[u64](first.range.begin))
+    checksum = benchmark_mix_checksum(checksum, cast[u64](first.range.end))
+    checksum = benchmark_mix_checksum(checksum, 1 if first.inserted else 0)
+    checksum = benchmark_mix_checksum(
+        checksum,
+        cast[u64](cast[u16](last.kind)),
+    )
+    checksum = benchmark_mix_checksum(checksum, cast[u64](last.range.begin))
+    checksum = benchmark_mix_checksum(checksum, cast[u64](last.range.end))
+    checksum = benchmark_mix_checksum(checksum, 1 if last.inserted else 0)
+    return checksum
+}
+
+// benchmark_tree_checksum adds the root and arena shape to the normalized token
+// summary. These ordinals intentionally mirror the bootstrap representation.
+benchmark_tree_checksum :: proc(tree: ^Syntax_Tree) -> u64 {
+    checksum := benchmark_token_checksum(&tree.tokens)
+    checksum = benchmark_mix_checksum(checksum, cast[u64](tree.node_count))
+    checksum = benchmark_mix_checksum(checksum, cast[u64](tree.root.value))
+    root := syntax_tree_node(tree, tree.root)
+    checksum = benchmark_mix_checksum(
+        checksum,
+        cast[u64](cast[u16](root.kind)),
+    )
+    checksum = benchmark_mix_checksum(checksum, cast[u64](root.token_begin))
+    checksum = benchmark_mix_checksum(checksum, cast[u64](root.token_end))
+    checksum = benchmark_mix_checksum(checksum, cast[u64](root.child_count))
+    return checksum
+}
+
+// frontend_benchmark_prepare_raw constructs the stable staging stream shared by
+// all semicolon samples. It is a setup operation and performs no timing.
+pub frontend_benchmark_prepare_raw :: proc(
+    source: ^compiler_source.Source_File,
+    diagnostics: ^compiler_diagnostic.Sink,
+    raw: ^Token_List,
+) {
+    token_list_init(raw)
+    lexer := Raw_Lexer{
+        source = source,
+        bytes = compiler_source.contents(source),
+        diagnostics = diagnostics,
+        raw = raw,
+    }
+    scan_raw(&lexer)
+}
+
+benchmark_copy_tokens :: proc(destination, source: ^Token_List) {
+    assert(destination.length == 0,
+        "benchmark token destination is not empty")
+    token_list_reserve(destination, source.length)
+    for index: usize = 0; index < source.length; index += 1 {
+        token_list_append(destination, source.data[index])
+    }
+}
+
+// frontend_benchmark_clock measures the same two adjacent monotonic reads used
+// around every other iteration. Consumers report it rather than subtracting a
+// noisy estimate from production durations.
+pub frontend_benchmark_clock :: proc(
+    iterations: usize,
+) -> Frontend_Benchmark_Sample {
+    sample := Frontend_Benchmark_Sample{
+        checksum = Benchmark_Checksum_Seed,
+        ok = true,
+    }
+    for iteration: usize = 0; iteration < iterations; iteration += 1 {
+        begin := time.monotonic_now()
+        end := time.monotonic_now()
+        sample.elapsed += end - begin
+        sample.checksum = benchmark_mix_checksum(
+            sample.checksum,
+            cast[u64](iteration),
+        )
+    }
+    return sample
+}
+
+// frontend_benchmark_raw_lexer measures UTF-8 validation plus raw scanning. A
+// fresh output owner is required for every production call; its destruction is
+// outside the timer.
+pub frontend_benchmark_raw_lexer :: proc(
+    source: ^compiler_source.Source_File,
+    iterations: usize,
+) -> Frontend_Benchmark_Sample {
+    sample := Frontend_Benchmark_Sample{
+        checksum = Benchmark_Checksum_Seed,
+        ok = true,
+    }
+    for iteration: usize = 0; iteration < iterations; iteration += 1 {
+        diagnostics: compiler_diagnostic.Sink
+        raw: Token_List
+        compiler_diagnostic.init(&diagnostics)
+        token_list_init(&raw)
+
+        lexer := Raw_Lexer{
+            source = source,
+            bytes = compiler_source.contents(source),
+            diagnostics = &diagnostics,
+            raw = &raw,
+        }
+        begin := time.monotonic_now()
+        scan_raw(&lexer)
+        end := time.monotonic_now()
+        sample.elapsed += end - begin
+
+        sample.ok = sample.ok && !compiler_diagnostic.has_errors(&diagnostics)
+        sample.tokens = raw.length
+        sample.checksum = benchmark_mix_checksum(
+            sample.checksum,
+            benchmark_token_checksum(&raw),
+        )
+        token_list_destroy(&raw)
+        compiler_diagnostic.destroy(&diagnostics)
+    }
+    return sample
+}
+
+// frontend_benchmark_semicolon_insertion measures only the second lexer pass.
+// raw is immutable and reused; output allocation belongs to the phase while its
+// release remains outside the timer.
+pub frontend_benchmark_semicolon_insertion :: proc(
+    raw: ^Token_List,
+    iterations: usize,
+) -> Frontend_Benchmark_Sample {
+    sample := Frontend_Benchmark_Sample{
+        checksum = Benchmark_Checksum_Seed,
+        ok = true,
+    }
+    for iteration: usize = 0; iteration < iterations; iteration += 1 {
+        tokens: Token_List
+        token_list_init(&tokens)
+        begin := time.monotonic_now()
+        insert_semicolons(raw, &tokens)
+        end := time.monotonic_now()
+        sample.elapsed += end - begin
+
+        sample.tokens = tokens.length
+        sample.checksum = benchmark_mix_checksum(
+            sample.checksum,
+            benchmark_token_checksum(&tokens),
+        )
+        token_list_destroy(&tokens)
+    }
+    return sample
+}
+
+// frontend_benchmark_lexer measures the complete public lexer, including both
+// token owners and semicolon normalization but excluding result destruction.
+pub frontend_benchmark_lexer :: proc(
+    source: ^compiler_source.Source_File,
+    iterations: usize,
+) -> Frontend_Benchmark_Sample {
+    sample := Frontend_Benchmark_Sample{
+        checksum = Benchmark_Checksum_Seed,
+        ok = true,
+    }
+    for iteration: usize = 0; iteration < iterations; iteration += 1 {
+        diagnostics: compiler_diagnostic.Sink
+        tokens: Token_List
+        compiler_diagnostic.init(&diagnostics)
+        token_list_init(&tokens)
+        begin := time.monotonic_now()
+        lex(source, &diagnostics, &tokens)
+        end := time.monotonic_now()
+        sample.elapsed += end - begin
+
+        sample.ok = sample.ok && !compiler_diagnostic.has_errors(&diagnostics)
+        sample.tokens = tokens.length
+        sample.checksum = benchmark_mix_checksum(
+            sample.checksum,
+            benchmark_token_checksum(&tokens),
+        )
+        token_list_destroy(&tokens)
+        compiler_diagnostic.destroy(&diagnostics)
+    }
+    return sample
+}
+
+// frontend_benchmark_parser parses a token copy prepared before each timed
+// interval. It includes parser scratch and permanent node/child allocation but
+// excludes lexing, token copying, and final tree destruction.
+pub frontend_benchmark_parser :: proc(
+    tokens: ^Token_List,
+    iterations: usize,
+) -> Frontend_Benchmark_Sample {
+    sample := Frontend_Benchmark_Sample{
+        checksum = Benchmark_Checksum_Seed,
+        ok = true,
+    }
+    for iteration: usize = 0; iteration < iterations; iteration += 1 {
+        diagnostics: compiler_diagnostic.Sink
+        tree: Syntax_Tree
+        compiler_diagnostic.init(&diagnostics)
+        syntax_tree_init(&tree)
+        benchmark_copy_tokens(&tree.tokens, tokens)
+
+        parser := Parser{
+            tree = &tree,
+            diagnostics = &diagnostics,
+        }
+        begin := time.monotonic_now()
+        node_id_buffer_init(&parser.scratch)
+        tree.root = parse_source_root(&parser)
+        node_id_buffer_destroy(&parser.scratch)
+        end := time.monotonic_now()
+        sample.elapsed += end - begin
+
+        sample.ok = sample.ok && !compiler_diagnostic.has_errors(&diagnostics)
+        sample.tokens = tree.tokens.length
+        sample.nodes = tree.node_count
+        sample.checksum = benchmark_mix_checksum(
+            sample.checksum,
+            benchmark_tree_checksum(&tree),
+        )
+        syntax_tree_destroy(&tree)
+        compiler_diagnostic.destroy(&diagnostics)
+    }
+    return sample
+}
+
+// frontend_benchmark_frontend measures the ordinary complete source-to-tree
+// operation and excludes only final tree/diagnostic destruction.
+pub frontend_benchmark_frontend :: proc(
+    source: ^compiler_source.Source_File,
+    iterations: usize,
+) -> Frontend_Benchmark_Sample {
+    sample := Frontend_Benchmark_Sample{
+        checksum = Benchmark_Checksum_Seed,
+        ok = true,
+    }
+    for iteration: usize = 0; iteration < iterations; iteration += 1 {
+        diagnostics: compiler_diagnostic.Sink
+        tree: Syntax_Tree
+        compiler_diagnostic.init(&diagnostics)
+        begin := time.monotonic_now()
+        parse_source_file(source, &diagnostics, &tree)
+        end := time.monotonic_now()
+        sample.elapsed += end - begin
+
+        sample.ok = sample.ok && !compiler_diagnostic.has_errors(&diagnostics)
+        sample.tokens = tree.tokens.length
+        sample.nodes = tree.node_count
+        sample.checksum = benchmark_mix_checksum(
+            sample.checksum,
+            benchmark_tree_checksum(&tree),
+        )
+        syntax_tree_destroy(&tree)
+        compiler_diagnostic.destroy(&diagnostics)
+    }
+    return sample
+}

@@ -539,6 +539,31 @@ endif()
 add_executable(draftc src/driver/main.cpp)
 target_link_libraries(draftc PRIVATE draft_compiler)
 
+# These sources are compiled a second time only for the bootstrap frontend
+# benchmark. DRAFT_FRONTEND_BENCHMARK exposes raw-scanner and pre-tokenized
+# parser seams from those private copies; draft_compiler is built without the
+# definition and therefore gains no benchmark code or runtime conditionals.
+# EXCLUDE_FROM_ALL also keeps ordinary builds from paying this compilation cost.
+add_executable(
+  draft_bootstrap_frontend_benchmark EXCLUDE_FROM_ALL
+  tools/bootstrap_frontend_benchmark.cpp
+  src/source/diagnostic.cpp
+  src/source/source.cpp
+  src/syntax/lexer.cpp
+  src/syntax/parser.cpp
+  src/syntax/syntax_tree.cpp
+  src/syntax/token.cpp
+)
+target_compile_definitions(
+  draft_bootstrap_frontend_benchmark PRIVATE DRAFT_FRONTEND_BENCHMARK=1)
+target_include_directories(
+  draft_bootstrap_frontend_benchmark PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(
+  draft_bootstrap_frontend_benchmark PRIVATE draft_build_options)
+set_target_properties(
+  draft_bootstrap_frontend_benchmark
+  PROPERTIES OUTPUT_NAME draft-bootstrap-frontend-benchmark)
+
 # The compiler service is an opaque C ABI over the C++ bootstrap. Draft owns the
 # real draftide executable, main procedure, workspace selection, editor, and UI;
 # this library owns only compiler-session products and native build operations.
@@ -715,6 +740,60 @@ if(DRAFT_NATIVE_HOST_TARGET)
   )
   add_custom_target(
     draftc_next ALL DEPENDS "${DRAFTC_NEXT_BUILD_STAMP}"
+  )
+endif()
+
+# The Draft frontend benchmark is another explicitly requested development
+# artifact, not a public command or default build prerequisite. Its staging copy
+# renames the package's *_bench.draft support so an ordinary Draft build selects
+# that code only here. Production compiler/syntax builds continue to exclude it
+# by the language's benchmark-file rule and contain no timers or counters.
+file(GLOB_RECURSE DRAFT_FRONTEND_BENCHMARK_DRAFT_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/core/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compiler/*.draft"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/draft_frontend_benchmark/*.draft.in"
+)
+if(DRAFT_NATIVE_HOST_TARGET)
+  set(DRAFT_FRONTEND_BENCHMARK_SOURCE_ROOT
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/draft-frontend-benchmark-source")
+  file(REMOVE_RECURSE "${DRAFT_FRONTEND_BENCHMARK_SOURCE_ROOT}")
+  file(MAKE_DIRECTORY
+    "${DRAFT_FRONTEND_BENCHMARK_SOURCE_ROOT}/tools/draft_frontend_benchmark")
+  file(WRITE "${DRAFT_FRONTEND_BENCHMARK_SOURCE_ROOT}/draft.workspace"
+    "draft-workspace-v1\n")
+  set(DRAFT_FRONTEND_BENCHMARK_EXECUTABLE
+    "${CMAKE_CURRENT_BINARY_DIR}/draft-frontend-benchmark${CMAKE_EXECUTABLE_SUFFIX}")
+  set(DRAFT_FRONTEND_BENCHMARK_BUILD_STAMP
+    "${CMAKE_CURRENT_BINARY_DIR}/draft-frontend-benchmark-build.stamp")
+  file(REMOVE "${DRAFT_FRONTEND_BENCHMARK_BUILD_STAMP}")
+  add_custom_command(
+    OUTPUT "${DRAFT_FRONTEND_BENCHMARK_BUILD_STAMP}"
+    BYPRODUCTS "${DRAFT_FRONTEND_BENCHMARK_EXECUTABLE}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+      "${CMAKE_CURRENT_SOURCE_DIR}/compiler"
+      "${DRAFT_FRONTEND_BENCHMARK_SOURCE_ROOT}/compiler"
+    COMMAND "${CMAKE_COMMAND}" -E copy
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/draft_frontend_benchmark/package.draft.in"
+      "${DRAFT_FRONTEND_BENCHMARK_SOURCE_ROOT}/tools/draft_frontend_benchmark/package.draft"
+    COMMAND "${CMAKE_COMMAND}" -E copy
+      "${CMAKE_CURRENT_SOURCE_DIR}/compiler/syntax/frontend_benchmark_support_bench.draft"
+      "${DRAFT_FRONTEND_BENCHMARK_SOURCE_ROOT}/compiler/syntax/frontend_benchmark_support.draft"
+    COMMAND $<TARGET_FILE:draftc> build
+      "${DRAFT_FRONTEND_BENCHMARK_SOURCE_ROOT}/tools/draft_frontend_benchmark"
+      --target "${DRAFT_NATIVE_HOST_TARGET}" -O2
+      -o "${DRAFT_FRONTEND_BENCHMARK_EXECUTABLE}"
+    COMMAND "${CMAKE_COMMAND}" -E touch
+      "${DRAFT_FRONTEND_BENCHMARK_BUILD_STAMP}"
+    DEPENDS
+      draftc
+      ${DRAFT_FRONTEND_BENCHMARK_DRAFT_SOURCES}
+      "${CMAKE_CURRENT_SOURCE_DIR}/draft.workspace"
+    COMMENT "Building the standalone Draft frontend benchmark"
+    VERBATIM
+  )
+  add_custom_target(
+    draft_frontend_benchmark
+    DEPENDS "${DRAFT_FRONTEND_BENCHMARK_BUILD_STAMP}"
   )
 endif()
 

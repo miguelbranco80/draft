@@ -1,0 +1,316 @@
+// Staged standalone in-process benchmark for the Draft-written frontend phases.
+//
+// The executable loads one caller-selected valid Draft source before timing,
+// performs one warmup and ten samples per phase, and emits tab-separated rows
+// compatible with the C++ bootstrap benchmark. Its compiler_syntax benchmark
+// support is staged from a *_bench.draft file; neither this driver nor the
+// support participates in draftc-next or an installed product.
+//
+// Phase calls are timed directly without callbacks or instrumentation inside
+// production code. Token preparation, checksums, owner destruction, median
+// selection, and output rendering remain outside measured intervals. The clock
+// row quantifies the two monotonic reads performed per iteration. Relevant
+// specification: section 4, "Source text and literals".
+package draft_frontend_benchmark
+
+import core/os
+import core/time
+import compiler/diagnostic as compiler_diagnostic
+import compiler/source as compiler_source
+import compiler/syntax as compiler_syntax
+import compiler/text as compiler_text
+
+Sample_Count :: 10
+Default_Iterations :: 100
+Maximum_Iterations :: 1000000
+
+Phase :: enum u8 {
+    clock,
+    raw_lexer,
+    semicolon_insertion,
+    lexer,
+    parser,
+    frontend,
+}
+
+phase_name :: proc(phase: Phase) -> string {
+    switch phase {
+    case .clock: return "clock"
+    case .raw_lexer: return "raw_lexer"
+    case .semicolon_insertion: return "semicolon_insertion"
+    case .lexer: return "lexer"
+    case .parser: return "parser"
+    case .frontend: return "frontend"
+    }
+    return "unknown"
+}
+
+// parse_iterations accepts one nonzero decimal count under a deliberate
+// runaway limit. It performs checked accumulation because command arguments are
+// ordinary user input, not compiler invariants.
+parse_iterations :: proc(text: string) -> (usize, bool) {
+    if len(text) == 0 {
+        return (0, false)
+    }
+    value: usize
+    for index: usize = 0; index < len(text); index += 1 {
+        byte := text[index]
+        if byte < cast[u8]('0') || byte > cast[u8]('9') {
+            return (0, false)
+        }
+        digit := cast[usize](byte - cast[u8]('0'))
+        if value > (Maximum_Iterations - digit) / 10 {
+            return (0, false)
+        }
+        value = value * 10 + digit
+    }
+    return (value, value != 0 && value <= Maximum_Iterations)
+}
+
+measure_phase :: proc(
+    phase: Phase,
+    source: ^compiler_source.Source_File,
+    raw, tokens: ^compiler_syntax.Token_List,
+    iterations: usize,
+) -> compiler_syntax.Frontend_Benchmark_Sample {
+    switch phase {
+    case .clock:
+        return compiler_syntax.frontend_benchmark_clock(iterations)
+    case .raw_lexer:
+        return compiler_syntax.frontend_benchmark_raw_lexer(source, iterations)
+    case .semicolon_insertion:
+        return compiler_syntax.frontend_benchmark_semicolon_insertion(
+            raw,
+            iterations,
+        )
+    case .lexer:
+        return compiler_syntax.frontend_benchmark_lexer(source, iterations)
+    case .parser:
+        return compiler_syntax.frontend_benchmark_parser(tokens, iterations)
+    case .frontend:
+        return compiler_syntax.frontend_benchmark_frontend(source, iterations)
+    }
+    return compiler_syntax.Frontend_Benchmark_Sample{}
+}
+
+same_result :: proc(
+    left, right: compiler_syntax.Frontend_Benchmark_Sample,
+) -> bool {
+    return left.checksum == right.checksum &&
+        left.tokens == right.tokens && left.nodes == right.nodes
+}
+
+// median_samples sorts only the ten elapsed values using direct insertion sort.
+// The sample count is fixed and tiny; adding a general algorithm dependency
+// would obscure the benchmark's actual policy.
+median_samples :: proc(samples: ^[Sample_Count]time.Duration) -> time.Duration {
+    sorted := samples^
+    for index: usize = 1; index < Sample_Count; index += 1 {
+        value := sorted[index]
+        position := index
+        for position > 0 && value < sorted[position - 1] {
+            sorted[position] = sorted[position - 1]
+            position -= 1
+        }
+        sorted[position] = value
+    }
+    lower := cast[i64](sorted[Sample_Count / 2 - 1])
+    upper := cast[i64](sorted[Sample_Count / 2])
+    return cast[time.Duration](lower + (upper - lower) / 2)
+}
+
+// run_phase discards one complete warmup and then requires all ten samples to
+// produce identical result metadata. A changing output is reported as harness
+// failure instead of being mistaken for performance noise.
+run_phase :: proc(
+    phase: Phase,
+    source: ^compiler_source.Source_File,
+    raw, tokens: ^compiler_syntax.Token_List,
+    iterations: usize,
+) -> (compiler_syntax.Frontend_Benchmark_Sample, bool) {
+    warmup := measure_phase(phase, source, raw, tokens, iterations)
+    if !warmup.ok {
+        return (warmup, false)
+    }
+
+    durations: [Sample_Count]time.Duration
+    reference: compiler_syntax.Frontend_Benchmark_Sample
+    for index: usize = 0; index < Sample_Count; index += 1 {
+        sample := measure_phase(phase, source, raw, tokens, iterations)
+        if !sample.ok {
+            return (sample, false)
+        }
+        if index == 0 {
+            reference = sample
+        } else if !same_result(reference, sample) {
+            return (sample, false)
+        }
+        durations[index] = sample.elapsed
+    }
+    reference.elapsed = median_samples(&durations)
+    return (reference, true)
+}
+
+scaled_cost :: proc(
+    elapsed: time.Duration,
+    units, iterations: usize,
+) -> usize {
+    if units == 0 || iterations == 0 ||
+        units > ~cast[usize](0) / iterations {
+        return 0
+    }
+    elapsed_ns := cast[usize](cast[i64](elapsed))
+    if elapsed_ns > ~cast[usize](0) / 1000 {
+        return 0
+    }
+    return elapsed_ns * 1000 / (units * iterations)
+}
+
+append_separator :: proc(output: ^compiler_text.Builder) {
+    compiler_text.append_byte(output, cast[u8]('\t'))
+}
+
+// append_row emits integer-only stable TSV. Costs use thousandths of a
+// nanosecond so comparison needs no floating formatter or locale policy.
+append_row :: proc(
+    output: ^compiler_text.Builder,
+    phase: Phase,
+    source: ^compiler_source.Source_File,
+    iterations: usize,
+    sample: compiler_syntax.Frontend_Benchmark_Sample,
+) {
+    bytes := len(compiler_source.contents(source))
+    if phase == .clock {
+        bytes = 0
+    }
+    compiler_text.append_text(output, "draft")
+    append_separator(output)
+    compiler_text.append_text(output, phase_name(phase))
+    append_separator(output)
+    compiler_text.append_unsigned(output, bytes)
+    append_separator(output)
+    compiler_text.append_unsigned(output, sample.tokens)
+    append_separator(output)
+    compiler_text.append_unsigned(output, sample.nodes)
+    append_separator(output)
+    compiler_text.append_unsigned(output, iterations)
+    append_separator(output)
+    compiler_text.append_unsigned(
+        output,
+        cast[usize](cast[i64](sample.elapsed)),
+    )
+    append_separator(output)
+    compiler_text.append_unsigned(
+        output,
+        scaled_cost(sample.elapsed, bytes, iterations),
+    )
+    append_separator(output)
+    compiler_text.append_unsigned(
+        output,
+        scaled_cost(sample.elapsed, sample.tokens, iterations),
+    )
+    append_separator(output)
+    compiler_text.append_unsigned(output, cast[usize](sample.checksum))
+    compiler_text.append_byte(output, cast[u8]('\n'))
+}
+
+write_error :: proc(text: string) -> int {
+    _ := os.write_text_all(os.standard_error, text)
+    return 1
+}
+
+// main owns all input, precomputed token forms, the preflight tree, and output
+// storage. The source is rejected before sampling when lexing or parsing emits
+// a diagnostic, keeping every measured phase on the same valid workload.
+main :: proc() -> int {
+    arguments := os.args()
+    if len(arguments) != 2 && len(arguments) != 3 {
+        return write_error(
+            "usage: draft-frontend-benchmark <file.draft> [iterations]\n",
+        )
+    }
+
+    iterations: usize = Default_Iterations
+    if len(arguments) == 3 {
+        valid: bool
+        (iterations, valid) = parse_iterations(arguments[2])
+        if !valid {
+            return write_error(
+                "error: iterations must be in [1, 1000000]\n",
+            )
+        }
+    }
+
+    source: compiler_source.Source_File
+    load_error := compiler_source.load(&source, arguments[1])
+    defer compiler_source.destroy(&source)
+    if load_error != .none {
+        return write_error("error: cannot load benchmark source\n")
+    }
+
+    diagnostics: compiler_diagnostic.Sink
+    raw: compiler_syntax.Token_List
+    tokens: compiler_syntax.Token_List
+    compiler_diagnostic.init(&diagnostics)
+    compiler_syntax.frontend_benchmark_prepare_raw(
+        &source,
+        &diagnostics,
+        &raw,
+    )
+    compiler_syntax.token_list_init(&tokens)
+    defer compiler_syntax.token_list_destroy(&tokens)
+    defer compiler_syntax.token_list_destroy(&raw)
+    defer compiler_diagnostic.destroy(&diagnostics)
+    compiler_syntax.lex(&source, &diagnostics, &tokens)
+
+    tree: compiler_syntax.Syntax_Tree
+    compiler_syntax.parse_source_file(&source, &diagnostics, &tree)
+    defer compiler_syntax.syntax_tree_destroy(&tree)
+    if compiler_diagnostic.has_errors(&diagnostics) {
+        rendered: compiler_text.Builder
+        compiler_text.init(&rendered)
+        defer compiler_text.destroy(&rendered)
+        compiler_diagnostic.render(&source, &diagnostics, &rendered)
+        _ := os.write_all(os.standard_error, compiler_text.view(&rendered))
+        return 1
+    }
+
+    output: compiler_text.Builder
+    compiler_text.init(&output)
+    defer compiler_text.destroy(&output)
+    compiler_text.append_text(
+        &output,
+        "implementation\tphase\tbytes\ttokens\tnodes\titerations",
+    )
+    compiler_text.append_text(
+        &output,
+        "\tmedian_ns\tns_per_byte_x1000\tns_per_token_x1000\tchecksum\n",
+    )
+    phases := [6]Phase{
+        .clock,
+        .raw_lexer,
+        .semicolon_insertion,
+        .lexer,
+        .parser,
+        .frontend,
+    }
+    for phase in phases {
+        (sample, complete) := run_phase(
+            phase,
+            &source,
+            &raw,
+            &tokens,
+            iterations,
+        )
+        if !complete {
+            return write_error(
+                "error: benchmark phase failed or changed output\n",
+            )
+        }
+        append_row(&output, phase, &source, iterations, sample)
+    }
+    if os.write_all(os.standard_output, compiler_text.view(&output)) != .none {
+        return 1
+    }
+    return 0
+}

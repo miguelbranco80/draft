@@ -82,6 +82,30 @@ structure, and parser recovery. The next semantic slice can therefore consume
 the proven Draft concrete tree directly; it does not need a compatibility call
 back into the C++ parser.
 
+Frontend performance experiments use two explicitly requested, non-installed
+executables rather than adding observation to either production driver. The C++
+`draft-bootstrap-frontend-benchmark` target compiles private copies of the
+source, lexer, parser, and concrete-tree modules with benchmark-only raw-scanner
+and pre-tokenized-parser entry points. The Draft `draft-frontend-benchmark`
+target stages `compiler/syntax/frontend_benchmark_support_bench.draft` under an
+ordinary filename; the `_bench.draft` suffix otherwise excludes that support
+from `draftc-next` and every normal package build. Both benchmark executables are
+also excluded from CMake's default target. Consequently the experiment adds no
+clock reads, counters, conditionals, callbacks, code size, or startup work to a
+compiler product.
+
+Each executable loads one identical valid source before measurement, then times
+raw scanning (including UTF-8 validation), semicolon insertion, complete lexing,
+parsing from a token copy prepared before the clock, and combined source-to-tree
+construction. One warmup precedes ten samples of a caller-selected in-process
+iteration batch. The report uses the median and includes a clock-only row rather
+than subtracting an estimated timer cost. Loading, token preparation, result
+checksums, destruction, sorting, and TSV rendering are outside timed intervals.
+The comparison tool refuses to calculate ratios unless byte, token, node,
+iteration, and checksum metadata match across implementations. This is
+development evidence for locating costs, not release qualification or a public
+CLI contract.
+
 This boundary does not couple the self-hosted frontend to LLVM. LLVM 22 remains
 part of the C++ bootstrap and native backend; the Draft source, diagnostic, and
 syntax packages depend only on ordinary core allocation, formatting, and OS

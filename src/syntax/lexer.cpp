@@ -16,6 +16,10 @@
 
 #include "syntax/lexer.h"
 
+#ifdef DRAFT_FRONTEND_BENCHMARK
+#include "syntax/frontend_benchmark.h"
+#endif
+
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -738,7 +742,8 @@ void advance_attachment_state(AttachmentState &state, TokenKind kind) {
 // Converts raw newline tokens into inserted semicolons. Parentheses and brackets
 // suppress insertion unconditionally. Braces do not: a closing brace can end a
 // declaration or statement, and `} else {` must consequently remain on one line.
-[[nodiscard]] std::vector<Token> insert_semicolons(std::vector<Token> raw_tokens) {
+[[nodiscard]] std::vector<Token> insert_semicolons(
+    const std::vector<Token> &raw_tokens) {
   std::vector<Token> tokens;
   tokens.reserve(raw_tokens.size());
 
@@ -805,7 +810,8 @@ void advance_attachment_state(AttachmentState &state, TokenKind kind) {
 std::vector<Token> lex_source(
     const SourceManager &sources, FileId file, DiagnosticSink &diagnostics) {
   RawLexer lexer(sources, file, diagnostics);
-  return insert_semicolons(lexer.scan());
+  const std::vector<Token> raw_tokens = lexer.scan();
+  return insert_semicolons(raw_tokens);
 }
 
 std::vector<ToolingToken> lex_source_for_tooling(
@@ -816,5 +822,20 @@ std::vector<ToolingToken> lex_source_for_tooling(
   (void)lexer.scan();
   return lexer.take_tooling_tokens();
 }
+
+#ifdef DRAFT_FRONTEND_BENCHMARK
+
+std::vector<Token> benchmark_raw_lex_source(
+    const SourceManager &sources, FileId file, DiagnosticSink &diagnostics) {
+  RawLexer lexer(sources, file, diagnostics);
+  return lexer.scan();
+}
+
+std::vector<Token> benchmark_insert_semicolons(
+    const std::vector<Token> &raw_tokens) {
+  return insert_semicolons(raw_tokens);
+}
+
+#endif
 
 } // namespace draft

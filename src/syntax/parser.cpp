@@ -26,6 +26,9 @@
 #include "syntax/parser.h"
 
 #include "syntax/lexer.h"
+#ifdef DRAFT_FRONTEND_BENCHMARK
+#include "syntax/frontend_benchmark.h"
+#endif
 
 #include <cassert>
 #include <cstdint>
@@ -1683,5 +1686,15 @@ SyntaxTree parse_source_file(
   Parser parser(file, std::move(tokens), diagnostics);
   return parser.parse();
 }
+
+#ifdef DRAFT_FRONTEND_BENCHMARK
+
+SyntaxTree benchmark_parse_tokens(
+    FileId file, std::vector<Token> tokens, DiagnosticSink &diagnostics) {
+  Parser parser(file, std::move(tokens), diagnostics);
+  return parser.parse();
+}
+
+#endif
 
 } // namespace draft

@@ -565,6 +565,29 @@ identical stdout, stderr, and exit status. Keep the bootstrap path until a
 replacement phase has this oracle; passing the Draft package's focused tests
 alone is not replacement evidence.
 
+For a frontend performance investigation, build the two explicitly requested
+standalone targets from a Release CMake tree, then run the comparison on one
+valid source. They are not default targets or installed commands, and their
+benchmark hooks are absent from ordinary `draftc` and `draftc-next` binaries:
+
+```sh
+cmake --build build-release --target \
+  draft_bootstrap_frontend_benchmark \
+  draft_frontend_benchmark --parallel
+python3 tools/compare_frontend_benchmarks.py \
+  --build-dir build-release \
+  --source compiler/syntax/parser.draft \
+  --iterations 100
+```
+
+The child executables load before timing, perform one warmup and ten samples,
+and report raw scanning, semicolon insertion, complete lexing, pre-tokenized
+parsing, combined frontend work, and clock overhead. The coordinator requires
+matching byte/token/node/checksum metadata before comparing medians. Use a
+larger iteration batch when a phase approaches the clock row. Do not subtract
+the clock result, add timers to production frontend code, or compare the syntax
+CLIs when token/tree rendering is not the operation under investigation.
+
 List registered tests without executing:
 
 ```sh
