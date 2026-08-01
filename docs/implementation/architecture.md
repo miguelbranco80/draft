@@ -433,6 +433,14 @@ Bit-field members additionally retain their exact owner-relative bit range in
 HIR. MIR uses explicit bit loads/stores against the first containing byte;
 assignment lowering never manufactures a typed pointer to the field.
 
+MIR assertion and bounds instructions retain their source-level checks. LLVM
+lowering emits the successful comparison in the package control-flow graph and
+places the hosted-runtime helper call in a non-returning failure block. This
+preserves the runtime handler and diagnostic ABI while exposing the ordinary
+path to LLVM so it can prove or combine checks. Assertion operands have already
+been evaluated before this branch; assertion-disabled compilation instead
+removes their evaluation while lowering HIR to MIR.
+
 LLVM types stay behind numeric, target, ABI, and code-generation adapters. The
 front end must not depend on LLVM IR details.
 

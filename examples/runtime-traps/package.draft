@@ -6,7 +6,9 @@ import core/os
 // selector comes from the process argument vector, so every invalid value is a
 // runtime value even though each case is deliberately small and transparent.
 // Successful compilation proves the source is legal; Darwin's SIGTRAP result
-// proves lowering reaches the target's fixed llvm.trap termination path.
+// proves lowering reaches the target's fixed llvm.trap termination path. The
+// assertion case also proves its lowered false branch reaches that runtime
+// failure path.
 
 Mode :: enum u8 {
     none,
@@ -22,6 +24,10 @@ main :: proc() -> int {
     selector := arguments[1][0]
     dynamic_zero := cast[i64](selector - selector)
 
+    if selector == cast[u8]('a') {
+        assert(dynamic_zero != 0, "runtime-selected assertion")
+        return 0
+    }
     if selector == cast[u8]('d') {
         return cast[int](42 / dynamic_zero)
     }

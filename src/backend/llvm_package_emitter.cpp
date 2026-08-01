@@ -2635,6 +2635,35 @@ private:
         instruction.range, procedure, values);
   }
 
+  // begin_failure_path emits the common fast-path shape for a checked Draft
+  // operation and leaves the builder in the newly appended failure block. The
+  // caller must emit a non-returning failure action, terminate that block, and
+  // then position the builder at the returned continuation. Keeping the
+  // successful comparison in the package module lets LLVM combine or prove
+  // checks; calling a runtime helper on every successful access would hide the
+  // comparison behind the separately compiled hosted-runtime boundary.
+  //
+  // success must be an i1 value in the current unterminated block. Block names
+  // use one builder-owned sequence so repeated checks remain deterministic and
+  // cannot collide with MIR block names or atomic auxiliary blocks.
+  [[nodiscard]] LLVMBasicBlockRef begin_failure_path(
+      LLVMValueRef success, std::string_view operation) {
+    LLVMValueRef function =
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder_.value));
+    const std::size_t branch = next_auxiliary_block_++;
+    const std::string failure_name =
+        std::string(operation) + ".failure." + std::to_string(branch);
+    const std::string continuation_name =
+        std::string(operation) + ".continue." + std::to_string(branch);
+    LLVMBasicBlockRef failure_block = LLVMAppendBasicBlockInContext(
+        context_.value, function, failure_name.c_str());
+    LLVMBasicBlockRef continuation_block = LLVMAppendBasicBlockInContext(
+        context_.value, function, continuation_name.c_str());
+    LLVMBuildCondBr(builder_.value, success, continuation_block, failure_block);
+    LLVMPositionBuilderAtEnd(builder_.value, failure_block);
+    return continuation_block;
+  }
+
   void emit_assertion(const MirProcedure &procedure,
                       const MirInstruction &instruction,
                       const std::vector<LLVMValueRef> &values,
@@ -2667,9 +2696,11 @@ private:
     LLVMValueRef function =
         runtime_helper("__draft.assert", LLVMVoidTypeInContext(context_.value),
                        parameter_types);
+    LLVMValueRef condition =
+        value_operand(values, instruction.operands[0], instruction.range);
     LLVMValueRef arguments[]{
         context_parameter,
-        value_operand(values, instruction.operands[0], instruction.range),
+        LLVMConstInt(LLVMInt1TypeInContext(context_.value), 0, 0),
         string_constant(condition_text),
         instruction.operands.size() == 2
             ? value_operand(values, instruction.operands[1], instruction.range)
@@ -2677,8 +2708,18 @@ private:
         string_constant(file_path),
         LLVMConstInt(integer_type, location.line, 0),
         LLVMConstInt(integer_type, location.column, 0)};
+
+    // Assertion operands were already evaluated into MIR values in source
+    // order. Branching here therefore changes only the runtime-helper call: a
+    // true assertion continues directly, while the false block passes a known
+    // false condition to the existing helper, which invokes the configured
+    // handler and traps even if that handler returns.
+    LLVMBasicBlockRef continuation =
+        begin_failure_path(condition, "assert");
     (void)LLVMBuildCall2(builder_.value, LLVMGlobalGetValueType(function),
                          function, arguments, 7, "");
+    LLVMBuildUnreachable(builder_.value);
+    LLVMPositionBuilderAtEnd(builder_.value, continuation);
   }
 
   void emit_bounds_check(const MirInstruction &instruction,
@@ -2703,9 +2744,30 @@ private:
     arguments[value_count] = cstring_constant(file_path);
     arguments[value_count + 1] = LLVMConstInt(integer_type, location.line, 0);
     arguments[value_count + 2] = LLVMConstInt(integer_type, location.column, 0);
+
+    // Indexing succeeds for index < length. A half-open slice succeeds only
+    // when low <= high <= length. These are unsigned comparisons because every
+    // MIR operand is a concrete usize; spelling the exact condition here keeps
+    // the ordinary path visible to LLVM without changing the runtime helper's
+    // diagnostic ABI or the mandatory trap on failure.
+    LLVMValueRef success = nullptr;
+    if (slice) {
+      LLVMValueRef ordered = LLVMBuildICmp(
+          builder_.value, LLVMIntULE, arguments[0], arguments[1], "");
+      LLVMValueRef within = LLVMBuildICmp(
+          builder_.value, LLVMIntULE, arguments[1], arguments[2], "");
+      success = LLVMBuildAnd(builder_.value, ordered, within, "");
+    } else {
+      success = LLVMBuildICmp(
+          builder_.value, LLVMIntULT, arguments[0], arguments[1], "");
+    }
+    LLVMBasicBlockRef continuation = begin_failure_path(
+        success, slice ? "slice.bounds" : "bounds");
     (void)LLVMBuildCall2(builder_.value, LLVMGlobalGetValueType(function),
                          function, arguments,
                          static_cast<unsigned>(value_count + 3U), "");
+    LLVMBuildUnreachable(builder_.value);
+    LLVMPositionBuilderAtEnd(builder_.value, continuation);
   }
 
   [[nodiscard]] LLVMValueRef abi_scratch(std::uint64_t size,

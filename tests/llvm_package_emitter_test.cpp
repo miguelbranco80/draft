@@ -45,6 +45,46 @@ struct DirectFixture {
   std::string diagnostics;
 };
 
+// Verifies the direct builder's checked-operation CFG rather than merely the
+// presence of a runtime declaration. The failure label must own both the
+// helper call and an unreachable terminator, and the continuation label must
+// follow that block. This catches the performance-significant regression in
+// which a separately compiled helper is called on the successful path.
+void expect_nonreturning_failure_block(
+    TestState &state,
+    std::string_view module,
+    std::string_view operation,
+    std::string_view helper) {
+  const std::string failure_label =
+      "\n" + std::string(operation) + ".failure.";
+  const std::string continuation_label =
+      "\n" + std::string(operation) + ".continue.";
+  const std::string helper_call = "call void @" + std::string(helper);
+
+  const std::size_t failure = module.find(failure_label);
+  const std::size_t continuation =
+      failure == std::string_view::npos
+          ? std::string_view::npos
+          : module.find(continuation_label, failure);
+  const std::size_t call =
+      failure == std::string_view::npos
+          ? std::string_view::npos
+          : module.find(helper_call, failure);
+  const std::size_t unreachable =
+      call == std::string_view::npos
+          ? std::string_view::npos
+          : module.find("unreachable", call);
+
+  EXPECT(state, failure != std::string_view::npos);
+  EXPECT(state, continuation != std::string_view::npos);
+  EXPECT(state, call != std::string_view::npos);
+  EXPECT(state, unreachable != std::string_view::npos);
+  if (continuation != std::string_view::npos) {
+    EXPECT(state, call < continuation);
+    EXPECT(state, unreachable < continuation);
+  }
+}
+
 // Builds one small package twice through the complete checked-source-to-object
 // path. The fixture deliberately has a local parameter, load, integer constant,
 // binary operation, and return so the test cannot pass with an empty hand-made
@@ -332,6 +372,20 @@ void test_direct_scalar_package_emits_native_object(TestState &state) {
          first.emitted.llvm_text.find("__draft.bounds") != std::string::npos);
   EXPECT(state, first.emitted.llvm_text.find("__draft.slice_bounds") !=
                     std::string::npos);
+  EXPECT(state,
+         first.emitted.llvm_text.find("icmp ult i64") != std::string::npos);
+  EXPECT(state,
+         first.emitted.llvm_text.find("icmp ule i64") != std::string::npos);
+  EXPECT(state,
+         first.emitted.llvm_text.find("i1 false") != std::string::npos);
+  expect_nonreturning_failure_block(
+      state, first.emitted.llvm_text, "assert", "__draft.assert");
+  expect_nonreturning_failure_block(
+      state, first.emitted.llvm_text, "bounds", "__draft.bounds");
+  expect_nonreturning_failure_block(state,
+      first.emitted.llvm_text,
+      "slice.bounds",
+      "__draft.slice_bounds");
   EXPECT(state, first.emitted.native.ok);
   EXPECT(state, !first.emitted.native.bytes.empty());
   EXPECT(state,

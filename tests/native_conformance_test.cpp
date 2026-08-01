@@ -293,10 +293,11 @@ void test_native_examples(TestState &state) {
     }
     if (test.name == "runtime-traps") {
       // One runtime-selected package covers every mandatory trap class without
-      // recompiling eight nearly identical fixtures. Each selector enters one
-      // path whose invalid value depends on argv, keeping the failure at
+      // recompiling separate nearly identical fixtures. Each selector enters
+      // one path whose invalid value depends on argv, keeping the failure at
       // runtime rather than turning it into a required-constant diagnostic.
       constexpr std::array trap_selectors{
+          "a", // Failed runtime assertion.
           "d", // Integer division by zero.
           "o", // Signed minimum divided by negative one.
           "s", // Out-of-range shift count.
