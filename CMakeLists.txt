@@ -2053,6 +2053,24 @@ if(BUILD_TESTING)
       PROPERTIES LABELS "integration"
     )
 
+    # core/filesystem canonicalization and directory enumeration are native
+    # path operations. Run their tests from an isolated copied workspace so
+    # `.` is stable and validation state never enters the source checkout.
+    add_test(
+      NAME draft_core_filesystem_tests
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/core-filesystem-test"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_TEST_TARGET}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_core_filesystem_test.cmake"
+    )
+    set_tests_properties(
+      draft_core_filesystem_tests
+      PROPERTIES LABELS "integration"
+    )
+
     # core/process owns the exact argv/environment/directory conversion on each
     # hosted target. Its native test launches fixed system executables from an
     # isolated copied workspace so no validation state reaches the checkout.

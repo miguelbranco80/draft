@@ -108,6 +108,10 @@ Win32 `WIN32_FIND_DATAW` layout: eight DWORD attribute/size/reserved fields,
 three two-DWORD timestamps, 260 UTF-16 filename units, and 14 alternate-name
 units. Search paths and result names cross the public boundary as UTF-8;
 `FILE_ATTRIBUTE_DIRECTORY = 0x10` supplies directory classification.
+Canonicalization converts the input to UTF-16, follows reparse points by
+opening the existing object with `CreateFileW`, and obtains its final spelling
+through `GetFinalPathNameByHandleW`. The portable result removes `\\?\` (or
+translates `\\?\UNC\`), uses `/` separators, and remains UTF-8.
 
 ## Native artifacts and assembly
 

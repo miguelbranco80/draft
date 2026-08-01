@@ -56,6 +56,22 @@ foreign windows {
         default_character: [^]u8,
         used_default_character: ^c_abi.int,
     ) -> c_abi.int
+    create_file as "CreateFileW" :: c proc(
+        path: [^]u16,
+        desired_access: c_abi.unsigned_long,
+        share_mode: c_abi.unsigned_long,
+        security_attributes: rawptr,
+        creation_disposition: c_abi.unsigned_long,
+        flags_and_attributes: c_abi.unsigned_long,
+        template_file: rawptr,
+    ) -> rawptr
+    get_final_path_name as "GetFinalPathNameByHandleW" :: c proc(
+        handle: rawptr,
+        destination: [^]u16,
+        destination_count: c_abi.unsigned_long,
+        flags: c_abi.unsigned_long,
+    ) -> c_abi.unsigned_long
+    close_handle as "CloseHandle" :: c proc(handle: rawptr) -> c_abi.int
 }
 
 foreign libc {
@@ -68,6 +84,11 @@ Mb_Err_Invalid_Chars :: cast[c_abi.unsigned_long](0x00000008)
 Wc_Err_Invalid_Chars :: cast[c_abi.unsigned_long](0x00000080)
 Directory_Attribute :: cast[c_abi.unsigned_long](0x00000010)
 Error_No_More_Files :: cast[c_abi.unsigned_long](18)
+File_Share_Read :: cast[c_abi.unsigned_long](0x00000001)
+File_Share_Write :: cast[c_abi.unsigned_long](0x00000002)
+File_Share_Delete :: cast[c_abi.unsigned_long](0x00000004)
+Open_Existing :: cast[c_abi.unsigned_long](3)
+File_Flag_Backup_Semantics :: cast[c_abi.unsigned_long](0x02000000)
 
 pub Directory :: struct {
     handle: rawptr,
@@ -77,6 +98,156 @@ pub Directory :: struct {
 
 invalid_handle :: proc() -> rawptr {
     return cast[rawptr](~cast[uintptr](0))
+}
+
+// canonicalize opens one existing object without requesting data access, then
+// asks Windows for the final path reached through reparse points. The exposed
+// portable spelling strips the extended-path prefix and converts separators to
+// `/`; UNC paths retain their leading `//`. If destination is too small,
+// invalid is returned with the required UTF-8 byte count and no bytes written.
+pub canonicalize :: proc(
+    path: cstring,
+    destination: []u8,
+) -> (usize, io.Error) {
+    wide_required := multi_byte_to_wide_char(
+        Cp_Utf8,
+        Mb_Err_Invalid_Chars,
+        path,
+        -1,
+        nil,
+        0,
+    )
+    if wide_required <= 0 {
+        return (0, .invalid)
+    }
+    input := cast[[^]u16](native_allocate(
+        cast[usize](wide_required) * size_of(u16),
+    ))
+    if input == nil {
+        return (0, .unavailable)
+    }
+    converted := multi_byte_to_wide_char(
+        Cp_Utf8,
+        Mb_Err_Invalid_Chars,
+        path,
+        -1,
+        input,
+        wide_required,
+    )
+    if converted != wide_required {
+        native_free(cast[rawptr](input))
+        return (0, .invalid)
+    }
+
+    handle := create_file(
+        input,
+        0,
+        File_Share_Read | File_Share_Write | File_Share_Delete,
+        nil,
+        Open_Existing,
+        File_Flag_Backup_Semantics,
+        nil,
+    )
+    native_free(cast[rawptr](input))
+    if handle == invalid_handle() {
+        return (0, .unavailable)
+    }
+
+    final_required := get_final_path_name(handle, nil, 0, 0)
+    if final_required == 0 {
+        _ := close_handle(handle)
+        return (0, .unavailable)
+    }
+    final_path := cast[[^]u16](native_allocate(
+        cast[usize](final_required) * size_of(u16),
+    ))
+    if final_path == nil {
+        _ := close_handle(handle)
+        return (0, .unavailable)
+    }
+    final_length := get_final_path_name(
+        handle,
+        final_path,
+        final_required,
+        0,
+    )
+    closed := close_handle(handle) != 0
+    if final_length == 0 || final_length >= final_required || !closed {
+        native_free(cast[rawptr](final_path))
+        return (0, .unavailable)
+    }
+
+    source_start: usize
+    prefix_length: usize
+    if final_length >= 8 &&
+        final_path[0] == cast[u16]('\\') &&
+        final_path[1] == cast[u16]('\\') &&
+        final_path[2] == cast[u16]('?') &&
+        final_path[3] == cast[u16]('\\') &&
+        final_path[4] == cast[u16]('U') &&
+        final_path[5] == cast[u16]('N') &&
+        final_path[6] == cast[u16]('C') &&
+        final_path[7] == cast[u16]('\\') {
+        source_start = 8
+        prefix_length = 2
+    } else if final_length >= 4 &&
+        final_path[0] == cast[u16]('\\') &&
+        final_path[1] == cast[u16]('\\') &&
+        final_path[2] == cast[u16]('?') &&
+        final_path[3] == cast[u16]('\\') {
+        source_start = 4
+    }
+
+    source_count := cast[usize](final_length) - source_start
+    source := ptr_offset(final_path, cast[isize](source_start))
+    byte_required := wide_char_to_multi_byte(
+        Cp_Utf8,
+        Wc_Err_Invalid_Chars,
+        source,
+        cast[c_abi.int](source_count),
+        nil,
+        0,
+        nil,
+        nil,
+    )
+    if byte_required <= 0 {
+        native_free(cast[rawptr](final_path))
+        return (0, .invalid)
+    }
+    required := prefix_length + cast[usize](byte_required)
+    if required > len(destination) {
+        native_free(cast[rawptr](final_path))
+        return (required, .invalid)
+    }
+
+    if prefix_length == 2 {
+        destination[0] = cast[u8]('/')
+        destination[1] = cast[u8]('/')
+    }
+    output := ptr_offset(
+        cast[[^]u8](&destination[0]),
+        cast[isize](prefix_length),
+    )
+    byte_count := wide_char_to_multi_byte(
+        Cp_Utf8,
+        Wc_Err_Invalid_Chars,
+        source,
+        cast[c_abi.int](source_count),
+        output,
+        byte_required,
+        nil,
+        nil,
+    )
+    native_free(cast[rawptr](final_path))
+    if byte_count != byte_required {
+        return (0, .unavailable)
+    }
+    for index: usize = prefix_length; index < required; index += 1 {
+        if destination[index] == cast[u8]('\\') {
+            destination[index] = cast[u8]('/')
+        }
+    }
+    return (required, .none)
 }
 
 // search_pattern converts one UTF-8 path and appends the wildcard needed by

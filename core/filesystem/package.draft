@@ -1,15 +1,17 @@
-// core/filesystem is the small hosted directory-enumeration boundary used by
-// interactive tools. Its input is one borrowed, zero-terminated UTF-8 path;
-// its output is an explicitly owned Directory handle plus one copied entry
-// name at a time. The caller owns all name storage and must close every
-// successfully opened Directory exactly once.
+// core/filesystem is the small hosted path and directory boundary used by
+// compiler and interactive tools. It resolves one existing UTF-8 path to a
+// caller-owned canonical absolute spelling, and enumerates an opened directory
+// through one copied entry name at a time. The caller owns all output storage
+// and must close every successfully opened Directory exactly once.
 //
-// Enumeration order is deliberately unspecified because native filesystems do
-// not provide a semantic order. A caller whose result is user-visible or enters
-// a manifest/hash must sort the copied names explicitly. Target-selected files
-// own native handle/layout/encoding details. This common file owns only the
-// portable value vocabulary. Draft specification: sections 3, 5-7, and 12,
-// plus the selected target profile.
+// Canonical paths follow symlinks, use `/` separators, and have no trailing
+// separator except a filesystem root. Enumeration order is deliberately
+// unspecified because native filesystems do not provide a semantic order. A
+// caller whose result is user-visible or enters a manifest/hash must sort the
+// copied names explicitly. Target-selected files own native handle, path,
+// layout, and encoding details. This common file owns only the portable value
+// vocabulary. Draft specification: sections 3, 5-7, and 12, plus the selected
+// target profile.
 package filesystem
 
 import core/io

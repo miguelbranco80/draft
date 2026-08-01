@@ -206,16 +206,25 @@ padding, floating-point, rune, or general formatting facility.
 
 ## `core/filesystem`
 
-Portable hosted directory enumeration:
+Portable existing-path resolution and hosted directory enumeration:
 
 ```draft
 filesystem.Entry_Kind // .unknown, .regular_file, .directory
 filesystem.Entry{name_length, kind}
 filesystem.Directory
+filesystem.canonicalize(path: cstring, destination: []u8)
+    -> (required_or_written: usize, io.Error)
 filesystem.open(path: cstring) -> (filesystem.Directory, io.Error)
 filesystem.read(&directory, destination) -> (filesystem.Entry, io.Error)
 filesystem.close(&directory) -> bool
 ```
+
+`canonicalize` follows symlinks for one existing file or directory and writes
+an absolute UTF-8 path with `/` separators and no trailing separator except a
+filesystem root. Success returns the written byte count. A short destination
+returns its required byte count with `io.Error.invalid` and writes nothing.
+Other native failures return `.unavailable`; invalid UTF-8/UTF-16 conversion is
+`.invalid`.
 
 `Directory` owns one native enumeration handle and is non-copyable by
 convention. `read` copies one UTF-8 entry name into caller storage; the returned
@@ -226,9 +235,9 @@ symlinks and native rows without a useful type classification; trying to open
 the complete path is the portable way to determine whether such a row can be
 entered as a directory.
 
-There is no owned path type, canonicalization, metadata/stat, recursive walk,
-directory creation/removal, rename, watch API, or ambient-current-directory
-query.
+There is no owned path type, lexical manipulation API, metadata/stat, recursive
+walk, directory creation/removal, rename, watch API, or ambient-current-
+directory query.
 
 ## `core/heap`
 

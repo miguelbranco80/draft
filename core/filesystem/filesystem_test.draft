@@ -42,3 +42,107 @@ test_inactive_close_is_idempotent :: proc(test: ^testing.Test) {
     testing.expect(test, close(&directory))
     testing.expect(test, close(&directory))
 }
+
+// Canonicalizing the current directory proves that the returned path is
+// absolute, can be consumed again by the directory API, and is idempotent.
+// Exact bytes are host-specific and therefore compared only with a second
+// canonicalization of the already canonical spelling.
+test_canonicalizes_existing_directory :: proc(test: ^testing.Test) {
+    input: memory.Owned_String
+    memory.owned_string_copy(&input, ".")
+    defer memory.owned_string_destroy(&input)
+
+    first: [65536]u8
+    (first_count, first_error) := canonicalize(
+        memory.owned_string_cstring(&input),
+        first[:],
+    )
+    testing.expect(test, first_error == .none)
+    testing.expect(test, first_count != 0)
+    if first_error != .none || first_count == 0 {
+        return
+    }
+
+    canonical: memory.Owned_String
+    memory.owned_string_copy_bytes(&canonical, first[:first_count])
+    defer memory.owned_string_destroy(&canonical)
+    (directory, open_error) := open(
+        memory.owned_string_cstring(&canonical),
+    )
+    testing.expect(test, open_error == .none)
+    if open_error == .none {
+        testing.expect(test, close(&directory))
+    }
+
+    second: [65536]u8
+    (second_count, second_error) := canonicalize(
+        memory.owned_string_cstring(&canonical),
+        second[:],
+    )
+    testing.expect(test, second_error == .none)
+    testing.expect(test, second_count == first_count)
+    if second_error == .none && second_count == first_count {
+        equal := true
+        for index: usize = 0; index < first_count; index += 1 {
+            if first[index] != second[index] {
+                equal = false
+                break
+            }
+        }
+        testing.expect(test, equal)
+    }
+}
+
+// The required byte count lets allocation-owning callers retry without a
+// platform path-size constant or a partially initialized destination.
+test_canonicalize_reports_required_capacity :: proc(test: ^testing.Test) {
+    input: memory.Owned_String
+    memory.owned_string_copy(&input, ".")
+    defer memory.owned_string_destroy(&input)
+
+    tiny: [1]u8
+    (required, error) := canonicalize(
+        memory.owned_string_cstring(&input),
+        tiny[:],
+    )
+    testing.expect(test, error == .invalid)
+    testing.expect(test, required > len(tiny))
+}
+
+// The registered native test supplies this optional relative symlink on hosts
+// which permit creating one. Ad-hoc package tests without the fixture skip the
+// check; when present, both spellings must resolve to one canonical identity.
+test_canonicalize_follows_fixture_symlink :: proc(test: ^testing.Test) {
+    target_path: memory.Owned_String
+    link_path: memory.Owned_String
+    memory.owned_string_copy(&target_path, "canonicalize-target")
+    memory.owned_string_copy(&link_path, "canonicalize-link")
+    defer memory.owned_string_destroy(&link_path)
+    defer memory.owned_string_destroy(&target_path)
+
+    target: [65536]u8
+    link: [65536]u8
+    (target_count, target_error) := canonicalize(
+        memory.owned_string_cstring(&target_path),
+        target[:],
+    )
+    (link_count, link_error) := canonicalize(
+        memory.owned_string_cstring(&link_path),
+        link[:],
+    )
+    if target_error != .none || link_error != .none {
+        return
+    }
+
+    testing.expect(test, link_count == target_count)
+    if link_count == target_count {
+        equal := true
+        for index: usize = 0; index < target_count; index += 1 {
+            if target[index] != link[index] {
+                equal = false
+                break
+            }
+        }
+        testing.expect(test, equal)
+    }
+}

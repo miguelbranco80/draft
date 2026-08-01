@@ -21,6 +21,14 @@ foreign darwin {
     native_open_directory as "opendir" :: c proc(path: cstring) -> rawptr
     native_read_directory as "readdir" :: c proc(handle: rawptr) -> ^Darwin_Dirent
     native_close_directory as "closedir" :: c proc(handle: rawptr) -> c_abi.int
+    native_real_path as "realpath" :: c proc(
+        path: cstring,
+        resolved: [^]u8,
+    ) -> cstring
+}
+
+foreign libc {
+    native_free as "free" :: c proc(storage: rawptr)
 }
 
 Directory_Type :: cast[u8](4)
@@ -30,6 +38,35 @@ Regular_File_Type :: cast[u8](8)
 // inactive. Keep an active value at one stable address and close it once.
 pub Directory :: struct {
     handle: rawptr,
+}
+
+// canonicalize resolves one existing path through Darwin's filesystem and
+// follows every symlink. The native allocation is released before return. A
+// successful result initializes exactly the returned byte prefix with an
+// absolute `/`-separated path. If destination is too small, invalid is returned
+// with the required byte count and destination is left unchanged.
+pub canonicalize :: proc(
+    path: cstring,
+    destination: []u8,
+) -> (usize, io.Error) {
+    resolved := native_real_path(path, nil)
+    if resolved == nil {
+        return (0, .unavailable)
+    }
+    defer native_free(cast[rawptr](resolved))
+
+    bytes := cast[[^]u8](resolved)
+    count: usize
+    for bytes[count] != 0 {
+        count += 1
+    }
+    if count > len(destination) {
+        return (count, .invalid)
+    }
+    for index: usize = 0; index < count; index += 1 {
+        destination[index] = bytes[index]
+    }
+    return (count, .none)
 }
 
 pub open :: proc(path: cstring) -> (Directory, io.Error) {

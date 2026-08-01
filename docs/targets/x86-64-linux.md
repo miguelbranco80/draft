@@ -87,10 +87,11 @@ Target-selected core files fix the following x86-64 glibc 2.39 facts:
 - `timespec` is two signed 64-bit words; and
 - Linux anonymous private mapping uses `MAP_PRIVATE | MAP_ANONYMOUS = 0x22`.
 
-The glibc `dirent` prefix used by `core/filesystem` is two 64-bit words, a
-16-bit record length, one-byte type, and a zero-terminated name. Type values 4
-and 8 identify directories and regular files; enumeration order is native and
-therefore explicitly non-semantic.
+`core/filesystem` canonicalizes through glibc `realpath(path, nil)`, copies the
+absolute UTF-8 bytes, and releases the returned allocation. Its `dirent` prefix
+is two 64-bit words, a 16-bit record length, one-byte type, and a zero-
+terminated name. Type values 4 and 8 identify directories and regular files;
+enumeration order is native and therefore explicitly non-semantic.
 
 `core/process` uses glibc `fork`/`chdir`/`execv`/`execve`/`waitpid`. Argument
 and any required replacement-environment pointer tables are complete before
