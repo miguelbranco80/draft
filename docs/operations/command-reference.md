@@ -281,11 +281,16 @@ which have reached exact bootstrap parity:
 ```sh
 build/draftc-next lex path/to/file.draft
 build/draftc-next syntax path/to/file.draft
+build/draftc-next package-syntax path/to/package \
+  --target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows
 ```
 
-This is qualification tooling rather than the public compiler. Package and
-later commands continue to use `build/draftc` until their own replacement gates
-are complete.
+`package-syntax` prints the target-selected files in canonical bytewise order,
+including package assembly, and the concrete tree for each selected Draft
+source. It validates package clauses but deliberately does not resolve imports
+or run semantic analysis. This is qualification tooling rather than the public
+compiler. Semantic and later commands continue to use `build/draftc` until
+their own replacement gates are complete.
 
 `check` runs the provider-free front end and semantic pipeline. If the program
 contains saved `...` expansions, it loads and revalidates them. It never starts

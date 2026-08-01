@@ -148,6 +148,67 @@ severity_text :: proc(severity: Severity) -> string {
     return "unknown"
 }
 
+// render_message_bytes appends one complete source-backed diagnostic whose
+// message was assembled dynamically by a later compiler phase. message is
+// borrowed only for this call and is never mutated or retained. Keeping the
+// common path/range/excerpt rendering here prevents package and semantic
+// diagnostics from growing subtly different coordinate or underline rules.
+pub render_message_bytes :: proc(
+    source: ^compiler_source.Source_File,
+    severity: Severity,
+    range: compiler_source.Source_Range,
+    message: []u8,
+    output: ^compiler_text.Builder,
+) {
+    coordinate := compiler_source.line_column(source, range.begin)
+
+    compiler_text.append_bytes(
+        output,
+        compiler_source.display_path_bytes(source),
+    )
+    compiler_text.append_byte(output, cast[u8](':'))
+    compiler_text.append_unsigned(output, cast[usize](coordinate.line))
+    compiler_text.append_byte(output, cast[u8](':'))
+    compiler_text.append_unsigned(output, cast[usize](coordinate.column))
+    compiler_text.append_text(output, ": ")
+    compiler_text.append_text(output, severity_text(severity))
+    compiler_text.append_text(output, ": ")
+    compiler_text.append_bytes(output, message)
+    compiler_text.append_byte(output, cast[u8]('\n'))
+
+    compiler_text.append_bytes(
+        output,
+        compiler_source.line_bytes(source, coordinate.line),
+    )
+    compiler_text.append_byte(output, cast[u8]('\n'))
+    compiler_text.append_repeated(
+        output,
+        cast[u8](' '),
+        cast[usize](coordinate.column - 1),
+    )
+
+    width: u32 = 1
+    if range.end > range.begin {
+        end_coordinate := compiler_source.line_column(source, range.end)
+        if end_coordinate.line == coordinate.line &&
+            end_coordinate.column > coordinate.column {
+            width = end_coordinate.column - coordinate.column
+            if width > 80 {
+                width = 80
+            }
+        }
+    }
+    compiler_text.append_byte(output, cast[u8]('^'))
+    if width > 1 {
+        compiler_text.append_repeated(
+            output,
+            cast[u8]('~'),
+            cast[usize](width - 1),
+        )
+    }
+    compiler_text.append_byte(output, cast[u8]('\n'))
+}
+
 // message_text is the single spelling authority shared by CLI rendering and
 // focused tests. These bytes intentionally match the C++ bootstrap.
 pub message_text :: proc(message: Message) -> string {
@@ -206,55 +267,13 @@ pub render :: proc(
 ) {
     for index: usize = 0; index < sink.diagnostics.length; index += 1 {
         diagnostic := sink.diagnostics.data[index]
-        coordinate := compiler_source.line_column(source, diagnostic.range.begin)
-
-        compiler_text.append_bytes(
+        message := raw_data(diagnostic.text)[:len(diagnostic.text)]
+        render_message_bytes(
+            source,
+            diagnostic.severity,
+            diagnostic.range,
+            message,
             output,
-            compiler_source.display_path_bytes(source),
         )
-        compiler_text.append_byte(output, cast[u8](':'))
-        compiler_text.append_unsigned(output, cast[usize](coordinate.line))
-        compiler_text.append_byte(output, cast[u8](':'))
-        compiler_text.append_unsigned(output, cast[usize](coordinate.column))
-        compiler_text.append_text(output, ": ")
-        compiler_text.append_text(output, severity_text(diagnostic.severity))
-        compiler_text.append_text(output, ": ")
-        compiler_text.append_text(output, diagnostic.text)
-        compiler_text.append_byte(output, cast[u8]('\n'))
-
-        compiler_text.append_bytes(
-            output,
-            compiler_source.line_bytes(source, coordinate.line),
-        )
-        compiler_text.append_byte(output, cast[u8]('\n'))
-        compiler_text.append_repeated(
-            output,
-            cast[u8](' '),
-            cast[usize](coordinate.column - 1),
-        )
-
-        width: u32 = 1
-        if diagnostic.range.end > diagnostic.range.begin {
-            end_coordinate := compiler_source.line_column(
-                source,
-                diagnostic.range.end,
-            )
-            if end_coordinate.line == coordinate.line &&
-                end_coordinate.column > coordinate.column {
-                width = end_coordinate.column - coordinate.column
-                if width > 80 {
-                    width = 80
-                }
-            }
-        }
-        compiler_text.append_byte(output, cast[u8]('^'))
-        if width > 1 {
-            compiler_text.append_repeated(
-                output,
-                cast[u8]('~'),
-                cast[usize](width - 1),
-            )
-        }
-        compiler_text.append_byte(output, cast[u8]('\n'))
     }
 }

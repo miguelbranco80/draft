@@ -1,0 +1,110 @@
+// Focused pure tests for self-hosted package filename selection.
+//
+// Process-level differential tests own real directory enumeration, sorting,
+// loading, parsing, and diagnostics. These tests isolate the closed filename
+// grammar for every target and validation mode without depending on ambient
+// filesystem contents. Relevant specification: section 3, "Folder packages".
+package compiler_workspace
+
+import core/testing
+
+expect_selected :: proc(
+    test: ^testing.Test,
+    filename: string,
+    options: Load_Options,
+    expected_kind: File_Kind,
+) {
+    (kind, selected) := selected_file_kind(filename, options)
+    testing.expect(test, selected)
+    if selected {
+        testing.expect(test, kind == expected_kind)
+    }
+}
+
+expect_excluded :: proc(
+    test: ^testing.Test,
+    filename: string,
+    options: Load_Options,
+) {
+    (_, selected) := selected_file_kind(filename, options)
+    testing.expect(test, !selected)
+}
+
+test_selects_unqualified_source_and_assembly :: proc(test: ^testing.Test) {
+    options := Load_Options{file_tag = "aarch64-macos"}
+    expect_selected(test, "package.draft", options, .draft_source)
+    expect_selected(test, "native.s", options, .assembly_source)
+    expect_selected(test, "native.S", options, .assembly_source)
+    expect_selected(test, "native.asm", options, .assembly_source)
+    expect_excluded(test, "README.md", options)
+    expect_excluded(test, ".draft", options)
+}
+
+test_selects_only_exact_target_qualifier :: proc(test: ^testing.Test) {
+    options := Load_Options{file_tag = "x86_64-linux"}
+    expect_selected(
+        test,
+        "platform@x86_64-linux.draft",
+        options,
+        .draft_source,
+    )
+    expect_selected(
+        test,
+        "native@x86_64-linux.s",
+        options,
+        .assembly_source,
+    )
+    expect_excluded(test, "platform@aarch64-linux.draft", options)
+    expect_excluded(test, "platform@linux.draft", options)
+    expect_excluded(test, "platform@.draft", options)
+}
+
+test_validation_suffixes_follow_removed_qualifier :: proc(test: ^testing.Test) {
+    ordinary := Load_Options{file_tag = "aarch64-linux"}
+    expect_excluded(test, "feature_test.draft", ordinary)
+    expect_excluded(test, "feature_test@aarch64-linux.draft", ordinary)
+    expect_excluded(test, "feature_bench@aarch64-linux.draft", ordinary)
+
+    validation := Load_Options{
+        file_tag = "aarch64-linux",
+        include_tests = true,
+        include_benchmarks = true,
+    }
+    expect_selected(
+        test,
+        "feature_test@aarch64-linux.draft",
+        validation,
+        .draft_source,
+    )
+    expect_selected(
+        test,
+        "feature_bench@aarch64-linux.draft",
+        validation,
+        .draft_source,
+    )
+}
+
+test_validation_suffixes_do_not_exclude_assembly :: proc(test: ^testing.Test) {
+    options := Load_Options{file_tag = "x86_64-windows"}
+    expect_selected(test, "support_test.asm", options, .assembly_source)
+    expect_selected(
+        test,
+        "support_bench@x86_64-windows.asm",
+        options,
+        .assembly_source,
+    )
+}
+
+test_final_qualifier_and_extension_are_authoritative :: proc(
+    test: ^testing.Test,
+) {
+    options := Load_Options{file_tag = "aarch64-macos"}
+    expect_selected(
+        test,
+        "name@other@aarch64-macos.draft",
+        options,
+        .draft_source,
+    )
+    expect_excluded(test, "name@aarch64-macos.draft.txt", options)
+    expect_selected(test, "name..draft", options, .draft_source)
+}

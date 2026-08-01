@@ -64,6 +64,16 @@ init_empty :: proc(source: ^Source_File, display_path: string) {
     array.append(&source.line_starts, 0)
 }
 
+// init_empty_bytes is the constructed-path counterpart used by package
+// discovery. It copies exact path bytes into the same terminated owner before
+// any OS call, so directory-entry scratch storage may be reused immediately.
+init_empty_bytes :: proc(source: ^Source_File, display_path: []u8) {
+    memory.owned_string_copy_bytes(&source.display_path, display_path)
+    array.init(&source.bytes)
+    array.init(&source.line_starts)
+    array.append(&source.line_starts, 0)
+}
+
 // append_source_byte extends owned source while maintaining the byte-addressed
 // line table. The caller has already proved the resulting offset fits u32.
 append_source_byte :: proc(source: ^Source_File, value: u8) {
@@ -108,11 +118,11 @@ pub init_from_bytes :: proc(
     return .none
 }
 
-// load reads one pathname completely as binary bytes and closes its descriptor
-// before publishing success. On any failure Source_File remains a valid owner
+// load_initialized reads into a Source_File whose path, byte owner, and line
+// table have already been initialized. Both public path forms share this exact
+// I/O and close transaction. On any failure the source remains a valid owner
 // which the caller destroys, but its partial bytes are not authoritative.
-pub load :: proc(source: ^Source_File, display_path: string) -> Load_Error {
-    init_empty(source, display_path)
+load_initialized :: proc(source: ^Source_File) -> Load_Error {
     native_path := memory.owned_string_cstring(&source.display_path)
     (handle, open_error) := os.open_for_reading(native_path)
     if open_error != .none {
@@ -142,6 +152,25 @@ pub load :: proc(source: ^Source_File, display_path: string) -> Load_Error {
         result = .cannot_read
     }
     return result
+}
+
+// load reads one immutable pathname completely as binary bytes and closes its
+// descriptor before publishing success. The copied path remains available for
+// diagnostics on every result.
+pub load :: proc(source: ^Source_File, display_path: string) -> Load_Error {
+    init_empty(source, display_path)
+    return load_initialized(source)
+}
+
+// load_bytes loads one caller-constructed path. The path is copied before the
+// operation and is retained for diagnostics exactly like the immutable-string
+// form. On every result Source_File is a valid owner which must be destroyed.
+pub load_bytes :: proc(
+    source: ^Source_File,
+    display_path: []u8,
+) -> Load_Error {
+    init_empty_bytes(source, display_path)
+    return load_initialized(source)
 }
 
 // destroy ends every source, pathname, and line-table borrow and releases the

@@ -190,25 +190,30 @@ boundary and no alternate-emitter fallback for unsupported operations.
 
 ## Self-hosted frontend staging limits
 
-Status: build-tree lexer and parser replacement; not a Draft language or public
-CLI limit.
+Status: build-tree source, lexer, parser, and folder-package loader replacement;
+not a Draft language or public CLI limit.
 
 On a supported native host, the build graph uses C++ `draftc` to produce an O2
 Draft executable named `draftc-next`. Its accepted commands are
-`draftc-next lex <file.draft>` and `draftc-next syntax <file.draft>`. It is not
-installed or included in release archives, and no package, semantic,
-elaboration, MIR, LLVM, artifact, or linking command has moved to it yet. The
-C++ driver remains the public compiler and compatibility oracle.
+`draftc-next lex <file.draft>`, `draftc-next syntax <file.draft>`, and
+`draftc-next package-syntax <package> --target <selector>`. It is not installed
+or included in release archives. Import resolution, workspace identity,
+semantic analysis, elaboration, MIR, LLVM, artifacts, and linking have not moved
+to it yet. The C++ driver remains the public compiler and compatibility oracle.
 
 The Draft lexer has the same token spellings, ranges, semicolon insertion,
 diagnostic rendering, stdout/stderr bytes, and exit behavior as the bootstrap
 over its registered differential corpus. The Draft parser likewise has the
 same concrete node hierarchy, token spans, recovery diagnostics, nesting-limit
 failure, stdout/stderr bytes, and exit behavior over its own registered corpus.
-Those are compatibility evidence for lexing and concrete parsing, not proof
-that package or semantic phases are self-hosted. Each later phase must add its
-own focused tests and complete process-level oracle before the corresponding
-C++ path can be removed.
+The Draft package loader likewise matches production package discovery, target
+and validation suffix selection, bytewise file ordering, source loading,
+multi-file parsing, assembly inventory, package-name diagnostics, and process
+behavior across repository packages and explicit four-target/failure fixtures.
+This is package-to-concrete-syntax compatibility evidence, not proof that import
+resolution or semantic phases are self-hosted. Each later phase must add its own
+focused tests and complete process-level oracle before the corresponding C++
+path can be removed.
 
 `compiler_syntax.Token_List` and the syntax tree's typed node/child tables
 currently implement their contiguous allocation directly. The bootstrap rejects

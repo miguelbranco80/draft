@@ -67,20 +67,27 @@ The self-hosted frontend staging source lives under `compiler/` and is compiled
 by the C++ bootstrap into the build-tree-only `draftc-next` executable. It owns
 source bytes and coordinates, structured frontend diagnostics, token storage,
 the complete production lexer including semicolon insertion, and the concrete
-syntax tree's append-only node and child-ID tables. `draftc-next` accepts
-`lex <file.draft>` and `syntax <file.draft>`; it is deliberately absent from the
-install set until a coherent public compiler command surface exists.
+syntax tree's append-only node and child-ID tables. It also owns deterministic
+direct-child package discovery, exact target/test/benchmark source selection,
+bytewise filename ordering, multi-file parsing, assembly-source inventory, and
+package-name consistency. `draftc-next` accepts `lex <file.draft>`,
+`syntax <file.draft>`, and
+`package-syntax <package> --target <selector>`; it is deliberately absent from
+the install set until a coherent public compiler command surface exists.
 
 Replacement proceeds at phase boundaries rather than by mixing C++ and Draft
-inside a phase. C++ `draftc lex` and `draftc syntax` remain independent oracles
-while both implementations exist. Registered differential tests supply every
-Draft source under `core`, `compiler`, `examples`, `lib`, and `tools`, plus
-phase-specific malformed, over-nested, and missing inputs, to both processes and
-compare stdout, stderr, and exit status exactly. Focused same-package Draft tests
-separately exercise scanning, semicolon insertion, syntax categories, child
-structure, and parser recovery. The next semantic slice can therefore consume
-the proven Draft concrete tree directly; it does not need a compatibility call
-back into the C++ parser.
+inside a phase. C++ `draftc lex` and `draftc syntax` remain independent single-
+file oracles while a non-installed helper exposes the production C++ package
+loader as the package oracle. Registered differential tests supply every Draft
+source under `core`, `compiler`, `examples`, `lib`, and `tools`, every repository
+folder-package root, a four-target selection matrix, and phase-specific
+malformed, mismatched-name, over-nested, empty, and missing inputs. The tests
+compare stdout, stderr, and exit status exactly. Focused same-package Draft
+tests separately exercise scanning, semicolon insertion, syntax categories,
+child structure, parser recovery, and filename selection. The next semantic
+slice can therefore consume canonical Draft-owned package file rows and their
+concrete trees directly; it does not need a compatibility call back into either
+the C++ parser or package loader.
 
 Frontend performance experiments use two explicitly requested, non-installed
 executables rather than adding observation to either production driver. The C++
@@ -107,10 +114,11 @@ development evidence for locating costs, not release qualification or a public
 CLI contract.
 
 This boundary does not couple the self-hosted frontend to LLVM. LLVM 22 remains
-part of the C++ bootstrap and native backend; the Draft source, diagnostic, and
-syntax packages depend only on ordinary core allocation, formatting, and OS
-facilities. Backend migration can happen later behind MIR/target interfaces
-without delaying source-to-concrete-syntax self-hosting.
+part of the C++ bootstrap and native backend; the Draft source, diagnostic,
+syntax, and workspace packages depend only on ordinary core allocation,
+filesystem, formatting, and OS facilities. Backend migration can happen later
+behind MIR/target interfaces without delaying source-to-package-syntax
+self-hosting.
 
 ```text
  Source/package loader

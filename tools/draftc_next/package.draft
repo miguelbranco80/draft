@@ -1,11 +1,12 @@
 // Draft-written staging driver for the self-hosted compiler frontend.
 //
-// This executable owns the replaced lexical and concrete-syntax phases. `lex`
-// and `syntax` load one source file and render the same stdout/stderr bytes and
-// exit status as the C++ bootstrap driver. Keeping the commands phase-bounded
-// makes the bootstrap replacement measurable and reversible; later semantic
-// slices can join this driver without placing LLVM or native-linker behavior in
-// the frontend packages.
+// This executable owns the replaced lexical, concrete-syntax, and folder-
+// package loading phases. `lex` and `syntax` load one source file;
+// `package-syntax` selects and parses all direct source files for one exact
+// target. Every command renders the same stdout/stderr bytes and exit status as
+// its C++ bootstrap oracle. Keeping the commands phase-bounded makes bootstrap
+// replacement measurable; later semantic slices can join this driver without
+// placing LLVM or native-linker behavior in the frontend packages.
 //
 // main owns all process-facing sources, token storage, diagnostics, and output
 // builders until the final writes complete. The imported compiler packages do
@@ -18,6 +19,7 @@ import compiler/diagnostic as compiler_diagnostic
 import compiler/source as compiler_source
 import compiler/syntax as compiler_syntax
 import compiler/text as compiler_text
+import compiler/workspace as compiler_workspace
 
 // text_equal performs exact command spelling comparison without locale or
 // normalization. Process arguments are borrowed for the process lifetime.
@@ -209,6 +211,52 @@ run_syntax :: proc(path: string) -> int {
     return 1 if compiler_diagnostic.has_errors(&diagnostics) else 0
 }
 
+// target_selector_valid keeps package source selection on the same closed file
+// tags as the bootstrap. This command performs no target semantics yet; the tag
+// only selects exact direct-child filenames before parsing.
+target_selector_valid :: proc(selector: string) -> bool {
+    return text_equal(selector, "aarch64-macos") ||
+        text_equal(selector, "aarch64-linux") ||
+        text_equal(selector, "x86_64-linux") ||
+        text_equal(selector, "x86_64-windows")
+}
+
+// run_package_syntax owns one deterministic folder-package transaction. The
+// package layer constructs both output streams completely before process I/O,
+// so partial writes cannot affect compiler state or diagnostic ordering.
+run_package_syntax :: proc(path, file_tag: string) -> int {
+    loaded: compiler_workspace.Package
+    succeeded := compiler_workspace.load(
+        &loaded,
+        path,
+        compiler_workspace.Load_Options{file_tag = file_tag},
+    )
+    defer compiler_workspace.destroy(&loaded)
+
+    syntax_output: compiler_text.Builder
+    diagnostic_output: compiler_text.Builder
+    compiler_text.init(&syntax_output)
+    compiler_text.init(&diagnostic_output)
+    defer compiler_text.destroy(&diagnostic_output)
+    defer compiler_text.destroy(&syntax_output)
+
+    compiler_workspace.dump_package_syntax(&loaded, &syntax_output)
+    compiler_workspace.render_diagnostics(&loaded, &diagnostic_output)
+    if os.write_all(
+        os.standard_output,
+        compiler_text.view(&syntax_output),
+    ) != .none {
+        return 1
+    }
+    if os.write_all(
+        os.standard_error,
+        compiler_text.view(&diagnostic_output),
+    ) != .none {
+        return 1
+    }
+    return 0 if succeeded else 1
+}
+
 // main accepts only implemented phases so an unimplemented command cannot
 // silently fall back to the bootstrap or claim self-hosted coverage.
 main :: proc() -> int {
@@ -219,9 +267,15 @@ main :: proc() -> int {
     if len(arguments) == 3 && text_equal(arguments[1], "syntax") {
         return run_syntax(arguments[2])
     }
+    if len(arguments) == 5 &&
+        text_equal(arguments[1], "package-syntax") &&
+        text_equal(arguments[3], "--target") &&
+        target_selector_valid(arguments[4]) {
+        return run_package_syntax(arguments[2], arguments[4])
+    }
     write_error := os.write_text_all(
         os.standard_error,
-        "usage:\n  draftc-next lex <file.draft>\n  draftc-next syntax <file.draft>\n",
+        "usage:\n  draftc-next lex <file.draft>\n  draftc-next syntax <file.draft>\n  draftc-next package-syntax <package> --target <selector>\n",
     )
     if write_error != .none {
         return 1

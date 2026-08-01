@@ -689,9 +689,10 @@ endif()
 
 # The self-hosted frontend is a separate Draft executable. The C++ draftc
 # remains the bootstrap and semantic oracle; it compiles draftc-next for the
-# native host, while the next-stage driver exposes the replaced `lex` and
-# `syntax` phases. Keeping the output out of the install set prevents a partial
-# command surface from being mistaken for the released compiler contract.
+# native host, while the next-stage driver exposes the replaced `lex`, `syntax`,
+# and folder-package loading phases. Keeping the output out of the install set
+# prevents a partial command surface from being mistaken for the released
+# compiler contract.
 file(GLOB_RECURSE DRAFTC_NEXT_DRAFT_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/core/*.draft"
   "${CMAKE_CURRENT_SOURCE_DIR}/compiler/*.draft"
@@ -1225,10 +1226,18 @@ if(BUILD_TESTING)
   add_test(NAME draft_lexer_tests COMMAND draft_lexer_tests)
 
   if(DRAFT_NATIVE_HOST_TARGET)
+    # This non-installed executable is the production C++ package-loader oracle
+    # for the Draft-written package-syntax boundary. Keeping it separate from
+    # draftc avoids adding a migration-only command to the public compiler.
+    add_executable(
+      draft_package_syntax_oracle tools/bootstrap_package_syntax.cpp)
+    target_link_libraries(draft_package_syntax_oracle PRIVATE draft_compiler)
+
     # Same-package Draft tests catch focused lexical and parser failures. The
-    # two process tests are the migration gates: stdout, stderr, and exit status
-    # remain byte-for-byte equal to the C++ bootstrap over repository sources
-    # and deliberately malformed input at each replaced phase boundary.
+    # process tests are the migration gates: stdout, stderr, and exit status
+    # remain byte-for-byte equal to the C++ bootstrap over repository sources,
+    # package directories, and deliberately malformed input at each replaced
+    # phase boundary.
     add_test(
       NAME draft_self_hosted_frontend_units
       COMMAND
@@ -1272,6 +1281,22 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
       draft_self_hosted_parser_differential
+      PROPERTIES LABELS "frontend;self-hosting;integration"
+    )
+    add_test(
+      NAME draft_self_hosted_package_syntax_differential
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DORACLE=$<TARGET_FILE:draft_package_syntax_oracle>"
+        "-DDRAFTC_NEXT=${DRAFTC_NEXT_EXECUTABLE}"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/self-hosted-package-syntax-tests"
+        "-DHOST_TARGET=${DRAFT_NATIVE_HOST_TARGET}"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_self_hosted_package_syntax_test.cmake"
+    )
+    set_tests_properties(
+      draft_self_hosted_package_syntax_differential
       PROPERTIES LABELS "frontend;self-hosting;integration"
     )
   endif()

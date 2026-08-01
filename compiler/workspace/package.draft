@@ -1,0 +1,658 @@
+// Deterministic loading of one Draft folder package for the self-hosted compiler.
+//
+// This package is the first multi-file boundary after concrete parsing. It
+// enumerates one directory, applies exact target/test/benchmark filename
+// selection, sorts selected names bytewise, owns every loaded source and syntax
+// tree, and verifies that all valid package clauses name one package. Imports
+// and canonical workspace identity belong to later semantic slices.
+//
+// Package owns all paths, sources, diagnostics, and trees returned by load.
+// Package_File rows remain in canonical filename order; their integer positions
+// are the first self-hosted file-ID domain. The initial implementation is
+// deliberately sequential. File-level parallelism may be added only after this
+// deterministic publication order is the established oracle.
+//
+// Allowed dependencies are compiler source/diagnostic/syntax/text and the small
+// core array, filesystem, I/O, and memory owners. Relevant specification:
+// section 3, "Folder packages", and target.file_tag source selection.
+package compiler_workspace
+
+import core/array
+import core/filesystem
+import core/io
+import core/memory
+import compiler/diagnostic as compiler_diagnostic
+import compiler/source as compiler_source
+import compiler/syntax as compiler_syntax
+import compiler/text as compiler_text
+
+Directory_Entry_Capacity :: 4096
+
+// File_Kind distinguishes parsed Draft source from exact package assembly.
+// Assembly bytes are still loaded and owned, but this phase deliberately does
+// not interpret the target assembler contract.
+pub File_Kind :: enum u8 {
+    draft_source,
+    assembly_source,
+}
+
+// Load_Options contains semantic file-selection facts only. file_tag must be
+// one exact supported target tag. Tests and benchmarks are independent because
+// ordinary builds select neither class.
+pub Load_Options :: struct {
+    file_tag: string,
+    include_tests: bool,
+    include_benchmarks: bool,
+}
+
+Discovery_Error :: enum u8 {
+    none,
+    cannot_enumerate,
+}
+
+// Selected_File is a discovery-only filename owner. Sorting moves these owners
+// structurally inside one array; loading then transfers each name into exactly
+// one Package_File and clears the source row.
+Selected_File :: struct {
+    name: memory.Owned_String,
+    kind: File_Kind,
+}
+
+// Package_File owns one selected source transaction. source is initialized even
+// when load_error is non-none so its retained path can render the I/O failure.
+// diagnostics and tree are initialized only according to their explicit flags.
+// package_name_range is meaningful only when package_name_valid is true.
+pub Package_File :: struct {
+    relative_name: memory.Owned_String,
+    kind: File_Kind,
+    source: compiler_source.Source_File,
+    diagnostics: compiler_diagnostic.Sink,
+    tree: compiler_syntax.Syntax_Tree,
+    load_error: compiler_source.Load_Error,
+    source_initialized: bool,
+    diagnostics_initialized: bool,
+    parsed: bool,
+    package_name_valid: bool,
+    package_name_mismatch: bool,
+    package_name_range: compiler_source.Source_Range,
+}
+
+// Package owns one complete package-loading result. files contains every
+// selected filename, including an I/O failure row, in bytewise order. Loaded
+// rows own source bytes; parsed rows additionally own diagnostics and a tree.
+// short_name is copied from the first valid package clause and therefore
+// survives destruction or relocation of any individual source row.
+pub Package :: struct {
+    directory: memory.Owned_String,
+    short_name: memory.Owned_String,
+    files: array.Dynamic[Package_File],
+    discovery_error: Discovery_Error,
+    no_draft_source: bool,
+    no_valid_package: bool,
+    failed: bool,
+}
+
+bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
+    if len(bytes) != len(text) {
+        return false
+    }
+    for index: usize = 0; index < len(bytes); index += 1 {
+        if bytes[index] != text[index] {
+            return false
+        }
+    }
+    return true
+}
+
+bytes_end_with_text :: proc(bytes: []u8, text: string) -> bool {
+    if len(bytes) < len(text) {
+        return false
+    }
+    start := len(bytes) - len(text)
+    for index: usize = 0; index < len(text); index += 1 {
+        if bytes[start + index] != text[index] {
+            return false
+        }
+    }
+    return true
+}
+
+bytes_less :: proc(left, right: []u8) -> bool {
+    common := len(left)
+    if len(right) < common {
+        common = len(right)
+    }
+    for index: usize = 0; index < common; index += 1 {
+        if left[index] < right[index] {
+            return true
+        }
+        if left[index] > right[index] {
+            return false
+        }
+    }
+    return len(left) < len(right)
+}
+
+// selected_file_kind_bytes implements the specification's final extension,
+// final @target qualifier, and post-qualifier validation suffix rules without
+// consulting filesystem state. A leading-only dot is not an extension, which
+// matches the bootstrap treatment of `.draft` as an ordinary hidden filename.
+selected_file_kind_bytes :: proc(
+    filename: []u8,
+    options: Load_Options,
+) -> (File_Kind, bool) {
+    dot := len(filename)
+    for index: usize = 0; index < len(filename); index += 1 {
+        if filename[index] == cast[u8]('.') {
+            dot = index
+        }
+    }
+    if dot == 0 || dot == len(filename) {
+        return (.draft_source, false)
+    }
+
+    extension := filename[dot:]
+    kind: File_Kind
+    if bytes_equal_text(extension, ".draft") {
+        kind = .draft_source
+    } else if bytes_equal_text(extension, ".s") ||
+        bytes_equal_text(extension, ".S") ||
+        bytes_equal_text(extension, ".asm") {
+        kind = .assembly_source
+    } else {
+        return (.draft_source, false)
+    }
+
+    stem_end := dot
+    qualifier := stem_end
+    for index: usize = 0; index < stem_end; index += 1 {
+        if filename[index] == cast[u8]('@') {
+            qualifier = index
+        }
+    }
+    if qualifier != stem_end {
+        target_tag := filename[qualifier + 1:stem_end]
+        if !bytes_equal_text(target_tag, options.file_tag) {
+            return (.draft_source, false)
+        }
+        stem_end = qualifier
+    }
+
+    if kind == .draft_source {
+        stem := filename[:stem_end]
+        if bytes_end_with_text(stem, "_test") && !options.include_tests {
+            return (.draft_source, false)
+        }
+        if bytes_end_with_text(stem, "_bench") && !options.include_benchmarks {
+            return (.draft_source, false)
+        }
+    }
+    return (kind, true)
+}
+
+// selected_file_kind is the immutable-text test and future discovery helper.
+// It performs no allocation and recognizes only the closed target-file surface.
+pub selected_file_kind :: proc(
+    filename: string,
+    options: Load_Options,
+) -> (File_Kind, bool) {
+    bytes := raw_data(filename)[:len(filename)]
+    return selected_file_kind_bytes(bytes, options)
+}
+
+take_owned_string :: proc(
+    destination, source: ^memory.Owned_String,
+) {
+    destination^ = source^
+    empty: memory.Owned_String
+    source^ = empty
+}
+
+swap_selected :: proc(values: []Selected_File, left, right: usize) {
+    if left == right {
+        return
+    }
+    temporary := values[left]
+    values[left] = values[right]
+    values[right] = temporary
+    empty: Selected_File
+    temporary = empty
+}
+
+// sift_selected restores one max-heap subtree. The selected-name owner moves as
+// a complete row, so no allocation is duplicated or destroyed during sorting.
+sift_selected :: proc(values: []Selected_File, root, count: usize) {
+    cursor := root
+    for cursor < count / 2 {
+        child := cursor * 2 + 1
+        if child + 1 < count && bytes_less(
+            memory.owned_string_bytes(&values[child].name),
+            memory.owned_string_bytes(&values[child + 1].name),
+        ) {
+            child += 1
+        }
+        if !bytes_less(
+            memory.owned_string_bytes(&values[cursor].name),
+            memory.owned_string_bytes(&values[child].name),
+        ) {
+            return
+        }
+        swap_selected(values, cursor, child)
+        cursor = child
+    }
+}
+
+// sort_selected performs deterministic O(n log n) bytewise heapsort. Native
+// enumeration order therefore cannot affect file IDs, diagnostics, or dumps.
+sort_selected :: proc(selected: ^array.Dynamic[Selected_File]) {
+    values := array.view(selected)
+    start := len(values) / 2
+    for start > 0 {
+        start -= 1
+        sift_selected(values, start, len(values))
+    }
+    end := len(values)
+    for end > 1 {
+        swap_selected(values, 0, end - 1)
+        end -= 1
+        sift_selected(values, 0, end)
+    }
+}
+
+destroy_selected :: proc(selected: ^array.Dynamic[Selected_File]) {
+    for index: usize = 0; index < selected.length; index += 1 {
+        memory.owned_string_destroy(&selected.data[index].name)
+    }
+    array.destroy(selected)
+}
+
+// discover_selected owns the native directory handle for exactly this call.
+// Only rows classified as regular files by the portable enumeration boundary
+// participate; directories and non-source entries are ignored before sorting.
+discover_selected :: proc(
+    loaded: ^Package,
+    options: Load_Options,
+    selected: ^array.Dynamic[Selected_File],
+) -> bool {
+    (directory, open_error) := filesystem.open(
+        memory.owned_string_cstring(&loaded.directory),
+    )
+    if open_error != .none {
+        loaded.discovery_error = .cannot_enumerate
+        loaded.failed = true
+        return false
+    }
+
+    name_storage: [Directory_Entry_Capacity]u8
+    read_failed := false
+    for {
+        (entry, read_error) := filesystem.read(&directory, name_storage[:])
+        if read_error == .end_of_input {
+            break
+        }
+        if read_error != .none {
+            read_failed = true
+            break
+        }
+        if entry.kind != .regular_file {
+            continue
+        }
+        name := name_storage[:entry.name_length]
+        (kind, participates) := selected_file_kind_bytes(name, options)
+        if !participates {
+            continue
+        }
+        selected_file: Selected_File
+        memory.owned_string_copy_bytes(&selected_file.name, name)
+        selected_file.kind = kind
+        array.append(selected, selected_file)
+        empty: Selected_File
+        selected_file = empty
+    }
+    if !filesystem.close(&directory) {
+        read_failed = true
+    }
+    if read_failed {
+        loaded.discovery_error = .cannot_enumerate
+        loaded.failed = true
+        return false
+    }
+    sort_selected(selected)
+    return true
+}
+
+append_path :: proc(
+    output: ^compiler_text.Builder,
+    directory: string,
+    filename: []u8,
+) {
+    compiler_text.append_text(output, directory)
+    if len(directory) != 0 {
+        final := directory[len(directory) - 1]
+        if final != cast[u8]('/') && final != cast[u8]('\\') {
+            compiler_text.append_byte(output, cast[u8]('/'))
+        }
+    }
+    compiler_text.append_bytes(output, filename)
+}
+
+token_is_package_name :: proc(kind: compiler_syntax.Token_Kind) -> bool {
+    switch kind {
+    case .identifier, .keyword_c, .keyword_type, .keyword_integer,
+        .keyword_float, .keyword_number, .keyword_flags, .keyword_memory,
+        .keyword_bits:
+        return true
+    case:
+        return false
+    }
+}
+
+// package_name_range extracts only a syntactically valid contextual name from
+// the parser's mandatory first PackageClause child. The returned range borrows
+// the file source and remains valid for the Package_File lifetime.
+package_name_range :: proc(
+    tree: ^compiler_syntax.Syntax_Tree,
+) -> (compiler_source.Source_Range, bool) {
+    if !compiler_syntax.node_id_valid(tree.root) {
+        return (compiler_source.Source_Range{}, false)
+    }
+    root_children := compiler_syntax.syntax_tree_children(tree, tree.root)
+    if len(root_children) == 0 {
+        return (compiler_source.Source_Range{}, false)
+    }
+    clause := compiler_syntax.syntax_tree_node(tree, root_children[0])
+    if clause.kind != .package_clause ||
+        clause.token_end <= clause.token_begin + 1 {
+        return (compiler_source.Source_Range{}, false)
+    }
+    token := tree.tokens.data[cast[usize](clause.token_begin + 1)]
+    if !token_is_package_name(token.kind) {
+        return (compiler_source.Source_Range{}, false)
+    }
+    return (token.range, true)
+}
+
+destroy_package_file :: proc(row: ^Package_File) {
+    if row.parsed {
+        compiler_syntax.syntax_tree_destroy(&row.tree)
+    }
+    if row.diagnostics_initialized {
+        compiler_diagnostic.destroy(&row.diagnostics)
+    }
+    if row.source_initialized {
+        compiler_source.destroy(&row.source)
+    }
+    memory.owned_string_destroy(&row.relative_name)
+}
+
+// load constructs one package transaction. package must be zero and must be
+// destroyed on every return. Selected files are processed sequentially in
+// canonical order, so the row index, diagnostic order, and first valid package
+// name are deterministic. It returns false for any discovery, I/O, syntax, or
+// package-consistency error while retaining all successfully constructed rows
+// for inspection.
+pub load :: proc(
+    loaded: ^Package,
+    directory: string,
+    options: Load_Options,
+) -> bool {
+    memory.owned_string_copy(&loaded.directory, directory)
+    array.init(&loaded.files)
+
+    selected: array.Dynamic[Selected_File]
+    array.init(&selected)
+    if !discover_selected(loaded, options, &selected) {
+        destroy_selected(&selected)
+        return false
+    }
+
+    saw_draft_source := false
+    for selected_index: usize = 0;
+        selected_index < selected.length;
+        selected_index += 1 {
+        selected_file := &selected.data[selected_index]
+        row: Package_File
+        take_owned_string(&row.relative_name, &selected_file.name)
+        row.kind = selected_file.kind
+
+        path: compiler_text.Builder
+        compiler_text.init(&path)
+        append_path(
+            &path,
+            directory,
+            memory.owned_string_bytes(&row.relative_name),
+        )
+        row.load_error = compiler_source.load_bytes(
+            &row.source,
+            compiler_text.view(&path),
+        )
+        row.source_initialized = true
+        compiler_text.destroy(&path)
+
+        if row.load_error != .none {
+            loaded.failed = true
+        } else if row.kind == .draft_source {
+            saw_draft_source = true
+            compiler_diagnostic.init(&row.diagnostics)
+            row.diagnostics_initialized = true
+            compiler_syntax.parse_source_file(
+                &row.source,
+                &row.diagnostics,
+                &row.tree,
+            )
+            row.parsed = true
+            if compiler_diagnostic.has_errors(&row.diagnostics) {
+                loaded.failed = true
+            }
+
+            (name_range, name_valid) := package_name_range(&row.tree)
+            row.package_name_range = name_range
+            row.package_name_valid = name_valid
+            if name_valid {
+                name := compiler_source.bytes_in_range(&row.source, name_range)
+                if loaded.short_name.data == nil {
+                    memory.owned_string_copy_bytes(&loaded.short_name, name)
+                } else {
+                    expected := memory.owned_string_bytes(&loaded.short_name)
+                    same := len(name) == len(expected)
+                    if same {
+                        for index: usize = 0; index < len(name); index += 1 {
+                            if name[index] != expected[index] {
+                                same = false
+                                break
+                            }
+                        }
+                    }
+                    if !same {
+                        row.package_name_mismatch = true
+                        loaded.failed = true
+                    }
+                }
+            }
+        }
+
+        array.append(&loaded.files, row)
+        empty_file: Package_File
+        row = empty_file
+    }
+    destroy_selected(&selected)
+
+    if !saw_draft_source {
+        loaded.no_draft_source = true
+        loaded.failed = true
+    }
+    if loaded.short_name.data == nil {
+        loaded.no_valid_package = true
+        loaded.failed = true
+    }
+    return !loaded.failed
+}
+
+// destroy releases files in reverse ownership nesting and ends every borrowed
+// source range, token, tree, diagnostic, name, and directory view.
+pub destroy :: proc(loaded: ^Package) {
+    for index: usize = 0; index < loaded.files.length; index += 1 {
+        destroy_package_file(&loaded.files.data[index])
+    }
+    array.destroy(&loaded.files)
+    memory.owned_string_destroy(&loaded.short_name)
+    memory.owned_string_destroy(&loaded.directory)
+    loaded.discovery_error = .none
+    loaded.no_draft_source = false
+    loaded.no_valid_package = false
+    loaded.failed = false
+}
+
+// file_count and file_at expose the canonical row domain without exporting the
+// Package's owning array operations to consumers.
+pub file_count :: proc(loaded: ^Package) -> usize {
+    return loaded.files.length
+}
+
+pub file_at :: proc(loaded: ^Package, index: usize) -> ^Package_File {
+    assert(index < loaded.files.length, "package file ID is out of bounds")
+    return &loaded.files.data[index]
+}
+
+pub short_name_bytes :: proc(loaded: ^Package) -> []u8 {
+    return memory.owned_string_bytes(&loaded.short_name)
+}
+
+append_pre_source_error :: proc(
+    output: ^compiler_text.Builder,
+    prefix: string,
+    path: []u8,
+    suffix: string,
+) {
+    compiler_text.append_text(output, "error: ")
+    compiler_text.append_text(output, prefix)
+    compiler_text.append_bytes(output, path)
+    compiler_text.append_text(output, suffix)
+    compiler_text.append_byte(output, cast[u8]('\n'))
+}
+
+// render_diagnostics appends package failures in canonical file order. Parser
+// rows retain the common source diagnostic renderer; the dynamic mismatch
+// message is assembled transiently and passed through the same range renderer.
+pub render_diagnostics :: proc(
+    loaded: ^Package,
+    output: ^compiler_text.Builder,
+) {
+    if loaded.discovery_error == .cannot_enumerate {
+        append_pre_source_error(
+            output,
+            "cannot enumerate package directory '",
+            memory.owned_string_bytes(&loaded.directory),
+            "'",
+        )
+        return
+    }
+
+    for index: usize = 0; index < loaded.files.length; index += 1 {
+        row := &loaded.files.data[index]
+        if row.load_error != .none {
+            prefix := "cannot read source file '"
+            if row.load_error == .cannot_open {
+                prefix = "cannot open source file '"
+            }
+            append_pre_source_error(
+                output,
+                prefix,
+                compiler_source.display_path_bytes(&row.source),
+                "'",
+            )
+            continue
+        }
+        if row.parsed {
+            compiler_diagnostic.render(
+                &row.source,
+                &row.diagnostics,
+                output,
+            )
+        }
+        if row.package_name_mismatch {
+            message: compiler_text.Builder
+            compiler_text.init(&message)
+            compiler_text.append_text(&message, "package name '")
+            compiler_text.append_bytes(
+                &message,
+                compiler_source.bytes_in_range(
+                    &row.source,
+                    row.package_name_range,
+                ),
+            )
+            compiler_text.append_text(
+                &message,
+                "' does not match package name '",
+            )
+            compiler_text.append_bytes(
+                &message,
+                memory.owned_string_bytes(&loaded.short_name),
+            )
+            compiler_text.append_text(
+                &message,
+                "' from another file in this directory",
+            )
+            compiler_diagnostic.render_message_bytes(
+                &row.source,
+                .error,
+                row.package_name_range,
+                compiler_text.view(&message),
+                output,
+            )
+            compiler_text.destroy(&message)
+        }
+    }
+
+    if loaded.no_draft_source {
+        append_pre_source_error(
+            output,
+            "package directory '",
+            memory.owned_string_bytes(&loaded.directory),
+            "' contains no selected .draft source files",
+        )
+    }
+    if loaded.no_valid_package {
+        append_pre_source_error(
+            output,
+            "package directory '",
+            memory.owned_string_bytes(&loaded.directory),
+            "' has no valid package declaration",
+        )
+    }
+}
+
+// dump_package_syntax is the staging inspection boundary used by the C++/Draft
+// differential gate. It emits the selected short name, each successfully loaded
+// file kind/name, and the existing stable concrete-tree dump for Draft sources.
+pub dump_package_syntax :: proc(
+    loaded: ^Package,
+    output: ^compiler_text.Builder,
+) {
+    if loaded.short_name.data != nil {
+        compiler_text.append_text(output, "package ")
+        compiler_text.append_bytes(
+            output,
+            memory.owned_string_bytes(&loaded.short_name),
+        )
+        compiler_text.append_byte(output, cast[u8]('\n'))
+    }
+    for index: usize = 0; index < loaded.files.length; index += 1 {
+        row := &loaded.files.data[index]
+        if row.load_error != .none {
+            continue
+        }
+        compiler_text.append_text(
+            output,
+            "draft " if row.kind == .draft_source else "assembly ",
+        )
+        compiler_text.append_bytes(
+            output,
+            memory.owned_string_bytes(&row.relative_name),
+        )
+        compiler_text.append_byte(output, cast[u8]('\n'))
+        if row.parsed {
+            compiler_syntax.dump_syntax_tree(&row.tree, output)
+        }
+    }
+}
