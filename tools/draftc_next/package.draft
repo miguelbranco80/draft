@@ -1,12 +1,13 @@
 // Draft-written staging driver for the self-hosted compiler frontend.
 //
-// This executable owns the replaced lexical, concrete-syntax, and folder-
-// package loading phases. `lex` and `syntax` load one source file;
-// `package-syntax` selects and parses all direct source files for one exact
-// target. Every command renders the same stdout/stderr bytes and exit status as
-// its C++ bootstrap oracle. Keeping the commands phase-bounded makes bootstrap
-// replacement measurable; later semantic slices can join this driver without
-// placing LLVM or native-linker behavior in the frontend packages.
+// This executable owns the replaced lexical, concrete-syntax, folder-package,
+// and recursive import-graph phases. `lex` and `syntax` load one source file;
+// `package-syntax` selects and parses one package; `workspace-syntax` resolves
+// explicitly configured roots and every reachable import. Every command
+// renders the same stdout/stderr bytes and exit status as its C++ bootstrap
+// oracle. Keeping the commands phase-bounded makes bootstrap replacement
+// measurable; later semantic slices can join this driver without placing LLVM
+// or native-linker behavior in the frontend packages.
 //
 // main owns all process-facing sources, token storage, diagnostics, and output
 // builders until the final writes complete. The imported compiler packages do
@@ -14,6 +15,7 @@
 // 4, "Source text and literals".
 package draftc_next
 
+import core/array
 import core/os
 import compiler/diagnostic as compiler_diagnostic
 import compiler/source as compiler_source
@@ -257,6 +259,58 @@ run_package_syntax :: proc(path, file_tag: string) -> int {
     return 0 if succeeded else 1
 }
 
+// run_workspace_syntax owns one canonical recursive package-graph transaction.
+// The explicit workspace, dependency, and physical core roots are the complete
+// namespace: no environment or ambient checkout search occurs. Output excludes
+// physical paths so equivalent checkout locations have the same graph dump.
+run_workspace_syntax :: proc(
+    root_package, workspace_directory, core_directory: string,
+    core_identity, file_tag: string,
+    dependencies: []compiler_workspace.Dependency_Mapping,
+) -> int {
+    graph: compiler_workspace.Workspace_Graph
+    succeeded := compiler_workspace.load_workspace(
+        &graph,
+        root_package,
+        compiler_workspace.Workspace_Options{
+            workspace_directory = workspace_directory,
+            core_directory = core_directory,
+            core_content_identity = core_identity,
+            dependencies = dependencies,
+            package_options = compiler_workspace.Load_Options{
+                file_tag = file_tag,
+            },
+        },
+    )
+    defer compiler_workspace.destroy_workspace_graph(&graph)
+
+    graph_output: compiler_text.Builder
+    diagnostic_output: compiler_text.Builder
+    compiler_text.init(&graph_output)
+    compiler_text.init(&diagnostic_output)
+    defer compiler_text.destroy(&diagnostic_output)
+    defer compiler_text.destroy(&graph_output)
+
+    compiler_workspace.dump_workspace_graph(&graph, &graph_output)
+    compiler_workspace.render_workspace_diagnostics(
+        &graph,
+        &diagnostic_output,
+    )
+    if os.write_all(
+        os.standard_output,
+        compiler_text.view(&graph_output),
+    ) != .none {
+        return 1
+    }
+    if os.write_all(
+        os.standard_error,
+        compiler_text.view(&diagnostic_output),
+    ) != .none {
+        return 1
+    }
+    return 0 if succeeded else 1
+}
+
 // main accepts only implemented phases so an unimplemented command cannot
 // silently fall back to the bootstrap or claim self-hosted coverage.
 main :: proc() -> int {
@@ -273,9 +327,48 @@ main :: proc() -> int {
         target_selector_valid(arguments[4]) {
         return run_package_syntax(arguments[2], arguments[4])
     }
+    if len(arguments) >= 11 &&
+        (len(arguments) - 11) % 4 == 0 &&
+        text_equal(arguments[1], "workspace-syntax") &&
+        text_equal(arguments[3], "--workspace") &&
+        text_equal(arguments[5], "--core") &&
+        text_equal(arguments[7], "--core-identity") &&
+        text_equal(arguments[9], "--target") &&
+        target_selector_valid(arguments[10]) {
+        dependencies: array.Dynamic[compiler_workspace.Dependency_Mapping]
+        array.init(&dependencies)
+        defer array.destroy(&dependencies)
+        argument_index: usize = 11
+        valid := true
+        for argument_index < len(arguments) {
+            if !text_equal(arguments[argument_index], "--dependency") {
+                valid = false
+                break
+            }
+            array.append(
+                &dependencies,
+                compiler_workspace.Dependency_Mapping{
+                    import_prefix = arguments[argument_index + 1],
+                    physical_directory = arguments[argument_index + 2],
+                    content_identity = arguments[argument_index + 3],
+                },
+            )
+            argument_index += 4
+        }
+        if valid {
+            return run_workspace_syntax(
+                arguments[2],
+                arguments[4],
+                arguments[6],
+                arguments[8],
+                arguments[10],
+                array.view(&dependencies),
+            )
+        }
+    }
     write_error := os.write_text_all(
         os.standard_error,
-        "usage:\n  draftc-next lex <file.draft>\n  draftc-next syntax <file.draft>\n  draftc-next package-syntax <package> --target <selector>\n",
+        "usage:\n  draftc-next lex <file.draft>\n  draftc-next syntax <file.draft>\n  draftc-next package-syntax <package> --target <selector>\n  draftc-next workspace-syntax <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n",
     )
     if write_error != .none {
         return 1

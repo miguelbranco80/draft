@@ -547,16 +547,22 @@ a bootstrap compiler component; it is not a Draft source-package dependency.
 
 On a supported native host, the default build also asks the bootstrap to build
 the Draft-written staging driver at O2. It currently implements `lex`, `syntax`,
-and target-qualified folder-package loading through `package-syntax`. It is a
-build-tree development artifact, not an installed public command:
+target-qualified folder-package loading through `package-syntax`, and canonical
+recursive import-graph loading through `workspace-syntax`. It is a build-tree
+development artifact, not an installed public command:
 
 ```sh
-cmake --build build --target draftc_next draft_package_syntax_oracle --parallel
+cmake --build build --target \
+  draftc_next draft_package_syntax_oracle draft_workspace_syntax_oracle \
+  --parallel
 build/draftc-next lex compiler/syntax/lexer.draft
 build/draftc-next syntax compiler/syntax/parser.draft
 build/draftc-next package-syntax compiler/syntax --target aarch64-macos
+build/draftc-next workspace-syntax tools/draftc_next \
+  --workspace . --core core --core-identity local-core-qualification \
+  --target aarch64-macos
 ctest --test-dir build --output-on-failure \
-  -R '^draft_self_hosted_(frontend_units|lexer_differential|parser_differential|package_syntax_differential)$'
+  -R '^draft_self_hosted_(frontend_units|lexer_differential|parser_differential|package_syntax_differential|workspace_syntax_differential)$'
 ```
 
 The single-file differential tests compare C++ `draftc lex`/`draftc syntax`
@@ -566,8 +572,15 @@ differential compares a helper around the production C++ package loader with
 `draftc-next package-syntax` over repository folder packages, all four target
 file tags, and explicit package-name, malformed-source, no-source, empty, and
 missing-directory failures. All gates require identical stdout, stderr, and
-exit status. Keep the bootstrap path until a replacement phase has this oracle;
-passing the Draft package's focused tests alone is not replacement evidence.
+exit status. The workspace differential additionally compares the production
+C++ graph loader with Draft over the real frontend graph and explicit
+workspace/dependency/core fixtures covering repeated imports, mapping errors,
+cycles, missing or malformed packages, canonical aliasing and escape rejection
+when the host permits symlink creation, root containment, and the 256-level
+import-depth limit. It compares semantic root/package/import output without
+physical paths. Keep the bootstrap path until a replacement phase has this
+oracle; passing focused Draft tests alone is not
+replacement evidence.
 
 For a frontend performance investigation, build the two explicitly requested
 standalone targets from a Release CMake tree, then run the comparison on one

@@ -1233,6 +1233,14 @@ if(BUILD_TESTING)
       draft_package_syntax_oracle tools/bootstrap_package_syntax.cpp)
     target_link_libraries(draft_package_syntax_oracle PRIVATE draft_compiler)
 
+    # This second migration-only oracle exercises the production recursive
+    # workspace loader and exposes only semantic graph facts. It remains out of
+    # the installed draftc command surface for the same reason as the direct
+    # package oracle above.
+    add_executable(
+      draft_workspace_syntax_oracle tools/bootstrap_workspace_syntax.cpp)
+    target_link_libraries(draft_workspace_syntax_oracle PRIVATE draft_compiler)
+
     # Same-package Draft tests catch focused lexical and parser failures. The
     # process tests are the migration gates: stdout, stderr, and exit status
     # remain byte-for-byte equal to the C++ bootstrap over repository sources,
@@ -1297,6 +1305,22 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
       draft_self_hosted_package_syntax_differential
+      PROPERTIES LABELS "frontend;self-hosting;integration"
+    )
+    add_test(
+      NAME draft_self_hosted_workspace_syntax_differential
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DORACLE=$<TARGET_FILE:draft_workspace_syntax_oracle>"
+        "-DDRAFTC_NEXT=${DRAFTC_NEXT_EXECUTABLE}"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/self-hosted-workspace-syntax-tests"
+        "-DHOST_TARGET=${DRAFT_NATIVE_HOST_TARGET}"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_self_hosted_workspace_syntax_test.cmake"
+    )
+    set_tests_properties(
+      draft_self_hosted_workspace_syntax_differential
       PROPERTIES LABELS "frontend;self-hosting;integration"
     )
   endif()

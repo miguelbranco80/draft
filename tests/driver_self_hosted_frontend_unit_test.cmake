@@ -43,7 +43,7 @@ execute_process(
   ERROR_VARIABLE workspace_standard_error
 )
 if(NOT workspace_status EQUAL 0 OR
-   NOT workspace_standard_output MATCHES "test passed: 16 selected procedures")
+   NOT workspace_standard_output MATCHES "test passed: 21 selected procedures")
   message(FATAL_ERROR
     "self-hosted workspace unit tests failed (${workspace_status})\n"
     "stdout:\n${workspace_standard_output}stderr:\n${workspace_standard_error}")

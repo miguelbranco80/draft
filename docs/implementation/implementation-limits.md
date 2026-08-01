@@ -190,16 +190,19 @@ boundary and no alternate-emitter fallback for unsupported operations.
 
 ## Self-hosted frontend staging limits
 
-Status: build-tree source, lexer, parser, and folder-package loader replacement;
-not a Draft language or public CLI limit.
+Status: build-tree source, lexer, parser, folder-package, and canonical import-
+graph replacement; not a Draft language or public CLI limit.
 
 On a supported native host, the build graph uses C++ `draftc` to produce an O2
 Draft executable named `draftc-next`. Its accepted commands are
 `draftc-next lex <file.draft>`, `draftc-next syntax <file.draft>`, and
-`draftc-next package-syntax <package> --target <selector>`. It is not installed
-or included in release archives. Import resolution, workspace identity,
-semantic analysis, elaboration, MIR, LLVM, artifacts, and linking have not moved
-to it yet. The C++ driver remains the public compiler and compatibility oracle.
+`draftc-next package-syntax <package> --target <selector>`. Its
+`workspace-syntax` qualification command additionally takes explicit workspace
+and physical-core roots, a pinned core identity, the target, and optional
+dependency prefix/root/identity mappings. It is not installed or included in
+release archives. Declaration collection, name resolution, type checking,
+elaboration, MIR, LLVM, artifacts, and linking have not moved to it yet. The C++
+driver remains the public compiler and compatibility oracle.
 
 The Draft lexer has the same token spellings, ranges, semicolon insertion,
 diagnostic rendering, stdout/stderr bytes, and exit behavior as the bootstrap
@@ -210,19 +213,25 @@ The Draft package loader likewise matches production package discovery, target
 and validation suffix selection, bytewise file ordering, source loading,
 multi-file parsing, assembly inventory, package-name diagnostics, and process
 behavior across repository packages and explicit four-target/failure fixtures.
-This is package-to-concrete-syntax compatibility evidence, not proof that import
-resolution or semantic phases are self-hosted. Each later phase must add its own
-focused tests and complete process-level oracle before the corresponding C++
-path can be removed.
+The Draft workspace loader additionally matches explicit root validation,
+canonical semantic identity, recursive first-discovery order, import occurrence
+order, mapping disambiguation, alias deduplication, containment, cycle handling,
+and the package-depth bound against the production C++ loader. This is package-
+graph compatibility evidence, not proof that semantic phases are self-hosted.
+Embedded-core package rows and complete-file source overrides still use the
+bootstrap path; the staging graph currently accepts physical core source. Each
+later phase or source-provider transition must add its own focused tests and
+complete process-level oracle before the corresponding C++ path can be removed.
 
-`compiler_syntax.Token_List` and the syntax tree's typed node/child tables
-currently implement their contiguous allocation directly. The bootstrap rejects
-an embedded `core/array.Dynamic[Token]` used across the syntax package's source
-files with a pointer type-identity diagnostic, including when the generic
-argument is explicit. This is a bootstrap generic-instantiation limitation, not
-missing array semantics or a Draft 1 ownership rule. The direct tables preserve
-the intended data layout, stable integer IDs, and explicit allocator lifetime;
-they can return to ordinary core containers after that compiler limitation is
+`compiler_syntax.Token_List`, the syntax tree's typed node/child tables, and the
+workspace graph's concrete root/package/import/diagnostic/visit tables currently
+implement contiguous allocation directly. The bootstrap rejects an embedded
+`core/array.Dynamic[T]` consumed across different source files of one package
+with a pointer type-identity diagnostic, including when the generic argument is
+explicit. This is a bootstrap generic-instantiation limitation, not missing
+array semantics or a Draft 1 ownership rule. The direct tables preserve the
+intended data layout, stable integer IDs, and explicit allocator lifetime; they
+can return to ordinary core containers after that compiler limitation is
 repaired and qualified.
 
 ## Native host and instrumentation limits

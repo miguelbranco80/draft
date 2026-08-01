@@ -72,22 +72,39 @@ direct-child package discovery, exact target/test/benchmark source selection,
 bytewise filename ordering, multi-file parsing, assembly-source inventory, and
 package-name consistency. `draftc-next` accepts `lex <file.draft>`,
 `syntax <file.draft>`, and
-`package-syntax <package> --target <selector>`; it is deliberately absent from
-the install set until a coherent public compiler command surface exists.
+`package-syntax <package> --target <selector>`. It now also owns explicit
+workspace/dependency/core roots, canonical semantic package identities,
+recursive first-discovery package loading, ordered import occurrences, and
+cycle, depth, and canonical containment checks. The corresponding
+`workspace-syntax` command accepts the root package, workspace and physical
+core roots, pinned core identity, target selector, and zero or more explicit
+dependency mappings. The staging executable is deliberately absent from the
+install set until a coherent public compiler command surface exists.
 
 Replacement proceeds at phase boundaries rather than by mixing C++ and Draft
 inside a phase. C++ `draftc lex` and `draftc syntax` remain independent single-
-file oracles while a non-installed helper exposes the production C++ package
-loader as the package oracle. Registered differential tests supply every Draft
-source under `core`, `compiler`, `examples`, `lib`, and `tools`, every repository
-folder-package root, a four-target selection matrix, and phase-specific
-malformed, mismatched-name, over-nested, empty, and missing inputs. The tests
-compare stdout, stderr, and exit status exactly. Focused same-package Draft
-tests separately exercise scanning, semicolon insertion, syntax categories,
-child structure, parser recovery, and filename selection. The next semantic
-slice can therefore consume canonical Draft-owned package file rows and their
-concrete trees directly; it does not need a compatibility call back into either
-the C++ parser or package loader.
+file oracles while non-installed helpers expose the production C++ package and
+workspace loaders as phase oracles. Registered differential tests supply every
+Draft source under `core`, `compiler`, `examples`, `lib`, and `tools`, every
+repository folder-package root, a four-target selection matrix, and phase-
+specific malformed, mismatched-name, over-nested, empty, and missing inputs.
+The tests also exercise the real frontend workspace graph plus workspace,
+dependency, and core mappings; repeated imports; cycles; ambiguous prefixes;
+missing and malformed imports; canonical symlink aliasing and escape rejection
+when the host permits symlink creation; command-root containment; and the 256-
+level import-depth bound. They compare stdout, stderr, and exit status exactly.
+Focused same-package Draft tests separately exercise scanning, semicolon
+insertion, syntax categories, child structure, parser recovery, filename
+selection, and component-aligned dependency prefixes. The
+next semantic slice can therefore consume canonical Draft-owned package rows,
+concrete trees, semantic identities, and import edges directly; it does not
+need a compatibility call back into the C++ parser or workspace loader.
+
+The staging graph uses physical core source because the C++ bootstrap must
+compile `draftc-next` before it can run. The installed bootstrap's immutable
+embedded-core selection and transactional complete-file source overrides have
+not yet moved to the Draft graph. They are source-provider seams rather than
+changes to package identity or import resolution.
 
 Frontend performance experiments use two explicitly requested, non-installed
 executables rather than adding observation to either production driver. The C++
@@ -117,7 +134,7 @@ This boundary does not couple the self-hosted frontend to LLVM. LLVM 22 remains
 part of the C++ bootstrap and native backend; the Draft source, diagnostic,
 syntax, and workspace packages depend only on ordinary core allocation,
 filesystem, formatting, and OS facilities. Backend migration can happen later
-behind MIR/target interfaces without delaying source-to-package-syntax
+behind MIR/target interfaces without delaying source-to-package-graph
 self-hosting.
 
 ```text

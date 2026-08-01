@@ -1,0 +1,1541 @@
+// Canonical workspace roots, package identities, and recursive import loading.
+//
+// This module is the self-hosted boundary between folder parsing and semantic
+// analysis. It maps explicitly configured physical roots to stable semantic
+// identities, loads every transitively imported folder package, records each
+// source import occurrence, rejects cycles, and prevents canonicalized paths
+// (including symlink targets) from escaping their selected root. The resulting
+// graph is closed and acyclic exactly when load_workspace returns true.
+//
+// Workspace_Graph owns every root spelling, identity, loaded Package, import
+// path, diagnostic message, and traversal row. Package_Id is a stable u32 index
+// into its package table. Source ranges and syntax IDs are interpreted only
+// through the nested Package_File that owns their source and tree. Discovery is
+// deliberately sequential: packages use recursive first-discovery order;
+// imports use canonical filename order and syntax order within each file.
+//
+// This phase depends only on compiler source, syntax, diagnostic, text, the
+// one-package loader, and core ownership/filesystem facilities. It knows no
+// declarations, types, or LLVM details. Relevant specification: section 3,
+// "Folder packages".
+package compiler_workspace
+
+import core/filesystem
+import core/io
+import core/memory
+import core/runtime
+import compiler/diagnostic as compiler_diagnostic
+import compiler/source as compiler_source
+import compiler/syntax as compiler_syntax
+import compiler/text as compiler_text
+
+Initial_Canonical_Path_Capacity :: 4096
+Maximum_Package_Import_Depth :: cast[u32](256)
+Invalid_Package_Value :: ~cast[u32](0)
+
+// Package_Id is one stable index into Workspace_Graph.packages. The all-ones
+// value is invalid and marks a failed import edge or an absent root package.
+// IDs are process-local traversal facts and must not enter persistent hashes.
+pub Package_Id :: struct {
+    value: u32,
+}
+
+// package_id_valid distinguishes a published graph row from the invalid
+// sentinel returned after a diagnosed load or graph failure.
+pub package_id_valid :: proc(id: Package_Id) -> bool {
+    return id.value != Invalid_Package_Value
+}
+
+invalid_package_id :: proc() -> Package_Id {
+    return Package_Id{value = Invalid_Package_Value}
+}
+
+// Root_Kind records which explicit namespace mapping selected a package.
+// Workspace is the unmatched import fallback, dependency prefixes are supplied
+// by build configuration, and core is the reserved compiler distribution.
+pub Root_Kind :: enum u8 {
+    workspace,
+    dependency,
+    core,
+}
+
+// Dependency_Mapping is borrowed load configuration. import_prefix is matched
+// only at slash-component boundaries. content_identity, not physical_directory,
+// participates in semantic identity and must name pinned dependency contents.
+pub Dependency_Mapping :: struct {
+    import_prefix: string,
+    physical_directory: string,
+    content_identity: string,
+}
+
+// Workspace_Options contains every permitted physical source root. All string
+// and dependency views are borrowed only for load_workspace. The initial
+// self-hosted graph accepts a physical core directory; embedded distribution
+// packages and in-memory source overrides remain at the later replacement seam.
+pub Workspace_Options :: struct {
+    workspace_directory: string,
+    core_directory: string,
+    core_content_identity: string,
+    dependencies: []Dependency_Mapping,
+    package_options: Load_Options,
+}
+
+// Package_Root is one owned semantic-to-physical root mapping. identity and
+// import_prefix affect graph meaning. physical_directory is a canonical,
+// absolute, slash-separated I/O path and must never enter semantic hashes.
+pub Package_Root :: struct {
+    kind: Root_Kind,
+    identity: memory.Owned_String,
+    import_prefix: memory.Owned_String,
+    physical_directory: memory.Owned_String,
+}
+
+// Package_Identity is the specification's semantic pair. root_relative_path
+// uses slash separators, has no leading or trailing slash, and is exactly "."
+// for the mapped root directory itself. Equality is bytewise semantic equality.
+pub Package_Identity :: struct {
+    root_identity: memory.Owned_String,
+    root_relative_path: memory.Owned_String,
+}
+
+// Workspace_Package owns one successfully loaded folder package. root indexes
+// Workspace_Graph.roots; identity is canonicalized before publication. The
+// nested Package owns all source bytes, syntax trees, and file diagnostics.
+pub Workspace_Package :: struct {
+    identity: Package_Identity,
+    root: u32,
+    loaded: Package,
+}
+
+// Package_Import is one source occurrence rather than one deduplicated graph
+// edge. file_index addresses the importing Package.files table; syntax is the
+// ImportClause node in that file's tree. path owns the exact normalized package
+// path written in source. Alias binding belongs to declaration collection.
+pub Package_Import :: struct {
+    importing_package: Package_Id,
+    imported_package: Package_Id,
+    file_index: usize,
+    syntax: compiler_syntax.Node_Id,
+    path: memory.Owned_String,
+}
+
+Diagnostic_Kind :: enum u8 {
+    pre_source,
+    source,
+    rendered,
+}
+
+// Graph_Diagnostic preserves insertion order across configuration, recursive
+// loading, and import resolution. source rows retain structured location facts;
+// rendered rows own complete output from a failed one-package transaction, whose
+// parser diagnostics cannot be retained after that unpublished package dies.
+Graph_Diagnostic :: struct {
+    kind: Diagnostic_Kind,
+    message: memory.Owned_String,
+    source_package: Package_Id,
+    file_index: usize,
+    range: compiler_source.Source_Range,
+}
+
+Visit_State :: enum u8 {
+    loading,
+    complete,
+}
+
+// Package_Visit is parallel to packages during one load. A loading hit is a
+// back edge; a complete hit reuses the existing stable Package_Id.
+Package_Visit :: struct {
+    state: Visit_State,
+}
+
+// Workspace_Graph is a partial inspection result on failure and a closed,
+// acyclic graph on success. All Dynamic fields are independently owned. roots
+// are ordered workspace, accepted dependencies, then core; packages use first
+// discovery order; imports use deterministic recursive resolution order.
+pub Workspace_Graph :: struct {
+    roots: Root_Array,
+    packages: Workspace_Package_Array,
+    imports: Package_Import_Array,
+    diagnostics: Graph_Diagnostic_Array,
+    visits: Package_Visit_Array,
+    root_package: Package_Id,
+    failed: bool,
+}
+
+// Diagnostic_Context identifies the source edge responsible for a recursive
+// operation. Invalid context denotes configuration or command-root diagnostics.
+Diagnostic_Context :: struct {
+    valid: bool,
+    source_package: Package_Id,
+    file_index: usize,
+    range: compiler_source.Source_Range,
+}
+
+// Parsed_Import temporarily owns facts copied from one stable syntax tree. The
+// complete list is extracted before recursion so graph array growth cannot
+// invalidate a retained pointer into the importing package row.
+Parsed_Import :: struct {
+    file_index: usize,
+    syntax: compiler_syntax.Node_Id,
+    range: compiler_source.Source_Range,
+    path: memory.Owned_String,
+}
+
+// The bootstrap currently gives imported generic record instantiations
+// different type identities when a package consumes them from multiple files.
+// These six concrete arrays are the same explicit workaround used by the syntax
+// token and node tables. Each owns contiguous storage, captures its allocator,
+// grows geometrically, and invalidates pointers on growth while preserving
+// integer indices. Remove them in favor of core/array only after that compiler
+// limitation is fixed and this package is requalified on all targets.
+Root_Array :: struct {
+    data: [^]Package_Root,
+    length: usize,
+    capacity: usize,
+    allocator: runtime.Allocator,
+}
+
+Workspace_Package_Array :: struct {
+    data: [^]Workspace_Package,
+    length: usize,
+    capacity: usize,
+    allocator: runtime.Allocator,
+}
+
+Package_Import_Array :: struct {
+    data: [^]Package_Import,
+    length: usize,
+    capacity: usize,
+    allocator: runtime.Allocator,
+}
+
+Graph_Diagnostic_Array :: struct {
+    data: [^]Graph_Diagnostic,
+    length: usize,
+    capacity: usize,
+    allocator: runtime.Allocator,
+}
+
+Package_Visit_Array :: struct {
+    data: [^]Package_Visit,
+    length: usize,
+    capacity: usize,
+    allocator: runtime.Allocator,
+}
+
+Parsed_Import_Array :: struct {
+    data: [^]Parsed_Import,
+    length: usize,
+    capacity: usize,
+    allocator: runtime.Allocator,
+}
+
+root_array_init :: proc(values: ^Root_Array) {
+    assert(values.data == nil && values.length == 0 && values.capacity == 0,
+        "root array is not empty")
+    values.allocator = context.allocator
+}
+
+root_array_append :: proc(values: ^Root_Array, value: Package_Root) {
+    if values.length == values.capacity {
+        next := values.capacity * 2
+        if next < 4 {
+            next = 4
+        }
+        values.data = cast[[^]Package_Root](memory.resize_with_allocator(
+            cast[rawptr](values.data),
+            values.capacity * size_of(Package_Root),
+            next * size_of(Package_Root),
+            align_of(Package_Root),
+            values.allocator,
+        ))
+        values.capacity = next
+    }
+    values.data[values.length] = value
+    values.length += 1
+}
+
+root_array_destroy :: proc(values: ^Root_Array) {
+    memory.free_bytes_with_allocator(
+        cast[rawptr](values.data),
+        values.capacity * size_of(Package_Root),
+        align_of(Package_Root),
+        values.allocator,
+    )
+    values.data = nil
+    values.length = 0
+    values.capacity = 0
+}
+
+workspace_package_array_init :: proc(values: ^Workspace_Package_Array) {
+    assert(values.data == nil && values.length == 0 && values.capacity == 0,
+        "workspace package array is not empty")
+    values.allocator = context.allocator
+}
+
+workspace_package_array_append :: proc(
+    values: ^Workspace_Package_Array,
+    value: Workspace_Package,
+) {
+    if values.length == values.capacity {
+        next := values.capacity * 2
+        if next < 4 {
+            next = 4
+        }
+        values.data = cast[[^]Workspace_Package](memory.resize_with_allocator(
+            cast[rawptr](values.data),
+            values.capacity * size_of(Workspace_Package),
+            next * size_of(Workspace_Package),
+            align_of(Workspace_Package),
+            values.allocator,
+        ))
+        values.capacity = next
+    }
+    values.data[values.length] = value
+    values.length += 1
+}
+
+workspace_package_array_destroy :: proc(values: ^Workspace_Package_Array) {
+    memory.free_bytes_with_allocator(
+        cast[rawptr](values.data),
+        values.capacity * size_of(Workspace_Package),
+        align_of(Workspace_Package),
+        values.allocator,
+    )
+    values.data = nil
+    values.length = 0
+    values.capacity = 0
+}
+
+package_import_array_init :: proc(values: ^Package_Import_Array) {
+    assert(values.data == nil && values.length == 0 && values.capacity == 0,
+        "package import array is not empty")
+    values.allocator = context.allocator
+}
+
+package_import_array_append :: proc(
+    values: ^Package_Import_Array,
+    value: Package_Import,
+) {
+    if values.length == values.capacity {
+        next := values.capacity * 2
+        if next < 4 {
+            next = 4
+        }
+        values.data = cast[[^]Package_Import](memory.resize_with_allocator(
+            cast[rawptr](values.data),
+            values.capacity * size_of(Package_Import),
+            next * size_of(Package_Import),
+            align_of(Package_Import),
+            values.allocator,
+        ))
+        values.capacity = next
+    }
+    values.data[values.length] = value
+    values.length += 1
+}
+
+package_import_array_destroy :: proc(values: ^Package_Import_Array) {
+    memory.free_bytes_with_allocator(
+        cast[rawptr](values.data),
+        values.capacity * size_of(Package_Import),
+        align_of(Package_Import),
+        values.allocator,
+    )
+    values.data = nil
+    values.length = 0
+    values.capacity = 0
+}
+
+graph_diagnostic_array_init :: proc(values: ^Graph_Diagnostic_Array) {
+    assert(values.data == nil && values.length == 0 && values.capacity == 0,
+        "graph diagnostic array is not empty")
+    values.allocator = context.allocator
+}
+
+graph_diagnostic_array_append :: proc(
+    values: ^Graph_Diagnostic_Array,
+    value: Graph_Diagnostic,
+) {
+    if values.length == values.capacity {
+        next := values.capacity * 2
+        if next < 4 {
+            next = 4
+        }
+        values.data = cast[[^]Graph_Diagnostic](memory.resize_with_allocator(
+            cast[rawptr](values.data),
+            values.capacity * size_of(Graph_Diagnostic),
+            next * size_of(Graph_Diagnostic),
+            align_of(Graph_Diagnostic),
+            values.allocator,
+        ))
+        values.capacity = next
+    }
+    values.data[values.length] = value
+    values.length += 1
+}
+
+graph_diagnostic_array_destroy :: proc(values: ^Graph_Diagnostic_Array) {
+    memory.free_bytes_with_allocator(
+        cast[rawptr](values.data),
+        values.capacity * size_of(Graph_Diagnostic),
+        align_of(Graph_Diagnostic),
+        values.allocator,
+    )
+    values.data = nil
+    values.length = 0
+    values.capacity = 0
+}
+
+package_visit_array_init :: proc(values: ^Package_Visit_Array) {
+    assert(values.data == nil && values.length == 0 && values.capacity == 0,
+        "package visit array is not empty")
+    values.allocator = context.allocator
+}
+
+package_visit_array_append :: proc(
+    values: ^Package_Visit_Array,
+    value: Package_Visit,
+) {
+    if values.length == values.capacity {
+        next := values.capacity * 2
+        if next < 4 {
+            next = 4
+        }
+        values.data = cast[[^]Package_Visit](memory.resize_with_allocator(
+            cast[rawptr](values.data),
+            values.capacity * size_of(Package_Visit),
+            next * size_of(Package_Visit),
+            align_of(Package_Visit),
+            values.allocator,
+        ))
+        values.capacity = next
+    }
+    values.data[values.length] = value
+    values.length += 1
+}
+
+package_visit_array_destroy :: proc(values: ^Package_Visit_Array) {
+    memory.free_bytes_with_allocator(
+        cast[rawptr](values.data),
+        values.capacity * size_of(Package_Visit),
+        align_of(Package_Visit),
+        values.allocator,
+    )
+    values.data = nil
+    values.length = 0
+    values.capacity = 0
+}
+
+parsed_import_array_init :: proc(values: ^Parsed_Import_Array) {
+    assert(values.data == nil && values.length == 0 && values.capacity == 0,
+        "parsed import array is not empty")
+    values.allocator = context.allocator
+}
+
+parsed_import_array_append :: proc(
+    values: ^Parsed_Import_Array,
+    value: Parsed_Import,
+) {
+    if values.length == values.capacity {
+        next := values.capacity * 2
+        if next < 4 {
+            next = 4
+        }
+        values.data = cast[[^]Parsed_Import](memory.resize_with_allocator(
+            cast[rawptr](values.data),
+            values.capacity * size_of(Parsed_Import),
+            next * size_of(Parsed_Import),
+            align_of(Parsed_Import),
+            values.allocator,
+        ))
+        values.capacity = next
+    }
+    values.data[values.length] = value
+    values.length += 1
+}
+
+parsed_import_array_destroy :: proc(values: ^Parsed_Import_Array) {
+    memory.free_bytes_with_allocator(
+        cast[rawptr](values.data),
+        values.capacity * size_of(Parsed_Import),
+        align_of(Parsed_Import),
+        values.allocator,
+    )
+    values.data = nil
+    values.length = 0
+    values.capacity = 0
+}
+
+text_bytes :: proc(text: string) -> []u8 {
+    return raw_data(text)[:len(text)]
+}
+
+bytes_equal :: proc(left, right: []u8) -> bool {
+    if len(left) != len(right) {
+        return false
+    }
+    for index: usize = 0; index < len(left); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
+}
+
+bytes_equal_text_workspace :: proc(left: []u8, right: string) -> bool {
+    return bytes_equal(left, text_bytes(right))
+}
+
+bytes_start_with :: proc(value, prefix: []u8) -> bool {
+    if len(prefix) > len(value) {
+        return false
+    }
+    for index: usize = 0; index < len(prefix); index += 1 {
+        if value[index] != prefix[index] {
+            return false
+        }
+    }
+    return true
+}
+
+// component_prefix matches either the entire path or a prefix followed by one
+// slash. Thus `vendor` selects `vendor/text` but never `vendorized/text`.
+component_prefix :: proc(prefix, value: []u8) -> bool {
+    if bytes_equal(prefix, value) {
+        return true
+    }
+    return len(value) > len(prefix) &&
+        bytes_start_with(value, prefix) &&
+        value[len(prefix)] == cast[u8]('/')
+}
+
+destroy_identity :: proc(identity: ^Package_Identity) {
+    memory.owned_string_destroy(&identity.root_relative_path)
+    memory.owned_string_destroy(&identity.root_identity)
+}
+
+destroy_root :: proc(root: ^Package_Root) {
+    memory.owned_string_destroy(&root.physical_directory)
+    memory.owned_string_destroy(&root.import_prefix)
+    memory.owned_string_destroy(&root.identity)
+}
+
+// init_workspace_graph establishes every owner and the invalid root sentinel.
+// graph must be its zero value and must later be destroyed on every result.
+init_workspace_graph :: proc(graph: ^Workspace_Graph) {
+    root_array_init(&graph.roots)
+    workspace_package_array_init(&graph.packages)
+    package_import_array_init(&graph.imports)
+    graph_diagnostic_array_init(&graph.diagnostics)
+    package_visit_array_init(&graph.visits)
+    graph.root_package = invalid_package_id()
+}
+
+// destroy_workspace_graph releases nested sources before their enclosing
+// identity and root tables. Every Package_Id, source range, syntax ID, and byte
+// view obtained from graph becomes invalid.
+pub destroy_workspace_graph :: proc(graph: ^Workspace_Graph) {
+    for index: usize = 0; index < graph.imports.length; index += 1 {
+        memory.owned_string_destroy(&graph.imports.data[index].path)
+    }
+    package_import_array_destroy(&graph.imports)
+
+    for index: usize = 0; index < graph.packages.length; index += 1 {
+        row := &graph.packages.data[index]
+        destroy(&row.loaded)
+        destroy_identity(&row.identity)
+    }
+    workspace_package_array_destroy(&graph.packages)
+
+    for index: usize = 0; index < graph.roots.length; index += 1 {
+        destroy_root(&graph.roots.data[index])
+    }
+    root_array_destroy(&graph.roots)
+
+    for index: usize = 0; index < graph.diagnostics.length; index += 1 {
+        memory.owned_string_destroy(&graph.diagnostics.data[index].message)
+    }
+    graph_diagnostic_array_destroy(&graph.diagnostics)
+    package_visit_array_destroy(&graph.visits)
+    graph.root_package = invalid_package_id()
+    graph.failed = false
+}
+
+// append_graph_error copies one dynamic diagnostic message and preserves its
+// structured source context when present. The caller may immediately destroy or
+// reuse its Builder. Every appended row marks the graph transaction failed.
+append_graph_error :: proc(
+    graph: ^Workspace_Graph,
+    diagnostic_context: Diagnostic_Context,
+    message: ^compiler_text.Builder,
+) {
+    row: Graph_Diagnostic
+    row.kind = .source if diagnostic_context.valid else .pre_source
+    row.source_package = diagnostic_context.source_package
+    row.file_index = diagnostic_context.file_index
+    row.range = diagnostic_context.range
+    memory.owned_string_copy_bytes(&row.message, compiler_text.view(message))
+    graph_diagnostic_array_append(&graph.diagnostics, row)
+    empty: Graph_Diagnostic
+    row = empty
+    graph.failed = true
+}
+
+// append_rendered_error retains a complete one-package diagnostic sequence.
+// Failed packages are not published into the graph, so flattening at this exact
+// ownership boundary avoids dangling source ranges while preserving byte order.
+append_rendered_error :: proc(
+    graph: ^Workspace_Graph,
+    rendered: ^compiler_text.Builder,
+) {
+    row: Graph_Diagnostic
+    row.kind = .rendered
+    row.source_package = invalid_package_id()
+    memory.owned_string_copy_bytes(&row.message, compiler_text.view(rendered))
+    graph_diagnostic_array_append(&graph.diagnostics, row)
+    empty: Graph_Diagnostic
+    row = empty
+    graph.failed = true
+}
+
+append_quoted_message :: proc(
+    message: ^compiler_text.Builder,
+    prefix: string,
+    value: []u8,
+    suffix: string,
+) {
+    compiler_text.append_text(message, prefix)
+    compiler_text.append_bytes(message, value)
+    compiler_text.append_text(message, suffix)
+}
+
+// canonical_existing_directory resolves one path through the host filesystem,
+// follows aliases, and proves the result can be opened as a directory. The
+// required-size retry avoids a platform path limit. output is initialized only
+// on success and owns an absolute slash-separated spelling.
+canonical_existing_directory :: proc(
+    graph: ^Workspace_Graph,
+    input, description: []u8,
+    diagnostic_context: Diagnostic_Context,
+    output: ^memory.Owned_String,
+) -> bool {
+    if len(input) == 0 {
+        message: compiler_text.Builder
+        compiler_text.init(&message)
+        compiler_text.append_bytes(&message, description)
+        compiler_text.append_text(&message, " directory is empty")
+        append_graph_error(graph, diagnostic_context, &message)
+        compiler_text.destroy(&message)
+        return false
+    }
+
+    native_input: memory.Owned_String
+    memory.owned_string_copy_bytes(&native_input, input)
+    defer memory.owned_string_destroy(&native_input)
+
+    initial: [Initial_Canonical_Path_Capacity]u8
+    (count, error) := filesystem.canonicalize(
+        memory.owned_string_cstring(&native_input),
+        initial[:],
+    )
+    if error == .none {
+        memory.owned_string_copy_bytes(output, initial[:count])
+    } else if error == .invalid && count > len(initial) {
+        storage := cast[[^]u8](memory.allocate(count, 1))
+        (retry_count, retry_error) := filesystem.canonicalize(
+            memory.owned_string_cstring(&native_input),
+            storage[:count],
+        )
+        if retry_error == .none {
+            memory.owned_string_copy_bytes(
+                output,
+                storage[:retry_count],
+            )
+        }
+        memory.free_bytes(cast[rawptr](storage), count, 1)
+        error = retry_error
+    }
+
+    if error != .none {
+        message: compiler_text.Builder
+        compiler_text.init(&message)
+        compiler_text.append_text(&message, "cannot resolve ")
+        compiler_text.append_bytes(&message, description)
+        append_quoted_message(&message, " directory '", input, "'")
+        append_graph_error(graph, diagnostic_context, &message)
+        compiler_text.destroy(&message)
+        return false
+    }
+
+    (directory, open_error) := filesystem.open(
+        memory.owned_string_cstring(output),
+    )
+    if open_error != .none {
+        message: compiler_text.Builder
+        compiler_text.init(&message)
+        compiler_text.append_bytes(&message, description)
+        append_quoted_message(
+            &message,
+            " path '",
+            input,
+            "' is invalid: not a directory",
+        )
+        append_graph_error(graph, diagnostic_context, &message)
+        compiler_text.destroy(&message)
+        memory.owned_string_destroy(output)
+        return false
+    }
+    if !filesystem.close(&directory) {
+        message: compiler_text.Builder
+        compiler_text.init(&message)
+        compiler_text.append_bytes(&message, description)
+        append_quoted_message(
+            &message,
+            " path '",
+            input,
+            "' is invalid: cannot close directory",
+        )
+        append_graph_error(graph, diagnostic_context, &message)
+        compiler_text.destroy(&message)
+        memory.owned_string_destroy(output)
+        return false
+    }
+    return true
+}
+
+// contained_relative_path derives semantic identity only after root and child
+// have both been canonicalized. A false byte prefix at a component boundary is
+// a symlink or explicit path escape. output owns "." or the relative suffix.
+contained_relative_path :: proc(
+    graph: ^Workspace_Graph,
+    root, child, description: []u8,
+    diagnostic_context: Diagnostic_Context,
+    output: ^memory.Owned_String,
+) -> bool {
+    if bytes_equal(root, child) {
+        memory.owned_string_copy(output, ".")
+        return true
+    }
+
+    prefix_matches := bytes_start_with(child, root)
+    suffix_begin := len(root)
+    if prefix_matches && len(root) != 0 &&
+        root[len(root) - 1] == cast[u8]('/') {
+        // Filesystem roots already contain their component separator.
+    } else if prefix_matches && len(child) > len(root) &&
+        child[len(root)] == cast[u8]('/') {
+        suffix_begin += 1
+    } else {
+        message: compiler_text.Builder
+        compiler_text.init(&message)
+        compiler_text.append_bytes(&message, description)
+        compiler_text.append_text(
+            &message,
+            " escapes its selected package root",
+        )
+        append_graph_error(graph, diagnostic_context, &message)
+        compiler_text.destroy(&message)
+        return false
+    }
+    if suffix_begin >= len(child) {
+        memory.owned_string_copy(output, ".")
+    } else {
+        memory.owned_string_copy_bytes(output, child[suffix_begin:])
+    }
+    return true
+}
+
+// valid_import_prefix implements the closed component grammar accepted for an
+// explicit dependency mapping. Empty, absolute, repeated, dot, and dot-dot
+// components cannot establish a semantic namespace.
+valid_import_prefix :: proc(prefix: []u8) -> bool {
+    if len(prefix) == 0 || prefix[0] == cast[u8]('/') ||
+        prefix[len(prefix) - 1] == cast[u8]('/') {
+        return false
+    }
+    component_begin: usize
+    for index: usize = 0; index <= len(prefix); index += 1 {
+        if index != len(prefix) && prefix[index] != cast[u8]('/') {
+            continue
+        }
+        component := prefix[component_begin:index]
+        if len(component) == 0 ||
+            bytes_equal_text_workspace(component, ".") ||
+            bytes_equal_text_workspace(component, "..") {
+            return false
+        }
+        component_begin = index + 1
+    }
+    return true
+}
+
+append_root :: proc(
+    graph: ^Workspace_Graph,
+    kind: Root_Kind,
+    identity, prefix: []u8,
+    physical: ^memory.Owned_String,
+) {
+    row: Package_Root
+    row.kind = kind
+    memory.owned_string_copy_bytes(&row.identity, identity)
+    memory.owned_string_copy_bytes(&row.import_prefix, prefix)
+    take_owned_string(&row.physical_directory, physical)
+    root_array_append(&graph.roots, row)
+    empty: Package_Root
+    row = empty
+}
+
+// initialize_roots materializes the only namespaces import resolution may use.
+// Ordering is workspace, accepted dependencies in configuration order, then
+// core. Any configuration error prevents package loading after all mappings
+// have been inspected in deterministic order.
+initialize_roots :: proc(
+    graph: ^Workspace_Graph,
+    options: Workspace_Options,
+) -> bool {
+    no_context: Diagnostic_Context
+    workspace: memory.Owned_String
+    if !canonical_existing_directory(
+        graph,
+        text_bytes(options.workspace_directory),
+        text_bytes("workspace"),
+        no_context,
+        &workspace,
+    ) {
+        return false
+    }
+    append_root(
+        graph,
+        .workspace,
+        text_bytes("workspace"),
+        text_bytes(""),
+        &workspace,
+    )
+
+    for mapping in options.dependencies {
+        prefix := text_bytes(mapping.import_prefix)
+        if !valid_import_prefix(prefix) {
+            message: compiler_text.Builder
+            compiler_text.init(&message)
+            append_quoted_message(
+                &message,
+                "invalid dependency import prefix '",
+                prefix,
+                "'",
+            )
+            append_graph_error(graph, no_context, &message)
+            compiler_text.destroy(&message)
+            continue
+        }
+        if bytes_equal_text_workspace(prefix, "core") {
+            message: compiler_text.Builder
+            compiler_text.init(&message)
+            compiler_text.append_text(
+                &message,
+                "dependency import prefix 'core' is reserved for the compiler distribution",
+            )
+            append_graph_error(graph, no_context, &message)
+            compiler_text.destroy(&message)
+            continue
+        }
+        identity := text_bytes(mapping.content_identity)
+        if len(identity) == 0 || bytes_equal_text_workspace(identity, "workspace") {
+            message: compiler_text.Builder
+            compiler_text.init(&message)
+            append_quoted_message(&message, "dependency '", prefix, "'")
+            compiler_text.append_text(
+                &message,
+                " requires a pinned content identity",
+            )
+            append_graph_error(graph, no_context, &message)
+            compiler_text.destroy(&message)
+            continue
+        }
+
+        ambiguous := false
+        for root_index: usize = 1;
+            root_index < graph.roots.length;
+            root_index += 1 {
+            existing := memory.owned_string_bytes(
+                &graph.roots.data[root_index].import_prefix,
+            )
+            if component_prefix(existing, prefix) ||
+                component_prefix(prefix, existing) {
+                message: compiler_text.Builder
+                compiler_text.init(&message)
+                append_quoted_message(
+                    &message,
+                    "ambiguous dependency import prefixes '",
+                    existing,
+                    "' and '",
+                )
+                compiler_text.append_bytes(&message, prefix)
+                compiler_text.append_byte(&message, cast[u8]('\''))
+                append_graph_error(graph, no_context, &message)
+                compiler_text.destroy(&message)
+                ambiguous = true
+                break
+            }
+        }
+        if ambiguous {
+            continue
+        }
+
+        description: compiler_text.Builder
+        compiler_text.init(&description)
+        append_quoted_message(
+            &description,
+            "dependency '",
+            prefix,
+            "'",
+        )
+        physical: memory.Owned_String
+        available := canonical_existing_directory(
+            graph,
+            text_bytes(mapping.physical_directory),
+            compiler_text.view(&description),
+            no_context,
+            &physical,
+        )
+        compiler_text.destroy(&description)
+        if !available {
+            continue
+        }
+        append_root(graph, .dependency, identity, prefix, &physical)
+    }
+
+    if len(options.core_directory) != 0 {
+        identity := text_bytes(options.core_content_identity)
+        if len(identity) == 0 || bytes_equal_text_workspace(identity, "workspace") {
+            message: compiler_text.Builder
+            compiler_text.init(&message)
+            compiler_text.append_text(
+                &message,
+                "core distribution requires a pinned content identity",
+            )
+            append_graph_error(graph, no_context, &message)
+            compiler_text.destroy(&message)
+        } else {
+            physical: memory.Owned_String
+            if canonical_existing_directory(
+                graph,
+                text_bytes(options.core_directory),
+                text_bytes("core distribution"),
+                no_context,
+                &physical,
+            ) {
+                append_root(
+                    graph,
+                    .core,
+                    identity,
+                    text_bytes("core"),
+                    &physical,
+                )
+            }
+        }
+    }
+    return !graph.failed
+}
+
+identity_equal :: proc(
+    identity: ^Package_Identity,
+    root_identity, relative: []u8,
+) -> bool {
+    return bytes_equal(
+        memory.owned_string_bytes(&identity.root_identity),
+        root_identity,
+    ) && bytes_equal(
+        memory.owned_string_bytes(&identity.root_relative_path),
+        relative,
+    )
+}
+
+// find_package performs a direct linear lookup over first-discovery rows. The
+// initial graph is small and this keeps identity/state ownership visible. A
+// future index must document its deterministic key and invalidation rule.
+find_package :: proc(
+    graph: ^Workspace_Graph,
+    root_identity, relative: []u8,
+) -> Package_Id {
+    for index: usize = 0; index < graph.packages.length; index += 1 {
+        if identity_equal(
+            &graph.packages.data[index].identity,
+            root_identity,
+            relative,
+        ) {
+            return Package_Id{value = cast[u32](index)}
+        }
+    }
+    return invalid_package_id()
+}
+
+append_identity_display :: proc(
+    output: ^compiler_text.Builder,
+    root_identity, relative: []u8,
+) {
+    compiler_text.append_bytes(output, root_identity)
+    compiler_text.append_byte(output, cast[u8](':'))
+    compiler_text.append_bytes(output, relative)
+}
+
+// resolve_import_root chooses exactly one explicit mapping. Dependencies and
+// core are checked at component boundaries; otherwise the workspace root is the
+// fallback. The returned relative owner must be destroyed by the caller.
+resolve_import_root :: proc(
+    graph: ^Workspace_Graph,
+    import_path: []u8,
+    diagnostic_context: Diagnostic_Context,
+    root_index: ^u32,
+    relative: ^memory.Owned_String,
+) -> bool {
+    has_core := false
+    for index: usize = 0; index < graph.roots.length; index += 1 {
+        if graph.roots.data[index].kind == .core {
+            has_core = true
+            break
+        }
+    }
+    if component_prefix(text_bytes("core"), import_path) && !has_core {
+        message: compiler_text.Builder
+        compiler_text.init(&message)
+        append_quoted_message(&message, "import path '", import_path, "'")
+        compiler_text.append_text(
+            &message,
+            " requires a configured core distribution",
+        )
+        append_graph_error(graph, diagnostic_context, &message)
+        compiler_text.destroy(&message)
+        return false
+    }
+
+    selected: u32
+    selected_valid := false
+    for index: usize = 1; index < graph.roots.length; index += 1 {
+        prefix := memory.owned_string_bytes(
+            &graph.roots.data[index].import_prefix,
+        )
+        if !component_prefix(prefix, import_path) {
+            continue
+        }
+        if selected_valid {
+            message: compiler_text.Builder
+            compiler_text.init(&message)
+            append_quoted_message(&message, "import path '", import_path, "'")
+            compiler_text.append_text(&message, " has ambiguous root mappings")
+            append_graph_error(graph, diagnostic_context, &message)
+            compiler_text.destroy(&message)
+            return false
+        }
+        selected = cast[u32](index)
+        selected_valid = true
+    }
+    if !selected_valid {
+        selected = 0
+    }
+
+    selected_root := &graph.roots.data[cast[usize](selected)]
+    prefix := memory.owned_string_bytes(&selected_root.import_prefix)
+    if selected_root.kind == .core && bytes_equal(import_path, prefix) {
+        message: compiler_text.Builder
+        compiler_text.init(&message)
+        compiler_text.append_text(
+            &message,
+            "import path 'core' must name a package below the core root",
+        )
+        append_graph_error(graph, diagnostic_context, &message)
+        compiler_text.destroy(&message)
+        return false
+    }
+
+    root_index^ = selected
+    if selected == 0 {
+        memory.owned_string_copy_bytes(relative, import_path)
+    } else if len(import_path) == len(prefix) {
+        memory.owned_string_copy(relative, ".")
+    } else {
+        memory.owned_string_copy_bytes(relative, import_path[len(prefix) + 1:])
+    }
+    return true
+}
+
+destroy_parsed_imports :: proc(imports: ^Parsed_Import_Array) {
+    for index: usize = 0; index < imports.length; index += 1 {
+        memory.owned_string_destroy(&imports.data[index].path)
+    }
+    parsed_import_array_destroy(imports)
+}
+
+// imports_in copies every direct ImportClause in canonical file and source
+// order. It reconstructs the normalized package path from the concrete token
+// span; aliases are siblings outside ImportPath and therefore excluded.
+imports_in :: proc(
+    graph: ^Workspace_Graph,
+    id: Package_Id,
+    imports: ^Parsed_Import_Array,
+) {
+    loaded := &graph.packages.data[cast[usize](id.value)].loaded
+    for file_index: usize = 0;
+        file_index < loaded.files.length;
+        file_index += 1 {
+        source_row := &loaded.files.data[file_index]
+        if !source_row.parsed ||
+            !compiler_syntax.node_id_valid(source_row.tree.root) {
+            continue
+        }
+        root_children := compiler_syntax.syntax_tree_children(
+            &source_row.tree,
+            source_row.tree.root,
+        )
+        for child_id in root_children {
+            node := compiler_syntax.syntax_tree_node(&source_row.tree, child_id)
+            if node.kind != .import_clause || node.child_count == 0 {
+                continue
+            }
+            clause_range := node.range
+            clause_children := compiler_syntax.syntax_tree_children(
+                &source_row.tree,
+                child_id,
+            )
+            path_id := clause_children[0]
+            path_node := compiler_syntax.syntax_tree_node(
+                &source_row.tree,
+                path_id,
+            )
+            if path_node.kind != .import_path {
+                continue
+            }
+
+            path_builder: compiler_text.Builder
+            compiler_text.init(&path_builder)
+            for token_index := path_node.token_begin;
+                token_index < path_node.token_end;
+                token_index += 1 {
+                token := source_row.tree.tokens.data[cast[usize](token_index)]
+                if token.kind == .slash {
+                    compiler_text.append_byte(
+                        &path_builder,
+                        cast[u8]('/'),
+                    )
+                } else {
+                    compiler_text.append_bytes(
+                        &path_builder,
+                        compiler_source.bytes_in_range(
+                            &source_row.source,
+                            token.range,
+                        ),
+                    )
+                }
+            }
+            if len(compiler_text.view(&path_builder)) != 0 {
+                parsed: Parsed_Import
+                parsed.file_index = file_index
+                parsed.syntax = child_id
+                parsed.range = clause_range
+                memory.owned_string_copy_bytes(
+                    &parsed.path,
+                    compiler_text.view(&path_builder),
+                )
+                parsed_import_array_append(imports, parsed)
+                empty: Parsed_Import
+                parsed = empty
+            }
+            compiler_text.destroy(&path_builder)
+        }
+    }
+}
+
+append_candidate_path :: proc(
+    output: ^compiler_text.Builder,
+    root, relative: []u8,
+) {
+    compiler_text.append_bytes(output, root)
+    if bytes_equal_text_workspace(relative, ".") {
+        return
+    }
+    if len(root) != 0 && root[len(root) - 1] != cast[u8]('/') {
+        compiler_text.append_byte(output, cast[u8]('/'))
+    }
+    compiler_text.append_bytes(output, relative)
+}
+
+// load_package_recursive publishes one package before following its imports so
+// a back edge can identify the loading row. It never retains a pointer into a
+// Dynamic table across recursion. Failed packages are not assigned IDs.
+load_package_recursive :: proc(
+    graph: ^Workspace_Graph,
+    root_index: u32,
+    relative_path: []u8,
+    diagnostic_context: Diagnostic_Context,
+    depth: u32,
+    options: Workspace_Options,
+) -> Package_Id {
+    assert(cast[usize](root_index) < graph.roots.length,
+        "workspace root index is out of bounds")
+    selected_root := &graph.roots.data[cast[usize](root_index)]
+    root_identity := memory.owned_string_bytes(&selected_root.identity)
+
+    existing := find_package(graph, root_identity, relative_path)
+    if package_id_valid(existing) {
+        state := graph.visits.data[cast[usize](existing.value)].state
+        if state == .loading {
+            message: compiler_text.Builder
+            compiler_text.init(&message)
+            compiler_text.append_text(&message, "package import cycle reaches '")
+            append_identity_display(&message, root_identity, relative_path)
+            compiler_text.append_byte(&message, cast[u8]('\''))
+            append_graph_error(graph, diagnostic_context, &message)
+            compiler_text.destroy(&message)
+            return invalid_package_id()
+        }
+        return existing
+    }
+    if depth >= Maximum_Package_Import_Depth {
+        message: compiler_text.Builder
+        compiler_text.init(&message)
+        compiler_text.append_text(
+            &message,
+            "package import depth exceeds the implementation limit of 256",
+        )
+        append_graph_error(graph, diagnostic_context, &message)
+        compiler_text.destroy(&message)
+        return invalid_package_id()
+    }
+
+    candidate: compiler_text.Builder
+    compiler_text.init(&candidate)
+    append_candidate_path(
+        &candidate,
+        memory.owned_string_bytes(&selected_root.physical_directory),
+        relative_path,
+    )
+    canonical: memory.Owned_String
+    if !canonical_existing_directory(
+        graph,
+        compiler_text.view(&candidate),
+        text_bytes("package"),
+        diagnostic_context,
+        &canonical,
+    ) {
+        compiler_text.destroy(&candidate)
+        return invalid_package_id()
+    }
+    compiler_text.destroy(&candidate)
+
+    checked_relative: memory.Owned_String
+    if !contained_relative_path(
+        graph,
+        memory.owned_string_bytes(&selected_root.physical_directory),
+        memory.owned_string_bytes(&canonical),
+        text_bytes("package path"),
+        diagnostic_context,
+        &checked_relative,
+    ) {
+        memory.owned_string_destroy(&canonical)
+        return invalid_package_id()
+    }
+
+    checked_bytes := memory.owned_string_bytes(&checked_relative)
+    if !bytes_equal(checked_bytes, relative_path) {
+        existing = find_package(graph, root_identity, checked_bytes)
+        if package_id_valid(existing) {
+            state := graph.visits.data[cast[usize](existing.value)].state
+            if state == .loading {
+                message: compiler_text.Builder
+                compiler_text.init(&message)
+                compiler_text.append_text(
+                    &message,
+                    "package import cycle reaches '",
+                )
+                append_identity_display(&message, root_identity, checked_bytes)
+                compiler_text.append_byte(&message, cast[u8]('\''))
+                append_graph_error(graph, diagnostic_context, &message)
+                compiler_text.destroy(&message)
+                memory.owned_string_destroy(&checked_relative)
+                memory.owned_string_destroy(&canonical)
+                return invalid_package_id()
+            }
+            memory.owned_string_destroy(&checked_relative)
+            memory.owned_string_destroy(&canonical)
+            return existing
+        }
+    }
+
+    loaded: Package
+    succeeded := load_bytes(
+        &loaded,
+        memory.owned_string_bytes(&canonical),
+        options.package_options,
+    )
+    memory.owned_string_destroy(&canonical)
+    if !succeeded {
+        rendered: compiler_text.Builder
+        compiler_text.init(&rendered)
+        render_diagnostics(&loaded, &rendered)
+        append_rendered_error(graph, &rendered)
+        compiler_text.destroy(&rendered)
+        destroy(&loaded)
+        memory.owned_string_destroy(&checked_relative)
+        return invalid_package_id()
+    }
+
+    if graph.packages.length >= cast[usize](Invalid_Package_Value) {
+        message: compiler_text.Builder
+        compiler_text.init(&message)
+        compiler_text.append_text(
+            &message,
+            "workspace contains too many packages",
+        )
+        append_graph_error(graph, diagnostic_context, &message)
+        compiler_text.destroy(&message)
+        destroy(&loaded)
+        memory.owned_string_destroy(&checked_relative)
+        return invalid_package_id()
+    }
+    id := Package_Id{value = cast[u32](graph.packages.length)}
+    row: Workspace_Package
+    row.root = root_index
+    memory.owned_string_copy_bytes(
+        &row.identity.root_identity,
+        root_identity,
+    )
+    take_owned_string(
+        &row.identity.root_relative_path,
+        &checked_relative,
+    )
+    row.loaded = loaded
+    empty_loaded: Package
+    loaded = empty_loaded
+    workspace_package_array_append(&graph.packages, row)
+    empty_row: Workspace_Package
+    row = empty_row
+    package_visit_array_append(
+        &graph.visits,
+        Package_Visit{state = .loading},
+    )
+
+    parsed_imports: Parsed_Import_Array
+    parsed_import_array_init(&parsed_imports)
+    imports_in(graph, id, &parsed_imports)
+    for import_index: usize = 0;
+        import_index < parsed_imports.length;
+        import_index += 1 {
+        parsed := &parsed_imports.data[import_index]
+        import_context := Diagnostic_Context{
+            valid = true,
+            source_package = id,
+            file_index = parsed.file_index,
+            range = parsed.range,
+        }
+        dependency_root: u32
+        dependency_relative: memory.Owned_String
+        if !resolve_import_root(
+            graph,
+            memory.owned_string_bytes(&parsed.path),
+            import_context,
+            &dependency_root,
+            &dependency_relative,
+        ) {
+            continue
+        }
+        dependency := load_package_recursive(
+            graph,
+            dependency_root,
+            memory.owned_string_bytes(&dependency_relative),
+            import_context,
+            depth + 1,
+            options,
+        )
+        memory.owned_string_destroy(&dependency_relative)
+        if !package_id_valid(dependency) {
+            continue
+        }
+        edge: Package_Import
+        edge.importing_package = id
+        edge.imported_package = dependency
+        edge.file_index = parsed.file_index
+        edge.syntax = parsed.syntax
+        take_owned_string(&edge.path, &parsed.path)
+        package_import_array_append(&graph.imports, edge)
+        empty_edge: Package_Import
+        edge = empty_edge
+    }
+    destroy_parsed_imports(&parsed_imports)
+    graph.visits.data[cast[usize](id.value)].state = .complete
+    return id
+}
+
+// load_workspace constructs one complete graph transaction. root_package_path
+// may name the workspace root itself or any descendant folder package; its
+// canonical target must remain inside the configured workspace root. graph is
+// initialized on every result and must be destroyed by the caller.
+pub load_workspace :: proc(
+    graph: ^Workspace_Graph,
+    root_package_path: string,
+    options: Workspace_Options,
+) -> bool {
+    init_workspace_graph(graph)
+    if !initialize_roots(graph, options) {
+        return false
+    }
+
+    no_context: Diagnostic_Context
+    canonical_root: memory.Owned_String
+    if !canonical_existing_directory(
+        graph,
+        text_bytes(root_package_path),
+        text_bytes("root package"),
+        no_context,
+        &canonical_root,
+    ) {
+        return false
+    }
+    relative: memory.Owned_String
+    if !contained_relative_path(
+        graph,
+        memory.owned_string_bytes(&graph.roots.data[0].physical_directory),
+        memory.owned_string_bytes(&canonical_root),
+        text_bytes("root package"),
+        no_context,
+        &relative,
+    ) {
+        memory.owned_string_destroy(&canonical_root)
+        return false
+    }
+    memory.owned_string_destroy(&canonical_root)
+
+    graph.root_package = load_package_recursive(
+        graph,
+        0,
+        memory.owned_string_bytes(&relative),
+        no_context,
+        0,
+        options,
+    )
+    memory.owned_string_destroy(&relative)
+    return package_id_valid(graph.root_package) && !graph.failed
+}
+
+// render_workspace_diagnostics appends failures in the exact order they were
+// discovered. Source rows use the shared structured renderer; configuration
+// rows receive the standard pre-source `error:` prefix; failed package blobs
+// already contain complete parser/package rendering.
+pub render_workspace_diagnostics :: proc(
+    graph: ^Workspace_Graph,
+    output: ^compiler_text.Builder,
+) {
+    for index: usize = 0; index < graph.diagnostics.length; index += 1 {
+        row := &graph.diagnostics.data[index]
+        message := memory.owned_string_bytes(&row.message)
+        if row.kind == .rendered {
+            compiler_text.append_bytes(output, message)
+        } else if row.kind == .pre_source {
+            compiler_text.append_text(output, "error: ")
+            compiler_text.append_bytes(output, message)
+            compiler_text.append_byte(output, cast[u8]('\n'))
+        } else {
+            source_row := &graph.packages.data[
+                cast[usize](row.source_package.value)
+            ].loaded.files.data[row.file_index]
+            compiler_diagnostic.render_message_bytes(
+                &source_row.source,
+                .error,
+                row.range,
+                message,
+                output,
+            )
+        }
+    }
+}
+
+root_kind_text :: proc(kind: Root_Kind) -> string {
+    switch kind {
+    case .workspace: return "workspace"
+    case .dependency: return "dependency"
+    case .core: return "core"
+    }
+    return "unknown"
+}
+
+// dump_workspace_graph is the stable differential inspection format. It emits
+// semantic roots, package IDs, package names, and source import occurrences but
+// intentionally omits canonical physical paths and incidental syntax node IDs.
+pub dump_workspace_graph :: proc(
+    graph: ^Workspace_Graph,
+    output: ^compiler_text.Builder,
+) {
+    compiler_text.append_text(output, "root-package ")
+    if package_id_valid(graph.root_package) {
+        compiler_text.append_unsigned(
+            output,
+            cast[usize](graph.root_package.value),
+        )
+    } else {
+        compiler_text.append_text(output, "invalid")
+    }
+    compiler_text.append_byte(output, cast[u8]('\n'))
+
+    for index: usize = 0; index < graph.roots.length; index += 1 {
+        row := &graph.roots.data[index]
+        compiler_text.append_text(output, "root ")
+        compiler_text.append_unsigned(output, index)
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_text(output, root_kind_text(row.kind))
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_bytes(
+            output,
+            memory.owned_string_bytes(&row.identity),
+        )
+        compiler_text.append_byte(output, cast[u8](' '))
+        prefix := memory.owned_string_bytes(&row.import_prefix)
+        if len(prefix) == 0 {
+            compiler_text.append_byte(output, cast[u8]('-'))
+        } else {
+            compiler_text.append_bytes(output, prefix)
+        }
+        compiler_text.append_byte(output, cast[u8]('\n'))
+    }
+
+    for index: usize = 0; index < graph.packages.length; index += 1 {
+        row := &graph.packages.data[index]
+        compiler_text.append_text(output, "package ")
+        compiler_text.append_unsigned(output, index)
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_unsigned(output, cast[usize](row.root))
+        compiler_text.append_byte(output, cast[u8](' '))
+        append_identity_display(
+            output,
+            memory.owned_string_bytes(&row.identity.root_identity),
+            memory.owned_string_bytes(&row.identity.root_relative_path),
+        )
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_bytes(output, short_name_bytes(&row.loaded))
+        compiler_text.append_byte(output, cast[u8]('\n'))
+    }
+
+    for index: usize = 0; index < graph.imports.length; index += 1 {
+        row := &graph.imports.data[index]
+        importing := &graph.packages.data[
+            cast[usize](row.importing_package.value)
+        ]
+        source_row := &importing.loaded.files.data[row.file_index]
+        compiler_text.append_text(output, "import ")
+        compiler_text.append_unsigned(
+            output,
+            cast[usize](row.importing_package.value),
+        )
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_bytes(
+            output,
+            memory.owned_string_bytes(&source_row.relative_name),
+        )
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_bytes(output, memory.owned_string_bytes(&row.path))
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_unsigned(
+            output,
+            cast[usize](row.imported_package.value),
+        )
+        compiler_text.append_byte(output, cast[u8]('\n'))
+    }
+}

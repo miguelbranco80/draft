@@ -108,3 +108,37 @@ test_final_qualifier_and_extension_are_authoritative :: proc(
     expect_excluded(test, "name@aarch64-macos.draft.txt", options)
     expect_selected(test, "name..draft", options, .draft_source)
 }
+
+// Root selection is component-aligned: a mapping may claim its exact root and
+// descendants, but a textual prefix inside one component remains workspace
+// source. This is the key disambiguation invariant for dependency namespaces.
+test_workspace_component_prefixes_are_aligned :: proc(test: ^testing.Test) {
+    vendor := text_bytes("vendor")
+    testing.expect(test, component_prefix(vendor, text_bytes("vendor")))
+    testing.expect(
+        test,
+        component_prefix(vendor, text_bytes("vendor/text")),
+    )
+    testing.expect(
+        test,
+        !component_prefix(vendor, text_bytes("vendorized/text")),
+    )
+    testing.expect(
+        test,
+        !component_prefix(text_bytes("vendor/text"), vendor),
+    )
+}
+
+// Dependency prefixes are already normalized semantic paths. Rejecting empty,
+// absolute, repeated, dot, and dot-dot components prevents configuration from
+// creating aliases or traversal before any physical path is consulted.
+test_workspace_dependency_prefix_validation :: proc(test: ^testing.Test) {
+    testing.expect(test, valid_import_prefix(text_bytes("vendor")))
+    testing.expect(test, valid_import_prefix(text_bytes("vendor/text")))
+    testing.expect(test, !valid_import_prefix(text_bytes("")))
+    testing.expect(test, !valid_import_prefix(text_bytes("/vendor")))
+    testing.expect(test, !valid_import_prefix(text_bytes("vendor/")))
+    testing.expect(test, !valid_import_prefix(text_bytes("vendor//text")))
+    testing.expect(test, !valid_import_prefix(text_bytes("vendor/./text")))
+    testing.expect(test, !valid_import_prefix(text_bytes("vendor/../text")))
+}

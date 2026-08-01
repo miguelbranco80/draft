@@ -3,8 +3,9 @@
 // This package is the first multi-file boundary after concrete parsing. It
 // enumerates one directory, applies exact target/test/benchmark filename
 // selection, sorts selected names bytewise, owns every loaded source and syntax
-// tree, and verifies that all valid package clauses name one package. Imports
-// and canonical workspace identity belong to later semantic slices.
+// tree, and verifies that all valid package clauses name one package. The
+// sibling workspace.draft module consumes these owned rows to build canonical
+// package identity and the recursive import graph.
 //
 // Package owns all paths, sources, diagnostics, and trees returned by load.
 // Package_File rows remain in canonical filename order; their integer positions
@@ -323,10 +324,10 @@ discover_selected :: proc(
 
 append_path :: proc(
     output: ^compiler_text.Builder,
-    directory: string,
+    directory: []u8,
     filename: []u8,
 ) {
-    compiler_text.append_text(output, directory)
+    compiler_text.append_bytes(output, directory)
     if len(directory) != 0 {
         final := directory[len(directory) - 1]
         if final != cast[u8]('/') && final != cast[u8]('\\') {
@@ -385,18 +386,15 @@ destroy_package_file :: proc(row: ^Package_File) {
     memory.owned_string_destroy(&row.relative_name)
 }
 
-// load constructs one package transaction. package must be zero and must be
-// destroyed on every return. Selected files are processed sequentially in
-// canonical order, so the row index, diagnostic order, and first valid package
-// name are deterministic. It returns false for any discovery, I/O, syntax, or
-// package-consistency error while retaining all successfully constructed rows
-// for inspection.
-pub load :: proc(
+// load_initialized constructs one package transaction after its directory
+// owner has been copied. Selected files are processed sequentially in canonical
+// order, so row indices, diagnostics, and the first valid package name are
+// deterministic. It returns false for any discovery, I/O, syntax, or package-
+// consistency error while retaining every constructed row for inspection.
+load_initialized :: proc(
     loaded: ^Package,
-    directory: string,
     options: Load_Options,
 ) -> bool {
-    memory.owned_string_copy(&loaded.directory, directory)
     array.init(&loaded.files)
 
     selected: array.Dynamic[Selected_File]
@@ -419,7 +417,7 @@ pub load :: proc(
         compiler_text.init(&path)
         append_path(
             &path,
-            directory,
+            memory.owned_string_bytes(&loaded.directory),
             memory.owned_string_bytes(&row.relative_name),
         )
         row.load_error = compiler_source.load_bytes(
@@ -486,6 +484,30 @@ pub load :: proc(
         loaded.failed = true
     }
     return !loaded.failed
+}
+
+// load copies one immutable directory spelling, then executes the common
+// package transaction. loaded must be zero and must be destroyed on every
+// result.
+pub load :: proc(
+    loaded: ^Package,
+    directory: string,
+    options: Load_Options,
+) -> bool {
+    memory.owned_string_copy(&loaded.directory, directory)
+    return load_initialized(loaded, options)
+}
+
+// load_bytes is the constructed-path counterpart used by workspace graph
+// traversal. The path is copied before discovery, so caller scratch may be
+// reused immediately. Ownership and failure behavior match load exactly.
+pub load_bytes :: proc(
+    loaded: ^Package,
+    directory: []u8,
+    options: Load_Options,
+) -> bool {
+    memory.owned_string_copy_bytes(&loaded.directory, directory)
+    return load_initialized(loaded, options)
 }
 
 // destroy releases files in reverse ownership nesting and ends every borrowed
