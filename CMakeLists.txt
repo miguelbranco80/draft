@@ -689,10 +689,10 @@ endif()
 
 # The self-hosted frontend is a separate Draft executable. The C++ draftc
 # remains the bootstrap and semantic oracle; it compiles draftc-next for the
-# native host, while the next-stage driver exposes the replaced `lex`, `syntax`,
-# and folder-package loading phases. Keeping the output out of the install set
-# prevents a partial command surface from being mistaken for the released
-# compiler contract.
+# native host, while the next-stage driver exposes replaced source, syntax,
+# package-graph, and declaration-name phases. Keeping the output out of the
+# install set prevents a partial command surface from being mistaken for the
+# released compiler contract.
 file(GLOB_RECURSE DRAFTC_NEXT_DRAFT_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/core/*.draft"
   "${CMAKE_CURRENT_SOURCE_DIR}/compiler/*.draft"
@@ -1241,6 +1241,16 @@ if(BUILD_TESTING)
       draft_workspace_syntax_oracle tools/bootstrap_workspace_syntax.cpp)
     target_link_libraries(draft_workspace_syntax_oracle PRIVATE draft_compiler)
 
+    # The declaration oracle extends the successful canonical graph through
+    # the production C++ name collector and source import-to-edge binding. It
+    # remains a non-installed migration executable; public-interface import and
+    # typing stay behind later phase gates.
+    add_executable(
+      draft_workspace_declarations_oracle
+      tools/bootstrap_workspace_declarations.cpp)
+    target_link_libraries(
+      draft_workspace_declarations_oracle PRIVATE draft_compiler)
+
     # Same-package Draft tests catch focused lexical and parser failures. The
     # process tests are the migration gates: stdout, stderr, and exit status
     # remain byte-for-byte equal to the C++ bootstrap over repository sources,
@@ -1321,6 +1331,22 @@ if(BUILD_TESTING)
     )
     set_tests_properties(
       draft_self_hosted_workspace_syntax_differential
+      PROPERTIES LABELS "frontend;self-hosting;integration"
+    )
+    add_test(
+      NAME draft_self_hosted_workspace_declarations_differential
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DORACLE=$<TARGET_FILE:draft_workspace_declarations_oracle>"
+        "-DDRAFTC_NEXT=${DRAFTC_NEXT_EXECUTABLE}"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/self-hosted-workspace-declaration-tests"
+        "-DHOST_TARGET=${DRAFT_NATIVE_HOST_TARGET}"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_self_hosted_workspace_declarations_test.cmake"
+    )
+    set_tests_properties(
+      draft_self_hosted_workspace_declarations_differential
       PROPERTIES LABELS "frontend;self-hosting;integration"
     )
   endif()

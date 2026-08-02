@@ -78,8 +78,17 @@ recursive first-discovery package loading, ordered import occurrences, and
 cycle, depth, and canonical containment checks. The corresponding
 `workspace-syntax` command accepts the root package, workspace and physical
 core roots, pinned core identity, target selector, and zero or more explicit
-dependency mappings. The staging executable is deliberately absent from the
-install set until a coherent public compiler command surface exists.
+dependency mappings. The subsequent `workspace-declarations` boundary consumes
+that closed graph directly. It creates one shared package scope and one child
+scope per parsed file, collects ordinary declarations in canonical file/source
+order, classifies source-only declaration categories and visibility/flags,
+diagnoses direct-scope duplicates, and binds each accepted file-local import
+alias to the exact canonical graph edge for its source ImportClause. Its names
+and ranges borrow the graph-owned source rather than copying spellings. It does
+not yet import dependency public declarations, resolve ambiguous constant/type
+aliases, materialize conditional declarations, or assign types. The staging
+executable is deliberately absent from the install set until a coherent public
+compiler command surface exists.
 
 Replacement proceeds at phase boundaries rather than by mixing C++ and Draft
 inside a phase. C++ `draftc lex` and `draftc syntax` remain independent single-
@@ -95,10 +104,15 @@ when the host permits symlink creation; command-root containment; and the 256-
 level import-depth bound. They compare stdout, stderr, and exit status exactly.
 Focused same-package Draft tests separately exercise scanning, semicolon
 insertion, syntax categories, child structure, parser recovery, filename
-selection, and component-aligned dependency prefixes. The
-next semantic slice can therefore consume canonical Draft-owned package rows,
-concrete trees, semantic identities, and import edges directly; it does not
-need a compatibility call back into the C++ parser or workspace loader.
+selection, and component-aligned dependency prefixes. A further process
+differential compares the production C++ declaration collector with the Draft
+collector over the real staging graph, source-only category/flag combinations,
+package-wide and file-local duplicate diagnostics, all four target file tags,
+deferred `when` declarations, and graph failure propagation. Later semantic
+work can therefore consume canonical Draft-owned package rows, concrete trees,
+semantic identities, import edges, package declaration name sets, and file-
+local alias bindings directly; it does not need a compatibility call back into
+the C++ parser, workspace loader, or declaration collector.
 
 The staging graph uses physical core source because the C++ bootstrap must
 compile `draftc-next` before it can run. The installed bootstrap's immutable
@@ -132,10 +146,10 @@ CLI contract.
 
 This boundary does not couple the self-hosted frontend to LLVM. LLVM 22 remains
 part of the C++ bootstrap and native backend; the Draft source, diagnostic,
-syntax, and workspace packages depend only on ordinary core allocation,
-filesystem, formatting, and OS facilities. Backend migration can happen later
-behind MIR/target interfaces without delaying source-to-package-graph
-self-hosting.
+syntax, workspace, and declaration-name packages depend only on ordinary core
+allocation, filesystem, formatting, and OS facilities. Backend migration can
+happen later behind MIR/target interfaces without delaying source-to-semantic-
+name-set self-hosting.
 
 ```text
  Source/package loader

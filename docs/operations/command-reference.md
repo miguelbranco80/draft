@@ -288,6 +288,11 @@ build/draftc-next workspace-syntax path/to/root-package \
   --core path/to/core --core-identity pinned-core-identity \
   --target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows \
   [--dependency prefix path/to/dependency pinned-content-identity]...
+build/draftc-next workspace-declarations path/to/root-package \
+  --workspace path/to/workspace \
+  --core path/to/core --core-identity pinned-core-identity \
+  --target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows \
+  [--dependency prefix path/to/dependency pinned-content-identity]...
 ```
 
 `package-syntax` prints the target-selected files in canonical bytewise order,
@@ -298,10 +303,15 @@ roots, first-discovery package IDs, and every ordered source import occurrence.
 It follows canonical filesystem targets, rejects paths outside their selected
 root, reserves `core`, and uses dependency content identities rather than
 checkout paths. Its physical core argument is a staging input; the public
-compiler continues to use its immutable embedded distribution. These are
-qualification commands rather than the public compiler. Semantic and later
-commands continue to use `build/draftc` until their own replacement gates are
-complete.
+compiler continues to use its immutable embedded distribution.
+`workspace-declarations` prints that same graph followed by shared package
+declarations, file scopes, source-only declaration categories/flags, and each
+accepted file-local alias bound to its canonical import target. It diagnoses
+direct-scope duplicates but deliberately stops before dependency public-
+interface import, ambiguous constant/type resolution, conditional declaration
+materialization, and typing. These are qualification commands rather than the
+public compiler. Public semantic compilation and later commands continue to use
+`build/draftc` until their own replacement gates are complete.
 
 `check` runs the provider-free front end and semantic pipeline. If the program
 contains saved `...` expansions, it loads and revalidates them. It never starts

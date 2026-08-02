@@ -190,8 +190,8 @@ boundary and no alternate-emitter fallback for unsupported operations.
 
 ## Self-hosted frontend staging limits
 
-Status: build-tree source, lexer, parser, folder-package, and canonical import-
-graph replacement; not a Draft language or public CLI limit.
+Status: build-tree source, lexer, parser, folder-package, canonical import-graph,
+and declaration-name replacement; not a Draft language or public CLI limit.
 
 On a supported native host, the build graph uses C++ `draftc` to produce an O2
 Draft executable named `draftc-next`. Its accepted commands are
@@ -200,9 +200,13 @@ Draft executable named `draftc-next`. Its accepted commands are
 `workspace-syntax` qualification command additionally takes explicit workspace
 and physical-core roots, a pinned core identity, the target, and optional
 dependency prefix/root/identity mappings. It is not installed or included in
-release archives. Declaration collection, name resolution, type checking,
-elaboration, MIR, LLVM, artifacts, and linking have not moved to it yet. The C++
-driver remains the public compiler and compatibility oracle.
+release archives. `workspace-declarations` accepts the same graph arguments and
+additionally emits shared package declarations plus file-local aliases bound to
+canonical import targets. Dependency public-interface import, qualified member
+lookup, ambiguous constant/type resolution, conditional declaration
+materialization, type checking, elaboration, MIR, LLVM, artifacts, and linking
+have not moved to it yet. The C++ driver remains the public compiler and
+compatibility oracle.
 
 The Draft lexer has the same token spellings, ranges, semicolon insertion,
 diagnostic rendering, stdout/stderr bytes, and exit behavior as the bootstrap
@@ -217,7 +221,11 @@ The Draft workspace loader additionally matches explicit root validation,
 canonical semantic identity, recursive first-discovery order, import occurrence
 order, mapping disambiguation, alias deduplication, containment, cycle handling,
 and the package-depth bound against the production C++ loader. This is package-
-graph compatibility evidence, not proof that semantic phases are self-hosted.
+graph compatibility evidence. The declaration differential additionally proves
+package/file scope construction, source-only symbol classification, visibility
+and native/parametric flags, package-wide and file-local duplicate behavior,
+and exact import-alias-to-graph-edge binding against the production C++
+collector. It does not prove dependency interface import or typed semantics.
 Embedded-core package rows and complete-file source overrides still use the
 bootstrap path; the staging graph currently accepts physical core source. Each
 later phase or source-provider transition must add its own focused tests and
@@ -233,6 +241,12 @@ array semantics or a Draft 1 ownership rule. The direct tables preserve the
 intended data layout, stable integer IDs, and explicit allocator lifetime; they
 can return to ordinary core containers after that compiler limitation is
 repaired and qualified.
+
+`compiler_sema` uses ordinary `core/array.Dynamic` owners but deliberately keeps
+the complete initial name-set representation and its operations in one source
+file. Splitting that package while the same bootstrap limitation remains would
+make its imported generic field types disagree across modules. This is a source-
+organization constraint on the staging compiler, not a semantic phase boundary.
 
 ## Native host and instrumentation limits
 

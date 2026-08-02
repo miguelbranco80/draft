@@ -1,0 +1,1418 @@
+// Deterministic declaration names and file-local import aliases.
+//
+// This package is the first self-hosted semantic phase. It consumes one closed
+// compiler_workspace.Workspace_Graph and constructs the name set which later
+// type and body work may read: a package scope shared by every source file, one
+// child file scope per parsed Draft file, ordinary declarations in canonical
+// file/source order, and import aliases bound to the exact canonical graph edge
+// selected for that ImportClause. It deliberately does not import public
+// dependency declarations, classify ambiguous constant/type aliases, evaluate
+// `when`, or assign TypeIds. Those operations require later semantic products.
+//
+// Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
+// ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
+// which must therefore outlive every lookup, dump, diagnostic render, and final
+// destroy. Symbol and Scope IDs are stable u32 table indices until destroy.
+// Package rows remain aligned with Workspace_Graph.packages, while file indices
+// remain aligned with each nested Package.files table.
+//
+// Collection follows the production C++ order exactly. All file scopes are
+// allocated before any names; imports occupy only their file scope; declarations
+// occupy the package scope; duplicate lookup is direct-scope linear lookup over
+// the canonical declaration-order vector. This intentionally preserves the
+// bootstrap's simple representation and diagnostic choice. If real package
+// sizes later justify a deterministic secondary index, the vectors remain the
+// semantic ordering authority.
+//
+// The current bootstrap gives an imported generic record instantiation
+// different pointer identity when separate files in one package consume it.
+// Keep the Dynamic-owning representation and all of its operations in this one
+// module until that bootstrap limitation is repaired; splitting the package now
+// would turn correct Scope/Semantic_Package pointers into type mismatches.
+//
+// Relevant specification: docs/specification/01-core-language.md sections 3-4,
+// especially file-local imports, package-wide declaration visibility, and
+// private-by-default visibility.
+package compiler_sema
+
+import core/array
+import core/memory
+import compiler/diagnostic as compiler_diagnostic
+import compiler/source as compiler_source
+import compiler/syntax as compiler_syntax
+import compiler/text as compiler_text
+import compiler/workspace as compiler_workspace
+
+Invalid_Scope_Value :: ~cast[u32](0)
+Invalid_Symbol_Value :: ~cast[u32](0)
+
+// Scope_Id is an index into one Semantic_Package.scopes table. The all-ones
+// value is the package scope's parent sentinel; IDs never cross package rows.
+pub Scope_Id :: struct {
+    value: u32,
+}
+
+// Symbol_Id is an index into one Semantic_Package.symbols table. The all-ones
+// value represents a diagnosed duplicate which published no binding.
+pub Symbol_Id :: struct {
+    value: u32,
+}
+
+// scope_id_valid distinguishes a table row from the package-parent sentinel.
+pub scope_id_valid :: proc(id: Scope_Id) -> bool {
+    return id.value != Invalid_Scope_Value
+}
+
+// symbol_id_valid distinguishes a published binding from a failed declaration.
+pub symbol_id_valid :: proc(id: Symbol_Id) -> bool {
+    return id.value != Invalid_Symbol_Value
+}
+
+invalid_scope_id :: proc() -> Scope_Id {
+    return Scope_Id{value = Invalid_Scope_Value}
+}
+
+invalid_symbol_id :: proc() -> Symbol_Id {
+    return Symbol_Id{value = Invalid_Symbol_Value}
+}
+
+// Scope_Kind is intentionally limited to the scopes established at declaration
+// collection. Procedure, type, block, and parametric scopes arrive with the
+// semantic products which actually populate them.
+pub Scope_Kind :: enum u8 {
+    package_scope,
+    file_scope,
+}
+
+// Symbol_Kind is the declaration collector's best source-only classification.
+// unresolved_declaration preserves the intentional ambiguity of `Name :: X`
+// until X has been resolved as a type value or ordinary constant.
+pub Symbol_Kind :: enum u8 {
+    import_alias,
+    unresolved_declaration,
+    type,
+    constant,
+    variable,
+    procedure,
+}
+
+// Visibility describes Draft package visibility only. Native linker export is
+// an orthogonal Symbol_Flags property.
+pub Visibility :: enum u8 {
+    private,
+    public,
+}
+
+// Syntax_Reference identifies one node inside one workspace package file. The
+// file index must address a parsed Draft source row in the owning package.
+pub Syntax_Reference :: struct {
+    file_index: usize,
+    node: compiler_syntax.Node_Id,
+}
+
+// Symbol_Flags records source properties known without type resolution.
+// parametric includes both an explicit parameter list and a procedure static
+// pack; foreign/exported remain separate from Draft visibility.
+pub Symbol_Flags :: struct {
+    is_thread_local: bool,
+    is_foreign: bool,
+    exported: bool,
+    parametric: bool,
+}
+
+// Symbol is one accepted direct binding. name_range and optional native ranges
+// address syntax.source's immutable bytes; no spelling is copied. scope is the
+// exact direct owner. linker_name_range retains the effective native spelling
+// for a foreign/export declaration: the quoted `as` token when present, or the
+// local binding name otherwise. foreign_provider_range retains the provider
+// name which encloses a foreign declaration.
+pub Symbol :: struct {
+    kind: Symbol_Kind,
+    visibility: Visibility,
+    flags: Symbol_Flags,
+    scope: Scope_Id,
+    syntax: Syntax_Reference,
+    name_range: compiler_source.Source_Range,
+    has_foreign_provider: bool,
+    foreign_provider_range: compiler_source.Source_Range,
+    has_linker_name: bool,
+    linker_name_range: compiler_source.Source_Range,
+}
+
+// Scope owns direct Symbol_Ids in canonical declaration order. parent is
+// invalid only for package. file_index is meaningful only for a file scope.
+pub Scope :: struct {
+    kind: Scope_Kind,
+    parent: Scope_Id,
+    file_index: usize,
+    symbols: array.Dynamic[Symbol_Id],
+}
+
+// Semantic_File connects one parsed package file to its preallocated file scope.
+// Assembly inputs contribute no row because they contain no Draft aliases.
+pub Semantic_File :: struct {
+    file_index: usize,
+    scope: Scope_Id,
+}
+
+// Import_Binding connects one accepted file-local alias symbol to the exact
+// source occurrence already resolved by Workspace_Graph. graph_import_index
+// therefore provides both canonical target Package_Id and normalized path.
+pub Import_Binding :: struct {
+    symbol: Symbol_Id,
+    graph_import_index: usize,
+}
+
+// Semantic_Package owns every collected row for one aligned workspace package.
+// graph_import_edges is a private source-order index built in one workspace-wide
+// graph scan; it avoids repeated global edge scans while aliases are collected.
+pub Semantic_Package :: struct {
+    workspace_package: compiler_workspace.Package_Id,
+    package_scope: Scope_Id,
+    scopes: array.Dynamic[Scope],
+    symbols: array.Dynamic[Symbol],
+    files: array.Dynamic[Semantic_File],
+    imports: array.Dynamic[Import_Binding],
+    graph_import_edges: array.Dynamic[usize],
+}
+
+Diagnostic_Code :: enum u8 {
+    duplicate_declaration,
+    previous_declaration,
+    thread_local_non_variable,
+    parametric_non_type_or_procedure,
+    linker_name_non_native,
+    grouped_type,
+    grouped_procedure,
+}
+
+// Semantic_Diagnostic is one source-backed row in deterministic collection
+// order. Dynamic messages are assembled only while rendering, so the semantic
+// graph owns no duplicated identifier strings.
+Semantic_Diagnostic :: struct {
+    severity: compiler_diagnostic.Severity,
+    code: Diagnostic_Code,
+    package_id: compiler_workspace.Package_Id,
+    file_index: usize,
+    range: compiler_source.Source_Range,
+    scope_kind: Scope_Kind,
+}
+
+// Semantic_Workspace owns package rows aligned to the canonical input graph and
+// a single cross-package diagnostic sequence. failed is true exactly when an
+// error (not a note) was appended.
+pub Semantic_Workspace :: struct {
+    packages: array.Dynamic[Semantic_Package],
+    diagnostics: array.Dynamic[Semantic_Diagnostic],
+    failed: bool,
+}
+
+Collection_Context :: struct {
+    flags: Symbol_Flags,
+    has_foreign_provider: bool,
+    foreign_provider_range: compiler_source.Source_Range,
+}
+
+Collector :: struct {
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic: ^Semantic_Workspace,
+    semantic_package: ^Semantic_Package,
+    workspace_package: ^compiler_workspace.Workspace_Package,
+    graph_import_cursor: usize,
+}
+
+bytes_equal :: proc(left, right: []u8) -> bool {
+    if len(left) != len(right) {
+        return false
+    }
+    for index: usize = 0; index < len(left); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
+}
+
+bytes_equal_text :: proc(bytes: []u8, text: string) -> bool {
+    if len(bytes) != len(text) {
+        return false
+    }
+    for index: usize = 0; index < len(bytes); index += 1 {
+        if bytes[index] != text[index] {
+            return false
+        }
+    }
+    return true
+}
+
+token_is_contextual_name :: proc(kind: compiler_syntax.Token_Kind) -> bool {
+    switch kind {
+    case .identifier, .keyword_c, .keyword_type, .keyword_integer,
+        .keyword_float, .keyword_number, .keyword_flags, .keyword_memory,
+        .keyword_bits:
+        return true
+    case:
+        return false
+    }
+}
+
+scope_kind_text :: proc(kind: Scope_Kind) -> string {
+    switch kind {
+    case .package_scope: return "package"
+    case .file_scope: return "file"
+    }
+    return "unknown"
+}
+
+// symbol_kind_text is the stable migration-dump spelling shared with the C++
+// oracle. It is not a source keyword table.
+pub symbol_kind_text :: proc(kind: Symbol_Kind) -> string {
+    switch kind {
+    case .import_alias: return "import"
+    case .unresolved_declaration: return "unresolved-declaration"
+    case .type: return "type"
+    case .constant: return "constant"
+    case .variable: return "variable"
+    case .procedure: return "procedure"
+    }
+    return "unknown"
+}
+
+visibility_text :: proc(visibility: Visibility) -> string {
+    switch visibility {
+    case .private: return "private"
+    case .public: return "public"
+    }
+    return "unknown"
+}
+
+source_file :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    package_id: compiler_workspace.Package_Id,
+    file_index: usize,
+) -> ^compiler_source.Source_File {
+    assert(compiler_workspace.package_id_valid(package_id),
+        "semantic source package ID is invalid")
+    assert(cast[usize](package_id.value) < graph.packages.length,
+        "semantic source package ID exceeds graph")
+    loaded := &graph.packages.data[cast[usize](package_id.value)].loaded
+    assert(file_index < compiler_workspace.file_count(loaded),
+        "semantic source file index exceeds package")
+    source_row := compiler_workspace.file_at(loaded, file_index)
+    assert(source_row.parsed,
+        "semantic source reference names an unparsed file")
+    return &source_row.source
+}
+
+source_bytes :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    package_id: compiler_workspace.Package_Id,
+    file_index: usize,
+    range: compiler_source.Source_Range,
+) -> []u8 {
+    return compiler_source.bytes_in_range(
+        source_file(graph, package_id, file_index),
+        range,
+    )
+}
+
+symbol_name_bytes :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    symbol: ^Symbol,
+) -> []u8 {
+    return source_bytes(
+        graph,
+        semantic_package.workspace_package,
+        symbol.syntax.file_index,
+        symbol.name_range,
+    )
+}
+
+append_diagnostic :: proc(
+    semantic: ^Semantic_Workspace,
+    severity: compiler_diagnostic.Severity,
+    code: Diagnostic_Code,
+    package_id: compiler_workspace.Package_Id,
+    file_index: usize,
+    range: compiler_source.Source_Range,
+    scope_kind: Scope_Kind,
+) {
+    array.append(&semantic.diagnostics, Semantic_Diagnostic{
+        severity = severity,
+        code = code,
+        package_id = package_id,
+        file_index = file_index,
+        range = range,
+        scope_kind = scope_kind,
+    })
+    if severity == .error {
+        semantic.failed = true
+    }
+}
+
+add_scope :: proc(
+    semantic_package: ^Semantic_Package,
+    kind: Scope_Kind,
+    parent: Scope_Id,
+    file_index: usize,
+) -> Scope_Id {
+    assert(semantic_package.scopes.length < cast[usize](Invalid_Scope_Value),
+        "semantic scope table exceeds u32 identity space")
+    if scope_id_valid(parent) {
+        assert(cast[usize](parent.value) < semantic_package.scopes.length,
+            "semantic scope parent is not yet published")
+    } else {
+        assert(kind == .package_scope,
+            "only a package scope may have no parent")
+    }
+
+    id := Scope_Id{value = cast[u32](semantic_package.scopes.length)}
+    scope: Scope
+    scope.kind = kind
+    scope.parent = parent
+    scope.file_index = file_index
+    array.init(&scope.symbols)
+    array.append(&semantic_package.scopes, scope)
+    empty: Scope
+    scope = empty
+    return id
+}
+
+// lookup_direct performs exact byte lookup only in scope. The returned symbol
+// is the first canonical declaration and therefore the duplicate diagnostic's
+// stable previous binding.
+pub lookup_direct :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    scope: Scope_Id,
+    name: []u8,
+) -> (Symbol_Id, bool) {
+    assert(scope_id_valid(scope), "semantic direct lookup scope is invalid")
+    assert(cast[usize](scope.value) < semantic_package.scopes.length,
+        "semantic direct lookup scope exceeds table")
+    owner := &semantic_package.scopes.data[cast[usize](scope.value)]
+    for index: usize = 0; index < owner.symbols.length; index += 1 {
+        id := owner.symbols.data[index]
+        symbol := &semantic_package.symbols.data[cast[usize](id.value)]
+        if bytes_equal(
+            symbol_name_bytes(graph, semantic_package, symbol),
+            name,
+        ) {
+            return (id, true)
+        }
+    }
+    return (invalid_symbol_id(), false)
+}
+
+// lookup walks direct scopes from file to package. It makes an import alias an
+// ordinary file-local shadow while keeping declarations visible to every file.
+pub lookup :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    scope: Scope_Id,
+    name: []u8,
+) -> (Symbol_Id, bool) {
+    current := scope
+    for scope_id_valid(current) {
+        (found, exists) := lookup_direct(
+            graph,
+            semantic_package,
+            current,
+            name,
+        )
+        if exists {
+            return (found, true)
+        }
+        current = semantic_package.scopes.data[
+            cast[usize](current.value)
+        ].parent
+    }
+    return (invalid_symbol_id(), false)
+}
+
+declare_symbol :: proc(
+    collector: ^Collector,
+    symbol: Symbol,
+) -> Symbol_Id {
+    name := source_bytes(
+        collector.graph,
+        collector.semantic_package.workspace_package,
+        symbol.syntax.file_index,
+        symbol.name_range,
+    )
+    (previous, duplicate) := lookup_direct(
+        collector.graph,
+        collector.semantic_package,
+        symbol.scope,
+        name,
+    )
+    if duplicate {
+        owner := &collector.semantic_package.scopes.data[
+            cast[usize](symbol.scope.value)
+        ]
+        append_diagnostic(
+            collector.semantic,
+            .error,
+            .duplicate_declaration,
+            collector.semantic_package.workspace_package,
+            symbol.syntax.file_index,
+            symbol.name_range,
+            owner.kind,
+        )
+        previous_symbol := &collector.semantic_package.symbols.data[
+            cast[usize](previous.value)
+        ]
+        append_diagnostic(
+            collector.semantic,
+            .note,
+            .previous_declaration,
+            collector.semantic_package.workspace_package,
+            previous_symbol.syntax.file_index,
+            previous_symbol.name_range,
+            owner.kind,
+        )
+        return invalid_symbol_id()
+    }
+
+    assert(collector.semantic_package.symbols.length <
+        cast[usize](Invalid_Symbol_Value),
+        "semantic symbol table exceeds u32 identity space")
+    id := Symbol_Id{
+        value = cast[u32](collector.semantic_package.symbols.length),
+    }
+    owner_scope := symbol.scope
+    array.append(&collector.semantic_package.symbols, symbol)
+    array.append(
+        &collector.semantic_package.scopes.data[
+            cast[usize](owner_scope.value)
+        ].symbols,
+        id,
+    )
+    return id
+}
+
+node_has_token_before :: proc(
+    tree: ^compiler_syntax.Syntax_Tree,
+    node: ^compiler_syntax.Syntax_Node,
+    end: u32,
+    wanted: compiler_syntax.Token_Kind,
+) -> bool {
+    bounded_end := end
+    if bounded_end > node.token_end {
+        bounded_end = node.token_end
+    }
+    for index := node.token_begin; index < bounded_end; index += 1 {
+        if tree.tokens.data[cast[usize](index)].kind == wanted {
+            return true
+        }
+    }
+    return false
+}
+
+declaration_payload :: proc(
+    tree: ^compiler_syntax.Syntax_Tree,
+    declaration_id: compiler_syntax.Node_Id,
+) -> (compiler_syntax.Node_Id, bool) {
+    declaration := compiler_syntax.syntax_tree_node(tree, declaration_id)
+    if declaration.child_count < 2 {
+        return (compiler_syntax.Node_Id{}, false)
+    }
+    children := compiler_syntax.syntax_tree_children(tree, declaration_id)
+    candidate := children[len(children) - 1]
+    kind := compiler_syntax.syntax_tree_node(tree, candidate).kind
+    if kind == .binding_pattern || kind == .tuple_pattern ||
+        kind == .parametric_parameter_list {
+        return (compiler_syntax.Node_Id{}, false)
+    }
+    return (candidate, true)
+}
+
+node_is_type_syntax :: proc(kind: compiler_syntax.Node_Kind) -> bool {
+    switch kind {
+    case .named_type, .pointer_type, .multi_pointer_type, .slice_type,
+        .array_type, .simd_type, .tuple_type, .procedure_type,
+        .distinct_type, .struct_type, .enum_type, .variant_type, .union_type:
+        return true
+    case:
+        return false
+    }
+}
+
+declaration_kind :: proc(
+    tree: ^compiler_syntax.Syntax_Tree,
+    declaration: ^compiler_syntax.Syntax_Node,
+    collection_context: Collection_Context,
+    payload: compiler_syntax.Node_Id,
+    has_payload: bool,
+) -> Symbol_Kind {
+    header_end := declaration.token_end
+    if has_payload {
+        header_end = compiler_syntax.syntax_tree_node(tree, payload).token_begin
+    }
+    immutable := node_has_token_before(
+        tree,
+        declaration,
+        header_end,
+        .colon_colon,
+    )
+    if !immutable {
+        return .variable
+    }
+    if !has_payload {
+        return .unresolved_declaration
+    }
+
+    payload_kind := compiler_syntax.syntax_tree_node(tree, payload).kind
+    if payload_kind == .procedure {
+        return .procedure
+    }
+    if payload_kind == .procedure_type &&
+        collection_context.flags.is_foreign {
+        return .procedure
+    }
+    if node_is_type_syntax(payload_kind) {
+        return .type
+    }
+    if payload_kind == .name_expression ||
+        payload_kind == .member_expression ||
+        payload_kind == .bracket_expression ||
+        payload_kind == .group_expression ||
+        payload_kind == .tuple_expression {
+        return .unresolved_declaration
+    }
+    return .constant
+}
+
+linker_name_range :: proc(
+    tree: ^compiler_syntax.Syntax_Tree,
+    declaration_id: compiler_syntax.Node_Id,
+) -> (compiler_source.Source_Range, bool) {
+    for child_id in compiler_syntax.syntax_tree_children(tree, declaration_id) {
+        child := compiler_syntax.syntax_tree_node(tree, child_id)
+        if child.kind != .link_name_clause {
+            continue
+        }
+        for index := child.token_begin; index < child.token_end; index += 1 {
+            token := &tree.tokens.data[cast[usize](index)]
+            if token.kind == .string_literal {
+                return (token.range, true)
+            }
+        }
+    }
+    return (compiler_source.Source_Range{}, false)
+}
+
+procedure_has_static_pack :: proc(
+    tree: ^compiler_syntax.Syntax_Tree,
+    payload: compiler_syntax.Node_Id,
+    has_payload: bool,
+) -> bool {
+    if !has_payload {
+        return false
+    }
+    procedure := compiler_syntax.syntax_tree_node(tree, payload)
+    if procedure.kind != .procedure && procedure.kind != .procedure_type {
+        return false
+    }
+    for child_id in compiler_syntax.syntax_tree_children(tree, payload) {
+        child := compiler_syntax.syntax_tree_node(tree, child_id)
+        if child.kind != .parameter_list {
+            continue
+        }
+        for parameter_id in compiler_syntax.syntax_tree_children(tree, child_id) {
+            for part_id in compiler_syntax.syntax_tree_children(
+                tree,
+                parameter_id,
+            ) {
+                if compiler_syntax.syntax_tree_node(tree, part_id).kind ==
+                    .static_pack_type {
+                    return true
+                }
+            }
+        }
+    }
+    return false
+}
+
+pattern_name_count :: proc(
+    tree: ^compiler_syntax.Syntax_Tree,
+    pattern_id: compiler_syntax.Node_Id,
+) -> usize {
+    count: usize = 0
+    for child_id in compiler_syntax.syntax_tree_children(tree, pattern_id) {
+        child := compiler_syntax.syntax_tree_node(tree, child_id)
+        if child.kind != .name_list {
+            continue
+        }
+        for index := child.token_begin; index < child.token_end; index += 1 {
+            if token_is_contextual_name(
+                tree.tokens.data[cast[usize](index)].kind,
+            ) {
+                count += 1
+            }
+        }
+    }
+    return count
+}
+
+report_declaration_error :: proc(
+    collector: ^Collector,
+    code: Diagnostic_Code,
+    syntax: Syntax_Reference,
+    range: compiler_source.Source_Range,
+) {
+    append_diagnostic(
+        collector.semantic,
+        .error,
+        code,
+        collector.semantic_package.workspace_package,
+        syntax.file_index,
+        range,
+        .package_scope,
+    )
+}
+
+collect_declaration :: proc(
+    collector: ^Collector,
+    tree: ^compiler_syntax.Syntax_Tree,
+    file_index: usize,
+    declaration_id: compiler_syntax.Node_Id,
+    scope: Scope_Id,
+    collection_context: Collection_Context,
+) {
+    declaration := compiler_syntax.syntax_tree_node(tree, declaration_id)
+    children := compiler_syntax.syntax_tree_children(tree, declaration_id)
+    if len(children) == 0 {
+        return
+    }
+    pattern_id := children[0]
+    pattern := compiler_syntax.syntax_tree_node(tree, pattern_id)
+    if pattern.kind != .binding_pattern && pattern.kind != .tuple_pattern {
+        return
+    }
+
+    (payload, has_payload) := declaration_payload(tree, declaration_id)
+    kind := declaration_kind(
+        tree,
+        declaration,
+        collection_context,
+        payload,
+        has_payload,
+    )
+    flags := collection_context.flags
+    for child_id in children {
+        if compiler_syntax.syntax_tree_node(tree, child_id).kind ==
+            .parametric_parameter_list {
+            flags.parametric = true
+        }
+    }
+    if procedure_has_static_pack(tree, payload, has_payload) {
+        flags.parametric = true
+    }
+    flags.is_thread_local = node_has_token_before(
+        tree,
+        declaration,
+        pattern.token_begin,
+        .keyword_thread_local,
+    )
+    visibility: Visibility = .private
+    if node_has_token_before(
+        tree,
+        declaration,
+        pattern.token_begin,
+        .keyword_pub,
+    ) {
+        visibility = .public
+    }
+    (link_range, has_link_name) := linker_name_range(tree, declaration_id)
+    syntax := Syntax_Reference{file_index = file_index, node = declaration_id}
+
+    if flags.is_thread_local && kind != .variable {
+        report_declaration_error(
+            collector,
+            .thread_local_non_variable,
+            syntax,
+            declaration.range,
+        )
+    }
+    if flags.parametric && kind != .type && kind != .procedure &&
+        kind != .unresolved_declaration {
+        report_declaration_error(
+            collector,
+            .parametric_non_type_or_procedure,
+            syntax,
+            declaration.range,
+        )
+    }
+    if has_link_name && !flags.is_foreign && !flags.exported {
+        report_declaration_error(
+            collector,
+            .linker_name_non_native,
+            syntax,
+            link_range,
+        )
+    }
+
+    name_count := pattern_name_count(tree, pattern_id)
+    if kind == .type && name_count > 1 {
+        report_declaration_error(
+            collector,
+            .grouped_type,
+            syntax,
+            pattern.range,
+        )
+    } else if kind == .procedure && name_count > 1 {
+        report_declaration_error(
+            collector,
+            .grouped_procedure,
+            syntax,
+            pattern.range,
+        )
+    }
+
+    for child_id in compiler_syntax.syntax_tree_children(tree, pattern_id) {
+        child := compiler_syntax.syntax_tree_node(tree, child_id)
+        if child.kind != .name_list {
+            continue
+        }
+        for index := child.token_begin; index < child.token_end; index += 1 {
+            token := &tree.tokens.data[cast[usize](index)]
+            if !token_is_contextual_name(token.kind) {
+                continue
+            }
+            name := compiler_source.bytes_in_range(
+                source_file(
+                    collector.graph,
+                    collector.semantic_package.workspace_package,
+                    file_index,
+                ),
+                token.range,
+            )
+            if bytes_equal_text(name, "_") {
+                continue
+            }
+
+            symbol: Symbol
+            symbol.kind = kind
+            symbol.visibility = visibility
+            symbol.flags = flags
+            symbol.scope = scope
+            symbol.syntax = syntax
+            symbol.name_range = token.range
+            symbol.has_foreign_provider =
+                collection_context.has_foreign_provider
+            symbol.foreign_provider_range =
+                collection_context.foreign_provider_range
+            if flags.is_foreign || flags.exported {
+                symbol.has_linker_name = true
+                symbol.linker_name_range = token.range
+                if has_link_name {
+                    symbol.linker_name_range = link_range
+                }
+            }
+            declare_symbol(collector, symbol)
+        }
+    }
+}
+
+foreign_provider_range :: proc(
+    tree: ^compiler_syntax.Syntax_Tree,
+    foreign_id: compiler_syntax.Node_Id,
+) -> (compiler_source.Source_Range, bool) {
+    foreign_node := compiler_syntax.syntax_tree_node(tree, foreign_id)
+    for index := foreign_node.token_begin + 1;
+        index < foreign_node.token_end;
+        index += 1 {
+        token := &tree.tokens.data[cast[usize](index)]
+        if token_is_contextual_name(token.kind) {
+            return (token.range, true)
+        }
+    }
+    return (compiler_source.Source_Range{}, false)
+}
+
+collect_item :: proc(
+    collector: ^Collector,
+    tree: ^compiler_syntax.Syntax_Tree,
+    file_index: usize,
+    node_id: compiler_syntax.Node_Id,
+    scope: Scope_Id,
+    collection_context: Collection_Context,
+) {
+    node := compiler_syntax.syntax_tree_node(tree, node_id)
+    switch node.kind {
+    case .declaration:
+        collect_declaration(
+            collector,
+            tree,
+            file_index,
+            node_id,
+            scope,
+            collection_context,
+        )
+    case .foreign_block:
+        nested := collection_context
+        nested.flags.is_foreign = true
+        (provider, has_provider) := foreign_provider_range(tree, node_id)
+        nested.foreign_provider_range = provider
+        nested.has_foreign_provider = has_provider
+        children := compiler_syntax.syntax_tree_children(tree, node_id)
+        if len(children) != 0 {
+            collect_declaration_list(
+                collector,
+                tree,
+                file_index,
+                children[len(children) - 1],
+                scope,
+                nested,
+            )
+        }
+    case .export_declaration:
+        nested := collection_context
+        nested.flags.exported = true
+        children := compiler_syntax.syntax_tree_children(tree, node_id)
+        if len(children) != 0 {
+            collect_item(
+                collector,
+                tree,
+                file_index,
+                children[0],
+                scope,
+                nested,
+            )
+        }
+    case .deny_declaration:
+        children := compiler_syntax.syntax_tree_children(tree, node_id)
+        if len(children) != 0 {
+            collect_declaration_list(
+                collector,
+                tree,
+                file_index,
+                children[len(children) - 1],
+                scope,
+                collection_context,
+            )
+        }
+    case .declaration_list:
+        collect_declaration_list(
+            collector,
+            tree,
+            file_index,
+            node_id,
+            scope,
+            collection_context,
+        )
+    case:
+        // `when` is intentionally deferred; docs, judgments, and synthesis do
+        // not publish an ordinary name during this phase.
+    }
+}
+
+collect_declaration_list :: proc(
+    collector: ^Collector,
+    tree: ^compiler_syntax.Syntax_Tree,
+    file_index: usize,
+    list_id: compiler_syntax.Node_Id,
+    scope: Scope_Id,
+    collection_context: Collection_Context,
+) {
+    list := compiler_syntax.syntax_tree_node(tree, list_id)
+    if list.kind != .declaration_list {
+        return
+    }
+    for child_id in compiler_syntax.syntax_tree_children(tree, list_id) {
+        collect_item(
+            collector,
+            tree,
+            file_index,
+            child_id,
+            scope,
+            collection_context,
+        )
+    }
+}
+
+collect_import :: proc(
+    collector: ^Collector,
+    tree: ^compiler_syntax.Syntax_Tree,
+    file_index: usize,
+    import_id: compiler_syntax.Node_Id,
+    file_scope: Scope_Id,
+) {
+    import_node := compiler_syntax.syntax_tree_node(tree, import_id)
+    children := compiler_syntax.syntax_tree_children(tree, import_id)
+    if len(children) == 0 {
+        return
+    }
+    path := compiler_syntax.syntax_tree_node(tree, children[0])
+
+    alias_range: compiler_source.Source_Range
+    have_alias := false
+    for index := path.token_begin; index < path.token_end; index += 1 {
+        token := &tree.tokens.data[cast[usize](index)]
+        if token_is_contextual_name(token.kind) {
+            alias_range = token.range
+            have_alias = true
+        }
+    }
+    if !have_alias {
+        return
+    }
+    for index := path.token_end; index < import_node.token_end; index += 1 {
+        if tree.tokens.data[cast[usize](index)].kind != .keyword_as {
+            continue
+        }
+        if index + 1 < import_node.token_end {
+            alias := &tree.tokens.data[cast[usize](index + 1)]
+            if token_is_contextual_name(alias.kind) {
+                alias_range = alias.range
+            }
+        }
+        break
+    }
+
+    // A successful closed Workspace_Graph has exactly one edge for every
+    // parsed import clause. Per-package edge lists preserve source order even
+    // though recursive dependency edges may appear between global rows.
+    assert(collector.graph_import_cursor <
+        collector.semantic_package.graph_import_edges.length,
+        "semantic import has no canonical workspace edge")
+    graph_import_index := collector.semantic_package.graph_import_edges.data[
+        collector.graph_import_cursor
+    ]
+    collector.graph_import_cursor += 1
+    graph_import := &collector.graph.imports.data[graph_import_index]
+    assert(graph_import.file_index == file_index &&
+        graph_import.syntax.value == import_id.value,
+        "semantic import order differs from canonical workspace edges")
+
+    symbol: Symbol
+    symbol.kind = .import_alias
+    symbol.visibility = .private
+    symbol.scope = file_scope
+    symbol.syntax = Syntax_Reference{
+        file_index = file_index,
+        node = import_id,
+    }
+    symbol.name_range = alias_range
+    id := declare_symbol(collector, symbol)
+    if symbol_id_valid(id) {
+        array.append(&collector.semantic_package.imports, Import_Binding{
+            symbol = id,
+            graph_import_index = graph_import_index,
+        })
+    }
+}
+
+collect_file :: proc(
+    collector: ^Collector,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    file_scope: Scope_Id,
+) {
+    if !compiler_syntax.node_id_valid(tree.root) {
+        return
+    }
+    collection_context: Collection_Context
+    for child_id in compiler_syntax.syntax_tree_children(tree, tree.root) {
+        child := compiler_syntax.syntax_tree_node(tree, child_id)
+        if child.kind == .import_clause {
+            collect_import(
+                collector,
+                tree,
+                file_index,
+                child_id,
+                file_scope,
+            )
+        } else if child.kind == .declaration_list {
+            collect_declaration_list(
+                collector,
+                tree,
+                file_index,
+                child_id,
+                collector.semantic_package.package_scope,
+                collection_context,
+            )
+        }
+    }
+}
+
+collect_package :: proc(collector: ^Collector) {
+    collector.semantic_package.package_scope = add_scope(
+        collector.semantic_package,
+        .package_scope,
+        invalid_scope_id(),
+        0,
+    )
+
+    // Allocate every file scope before names so scope IDs and the scope graph
+    // do not depend on an earlier semantic error.
+    loaded := &collector.workspace_package.loaded
+    for file_index: usize = 0;
+        file_index < compiler_workspace.file_count(loaded);
+        file_index += 1 {
+        source_row := compiler_workspace.file_at(loaded, file_index)
+        if !source_row.parsed ||
+            !compiler_syntax.node_id_valid(source_row.tree.root) {
+            continue
+        }
+        scope := add_scope(
+            collector.semantic_package,
+            .file_scope,
+            collector.semantic_package.package_scope,
+            file_index,
+        )
+        array.append(&collector.semantic_package.files, Semantic_File{
+            file_index = file_index,
+            scope = scope,
+        })
+    }
+
+    for index: usize = 0;
+        index < collector.semantic_package.files.length;
+        index += 1 {
+        semantic_file := collector.semantic_package.files.data[index]
+        source_row := compiler_workspace.file_at(
+            loaded,
+            semantic_file.file_index,
+        )
+        collect_file(
+            collector,
+            semantic_file.file_index,
+            &source_row.tree,
+            semantic_file.scope,
+        )
+    }
+    assert(collector.graph_import_cursor ==
+        collector.semantic_package.graph_import_edges.length,
+        "canonical workspace edge has no semantic import clause")
+}
+
+init_semantic_package :: proc(
+    semantic_package: ^Semantic_Package,
+    id: compiler_workspace.Package_Id,
+) {
+    semantic_package.workspace_package = id
+    semantic_package.package_scope = invalid_scope_id()
+    array.init(&semantic_package.scopes)
+    array.init(&semantic_package.symbols)
+    array.init(&semantic_package.files)
+    array.init(&semantic_package.imports)
+    array.init(&semantic_package.graph_import_edges)
+}
+
+destroy_semantic_package :: proc(semantic_package: ^Semantic_Package) {
+    for index: usize = 0;
+        index < semantic_package.scopes.length;
+        index += 1 {
+        array.destroy(&semantic_package.scopes.data[index].symbols)
+    }
+    array.destroy(&semantic_package.graph_import_edges)
+    array.destroy(&semantic_package.imports)
+    array.destroy(&semantic_package.files)
+    array.destroy(&semantic_package.symbols)
+    array.destroy(&semantic_package.scopes)
+    semantic_package.workspace_package = compiler_workspace.Package_Id{}
+    semantic_package.package_scope = invalid_scope_id()
+}
+
+// collect_workspace_declarations constructs every package row, indexes graph
+// edges in one global pass, then collects packages in stable graph order. graph
+// remains borrowed. A failed graph initializes an empty result and returns
+// false without entering semantics, letting process drivers use one unconditional
+// ownership path while preserving the graph's diagnostics as the sole failure.
+pub collect_workspace_declarations :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic: ^Semantic_Workspace,
+) -> bool {
+    array.init(&semantic.packages)
+    array.init(&semantic.diagnostics)
+    if graph.failed {
+        semantic.failed = true
+        return false
+    }
+
+    for index: usize = 0; index < graph.packages.length; index += 1 {
+        semantic_package: Semantic_Package
+        init_semantic_package(
+            &semantic_package,
+            compiler_workspace.Package_Id{value = cast[u32](index)},
+        )
+        array.append(&semantic.packages, semantic_package)
+        empty: Semantic_Package
+        semantic_package = empty
+    }
+
+    for edge_index: usize = 0;
+        edge_index < graph.imports.length;
+        edge_index += 1 {
+        edge := &graph.imports.data[edge_index]
+        assert(compiler_workspace.package_id_valid(edge.importing_package) &&
+            cast[usize](edge.importing_package.value) < semantic.packages.length,
+            "workspace import consumer is outside semantic package table")
+        semantic_package := &semantic.packages.data[
+            cast[usize](edge.importing_package.value)
+        ]
+        array.append(&semantic_package.graph_import_edges, edge_index)
+    }
+
+    for index: usize = 0; index < semantic.packages.length; index += 1 {
+        collector := Collector{
+            graph = graph,
+            semantic = semantic,
+            semantic_package = &semantic.packages.data[index],
+            workspace_package = &graph.packages.data[index],
+        }
+        collect_package(&collector)
+    }
+    return !semantic.failed
+}
+
+// destroy_semantic_workspace releases every table. The borrowed graph is not
+// touched and may be destroyed only after this call if diagnostics or dumps are
+// no longer needed.
+pub destroy_semantic_workspace :: proc(semantic: ^Semantic_Workspace) {
+    for index: usize = 0; index < semantic.packages.length; index += 1 {
+        destroy_semantic_package(&semantic.packages.data[index])
+    }
+    array.destroy(&semantic.diagnostics)
+    array.destroy(&semantic.packages)
+    semantic.failed = false
+}
+
+append_bool :: proc(output: ^compiler_text.Builder, value: bool) {
+    compiler_text.append_byte(
+        output,
+        cast[u8]('1') if value else cast[u8]('0'),
+    )
+}
+
+relative_file_name :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    package_id: compiler_workspace.Package_Id,
+    file_index: usize,
+) -> []u8 {
+    loaded := &graph.packages.data[cast[usize](package_id.value)].loaded
+    return memory.owned_string_bytes(
+        &compiler_workspace.file_at(loaded, file_index).relative_name,
+    )
+}
+
+// dump_workspace_declarations appends the stable migration view after the
+// caller's workspace-graph dump. Scope IDs make file-local alias placement
+// visible; import bindings name canonical target package IDs; native spellings
+// remain exact source bytes.
+pub dump_workspace_declarations :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic: ^Semantic_Workspace,
+    output: ^compiler_text.Builder,
+) {
+    for package_index: usize = 0;
+        package_index < semantic.packages.length;
+        package_index += 1 {
+        semantic_package := &semantic.packages.data[package_index]
+        compiler_text.append_text(output, "semantic-package ")
+        compiler_text.append_unsigned(output, package_index)
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_unsigned(output, semantic_package.scopes.length)
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_unsigned(output, semantic_package.symbols.length)
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_unsigned(output, semantic_package.imports.length)
+        compiler_text.append_byte(output, cast[u8]('\n'))
+
+        for file_index: usize = 0;
+            file_index < semantic_package.files.length;
+            file_index += 1 {
+            semantic_file := semantic_package.files.data[file_index]
+            compiler_text.append_text(output, "file-scope ")
+            compiler_text.append_unsigned(output, package_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](semantic_file.scope.value),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_bytes(
+                output,
+                relative_file_name(
+                    graph,
+                    semantic_package.workspace_package,
+                    semantic_file.file_index,
+                ),
+            )
+            compiler_text.append_byte(output, cast[u8]('\n'))
+        }
+
+        for symbol_index: usize = 0;
+            symbol_index < semantic_package.symbols.length;
+            symbol_index += 1 {
+            symbol := &semantic_package.symbols.data[symbol_index]
+            compiler_text.append_text(output, "symbol ")
+            compiler_text.append_unsigned(output, package_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(output, symbol_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](symbol.scope.value),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_bytes(
+                output,
+                relative_file_name(
+                    graph,
+                    semantic_package.workspace_package,
+                    symbol.syntax.file_index,
+                ),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_bytes(
+                output,
+                symbol_name_bytes(graph, semantic_package, symbol),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_text(output, symbol_kind_text(symbol.kind))
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_text(output, visibility_text(symbol.visibility))
+            compiler_text.append_byte(output, cast[u8](' '))
+            append_bool(output, symbol.flags.is_thread_local)
+            append_bool(output, symbol.flags.is_foreign)
+            append_bool(output, symbol.flags.exported)
+            append_bool(output, symbol.flags.parametric)
+            compiler_text.append_byte(output, cast[u8](' '))
+            if symbol.has_foreign_provider {
+                compiler_text.append_bytes(
+                    output,
+                    source_bytes(
+                        graph,
+                        semantic_package.workspace_package,
+                        symbol.syntax.file_index,
+                        symbol.foreign_provider_range,
+                    ),
+                )
+            } else {
+                compiler_text.append_byte(output, cast[u8]('-'))
+            }
+            compiler_text.append_byte(output, cast[u8](' '))
+            if symbol.has_linker_name {
+                compiler_text.append_bytes(
+                    output,
+                    source_bytes(
+                        graph,
+                        semantic_package.workspace_package,
+                        symbol.syntax.file_index,
+                        symbol.linker_name_range,
+                    ),
+                )
+            } else {
+                compiler_text.append_byte(output, cast[u8]('-'))
+            }
+            compiler_text.append_byte(output, cast[u8]('\n'))
+        }
+
+        for import_index: usize = 0;
+            import_index < semantic_package.imports.length;
+            import_index += 1 {
+            binding := semantic_package.imports.data[import_index]
+            edge := &graph.imports.data[binding.graph_import_index]
+            compiler_text.append_text(output, "import-binding ")
+            compiler_text.append_unsigned(output, package_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](binding.symbol.value),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_bytes(
+                output,
+                memory.owned_string_bytes(&edge.path),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](edge.imported_package.value),
+            )
+            compiler_text.append_byte(output, cast[u8]('\n'))
+        }
+    }
+}
+
+render_semantic_message :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    diagnostic: ^Semantic_Diagnostic,
+    output: ^compiler_text.Builder,
+) {
+    switch diagnostic.code {
+    case .duplicate_declaration:
+        compiler_text.append_text(output, "duplicate declaration of '")
+        compiler_text.append_bytes(
+            output,
+            source_bytes(
+                graph,
+                diagnostic.package_id,
+                diagnostic.file_index,
+                diagnostic.range,
+            ),
+        )
+        compiler_text.append_text(output, "' in the same ")
+        compiler_text.append_text(output, scope_kind_text(diagnostic.scope_kind))
+        compiler_text.append_text(output, " scope")
+    case .previous_declaration:
+        compiler_text.append_text(output, "previous declaration is here")
+    case .thread_local_non_variable:
+        compiler_text.append_text(
+            output,
+            "thread_local is valid only on a package variable declaration",
+        )
+    case .parametric_non_type_or_procedure:
+        compiler_text.append_text(
+            output,
+            "parametric parameters are valid only on type and procedure declarations",
+        )
+    case .linker_name_non_native:
+        compiler_text.append_text(
+            output,
+            "a linker symbol name is valid only on a foreign or exported procedure",
+        )
+    case .grouped_type:
+        compiler_text.append_text(
+            output,
+            "type declaration requires one binding name",
+        )
+    case .grouped_procedure:
+        compiler_text.append_text(
+            output,
+            "procedure declaration requires one binding name",
+        )
+    }
+}
+
+// render_workspace_diagnostics appends exact bootstrap-style source messages
+// after graph diagnostics. Every message is assembled transiently from fixed
+// text plus the borrowed declaration spelling.
+pub render_workspace_diagnostics :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic: ^Semantic_Workspace,
+    output: ^compiler_text.Builder,
+) {
+    for index: usize = 0; index < semantic.diagnostics.length; index += 1 {
+        diagnostic := &semantic.diagnostics.data[index]
+        message: compiler_text.Builder
+        compiler_text.init(&message)
+        render_semantic_message(graph, diagnostic, &message)
+        compiler_diagnostic.render_message_bytes(
+            source_file(
+                graph,
+                diagnostic.package_id,
+                diagnostic.file_index,
+            ),
+            diagnostic.severity,
+            diagnostic.range,
+            compiler_text.view(&message),
+            output,
+        )
+        compiler_text.destroy(&message)
+    }
+}

@@ -1,9 +1,11 @@
 // Draft-written staging driver for the self-hosted compiler frontend.
 //
 // This executable owns the replaced lexical, concrete-syntax, folder-package,
-// and recursive import-graph phases. `lex` and `syntax` load one source file;
-// `package-syntax` selects and parses one package; `workspace-syntax` resolves
-// explicitly configured roots and every reachable import. Every command
+// recursive import-graph, and declaration-name phases. `lex` and `syntax` load
+// one source file; `package-syntax` selects and parses one package;
+// `workspace-syntax` resolves explicitly configured roots and every reachable
+// import; `workspace-declarations` additionally publishes package declarations
+// and file-local alias bindings. Every command
 // renders the same stdout/stderr bytes and exit status as its C++ bootstrap
 // oracle. Keeping the commands phase-bounded makes bootstrap replacement
 // measurable; later semantic slices can join this driver without placing LLVM
@@ -18,6 +20,7 @@ package draftc_next
 import core/array
 import core/os
 import compiler/diagnostic as compiler_diagnostic
+import compiler/sema as compiler_sema
 import compiler/source as compiler_source
 import compiler/syntax as compiler_syntax
 import compiler/text as compiler_text
@@ -311,6 +314,78 @@ run_workspace_syntax :: proc(
     return 0 if succeeded else 1
 }
 
+// run_workspace_declarations extends the canonical graph transaction through
+// the first semantic name-set boundary. A graph failure publishes the same
+// partial graph and diagnostics as workspace-syntax and never enters semantics.
+// A successful graph remains alive until every borrowed declaration spelling,
+// dump row, and semantic diagnostic has been rendered.
+run_workspace_declarations :: proc(
+    root_package, workspace_directory, core_directory: string,
+    core_identity, file_tag: string,
+    dependencies: []compiler_workspace.Dependency_Mapping,
+) -> int {
+    graph: compiler_workspace.Workspace_Graph
+    graph_succeeded := compiler_workspace.load_workspace(
+        &graph,
+        root_package,
+        compiler_workspace.Workspace_Options{
+            workspace_directory = workspace_directory,
+            core_directory = core_directory,
+            core_content_identity = core_identity,
+            dependencies = dependencies,
+            package_options = compiler_workspace.Load_Options{
+                file_tag = file_tag,
+            },
+        },
+    )
+    defer compiler_workspace.destroy_workspace_graph(&graph)
+
+    semantic: compiler_sema.Semantic_Workspace
+    semantic_succeeded := compiler_sema.collect_workspace_declarations(
+        &graph,
+        &semantic,
+    )
+    defer compiler_sema.destroy_semantic_workspace(&semantic)
+
+    standard_output: compiler_text.Builder
+    diagnostic_output: compiler_text.Builder
+    compiler_text.init(&standard_output)
+    compiler_text.init(&diagnostic_output)
+    defer compiler_text.destroy(&diagnostic_output)
+    defer compiler_text.destroy(&standard_output)
+
+    compiler_workspace.dump_workspace_graph(&graph, &standard_output)
+    compiler_workspace.render_workspace_diagnostics(
+        &graph,
+        &diagnostic_output,
+    )
+    if graph_succeeded {
+        compiler_sema.dump_workspace_declarations(
+            &graph,
+            &semantic,
+            &standard_output,
+        )
+        compiler_sema.render_workspace_diagnostics(
+            &graph,
+            &semantic,
+            &diagnostic_output,
+        )
+    }
+    if os.write_all(
+        os.standard_output,
+        compiler_text.view(&standard_output),
+    ) != .none {
+        return 1
+    }
+    if os.write_all(
+        os.standard_error,
+        compiler_text.view(&diagnostic_output),
+    ) != .none {
+        return 1
+    }
+    return 0 if graph_succeeded && semantic_succeeded else 1
+}
+
 // main accepts only implemented phases so an unimplemented command cannot
 // silently fall back to the bootstrap or claim self-hosted coverage.
 main :: proc() -> int {
@@ -327,9 +402,13 @@ main :: proc() -> int {
         target_selector_valid(arguments[4]) {
         return run_package_syntax(arguments[2], arguments[4])
     }
+    workspace_syntax_command := len(arguments) >= 2 &&
+        text_equal(arguments[1], "workspace-syntax")
+    workspace_declarations_command := len(arguments) >= 2 &&
+        text_equal(arguments[1], "workspace-declarations")
     if len(arguments) >= 11 &&
         (len(arguments) - 11) % 4 == 0 &&
-        text_equal(arguments[1], "workspace-syntax") &&
+        (workspace_syntax_command || workspace_declarations_command) &&
         text_equal(arguments[3], "--workspace") &&
         text_equal(arguments[5], "--core") &&
         text_equal(arguments[7], "--core-identity") &&
@@ -356,7 +435,17 @@ main :: proc() -> int {
             argument_index += 4
         }
         if valid {
-            return run_workspace_syntax(
+            if workspace_syntax_command {
+                return run_workspace_syntax(
+                    arguments[2],
+                    arguments[4],
+                    arguments[6],
+                    arguments[8],
+                    arguments[10],
+                    array.view(&dependencies),
+                )
+            }
+            return run_workspace_declarations(
                 arguments[2],
                 arguments[4],
                 arguments[6],
@@ -368,7 +457,7 @@ main :: proc() -> int {
     }
     write_error := os.write_text_all(
         os.standard_error,
-        "usage:\n  draftc-next lex <file.draft>\n  draftc-next syntax <file.draft>\n  draftc-next package-syntax <package> --target <selector>\n  draftc-next workspace-syntax <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n",
+        "usage:\n  draftc-next lex <file.draft>\n  draftc-next syntax <file.draft>\n  draftc-next package-syntax <package> --target <selector>\n  draftc-next workspace-syntax <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n  draftc-next workspace-declarations <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n",
     )
     if write_error != .none {
         return 1
