@@ -42,7 +42,8 @@ gate.
    layouts, package/member conditional choices, and final named constants as
    individual products. Forward type aliases and type-valued constant uses add
    exact `SymbolId` edges; aggregate layout adds exact type-facet edges; a
-   selected package branch appends only its new declarations and conditions.
+   selected package branch appends only its new declarations and immediately
+   indexes their condition, type, layout, and constant products.
    Every declaration task reads one frozen patch-enabled semantic prefix and
    owns only appended rows, exact replacements of collected type/symbol rows,
    and private diagnostics. Blocked attempts discard that task output; complete

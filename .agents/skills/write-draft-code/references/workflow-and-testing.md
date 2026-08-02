@@ -552,8 +552,9 @@ recursive import-graph loading through `workspace-syntax`, and package
 declarations plus file-local import aliases through `workspace-declarations`.
 `workspace-public-names` adds direct unconditional public declarations and
 two-part qualified lookup through those aliases. `workspace-target-declarations`
-selects the target-fact-only package `when` frontier and rebuilds that public
-view. It is a build-tree development artifact, not an installed public command:
+selects the package `when` frontier through target facts and demand-driven local
+scalar constant products, then rebuilds that public view. It is a build-tree
+development artifact, not an installed public command:
 
 ```sh
 cmake --build build --target \
@@ -606,10 +607,13 @@ payloads remain outside that gate. The target-declaration differential replays
 production ConditionalSelections through the source collector, then compares
 Draft's target facts, condition order, appended Symbol IDs/categories/flags,
 selected public/import names, all four profiles, and earlier failures. It also
-requires a named-constant condition to fail closed because general compile-time
-dependency products have not moved yet. Keep the bootstrap path until a
-replacement phase has this oracle; passing focused Draft tests alone is not
-replacement evidence.
+checks forward and chained local constants, target-derived named values, named
+feature strings, short-circuit validation, selected-branch constants feeding
+nested conditions, dormant unrelated constants, and fail-closed demanded
+arithmetic/cycles. Arithmetic and aggregate values, imported constants, types,
+and compile-time procedures remain outside this staging evaluator. Keep the
+bootstrap path until a replacement phase has this oracle; passing focused Draft
+tests alone is not replacement evidence.
 
 For a frontend performance investigation, build the two explicitly requested
 standalone targets from a Release CMake tree, then run the comparison on one

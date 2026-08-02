@@ -94,11 +94,17 @@ demand described below.
 
 Package and member `when` conditions also have one-site producers. The
 coordinator publishes a completed package selection and appends only the chosen
-branch before extending the dynamic product graph. For aggregate members, a
-syntax-only scan records the initially reachable condition frontier without
-declaring members. A member packet waits on those exact products; if a selected
-false branch reveals an `else when`, the private member attempt reports that
-site by `SyntaxReference`, the coordinator appends its condition product, and
+branch before extending the dynamic product graph. That source mutation indexes
+the complete newly visible condition, declaration-type, natural-layout, and
+constant frontier in the same coordinator publication step, then extends the
+waiting package-name barrier with every new row. A nested condition can
+therefore report a sibling selected-branch constant as an exact dependency,
+and the barrier cannot close over an incomplete selected declaration. For
+aggregate members, a syntax-only scan records the initially reachable condition
+frontier without declaring members. A member packet waits on those exact
+products; if a selected false branch reveals an `else when`, the private member
+attempt reports that site by `SyntaxReference`, the coordinator appends its
+condition product, and
 only then retries the packet. Unselected branches remain opaque. The completed
 condition frontier feeds `TypeMembers`; `TypeMemberTypes` depends on that stable
 namespace and may add its own exact declaration, constant, generic-demand, or

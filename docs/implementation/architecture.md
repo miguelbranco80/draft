@@ -92,15 +92,22 @@ binding one contiguous source-ordered span of those references. Two-part
 cross-package reference without copying a name or creating a typed proxy.
 Imports themselves remain outside package scope, so they cannot re-export
 names. `workspace-target-declarations` then records each package-level `when`,
-evaluates the target-fact boolean subset, and appends exactly one selected
-declaration list to the existing package scope. Initial Symbol IDs remain
-stable; nested `else when` rows enter a later deterministic materialization
-round. Public alias spans are rebuilt from that selected source table. This is
-still a source-name view, not the canonical typed interface: named constants or
-compile-time procedures in conditions, ambiguous constant/type aliases,
-interface types/constants/contracts, and type assignment remain later semantic
-products. The staging executable is deliberately absent from the install set
-until a coherent public compiler command surface exists.
+indexes visible local scalar constants as stable source-ordered products, and
+evaluates only the values demanded by a condition. An unpublished name becomes
+an explicit product edge rather than a recursive evaluator call; forward chains
+therefore publish each value once, cycles remain a visible stalled graph, and an
+unrelated unsupported constant stays dormant. The supported scalar vocabulary
+is the earlier target facts, known feature queries, boolean/string/unsigned
+literals, boolean composition, categorical equality, and unsigned comparisons.
+Exactly one selected declaration list is appended to the existing package
+scope. Initial Symbol IDs remain stable; nested `else when` rows enter a later
+deterministic materialization round. Public alias spans are rebuilt from that
+selected source table. This is still a source-name view, not the canonical typed
+interface: arithmetic and aggregate constants, imported constants, compile-time
+procedures in conditions, ambiguous constant/type classification, interface
+types/constants/contracts, and type assignment remain later semantic products.
+The staging executable is deliberately absent from the install set until a
+coherent public compiler command surface exists.
 
 Replacement proceeds at phase boundaries rather than by mixing C++ and Draft
 inside a phase. C++ `draftc lex` and `draftc syntax` remain independent single-
@@ -135,14 +142,20 @@ explicitly absent on both sides of this earlier gate.
 
 The target-declaration differential obtains final condition decisions from the
 production semantic product graph, replays them through the production source
-collector, and compares those rows with Draft's direct evaluator. It checks the
+collector, and compares those rows with Draft's product evaluator. It checks the
 four versioned target fact sets, categorical and unsigned comparisons, guarded
 `has_feature`, boolean composition, selected visibility/native flags, stable
-symbol prefixes, selected public/import views, and earlier-phase failures. The
-real staging graph exercises both sides of core/c_abi's target branch. Draft
-rejects a named-constant condition explicitly at this boundary rather than
-guessing a branch; general compile-time dependency evaluation is the next
-semantic product slice.
+symbol prefixes, selected public/import views, and earlier-phase failures. Its
+named-value fixture covers forward and chained local dependencies, target-
+derived categorical and numeric values, a named feature string, short-circuit
+type checking, selected-branch constants feeding nested conditions, and an
+unrelated unsupported arithmetic constant which remains dormant. That fixture
+also guards the production scheduler rule that a selected declaration frontier
+must receive condition, type, layout, and constant product identities before
+the package-name barrier can close. Cyclic or demanded out-of-vocabulary
+constants fail explicitly without selecting a branch. The real staging graph
+exercises both sides of core/c_abi's target branch. General constant evaluation
+and typed package interfaces are the next semantic product slices.
 
 The staging graph uses physical core source because the C++ bootstrap must
 compile `draftc-next` before it can run. The installed bootstrap's immutable

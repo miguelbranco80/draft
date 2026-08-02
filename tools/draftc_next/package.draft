@@ -7,8 +7,9 @@
 // import; `workspace-declarations` additionally publishes package declarations
 // and file-local alias bindings; `workspace-public-names` projects target
 // package public declarations beneath those aliases and qualifies two-part
-// imported-name lookup; `workspace-target-declarations` materializes the
-// supported target-only package `when` frontier and rebinds that public view.
+// imported-name lookup; `workspace-target-declarations` materializes package
+// `when` through target facts and demand-driven local scalar constant products,
+// then rebinds that public view.
 // Every command
 // renders the same stdout/stderr bytes and exit status as its C++ bootstrap
 // oracle. Keeping the commands phase-bounded makes bootstrap replacement
@@ -479,10 +480,11 @@ run_workspace_public_names :: proc(
 }
 
 // run_workspace_target_declarations preserves the earlier graph/declaration
-// prefix, then selects target-fact package `when` regions, appends their symbols
-// without changing an unconditional Symbol_Id, and rebuilds public alias spans
-// from the chosen declaration tables. The immutable graph remains alive for
-// every borrowed source spelling through the final writes.
+// prefix, then selects package `when` regions through target facts and local
+// scalar constant dependencies, appends their symbols without changing an
+// unconditional Symbol_Id, and rebuilds public alias spans from the chosen
+// declaration tables. The immutable graph remains alive for every borrowed
+// source spelling and product value through the final writes.
 run_workspace_target_declarations :: proc(
     root_package, workspace_directory, core_directory: string,
     core_identity, file_tag: string,

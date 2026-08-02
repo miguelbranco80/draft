@@ -4148,9 +4148,12 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
     }
 
     // A completed package-level condition publishes its boolean selection and
-    // appends only the chosen branch to the retained declaration table. New
-    // symbols and nested `else when` sites receive products when PackageNameSet
-    // next re-enters; no authored declaration or earlier branch is rebuilt.
+    // appends only the chosen branch to the retained declaration table. Index
+    // the complete newly visible product frontier before another wave is
+    // frozen. In particular, a nested condition may name a constant declared
+    // beside it in the selected branch; publishing only the condition row would
+    // let that task run before its ConstantValue dependency had an identity.
+    // No authored declaration or earlier branch is rebuilt.
     for (std::size_t task_index = 0; task_index < wave.products.size();
          ++task_index) {
       const SemanticProductId product = wave.products[task_index];
@@ -4188,29 +4191,65 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           package.declaration_discovery.package, diagnostics);
       PackageSemanticProducts &package_products =
           result.semantic_products.packages[owner.value];
+      const std::size_t previous_declaration_type_count =
+          package_products.declaration_types.size();
+      const std::size_t previous_natural_layout_count =
+          package_products.natural_layouts.size();
       const std::size_t previous_condition_count =
           package_products.conditions.size();
-      if (!append_package_condition_products(
-              result, package_products.declaration_inputs, owner, package,
-              diagnostics)) {
+      const std::size_t previous_constant_count =
+          package_products.constants.size();
+      bool appended = append_package_condition_products(
+          result, package_products.declaration_inputs, owner, package,
+          diagnostics);
+      if (appended) {
+        appended = append_package_type_products(
+            result, package_products.declaration_inputs, owner, package,
+            diagnostics);
+      }
+      if (appended) {
+        appended = append_package_constant_products(
+            result, package_products.declaration_inputs, owner, package,
+            diagnostics);
+      }
+      if (!appended) {
         return false;
       }
-      // A nested `else when` row did not exist when PackageNameSet last
-      // blocked. Attach each newly appended condition before publishing this
-      // frozen wave; otherwise both the condition and the source-mutating name
-      // barrier become ready together, and the barrier could observe a branch
-      // which has not yet been selected and materialized.
-      if (package_products.conditions.size() > previous_condition_count) {
-        const std::span<const SemanticProductId> new_conditions(
-            package_products.conditions.data() + previous_condition_count,
-            package_products.conditions.size() - previous_condition_count);
+
+      // PackageNameSet blocked on the old frontier. Extend it with every row
+      // introduced by this source mutation before publishing the frozen wave.
+      // Attaching only nested conditions would let the barrier close while a
+      // sibling declaration type, layout, or constant was still incomplete;
+      // attaching none would let it race a newly revealed `else when` branch.
+      std::vector<SemanticProductId> new_frontier;
+      new_frontier.insert(
+          new_frontier.end(),
+          package_products.declaration_types.begin() +
+              static_cast<std::ptrdiff_t>(previous_declaration_type_count),
+          package_products.declaration_types.end());
+      new_frontier.insert(
+          new_frontier.end(),
+          package_products.natural_layouts.begin() +
+              static_cast<std::ptrdiff_t>(previous_natural_layout_count),
+          package_products.natural_layouts.end());
+      new_frontier.insert(
+          new_frontier.end(),
+          package_products.conditions.begin() +
+              static_cast<std::ptrdiff_t>(previous_condition_count),
+          package_products.conditions.end());
+      new_frontier.insert(
+          new_frontier.end(),
+          package_products.constants.begin() +
+              static_cast<std::ptrdiff_t>(previous_constant_count),
+          package_products.constants.end());
+      if (!new_frontier.empty()) {
         std::string dependency_error;
         if (!extend_waiting_semantic_product_dependencies(
                 result.semantic_graph, package_products.name_set,
-                new_conditions, dependency_error)) {
+                new_frontier, dependency_error)) {
           diagnostics.error(
               SourceRange::invalid(),
-              "cannot extend package name-set condition dependencies: " +
+              "cannot extend package name-set declaration dependencies: " +
                   dependency_error);
           return false;
         }

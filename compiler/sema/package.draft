@@ -5,15 +5,16 @@
 // type and body work may read: a package scope shared by every source file, one
 // child file scope per parsed Draft file, ordinary declarations in canonical
 // file/source order, and import aliases bound to the exact canonical graph edge
-// selected for that ImportClause. Target-condition materialization records each
-// package-level `when`, evaluates the supported target-fact boolean subset, and
-// appends exactly one branch to the same package scope without rebuilding an
-// earlier symbol. A subsequent operation projects the resulting direct public
+// selected for that ImportClause. Target-condition materialization gives each
+// package-level `when` and visible local scalar constant one stable product row,
+// evaluates demanded values through explicit dependency edges, and appends
+// exactly one branch to the same package scope without rebuilding an earlier
+// symbol. A subsequent operation projects the resulting direct public
 // declarations into source-ordered imported-name rows, giving `alias.member` a
 // stable cross-package Symbol_Reference without copying spellings. This is
 // intentionally a source declaration-name view, not the canonical typed
-// package interface: named constants in conditions, ambiguous constant/type
-// aliases, types, constants, procedure contracts, and nominal members require
+// package interface: imported/general constants, ambiguous constant/type
+// classification, types, procedure contracts, and nominal members require
 // later semantic products.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
@@ -21,10 +22,10 @@
 // which must therefore outlive every lookup, dump, diagnostic render, and final
 // destroy. Symbol and Scope IDs are stable u32 table indices until destroy.
 // Package rows remain aligned with Workspace_Graph.packages, while file indices
-// remain aligned with each nested Package.files table. Conditional regions and
-// selections borrow syntax from those same files. Imported name spans are
-// contiguous per Import_Binding and retain references into the target package's
-// stable Symbol table.
+// remain aligned with each nested Package.files table. Conditional regions,
+// selections, and compile-time product values borrow syntax from those same
+// files. Imported name spans are contiguous per Import_Binding and retain
+// references into the target package's stable Symbol table.
 //
 // Collection follows the production C++ order exactly. All file scopes are
 // allocated before any names; imports occupy only their file scope; declarations
@@ -55,6 +56,7 @@ import compiler/workspace as compiler_workspace
 
 Invalid_Scope_Value :: ~cast[u32](0)
 Invalid_Symbol_Value :: ~cast[u32](0)
+Invalid_Compile_Time_Product_Value :: ~cast[u32](0)
 
 // Scope_Id is an index into one Semantic_Package.scopes table. The all-ones
 // value is the package scope's parent sentinel; IDs never cross package rows.
@@ -65,6 +67,14 @@ pub Scope_Id :: struct {
 // Symbol_Id is an index into one Semantic_Package.symbols table. The all-ones
 // value represents a diagnosed duplicate which published no binding.
 pub Symbol_Id :: struct {
+    value: u32,
+}
+
+// Compile_Time_Product_Id is an index into one
+// Semantic_Package.compile_time_products table. Product IDs never cross a
+// package row. The all-ones value means that a waiting product currently has
+// no prerequisite; it is not a table row or a diagnosed source failure.
+Compile_Time_Product_Id :: struct {
     value: u32,
 }
 
@@ -87,12 +97,22 @@ pub symbol_id_valid :: proc(id: Symbol_Id) -> bool {
     return id.value != Invalid_Symbol_Value
 }
 
+compile_time_product_id_valid :: proc(id: Compile_Time_Product_Id) -> bool {
+    return id.value != Invalid_Compile_Time_Product_Value
+}
+
 invalid_scope_id :: proc() -> Scope_Id {
     return Scope_Id{value = Invalid_Scope_Value}
 }
 
 invalid_symbol_id :: proc() -> Symbol_Id {
     return Symbol_Id{value = Invalid_Symbol_Value}
+}
+
+invalid_compile_time_product_id :: proc() -> Compile_Time_Product_Id {
+    return Compile_Time_Product_Id{
+        value = Invalid_Compile_Time_Product_Value,
+    }
 }
 
 // Scope_Kind is intentionally limited to the scopes established at declaration
@@ -217,6 +237,73 @@ pub Conditional_Selection :: struct {
     select_true: bool,
 }
 
+// Target_Condition_Value_Kind is the intentionally closed scalar domain moved
+// by the current self-hosted constant products. The categorical kinds remain
+// distinct even though their payload is text: target.os and target.arch cannot
+// compare merely because two alternatives have different spellings.
+Target_Condition_Value_Kind :: enum u8 {
+    invalid,
+    boolean,
+    unsigned_integer,
+    string_value,
+    architecture,
+    operating_system,
+    abi,
+    byte_order,
+    object_format,
+}
+
+// Target_Condition_Value owns no allocation. A textual value is either a
+// profile literal (profile_text) or a source-backed contextual/string spelling
+// (source_text); text_from_source selects the active borrowed view. Source
+// views borrow the Workspace_Graph for the complete semantic workspace
+// lifetime. Values are copied into completed constant products.
+Target_Condition_Value :: struct {
+    kind: Target_Condition_Value_Kind,
+    boolean: bool,
+    unsigned_integer: u64,
+    profile_text: string,
+    source_text: []u8,
+    text_from_source: bool,
+}
+
+// Compile_Time_Product_Kind distinguishes a named scalar constant value from a
+// package branch decision. Conditions use condition_index; constants use
+// symbol. The inactive identity field is invalid/zero and has no meaning.
+Compile_Time_Product_Kind :: enum u8 {
+    condition,
+    constant,
+}
+
+// Compile_Time_Product_State is monotonic. dormant constant rows preserve the
+// production source-order index without evaluating unrelated constants.
+// waiting rows are demanded and may name one exact unpublished prerequisite;
+// complete rows own one immutable scalar value or selected branch; error is
+// terminal. A blocked attempt records only its first missing value, then is
+// retried after that product completes, so the single dependency field is the
+// complete ready-edge set for the current attempt rather than hidden recursion.
+Compile_Time_Product_State :: enum u8 {
+    dormant,
+    waiting,
+    complete,
+    error,
+}
+
+// Compile_Time_Product is one stable row in Semantic_Package's append-only
+// compile-time table. Conditions are appended in discovered site order before
+// currently visible constant candidates; selected branches extend that same
+// order. dependency names another row in this table and never a Symbol_Id from
+// another package. value is meaningful only for a completed constant product.
+// The row owns no allocation and may move when its Dynamic table grows.
+Compile_Time_Product :: struct {
+    kind: Compile_Time_Product_Kind,
+    state: Compile_Time_Product_State,
+    symbol: Symbol_Id,
+    condition_index: usize,
+    dependency: Compile_Time_Product_Id,
+    value: Target_Condition_Value,
+}
+
 // Semantic_Package owns every collected row for one aligned workspace package.
 // graph_import_edges is a private source-order index built in one workspace-wide
 // graph scan; it avoids repeated global edge scans while aliases are collected.
@@ -230,6 +317,9 @@ pub Semantic_Package :: struct {
     imported_names: array.Dynamic[Imported_Name],
     conditional_declarations: array.Dynamic[Conditional_Declaration],
     conditional_selections: array.Dynamic[Conditional_Selection],
+    compile_time_products: array.Dynamic[Compile_Time_Product],
+    indexed_condition_count: usize,
+    indexed_compile_time_symbol_count: usize,
     unconditional_symbol_count: usize,
     graph_import_edges: array.Dynamic[usize],
 }
@@ -1180,6 +1270,9 @@ init_semantic_package :: proc(
     array.init(&semantic_package.imported_names)
     array.init(&semantic_package.conditional_declarations)
     array.init(&semantic_package.conditional_selections)
+    array.init(&semantic_package.compile_time_products)
+    semantic_package.indexed_condition_count = 0
+    semantic_package.indexed_compile_time_symbol_count = 0
     semantic_package.unconditional_symbol_count = 0
     array.init(&semantic_package.graph_import_edges)
 }
@@ -1191,6 +1284,7 @@ destroy_semantic_package :: proc(semantic_package: ^Semantic_Package) {
         array.destroy(&semantic_package.scopes.data[index].symbols)
     }
     array.destroy(&semantic_package.graph_import_edges)
+    array.destroy(&semantic_package.compile_time_products)
     array.destroy(&semantic_package.conditional_selections)
     array.destroy(&semantic_package.conditional_declarations)
     array.destroy(&semantic_package.imported_names)
@@ -1200,6 +1294,8 @@ destroy_semantic_package :: proc(semantic_package: ^Semantic_Package) {
     array.destroy(&semantic_package.scopes)
     semantic_package.workspace_package = compiler_workspace.Package_Id{}
     semantic_package.package_scope = invalid_scope_id()
+    semantic_package.indexed_condition_count = 0
+    semantic_package.indexed_compile_time_symbol_count = 0
     semantic_package.unconditional_symbol_count = 0
 }
 
@@ -1340,36 +1436,126 @@ pub select_builtin_target_facts :: proc(
     return (empty, false)
 }
 
-Target_Condition_Value_Kind :: enum u8 {
-    invalid,
-    boolean,
-    unsigned_integer,
-    string_value,
-    architecture,
-    operating_system,
-    abi,
-    byte_order,
-    object_format,
-}
-
-// Target_Condition_Value is the closed value domain of the target-only `when`
-// evaluator. A textual value is either a profile literal (`profile_text`) or a
-// source-backed contextual/string spelling (`source_text`); text_from_source
-// selects the active borrowed view. Keeping the two view types explicit avoids
-// manufacturing mutable-to-immutable conversions.
-Target_Condition_Value :: struct {
-    kind: Target_Condition_Value_Kind,
-    boolean: bool,
-    unsigned_integer: u64,
-    profile_text: string,
-    source_text: []u8,
-    text_from_source: bool,
-}
-
 invalid_target_condition_value :: proc() -> Target_Condition_Value {
     value: Target_Condition_Value
     value.kind = .invalid
     return value
+}
+
+// append_compile_time_product assigns the next stable package-local product
+// ID. Callers retain IDs rather than pointers because Dynamic growth may move
+// the table. The all-ones sentinel is kept outside the valid index domain.
+append_compile_time_product :: proc(
+    semantic_package: ^Semantic_Package,
+    product: Compile_Time_Product,
+) -> Compile_Time_Product_Id {
+    assert(semantic_package.compile_time_products.length <
+        cast[usize](Invalid_Compile_Time_Product_Value),
+        "compile-time product table exceeds u32 identity space")
+    id := Compile_Time_Product_Id{
+        value = cast[u32](semantic_package.compile_time_products.length),
+    }
+    array.append(&semantic_package.compile_time_products, product)
+    return id
+}
+
+// find_constant_product returns the unique source-row product for symbol.
+// Candidate rows are indexed before an evaluator may request one, so absence
+// means that the name is not a constant supported by this staging boundary.
+find_constant_product :: proc(
+    semantic_package: ^Semantic_Package,
+    symbol: Symbol_Id,
+) -> (Compile_Time_Product_Id, bool) {
+    for index: usize = 0;
+        index < semantic_package.compile_time_products.length;
+        index += 1 {
+        product := &semantic_package.compile_time_products.data[index]
+        if product.kind == .constant &&
+            product.symbol.value == symbol.value {
+            return (Compile_Time_Product_Id{value = cast[u32](index)}, true)
+        }
+    }
+    return (invalid_compile_time_product_id(), false)
+}
+
+// index_visible_compile_time_products extends the package product table after
+// initial collection and after each selected branch. Newly reachable condition
+// sites precede newly visible constants, matching the production work graph.
+// Constant candidates remain dormant until an expression demands them: this
+// narrow evaluator must not reject an unrelated valid Draft constant merely
+// because its aggregate, type, or procedural vocabulary has not moved yet.
+index_visible_compile_time_products :: proc(
+    semantic_package: ^Semantic_Package,
+) {
+    for semantic_package.indexed_condition_count <
+        semantic_package.conditional_declarations.length {
+        product: Compile_Time_Product
+        product.kind = .condition
+        product.state = .waiting
+        product.symbol = invalid_symbol_id()
+        product.condition_index = semantic_package.indexed_condition_count
+        product.dependency = invalid_compile_time_product_id()
+        append_compile_time_product(semantic_package, product)
+        semantic_package.indexed_condition_count += 1
+    }
+
+    for semantic_package.indexed_compile_time_symbol_count <
+        semantic_package.symbols.length {
+        symbol_index := semantic_package.indexed_compile_time_symbol_count
+        semantic_package.indexed_compile_time_symbol_count += 1
+        symbol := &semantic_package.symbols.data[symbol_index]
+        if symbol.scope.value != semantic_package.package_scope.value ||
+            (symbol.kind != .constant &&
+                symbol.kind != .unresolved_declaration) {
+            continue
+        }
+        product: Compile_Time_Product
+        product.kind = .constant
+        product.state = .dormant
+        product.symbol = Symbol_Id{value = cast[u32](symbol_index)}
+        product.dependency = invalid_compile_time_product_id()
+        append_compile_time_product(semantic_package, product)
+    }
+}
+
+// completed_constant_value is the sole local named-constant read available to
+// an evaluator attempt. It never evaluates recursively. A false result causes
+// the caller to return the exact Symbol_Id as a graph prerequisite.
+completed_constant_value :: proc(
+    semantic_package: ^Semantic_Package,
+    symbol: Symbol_Id,
+) -> (Target_Condition_Value, bool) {
+    (product_id, found) := find_constant_product(semantic_package, symbol)
+    if found {
+        product := &semantic_package.compile_time_products.data[
+            cast[usize](product_id.value)
+        ]
+        if product.state == .complete {
+            return (product.value, true)
+        }
+    }
+    return (invalid_target_condition_value(), false)
+}
+
+// demand_constant_product changes exactly one dormant constant to waiting and
+// returns its stable row. Already demanded or completed rows retain state. The
+// false result identifies an unsupported declaration category, not a scheduler
+// edge which may become ready later.
+demand_constant_product :: proc(
+    semantic_package: ^Semantic_Package,
+    symbol: Symbol_Id,
+) -> (Compile_Time_Product_Id, bool) {
+    (product_id, found) := find_constant_product(semantic_package, symbol)
+    if !found {
+        return (invalid_compile_time_product_id(), false)
+    }
+    product := &semantic_package.compile_time_products.data[
+        cast[usize](product_id.value)
+    ]
+    if product.state == .dormant {
+        product.state = .waiting
+    }
+    return (product_id, true)
 }
 
 target_condition_text_equal :: proc(
@@ -1657,7 +1843,8 @@ target_feature :: proc(
 
 // binary_operator finds the one infix token between the parser's two child
 // ranges. The parser has already established expression shape; this operation
-// deliberately recognizes only operators in the target-only subset.
+// deliberately recognizes only operators in the current scalar-constant
+// subset.
 binary_operator :: proc(
     tree: ^compiler_syntax.Syntax_Tree,
     left, right: ^compiler_syntax.Syntax_Node,
@@ -1675,14 +1862,15 @@ binary_operator :: proc(
 }
 
 // evaluate_target_condition_expression checks one syntax expression against
-// the closed target-only value domain. expected supplies contextual enum type
-// information to `.alternative` nodes. A valid result owns no memory and
-// borrows source spellings only for this command; invalid means the expression
-// requires a semantic product outside this phase or violates the target fact
-// types. Both logical operands are checked even though the computed value uses
+// the closed scalar domain. expected supplies contextual enum type information
+// to `.alternative` nodes. A name consumes only a completed local constant
+// product; an unpublished candidate writes its Symbol_Id to blocked_symbol and
+// returns invalid without evaluating that declaration recursively. All other
+// invalid results mean that syntax or types fall outside this staging subset.
+// Both logical operands are checked even though the computed value uses
 // short-circuit truth rules: Draft evaluation skips the dead operand, but its
-// source must still type-check and this staging boundary must not hide an
-// unsupported dependency behind `false &&` or `true ||`.
+// source must still type-check and this boundary must not hide an unsupported
+// or unpublished dependency behind `false &&` or `true ||`.
 evaluate_target_condition_expression :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     semantic_package: ^Semantic_Package,
@@ -1690,6 +1878,7 @@ evaluate_target_condition_expression :: proc(
     tree: ^compiler_syntax.Syntax_Tree,
     id: compiler_syntax.Node_Id,
     facts: ^Target_Facts,
+    blocked_symbol: ^Symbol_Id,
     expected: Target_Condition_Value_Kind = .invalid,
 ) -> Target_Condition_Value {
     node := compiler_syntax.syntax_tree_node(tree, id)
@@ -1737,6 +1926,39 @@ evaluate_target_condition_expression :: proc(
             return value
         }
         return invalid_target_condition_value()
+    case .name_expression:
+        name := node_source_bytes(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            id,
+        )
+        (symbol_id, found) := lookup_direct(
+            graph,
+            semantic_package,
+            semantic_package.package_scope,
+            name,
+        )
+        if !found {
+            return invalid_target_condition_value()
+        }
+        symbol := &semantic_package.symbols.data[cast[usize](symbol_id.value)]
+        if symbol.kind != .constant &&
+            symbol.kind != .unresolved_declaration {
+            return invalid_target_condition_value()
+        }
+        (value, complete) := completed_constant_value(
+            semantic_package,
+            symbol_id,
+        )
+        if complete {
+            return value
+        }
+        if !symbol_id_valid(blocked_symbol^) {
+            blocked_symbol^ = symbol_id
+        }
+        return invalid_target_condition_value()
     case .contextual_alternative_expression:
         if expected != .architecture && expected != .operating_system &&
             expected != .abi && expected != .byte_order &&
@@ -1782,6 +2004,7 @@ evaluate_target_condition_expression :: proc(
                 tree,
                 children[0],
                 facts,
+                blocked_symbol,
                 expected,
             )
         }
@@ -1798,6 +2021,7 @@ evaluate_target_condition_expression :: proc(
             tree,
             children[0],
             facts,
+            blocked_symbol,
             .boolean,
         )
         if operand.kind != .boolean {
@@ -1819,18 +2043,20 @@ evaluate_target_condition_expression :: proc(
         if !is_target_member || !bytes_equal_text(member, "has_feature") {
             return invalid_target_condition_value()
         }
-        argument := compiler_syntax.syntax_tree_node(tree, children[1])
-        (feature, valid_feature) := simple_string_literal(
+        argument := evaluate_target_condition_expression(
             graph,
             semantic_package,
             file_index,
             tree,
-            argument,
+            children[1],
+            facts,
+            blocked_symbol,
+            .string_value,
         )
-        if !valid_feature {
+        if argument.kind != .string_value || !argument.text_from_source {
             return invalid_target_condition_value()
         }
-        (enabled, known) := target_feature(facts, feature)
+        (enabled, known) := target_feature(facts, argument.source_text)
         if !known {
             return invalid_target_condition_value()
         }
@@ -1860,6 +2086,7 @@ evaluate_target_condition_expression :: proc(
                 tree,
                 children[0],
                 facts,
+                blocked_symbol,
                 .boolean,
             )
             if left.kind != .boolean {
@@ -1872,6 +2099,7 @@ evaluate_target_condition_expression :: proc(
                 tree,
                 children[1],
                 facts,
+                blocked_symbol,
                 .boolean,
             )
             if right.kind != .boolean {
@@ -1897,6 +2125,7 @@ evaluate_target_condition_expression :: proc(
                 tree,
                 children[1],
                 facts,
+                blocked_symbol,
             )
             left = evaluate_target_condition_expression(
                 graph,
@@ -1905,6 +2134,7 @@ evaluate_target_condition_expression :: proc(
                 tree,
                 children[0],
                 facts,
+                blocked_symbol,
                 right.kind,
             )
         } else {
@@ -1915,6 +2145,7 @@ evaluate_target_condition_expression :: proc(
                 tree,
                 children[0],
                 facts,
+                blocked_symbol,
             )
             right = evaluate_target_condition_expression(
                 graph,
@@ -1923,6 +2154,7 @@ evaluate_target_condition_expression :: proc(
                 tree,
                 children[1],
                 facts,
+                blocked_symbol,
                 left.kind,
             )
         }
@@ -1962,20 +2194,433 @@ evaluate_target_condition_expression :: proc(
     }
 }
 
-// materialize_workspace_target_declarations selects the supported target-only
-// package `when` frontier in deterministic rounds. Initial regions are in
-// canonical source order. Materializing one branch may append a nested `when`;
-// the growing loop visits that row later, matching the production fixed point
-// without rebuilding unconditional declarations or changing their Symbol_Ids.
+// first_ready_compile_time_product preserves the source replay boundary used by
+// this phase oracle. The earliest waiting condition may run when its current
+// edge is complete; while it is blocked, only demanded constant rows may run to
+// satisfy that edge. A later independent condition therefore cannot append its
+// branch before an earlier source condition. The production semantic executor
+// may evaluate independent products concurrently, but its migration oracle
+// replays published selections through the source collector in this canonical
+// order, which is also the stable Symbol_Id order owned by this staging view.
+// Dormant unrelated constants and terminal rows are skipped.
+first_ready_compile_time_product :: proc(
+    semantic_package: ^Semantic_Package,
+) -> (Compile_Time_Product_Id, bool) {
+    waiting_condition := invalid_compile_time_product_id()
+    for index: usize = 0;
+        index < semantic_package.compile_time_products.length;
+        index += 1 {
+        product := &semantic_package.compile_time_products.data[index]
+        if product.state != .waiting || product.kind != .condition {
+            continue
+        }
+        waiting_condition = Compile_Time_Product_Id{
+            value = cast[u32](index),
+        }
+        if !compile_time_product_id_valid(product.dependency) ||
+            semantic_package.compile_time_products.data[
+                cast[usize](product.dependency.value)
+            ].state == .complete {
+            return (waiting_condition, true)
+        }
+        break
+    }
+
+    // Do not cross an earlier blocked condition with another condition. Only
+    // named-value work can make its current prerequisite complete.
+    for index: usize = 0;
+        index < semantic_package.compile_time_products.length;
+        index += 1 {
+        product := &semantic_package.compile_time_products.data[index]
+        if product.state != .waiting || product.kind != .constant {
+            continue
+        }
+        if !compile_time_product_id_valid(product.dependency) ||
+            semantic_package.compile_time_products.data[
+                cast[usize](product.dependency.value)
+            ].state == .complete {
+            return (Compile_Time_Product_Id{value = cast[u32](index)}, true)
+        }
+    }
+    return (invalid_compile_time_product_id(), false)
+}
+
+compile_time_product_state_present :: proc(
+    semantic_package: ^Semantic_Package,
+    state: Compile_Time_Product_State,
+) -> bool {
+    for index: usize = 0;
+        index < semantic_package.compile_time_products.length;
+        index += 1 {
+        if semantic_package.compile_time_products.data[index].state == state {
+            return true
+        }
+    }
+    return false
+}
+
+// block_compile_time_product attaches the exact constant prerequisite returned
+// by an evaluator attempt. Indexing has already created every visible candidate
+// in source order. A missing row means the name is outside the supported local
+// scalar-constant boundary and is therefore a terminal expression failure.
+block_compile_time_product :: proc(
+    semantic_package: ^Semantic_Package,
+    product_id: Compile_Time_Product_Id,
+    symbol: Symbol_Id,
+) -> bool {
+    (dependency, found) := demand_constant_product(
+        semantic_package,
+        symbol,
+    )
+    if !found {
+        return false
+    }
+    semantic_package.compile_time_products.data[
+        cast[usize](product_id.value)
+    ].dependency = dependency
+    return true
+}
+
+// append_unsupported_condition_diagnostic reports the precise expression which
+// this staging evaluator cannot complete. The language itself has broader
+// constant evaluation; this diagnostic is an explicit self-hosting boundary,
+// never a guessed false branch.
+append_unsupported_condition_diagnostic :: proc(
+    semantic: ^Semantic_Workspace,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    range: compiler_source.Source_Range,
+) {
+    append_diagnostic(
+        semantic,
+        .error,
+        .unsupported_target_condition,
+        semantic_package.workspace_package,
+        file_index,
+        range,
+        .package_scope,
+    )
+}
+
+// run_named_scalar_constant_product evaluates exactly one declaration payload
+// against already completed scalar constants and target facts. It never calls
+// another declaration evaluator. A missing local value attaches one graph edge
+// and discards the provisional invalid result; only a complete attempt publishes
+// value. Grouped constants and the broader Draft constant vocabulary remain
+// outside this staging slice and fail only when a `when` actually demands them.
+run_named_scalar_constant_product :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    facts: ^Target_Facts,
+    semantic: ^Semantic_Workspace,
+    semantic_package: ^Semantic_Package,
+    workspace_package: ^compiler_workspace.Workspace_Package,
+    product_id: Compile_Time_Product_Id,
+) {
+    product_index := cast[usize](product_id.value)
+    product := semantic_package.compile_time_products.data[product_index]
+    assert(product.kind == .constant && product.state == .waiting,
+        "constant product is not ready to run")
+    assert(cast[usize](product.symbol.value) <
+        semantic_package.symbols.length,
+        "constant product symbol exceeds semantic table")
+    symbol := &semantic_package.symbols.data[
+        cast[usize](product.symbol.value)
+    ]
+    source_row := compiler_workspace.file_at(
+        &workspace_package.loaded,
+        symbol.syntax.file_index,
+    )
+    tree := &source_row.tree
+    declaration := compiler_syntax.syntax_tree_node(tree, symbol.syntax.node)
+    (payload_id, has_payload) := declaration_payload(tree, symbol.syntax.node)
+    valid_declaration := declaration.kind == .declaration && has_payload
+    if valid_declaration {
+        children := compiler_syntax.syntax_tree_children(
+            tree,
+            symbol.syntax.node,
+        )
+        valid_declaration = len(children) != 0 &&
+            pattern_name_count(tree, children[0]) == 1
+    }
+    if !valid_declaration {
+        append_unsupported_condition_diagnostic(
+            semantic,
+            semantic_package,
+            symbol.syntax.file_index,
+            declaration.range,
+        )
+        semantic_package.compile_time_products.data[
+            product_index
+        ].state = .error
+        return
+    }
+
+    payload := compiler_syntax.syntax_tree_node(tree, payload_id)
+    blocked_symbol := invalid_symbol_id()
+    value := evaluate_target_condition_expression(
+        graph,
+        semantic_package,
+        symbol.syntax.file_index,
+        tree,
+        payload_id,
+        facts,
+        &blocked_symbol,
+    )
+    if value.kind == .invalid {
+        if symbol_id_valid(blocked_symbol) &&
+            block_compile_time_product(
+                semantic_package,
+                product_id,
+                blocked_symbol,
+            ) {
+            return
+        }
+        append_unsupported_condition_diagnostic(
+            semantic,
+            semantic_package,
+            symbol.syntax.file_index,
+            payload.range,
+        )
+        semantic_package.compile_time_products.data[
+            product_index
+        ].state = .error
+        return
+    }
+
+    // Reacquire the row after evaluation instead of retaining a pointer across
+    // helper calls. The current attempt does not append products, but this rule
+    // keeps pointer stability explicit if indexing later moves to ready waves.
+    semantic_package.compile_time_products.data[product_index].value = value
+    semantic_package.compile_time_products.data[
+        product_index
+    ].dependency = invalid_compile_time_product_id()
+    semantic_package.compile_time_products.data[
+        product_index
+    ].state = .complete
+}
+
+// run_package_condition_product evaluates and publishes one package `when`.
+// A completed condition appends exactly its selected declaration list to the
+// retained package scope. Newly visible symbols and nested `else when` sites are
+// indexed by the coordinator before the next product executes, preserving the
+// unconditional Symbol_Id prefix and the production continuation ordering.
+run_package_condition_product :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    facts: ^Target_Facts,
+    semantic: ^Semantic_Workspace,
+    semantic_package: ^Semantic_Package,
+    workspace_package: ^compiler_workspace.Workspace_Package,
+    product_id: Compile_Time_Product_Id,
+) {
+    product_index := cast[usize](product_id.value)
+    product := semantic_package.compile_time_products.data[product_index]
+    assert(product.kind == .condition && product.state == .waiting,
+        "condition product is not ready to run")
+    assert(product.condition_index <
+        semantic_package.conditional_declarations.length,
+        "condition product exceeds declaration table")
+    region := semantic_package.conditional_declarations.data[
+        product.condition_index
+    ]
+    assert(!region.materialized,
+        "conditional declaration was materialized twice")
+    source_row := compiler_workspace.file_at(
+        &workspace_package.loaded,
+        region.syntax.file_index,
+    )
+    tree := &source_row.tree
+    when_node := compiler_syntax.syntax_tree_node(tree, region.syntax.node)
+    children := compiler_syntax.syntax_tree_children(tree, region.syntax.node)
+    if when_node.kind != .when_declaration || len(children) < 2 {
+        append_unsupported_condition_diagnostic(
+            semantic,
+            semantic_package,
+            region.syntax.file_index,
+            when_node.range,
+        )
+        semantic_package.compile_time_products.data[
+            product_index
+        ].state = .error
+        return
+    }
+
+    condition_node := compiler_syntax.syntax_tree_node(tree, children[0])
+    blocked_symbol := invalid_symbol_id()
+    value := evaluate_target_condition_expression(
+        graph,
+        semantic_package,
+        region.syntax.file_index,
+        tree,
+        children[0],
+        facts,
+        &blocked_symbol,
+        .boolean,
+    )
+    if value.kind != .boolean {
+        if symbol_id_valid(blocked_symbol) &&
+            block_compile_time_product(
+                semantic_package,
+                product_id,
+                blocked_symbol,
+            ) {
+            return
+        }
+        append_unsupported_condition_diagnostic(
+            semantic,
+            semantic_package,
+            region.syntax.file_index,
+            condition_node.range,
+        )
+        semantic_package.compile_time_products.data[
+            product_index
+        ].state = .error
+        return
+    }
+
+    semantic_package.conditional_declarations.data[
+        product.condition_index
+    ].materialized = true
+    array.append(
+        &semantic_package.conditional_selections,
+        Conditional_Selection{
+            syntax = region.syntax,
+            select_true = value.boolean,
+        },
+    )
+    collector := Collector{
+        graph = graph,
+        semantic = semantic,
+        semantic_package = semantic_package,
+        workspace_package = workspace_package,
+    }
+    if value.boolean {
+        collect_declaration_list(
+            &collector,
+            tree,
+            region.syntax.file_index,
+            children[1],
+            region.scope,
+            region.collection_context,
+        )
+    } else if len(children) >= 3 {
+        alternative := compiler_syntax.syntax_tree_node(tree, children[2])
+        if alternative.kind == .when_declaration {
+            collect_item(
+                &collector,
+                tree,
+                region.syntax.file_index,
+                children[2],
+                region.scope,
+                region.collection_context,
+            )
+        } else {
+            collect_declaration_list(
+                &collector,
+                tree,
+                region.syntax.file_index,
+                children[2],
+                region.scope,
+                region.collection_context,
+            )
+        }
+    }
+    semantic_package.compile_time_products.data[
+        product_index
+    ].dependency = invalid_compile_time_product_id()
+    semantic_package.compile_time_products.data[
+        product_index
+    ].state = .complete
+}
+
+// diagnose_stalled_compile_time_products distinguishes a real dependency cycle
+// from a product already in terminal error. Every active constant is reachable
+// from some package condition, so the earliest waiting condition is the most
+// useful surface range. Falling back to a constant initializer protects the
+// invariant if a future caller explicitly demands a root constant.
+diagnose_stalled_compile_time_products :: proc(
+    semantic: ^Semantic_Workspace,
+    semantic_package: ^Semantic_Package,
+    workspace_package: ^compiler_workspace.Workspace_Package,
+) {
+    for index: usize = 0;
+        index < semantic_package.compile_time_products.length;
+        index += 1 {
+        product := &semantic_package.compile_time_products.data[index]
+        if product.state != .waiting || product.kind != .condition {
+            continue
+        }
+        region := semantic_package.conditional_declarations.data[
+            product.condition_index
+        ]
+        source_row := compiler_workspace.file_at(
+            &workspace_package.loaded,
+            region.syntax.file_index,
+        )
+        children := compiler_syntax.syntax_tree_children(
+            &source_row.tree,
+            region.syntax.node,
+        )
+        range := compiler_syntax.syntax_tree_node(
+            &source_row.tree,
+            region.syntax.node,
+        ).range
+        if len(children) != 0 {
+            range = compiler_syntax.syntax_tree_node(
+                &source_row.tree,
+                children[0],
+            ).range
+        }
+        append_unsupported_condition_diagnostic(
+            semantic,
+            semantic_package,
+            region.syntax.file_index,
+            range,
+        )
+        product.state = .error
+        return
+    }
+
+    for index: usize = 0;
+        index < semantic_package.compile_time_products.length;
+        index += 1 {
+        product := &semantic_package.compile_time_products.data[index]
+        if product.state != .waiting || product.kind != .constant {
+            continue
+        }
+        symbol := &semantic_package.symbols.data[
+            cast[usize](product.symbol.value)
+        ]
+        source_row := compiler_workspace.file_at(
+            &workspace_package.loaded,
+            symbol.syntax.file_index,
+        )
+        declaration := compiler_syntax.syntax_tree_node(
+            &source_row.tree,
+            symbol.syntax.node,
+        )
+        append_unsupported_condition_diagnostic(
+            semantic,
+            semantic_package,
+            symbol.syntax.file_index,
+            declaration.range,
+        )
+        product.state = .error
+        return
+    }
+}
+
+// materialize_workspace_target_declarations selects package `when` branches
+// through explicit condition and local named-scalar-constant products. Initial
+// sites and constant candidates are indexed in canonical source order. A named
+// value may depend on earlier or later local scalar constants, target fields,
+// known target.has_feature calls, literals, `!`, `&&`, `||`, categorical
+// equality, and unsigned comparisons. Strings remain valid values and feature
+// arguments, but Draft strings have no language equality operator.
 //
-// The accepted expression subset contains target fields, known
-// target.has_feature calls with simple literal arguments, boolean literals,
-// `!`, `&&`, `||`, categorical equality, and unsigned comparisons. Target
-// identity/file-tag strings are facts but Draft strings have no equality
-// operator, so they do not form a condition in this subset.
-// Named constants and general compile-time procedures remain a later product
-// graph. An expression outside this subset emits one source diagnostic and no
-// branch is guessed.
+// General arithmetic, aggregates, types, imported constants, and compile-time
+// procedures remain later products. Unsupported syntax emits one source
+// diagnostic and selects no branch. Cycles leave an explicit waiting graph and
+// fail at the earliest surface condition rather than recursing through source.
 pub materialize_workspace_target_declarations :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     facts: ^Target_Facts,
@@ -1994,117 +2639,54 @@ pub materialize_workspace_target_declarations :: proc(
         package_index += 1 {
         semantic_package := &semantic.packages.data[package_index]
         workspace_package := &graph.packages.data[package_index]
-        condition_index: usize = 0
-        for condition_index < semantic_package.conditional_declarations.length {
-            region := semantic_package.conditional_declarations.data[
-                condition_index
-            ]
-            assert(!region.materialized,
-                "conditional declaration was materialized twice")
-            source_row := compiler_workspace.file_at(
-                &workspace_package.loaded,
-                region.syntax.file_index,
-            )
-            tree := &source_row.tree
-            when_node := compiler_syntax.syntax_tree_node(
-                tree,
-                region.syntax.node,
-            )
-            children := compiler_syntax.syntax_tree_children(
-                tree,
-                region.syntax.node,
-            )
-            if when_node.kind != .when_declaration || len(children) < 2 {
-                append_diagnostic(
-                    semantic,
-                    .error,
-                    .unsupported_target_condition,
-                    semantic_package.workspace_package,
-                    region.syntax.file_index,
-                    when_node.range,
-                    .package_scope,
-                )
-                condition_index += 1
-                continue
-            }
-            condition_node := compiler_syntax.syntax_tree_node(
-                tree,
-                children[0],
-            )
-            value := evaluate_target_condition_expression(
-                graph,
+        for {
+            index_visible_compile_time_products(semantic_package)
+            (ready, found_ready) := first_ready_compile_time_product(
                 semantic_package,
-                region.syntax.file_index,
-                tree,
-                children[0],
-                facts,
-                .boolean,
             )
-            if value.kind != .boolean {
-                append_diagnostic(
-                    semantic,
+            if !found_ready {
+                if !compile_time_product_state_present(
+                    semantic_package,
+                    .waiting,
+                ) {
+                    break
+                }
+                if !compile_time_product_state_present(
+                    semantic_package,
                     .error,
-                    .unsupported_target_condition,
-                    semantic_package.workspace_package,
-                    region.syntax.file_index,
-                    condition_node.range,
-                    .package_scope,
-                )
-                condition_index += 1
-                continue
-            }
-
-            semantic_package.conditional_declarations.data[
-                condition_index
-            ].materialized = true
-            array.append(
-                &semantic_package.conditional_selections,
-                Conditional_Selection{
-                    syntax = region.syntax,
-                    select_true = value.boolean,
-                },
-            )
-            collector := Collector{
-                graph = graph,
-                semantic = semantic,
-                semantic_package = semantic_package,
-                workspace_package = workspace_package,
-            }
-            if value.boolean {
-                collect_declaration_list(
-                    &collector,
-                    tree,
-                    region.syntax.file_index,
-                    children[1],
-                    region.scope,
-                    region.collection_context,
-                )
-            } else if len(children) >= 3 {
-                alternative := compiler_syntax.syntax_tree_node(
-                    tree,
-                    children[2],
-                )
-                if alternative.kind == .when_declaration {
-                    collect_item(
-                        &collector,
-                        tree,
-                        region.syntax.file_index,
-                        children[2],
-                        region.scope,
-                        region.collection_context,
-                    )
-                } else {
-                    collect_declaration_list(
-                        &collector,
-                        tree,
-                        region.syntax.file_index,
-                        children[2],
-                        region.scope,
-                        region.collection_context,
+                ) {
+                    diagnose_stalled_compile_time_products(
+                        semantic,
+                        semantic_package,
+                        workspace_package,
                     )
                 }
+                break
             }
-            condition_index += 1
+
+            kind := semantic_package.compile_time_products.data[
+                cast[usize](ready.value)
+            ].kind
+            switch kind {
+            case .condition:
+                run_package_condition_product(
+                    graph,
+                    facts,
+                    semantic,
+                    semantic_package,
+                    workspace_package,
+                    ready,
+                )
+            case .constant:
+                run_named_scalar_constant_product(
+                    graph,
+                    facts,
+                    semantic,
+                    semantic_package,
+                    workspace_package,
+                    ready,
+                )
+            }
         }
     }
     if semantic.failed {
@@ -2773,7 +3355,7 @@ render_semantic_message :: proc(
     case .unsupported_target_condition:
         compiler_text.append_text(
             output,
-            "self-hosted target 'when' requires a supported target-fact boolean expression",
+            "self-hosted package 'when' requires a supported scalar constant expression",
         )
     }
 }

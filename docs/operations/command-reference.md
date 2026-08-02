@@ -327,10 +327,14 @@ graphs/constants/contracts, and deeper nominal members.
 `workspace-target-declarations` preserves that earlier output, then appends the
 selected target profile, package-condition decisions, selected source-symbol
 suffix, and rebuilt public/import view. Its current evaluator accepts target
-categorical and numeric facts, known `target.has_feature` calls with simple
-literal arguments, boolean literals/composition, categorical equality, and
-unsigned comparisons. A condition requiring a named constant, type, or
-compile-time procedure fails explicitly at this staging boundary. These are
+categorical and numeric facts, known `target.has_feature` calls, boolean,
+string, and unsigned literals, boolean composition, categorical equality, and
+unsigned comparisons. A condition may consume forward or chained local named
+constants over that same scalar vocabulary. Each demanded constant is an
+explicit product evaluated once against already published values; unrelated
+constants remain dormant and cycles fail without recursive evaluation.
+Arithmetic/aggregate constants, imported constants, types, and compile-time
+procedures still fail explicitly at this staging boundary. These are
 qualification commands rather than the public compiler. Public semantic
 compilation and later commands continue to use `build/draftc` until their own
 replacement gates are complete.
