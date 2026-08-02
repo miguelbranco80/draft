@@ -298,6 +298,11 @@ build/draftc-next workspace-public-names path/to/root-package \
   --core path/to/core --core-identity pinned-core-identity \
   --target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows \
   [--dependency prefix path/to/dependency pinned-content-identity]...
+build/draftc-next workspace-target-declarations path/to/root-package \
+  --workspace path/to/workspace \
+  --core path/to/core --core-identity pinned-core-identity \
+  --target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows \
+  [--dependency prefix path/to/dependency pinned-content-identity]...
 ```
 
 `package-syntax` prints the target-selected files in canonical bytewise order,
@@ -318,10 +323,17 @@ materialization, and typing. `workspace-public-names` appends each direct
 unconditional public declaration and each file-local alias's ordered members as
 stable defining package/symbol references. It exercises two-part
 `alias.member` lookup but omits conditional public declarations, typed interface
-graphs/constants/contracts, and deeper nominal members. These are qualification
-commands rather than the public compiler. Public semantic compilation and later
-commands continue to use `build/draftc` until their own replacement gates are
-complete.
+graphs/constants/contracts, and deeper nominal members.
+`workspace-target-declarations` preserves that earlier output, then appends the
+selected target profile, package-condition decisions, selected source-symbol
+suffix, and rebuilt public/import view. Its current evaluator accepts target
+categorical and numeric facts, known `target.has_feature` calls with simple
+literal arguments, boolean literals/composition, categorical equality, and
+unsigned comparisons. A condition requiring a named constant, type, or
+compile-time procedure fails explicitly at this staging boundary. These are
+qualification commands rather than the public compiler. Public semantic
+compilation and later commands continue to use `build/draftc` until their own
+replacement gates are complete.
 
 `check` runs the provider-free front end and semantic pipeline. If the program
 contains saved `...` expansions, it loads and revalidates them. It never starts

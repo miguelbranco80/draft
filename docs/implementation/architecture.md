@@ -91,11 +91,16 @@ binding one contiguous source-ordered span of those references. Two-part
 `alias.member` lookup first resolves the file-local alias, then returns that
 cross-package reference without copying a name or creating a typed proxy.
 Imports themselves remain outside package scope, so they cannot re-export
-names. This is a source-name view, not the canonical typed interface: it does
-not yet materialize conditional declarations, resolve ambiguous constant/type
-aliases, reconstruct interface types/constants/contracts, or assign types. The
-staging executable is deliberately absent from the install set until a coherent
-public compiler command surface exists.
+names. `workspace-target-declarations` then records each package-level `when`,
+evaluates the target-fact boolean subset, and appends exactly one selected
+declaration list to the existing package scope. Initial Symbol IDs remain
+stable; nested `else when` rows enter a later deterministic materialization
+round. Public alias spans are rebuilt from that selected source table. This is
+still a source-name view, not the canonical typed interface: named constants or
+compile-time procedures in conditions, ambiguous constant/type aliases,
+interface types/constants/contracts, and type assignment remain later semantic
+products. The staging executable is deliberately absent from the install set
+until a coherent public compiler command surface exists.
 
 Replacement proceeds at phase boundaries rather than by mixing C++ and Draft
 inside a phase. C++ `draftc lex` and `draftc syntax` remain independent single-
@@ -127,6 +132,17 @@ canonical targets, and member order. It covers the real compiler graph,
 workspace/dependency/core boundaries, all four target file selectors, and
 earlier graph/declaration failures. Conditional public declarations remain
 explicitly absent on both sides of this earlier gate.
+
+The target-declaration differential obtains final condition decisions from the
+production semantic product graph, replays them through the production source
+collector, and compares those rows with Draft's direct evaluator. It checks the
+four versioned target fact sets, categorical and unsigned comparisons, guarded
+`has_feature`, boolean composition, selected visibility/native flags, stable
+symbol prefixes, selected public/import views, and earlier-phase failures. The
+real staging graph exercises both sides of core/c_abi's target branch. Draft
+rejects a named-constant condition explicitly at this boundary rather than
+guessing a branch; general compile-time dependency evaluation is the next
+semantic product slice.
 
 The staging graph uses physical core source because the C++ bootstrap must
 compile `draftc-next` before it can run. The installed bootstrap's immutable
@@ -163,7 +179,7 @@ part of the C++ bootstrap and native backend; the Draft source, diagnostic,
 syntax, workspace, and semantic-name packages depend only on ordinary core
 allocation, filesystem, formatting, and OS facilities. Backend migration can
 happen later behind MIR/target interfaces without delaying source-to-qualified-
-name self-hosting.
+name and target-selection self-hosting.
 
 ```text
  Source/package loader

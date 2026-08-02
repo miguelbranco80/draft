@@ -191,8 +191,8 @@ boundary and no alternate-emitter fallback for unsupported operations.
 ## Self-hosted frontend staging limits
 
 Status: build-tree source, lexer, parser, folder-package, canonical import-graph,
-declaration-name, and unconditional qualified-name replacement; not a Draft
-language or public CLI limit.
+declaration-name, unconditional qualified-name, and target-conditional
+declaration replacement; not a Draft language or public CLI limit.
 
 On a supported native host, the build graph uses C++ `draftc` to produce an O2
 Draft executable named `draftc-next`. Its accepted commands are
@@ -206,11 +206,16 @@ additionally emits shared package declarations plus file-local aliases bound to
 canonical import targets. `workspace-public-names` additionally emits direct
 unconditional public symbols, contiguous per-alias imported-name spans, and
 stable target `(Package_Id, Symbol_Id)` references used by two-part qualified
-lookup. Conditional declaration materialization, typed dependency-interface
-reconstruction, deeper nominal member lookup, ambiguous constant/type
-resolution, type checking, elaboration, MIR, LLVM, artifacts, and linking have
-not moved to it yet. The C++ driver remains the public compiler and compatibility
-oracle.
+lookup. `workspace-target-declarations` selects package `when` branches whose
+conditions use only target categorical/numeric facts, known `has_feature`
+queries, boolean literals, boolean composition, and supported comparisons. It
+appends the chosen source declarations without rebuilding the unconditional
+Symbol-ID prefix, then rebuilds the public alias spans. General condition
+dependencies on named constants, types, or compile-time procedures, typed
+dependency-interface reconstruction, deeper nominal member lookup, ambiguous
+constant/type resolution, type checking, elaboration, MIR, LLVM, artifacts, and
+linking have not moved to it yet. The C++ driver remains the public compiler and
+compatibility oracle.
 
 The Draft lexer has the same token spellings, ranges, semicolon insertion,
 diagnostic rendering, stdout/stderr bytes, and exit behavior as the bootstrap
@@ -238,6 +243,12 @@ symbol references, canonical targets, alias locality, and source ordering for
 that earlier view. Conditional public names are deliberately filtered out of
 the oracle and Draft result until the self-hosted condition products exist; the
 view is not yet a serialized or typed package interface.
+The target-declaration differential replays the production compiler's published
+condition selections through its source collector and compares Draft's selected
+condition order, stable symbol suffix, source classification/flags, and rebuilt
+public/import view on all four profiles. The real compiler graph and explicit
+expression fixtures cover both selected branches, guarded architecture feature
+queries, earlier failures, and an explicit fail-closed named-constant condition.
 Embedded-core package rows and complete-file source overrides still use the
 bootstrap path; the staging graph currently accepts physical core source. Each
 later phase or source-provider transition must add its own focused tests and

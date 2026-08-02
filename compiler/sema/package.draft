@@ -5,20 +5,24 @@
 // type and body work may read: a package scope shared by every source file, one
 // child file scope per parsed Draft file, ordinary declarations in canonical
 // file/source order, and import aliases bound to the exact canonical graph edge
-// selected for that ImportClause. A subsequent operation projects the direct
-// unconditional public declarations of every target package into source-
-// ordered imported-name rows, giving `alias.member` a stable cross-package
-// Symbol_Reference without copying spellings. This is intentionally a source
-// declaration-name view, not the canonical typed package interface: ambiguous
-// constant/type aliases, conditional `when`, types, constants, procedure
-// contracts, and nominal members require later semantic products.
+// selected for that ImportClause. Target-condition materialization records each
+// package-level `when`, evaluates the supported target-fact boolean subset, and
+// appends exactly one branch to the same package scope without rebuilding an
+// earlier symbol. A subsequent operation projects the resulting direct public
+// declarations into source-ordered imported-name rows, giving `alias.member` a
+// stable cross-package Symbol_Reference without copying spellings. This is
+// intentionally a source declaration-name view, not the canonical typed
+// package interface: named constants in conditions, ambiguous constant/type
+// aliases, types, constants, procedure contracts, and nominal members require
+// later semantic products.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
 // ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
 // which must therefore outlive every lookup, dump, diagnostic render, and final
 // destroy. Symbol and Scope IDs are stable u32 table indices until destroy.
 // Package rows remain aligned with Workspace_Graph.packages, while file indices
-// remain aligned with each nested Package.files table. Imported name spans are
+// remain aligned with each nested Package.files table. Conditional regions and
+// selections borrow syntax from those same files. Imported name spans are
 // contiguous per Import_Binding and retain references into the target package's
 // stable Symbol table.
 //
@@ -38,7 +42,7 @@
 //
 // Relevant specification: docs/specification/01-core-language.md sections 3-4,
 // especially file-local imports, package-wide declaration visibility, and
-// private-by-default visibility.
+// compile-time `when` contributing its selected declarations without a scope.
 package compiler_sema
 
 import core/array
@@ -193,6 +197,26 @@ pub Imported_Name :: struct {
     declaration: Symbol_Reference,
 }
 
+// Conditional_Declaration is one unmaterialized package-level `when`. syntax
+// names the parsed WhenDeclaration, scope is the surrounding package scope, and
+// collection_context preserves foreign/export facts which apply if the chosen
+// branch is appended. materialized changes exactly once after a selection is
+// published. The row borrows all source and owns no allocation.
+Conditional_Declaration :: struct {
+    syntax: Syntax_Reference,
+    scope: Scope_Id,
+    collection_context: Collection_Context,
+    materialized: bool,
+}
+
+// Conditional_Selection is the immutable boolean result for one recorded
+// declaration condition. Rows follow materialization order; an `else when`
+// appears only after the false predecessor exposes it.
+pub Conditional_Selection :: struct {
+    syntax: Syntax_Reference,
+    select_true: bool,
+}
+
 // Semantic_Package owns every collected row for one aligned workspace package.
 // graph_import_edges is a private source-order index built in one workspace-wide
 // graph scan; it avoids repeated global edge scans while aliases are collected.
@@ -204,6 +228,9 @@ pub Semantic_Package :: struct {
     files: array.Dynamic[Semantic_File],
     imports: array.Dynamic[Import_Binding],
     imported_names: array.Dynamic[Imported_Name],
+    conditional_declarations: array.Dynamic[Conditional_Declaration],
+    conditional_selections: array.Dynamic[Conditional_Selection],
+    unconditional_symbol_count: usize,
     graph_import_edges: array.Dynamic[usize],
 }
 
@@ -215,6 +242,7 @@ Diagnostic_Code :: enum u8 {
     linker_name_non_native,
     grouped_type,
     grouped_procedure,
+    unsupported_target_condition,
 }
 
 // Semantic_Diagnostic is one source-backed row in deterministic collection
@@ -231,12 +259,15 @@ Semantic_Diagnostic :: struct {
 
 // Semantic_Workspace owns package rows aligned to the canonical input graph and
 // a single cross-package diagnostic sequence. failed is true exactly when an
-// error (not a note) was appended. public_names_bound changes once, after every
-// package declaration table is complete and the imported-name spans are ready.
+// error (not a note) was appended. target_declarations_materialized changes
+// once after every supported package condition has selected a branch;
+// public_names_bound changes after the chosen declaration table is complete and
+// the imported-name spans are ready.
 pub Semantic_Workspace :: struct {
     packages: array.Dynamic[Semantic_Package],
     diagnostics: array.Dynamic[Semantic_Diagnostic],
     failed: bool,
+    target_declarations_materialized: bool,
     public_names_bound: bool,
 }
 
@@ -936,9 +967,21 @@ collect_item :: proc(
             scope,
             collection_context,
         )
+    case .when_declaration:
+        array.append(
+            &collector.semantic_package.conditional_declarations,
+            Conditional_Declaration{
+                syntax = Syntax_Reference{
+                    file_index = file_index,
+                    node = node_id,
+                },
+                scope = scope,
+                collection_context = collection_context,
+            },
+        )
     case:
-        // `when` is intentionally deferred; docs, judgments, and synthesis do
-        // not publish an ordinary name during this phase.
+        // Docs, judgments, and synthesis do not publish an ordinary name
+        // during this phase.
     }
 }
 
@@ -1120,6 +1163,8 @@ collect_package :: proc(collector: ^Collector) {
     assert(collector.graph_import_cursor ==
         collector.semantic_package.graph_import_edges.length,
         "canonical workspace edge has no semantic import clause")
+    collector.semantic_package.unconditional_symbol_count =
+        collector.semantic_package.symbols.length
 }
 
 init_semantic_package :: proc(
@@ -1133,6 +1178,9 @@ init_semantic_package :: proc(
     array.init(&semantic_package.files)
     array.init(&semantic_package.imports)
     array.init(&semantic_package.imported_names)
+    array.init(&semantic_package.conditional_declarations)
+    array.init(&semantic_package.conditional_selections)
+    semantic_package.unconditional_symbol_count = 0
     array.init(&semantic_package.graph_import_edges)
 }
 
@@ -1143,6 +1191,8 @@ destroy_semantic_package :: proc(semantic_package: ^Semantic_Package) {
         array.destroy(&semantic_package.scopes.data[index].symbols)
     }
     array.destroy(&semantic_package.graph_import_edges)
+    array.destroy(&semantic_package.conditional_selections)
+    array.destroy(&semantic_package.conditional_declarations)
     array.destroy(&semantic_package.imported_names)
     array.destroy(&semantic_package.imports)
     array.destroy(&semantic_package.files)
@@ -1150,6 +1200,7 @@ destroy_semantic_package :: proc(semantic_package: ^Semantic_Package) {
     array.destroy(&semantic_package.scopes)
     semantic_package.workspace_package = compiler_workspace.Package_Id{}
     semantic_package.package_scope = invalid_scope_id()
+    semantic_package.unconditional_symbol_count = 0
 }
 
 // collect_workspace_declarations constructs every package row, indexes graph
@@ -1163,6 +1214,8 @@ pub collect_workspace_declarations :: proc(
 ) -> bool {
     array.init(&semantic.packages)
     array.init(&semantic.diagnostics)
+    semantic.failed = false
+    semantic.target_declarations_materialized = false
     semantic.public_names_bound = false
     if graph.failed {
         semantic.failed = true
@@ -1205,13 +1258,870 @@ pub collect_workspace_declarations :: proc(
     return !semantic.failed
 }
 
+// Target_Facts is the LLVM-independent semantic projection required by the
+// first self-hosted compile-time selector. Text fields use the specification's
+// stable target spellings; pointer_bits and page_size are exact unsigned
+// compile-time integers. The value owns no allocation because every string
+// refers to a process-lifetime literal.
+pub Target_Facts :: struct {
+    identity: string,
+    arch: string,
+    os: string,
+    abi: string,
+    byte_order: string,
+    object_format: string,
+    file_tag: string,
+    pointer_bits: u64,
+    page_size: u64,
+}
+
+strings_equal :: proc(left, right: string) -> bool {
+    if len(left) != len(right) {
+        return false
+    }
+    for index: usize = 0; index < len(left); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
+}
+
+// select_builtin_target_facts maps the four public target selectors to the
+// same versioned semantic facts as the bootstrap profiles. An unknown selector
+// returns false and a zero value; CLI validation remains the caller's policy.
+pub select_builtin_target_facts :: proc(
+    selector: string,
+) -> (Target_Facts, bool) {
+    facts: Target_Facts
+    facts.pointer_bits = 64
+    facts.byte_order = "little"
+    if strings_equal(selector, "aarch64-macos") {
+        facts.identity = "draft-aarch64-macos-v6"
+        facts.arch = "aarch64"
+        facts.os = "macos"
+        facts.abi = "darwin_arm64"
+        facts.object_format = "macho"
+        facts.file_tag = "aarch64-macos"
+        facts.page_size = 16384
+        return (facts, true)
+    }
+    if strings_equal(selector, "aarch64-linux") {
+        facts.identity = "draft-aarch64-linux-gnu-v2"
+        facts.arch = "aarch64"
+        facts.os = "linux"
+        facts.abi = "aapcs64_gnu"
+        facts.object_format = "elf"
+        facts.file_tag = "aarch64-linux"
+        facts.page_size = 4096
+        return (facts, true)
+    }
+    if strings_equal(selector, "x86_64-linux") {
+        facts.identity = "draft-x86_64-linux-gnu-v2"
+        facts.arch = "x86_64"
+        facts.os = "linux"
+        facts.abi = "sysv_amd64"
+        facts.object_format = "elf"
+        facts.file_tag = "x86_64-linux"
+        facts.page_size = 4096
+        return (facts, true)
+    }
+    if strings_equal(selector, "x86_64-windows") {
+        facts.identity = "draft-x86_64-windows-msvc-v2"
+        facts.arch = "x86_64"
+        facts.os = "windows"
+        facts.abi = "win64"
+        facts.object_format = "coff"
+        facts.file_tag = "x86_64-windows"
+        facts.page_size = 4096
+        return (facts, true)
+    }
+    empty: Target_Facts
+    return (empty, false)
+}
+
+Target_Condition_Value_Kind :: enum u8 {
+    invalid,
+    boolean,
+    unsigned_integer,
+    string_value,
+    architecture,
+    operating_system,
+    abi,
+    byte_order,
+    object_format,
+}
+
+// Target_Condition_Value is the closed value domain of the target-only `when`
+// evaluator. A textual value is either a profile literal (`profile_text`) or a
+// source-backed contextual/string spelling (`source_text`); text_from_source
+// selects the active borrowed view. Keeping the two view types explicit avoids
+// manufacturing mutable-to-immutable conversions.
+Target_Condition_Value :: struct {
+    kind: Target_Condition_Value_Kind,
+    boolean: bool,
+    unsigned_integer: u64,
+    profile_text: string,
+    source_text: []u8,
+    text_from_source: bool,
+}
+
+invalid_target_condition_value :: proc() -> Target_Condition_Value {
+    value: Target_Condition_Value
+    value.kind = .invalid
+    return value
+}
+
+target_condition_text_equal :: proc(
+    left, right: Target_Condition_Value,
+) -> bool {
+    if left.text_from_source {
+        if right.text_from_source {
+            return bytes_equal(left.source_text, right.source_text)
+        }
+        return bytes_equal_text(left.source_text, right.profile_text)
+    }
+    if right.text_from_source {
+        return bytes_equal_text(right.source_text, left.profile_text)
+    }
+    return strings_equal(left.profile_text, right.profile_text)
+}
+
+target_condition_values_equal :: proc(
+    left, right: Target_Condition_Value,
+) -> bool {
+    if left.kind != right.kind {
+        return false
+    }
+    switch left.kind {
+    case .boolean:
+        return left.boolean == right.boolean
+    case .unsigned_integer:
+        return left.unsigned_integer == right.unsigned_integer
+    case .string_value, .architecture, .operating_system, .abi, .byte_order,
+        .object_format:
+        return target_condition_text_equal(left, right)
+    case:
+        return false
+    }
+}
+
+// target_alternative_known enforces the specification's distinct categorical
+// enum vocabularies before equality is evaluated. Comparing target.os with
+// `.aarch64`, for example, is a semantic error rather than a false condition.
+target_alternative_known :: proc(
+    kind: Target_Condition_Value_Kind,
+    spelling: []u8,
+) -> bool {
+    switch kind {
+    case .architecture:
+        return bytes_equal_text(spelling, "aarch64") ||
+            bytes_equal_text(spelling, "x86_64")
+    case .operating_system:
+        return bytes_equal_text(spelling, "macos") ||
+            bytes_equal_text(spelling, "linux") ||
+            bytes_equal_text(spelling, "windows")
+    case .abi:
+        return bytes_equal_text(spelling, "darwin_arm64") ||
+            bytes_equal_text(spelling, "aapcs64_gnu") ||
+            bytes_equal_text(spelling, "sysv_amd64") ||
+            bytes_equal_text(spelling, "win64")
+    case .byte_order:
+        return bytes_equal_text(spelling, "little") ||
+            bytes_equal_text(spelling, "big")
+    case .object_format:
+        return bytes_equal_text(spelling, "macho") ||
+            bytes_equal_text(spelling, "elf") ||
+            bytes_equal_text(spelling, "coff")
+    case:
+        return false
+    }
+}
+
+node_source_bytes :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    id: compiler_syntax.Node_Id,
+) -> []u8 {
+    return source_bytes(
+        graph,
+        semantic_package.workspace_package,
+        file_index,
+        compiler_syntax.syntax_tree_node(tree, id).range,
+    )
+}
+
+target_member_name :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    member_id: compiler_syntax.Node_Id,
+) -> ([]u8, bool) {
+    member := compiler_syntax.syntax_tree_node(tree, member_id)
+    if member.kind != .member_expression || member.child_count != 1 {
+        empty: []u8
+        return (empty, false)
+    }
+    children := compiler_syntax.syntax_tree_children(tree, member_id)
+    base := compiler_syntax.syntax_tree_node(tree, children[0])
+    if base.kind != .name_expression ||
+        !bytes_equal_text(
+            node_source_bytes(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                children[0],
+            ),
+            "target",
+        ) {
+        empty: []u8
+        return (empty, false)
+    }
+    if member.token_end == 0 {
+        empty: []u8
+        return (empty, false)
+    }
+    token := &tree.tokens.data[cast[usize](member.token_end - 1)]
+    if !token_is_contextual_name(token.kind) {
+        empty: []u8
+        return (empty, false)
+    }
+    return (
+        source_bytes(
+            graph,
+            semantic_package.workspace_package,
+            file_index,
+            token.range,
+        ),
+        true,
+    )
+}
+
+// target_field_value projects one recognized member spelling into its distinct
+// semantic category. An unknown member leaves kind invalid so the enclosing
+// condition fails at its source range without inventing a target fact.
+target_field_value :: proc(
+    name: []u8,
+    facts: ^Target_Facts,
+) -> Target_Condition_Value {
+    value: Target_Condition_Value
+    if bytes_equal_text(name, "identity") {
+        value.kind = .string_value
+        value.profile_text = facts.identity
+    } else if bytes_equal_text(name, "arch") {
+        value.kind = .architecture
+        value.profile_text = facts.arch
+    } else if bytes_equal_text(name, "os") {
+        value.kind = .operating_system
+        value.profile_text = facts.os
+    } else if bytes_equal_text(name, "abi") {
+        value.kind = .abi
+        value.profile_text = facts.abi
+    } else if bytes_equal_text(name, "byte_order") {
+        value.kind = .byte_order
+        value.profile_text = facts.byte_order
+    } else if bytes_equal_text(name, "object_format") {
+        value.kind = .object_format
+        value.profile_text = facts.object_format
+    } else if bytes_equal_text(name, "file_tag") {
+        value.kind = .string_value
+        value.profile_text = facts.file_tag
+    } else if bytes_equal_text(name, "pointer_bits") {
+        value.kind = .unsigned_integer
+        value.unsigned_integer = facts.pointer_bits
+    } else if bytes_equal_text(name, "page_size") {
+        value.kind = .unsigned_integer
+        value.unsigned_integer = facts.page_size
+    }
+    return value
+}
+
+digit_value :: proc(byte: u8) -> (u64, bool) {
+    if byte >= cast[u8]('0') && byte <= cast[u8]('9') {
+        return (cast[u64](byte - cast[u8]('0')), true)
+    }
+    if byte >= cast[u8]('a') && byte <= cast[u8]('f') {
+        return (cast[u64](byte - cast[u8]('a')) + 10, true)
+    }
+    if byte >= cast[u8]('A') && byte <= cast[u8]('F') {
+        return (cast[u64](byte - cast[u8]('A')) + 10, true)
+    }
+    return (0, false)
+}
+
+// parse_target_unsigned accepts the lexer-validated integer spelling but still
+// checks overflow because target facts have the concrete u64 domain.
+parse_target_unsigned :: proc(bytes: []u8) -> (u64, bool) {
+    if len(bytes) == 0 {
+        return (0, false)
+    }
+    base: u64 = 10
+    index: usize = 0
+    if len(bytes) >= 2 && bytes[0] == cast[u8]('0') {
+        if bytes[1] == cast[u8]('b') {
+            base = 2
+            index = 2
+        } else if bytes[1] == cast[u8]('o') {
+            base = 8
+            index = 2
+        } else if bytes[1] == cast[u8]('x') {
+            base = 16
+            index = 2
+        }
+    }
+    value: u64 = 0
+    saw_digit := false
+    maximum := ~cast[u64](0)
+    for index < len(bytes) {
+        byte := bytes[index]
+        index += 1
+        if byte == cast[u8]('_') {
+            continue
+        }
+        (digit, valid) := digit_value(byte)
+        if !valid || digit >= base || value > (maximum - digit) / base {
+            return (0, false)
+        }
+        value = value * base + digit
+        saw_digit = true
+    }
+    return (value, saw_digit)
+}
+
+// simple_string_literal returns the interior bytes only when no escape decoding
+// is required. Raw backtick contents are already exact; quoted escapes remain
+// for the later general constant evaluator rather than being partially decoded
+// by this phase.
+simple_string_literal :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    node: ^compiler_syntax.Syntax_Node,
+) -> ([]u8, bool) {
+    if node.token_begin + 1 != node.token_end {
+        empty: []u8
+        return (empty, false)
+    }
+    token := &tree.tokens.data[cast[usize](node.token_begin)]
+    if token.kind != .string_literal && token.kind != .raw_string_literal {
+        empty: []u8
+        return (empty, false)
+    }
+    spelling := source_bytes(
+        graph,
+        semantic_package.workspace_package,
+        file_index,
+        token.range,
+    )
+    if len(spelling) < 2 {
+        empty: []u8
+        return (empty, false)
+    }
+    if token.kind == .string_literal {
+        for index: usize = 1; index + 1 < len(spelling); index += 1 {
+            if spelling[index] == cast[u8]('\\') {
+                empty: []u8
+                return (empty, false)
+            }
+        }
+    }
+    return (spelling[1:len(spelling) - 1], true)
+}
+
+// target_feature mirrors the selected architecture's complete stable feature
+// vocabulary. The second result distinguishes a known disabled feature from an
+// unknown spelling, which the specification requires the caller to diagnose.
+target_feature :: proc(
+    facts: ^Target_Facts,
+    feature: []u8,
+) -> (bool, bool) {
+    if strings_equal(facts.arch, "aarch64") {
+        known := bytes_equal_text(feature, "aes") ||
+            bytes_equal_text(feature, "crc") ||
+            bytes_equal_text(feature, "dotprod") ||
+            bytes_equal_text(feature, "fp16") ||
+            bytes_equal_text(feature, "neon") ||
+            bytes_equal_text(feature, "sha2")
+        return (bytes_equal_text(feature, "neon"), known)
+    }
+    known := bytes_equal_text(feature, "avx") ||
+        bytes_equal_text(feature, "avx2") ||
+        bytes_equal_text(feature, "sse2")
+    return (bytes_equal_text(feature, "sse2"), known)
+}
+
+// binary_operator finds the one infix token between the parser's two child
+// ranges. The parser has already established expression shape; this operation
+// deliberately recognizes only operators in the target-only subset.
+binary_operator :: proc(
+    tree: ^compiler_syntax.Syntax_Tree,
+    left, right: ^compiler_syntax.Syntax_Node,
+) -> (compiler_syntax.Token_Kind, bool) {
+    for index := left.token_end; index < right.token_begin; index += 1 {
+        kind := tree.tokens.data[cast[usize](index)].kind
+        switch kind {
+        case .equal_equal, .bang_equal, .less, .less_equal, .greater,
+            .greater_equal, .logical_and, .logical_or:
+            return (kind, true)
+        case:
+        }
+    }
+    return (.end_of_file, false)
+}
+
+// evaluate_target_condition_expression checks one syntax expression against
+// the closed target-only value domain. expected supplies contextual enum type
+// information to `.alternative` nodes. A valid result owns no memory and
+// borrows source spellings only for this command; invalid means the expression
+// requires a semantic product outside this phase or violates the target fact
+// types. Both logical operands are checked even though the computed value uses
+// short-circuit truth rules: Draft evaluation skips the dead operand, but its
+// source must still type-check and this staging boundary must not hide an
+// unsupported dependency behind `false &&` or `true ||`.
+evaluate_target_condition_expression :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    id: compiler_syntax.Node_Id,
+    facts: ^Target_Facts,
+    expected: Target_Condition_Value_Kind = .invalid,
+) -> Target_Condition_Value {
+    node := compiler_syntax.syntax_tree_node(tree, id)
+    children := compiler_syntax.syntax_tree_children(tree, id)
+    switch node.kind {
+    case .literal_expression:
+        if node.token_begin + 1 != node.token_end {
+            return invalid_target_condition_value()
+        }
+        token := &tree.tokens.data[cast[usize](node.token_begin)]
+        if token.kind == .keyword_true || token.kind == .keyword_false {
+            value: Target_Condition_Value
+            value.kind = .boolean
+            value.boolean = token.kind == .keyword_true
+            return value
+        }
+        if token.kind == .integer_literal {
+            (integer, valid) := parse_target_unsigned(
+                source_bytes(
+                    graph,
+                    semantic_package.workspace_package,
+                    file_index,
+                    token.range,
+                ),
+            )
+            if valid {
+                value: Target_Condition_Value
+                value.kind = .unsigned_integer
+                value.unsigned_integer = integer
+                return value
+            }
+        }
+        (text, valid_text) := simple_string_literal(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            node,
+        )
+        if valid_text {
+            value: Target_Condition_Value
+            value.kind = .string_value
+            value.source_text = text
+            value.text_from_source = true
+            return value
+        }
+        return invalid_target_condition_value()
+    case .contextual_alternative_expression:
+        if expected != .architecture && expected != .operating_system &&
+            expected != .abi && expected != .byte_order &&
+            expected != .object_format {
+            return invalid_target_condition_value()
+        }
+        if node.token_end < node.token_begin + 2 {
+            return invalid_target_condition_value()
+        }
+        token := &tree.tokens.data[cast[usize](node.token_end - 1)]
+        spelling := source_bytes(
+            graph,
+            semantic_package.workspace_package,
+            file_index,
+            token.range,
+        )
+        if !target_alternative_known(expected, spelling) {
+            return invalid_target_condition_value()
+        }
+        value: Target_Condition_Value
+        value.kind = expected
+        value.source_text = spelling
+        value.text_from_source = true
+        return value
+    case .member_expression:
+        (member, is_target_member) := target_member_name(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            id,
+        )
+        if is_target_member {
+            return target_field_value(member, facts)
+        }
+        return invalid_target_condition_value()
+    case .group_expression:
+        if len(children) == 1 {
+            return evaluate_target_condition_expression(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                children[0],
+                facts,
+                expected,
+            )
+        }
+        return invalid_target_condition_value()
+    case .unary_expression:
+        if len(children) != 1 ||
+            tree.tokens.data[cast[usize](node.token_begin)].kind != .bang {
+            return invalid_target_condition_value()
+        }
+        operand := evaluate_target_condition_expression(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            children[0],
+            facts,
+            .boolean,
+        )
+        if operand.kind != .boolean {
+            return invalid_target_condition_value()
+        }
+        operand.boolean = !operand.boolean
+        return operand
+    case .call_expression:
+        if len(children) != 2 {
+            return invalid_target_condition_value()
+        }
+        (member, is_target_member) := target_member_name(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            children[0],
+        )
+        if !is_target_member || !bytes_equal_text(member, "has_feature") {
+            return invalid_target_condition_value()
+        }
+        argument := compiler_syntax.syntax_tree_node(tree, children[1])
+        (feature, valid_feature) := simple_string_literal(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            argument,
+        )
+        if !valid_feature {
+            return invalid_target_condition_value()
+        }
+        (enabled, known) := target_feature(facts, feature)
+        if !known {
+            return invalid_target_condition_value()
+        }
+        value: Target_Condition_Value
+        value.kind = .boolean
+        value.boolean = enabled
+        return value
+    case .binary_expression:
+        if len(children) != 2 {
+            return invalid_target_condition_value()
+        }
+        left_node := compiler_syntax.syntax_tree_node(tree, children[0])
+        right_node := compiler_syntax.syntax_tree_node(tree, children[1])
+        (operator, have_operator) := binary_operator(
+            tree,
+            left_node,
+            right_node,
+        )
+        if !have_operator {
+            return invalid_target_condition_value()
+        }
+        if operator == .logical_and || operator == .logical_or {
+            left := evaluate_target_condition_expression(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                children[0],
+                facts,
+                .boolean,
+            )
+            if left.kind != .boolean {
+                return invalid_target_condition_value()
+            }
+            right := evaluate_target_condition_expression(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                children[1],
+                facts,
+                .boolean,
+            )
+            if right.kind != .boolean {
+                return invalid_target_condition_value()
+            }
+            result: Target_Condition_Value
+            result.kind = .boolean
+            if operator == .logical_and {
+                result.boolean = left.boolean && right.boolean
+            } else {
+                result.boolean = left.boolean || right.boolean
+            }
+            return result
+        }
+
+        left: Target_Condition_Value
+        right: Target_Condition_Value
+        if left_node.kind == .contextual_alternative_expression {
+            right = evaluate_target_condition_expression(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                children[1],
+                facts,
+            )
+            left = evaluate_target_condition_expression(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                children[0],
+                facts,
+                right.kind,
+            )
+        } else {
+            left = evaluate_target_condition_expression(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                children[0],
+                facts,
+            )
+            right = evaluate_target_condition_expression(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                children[1],
+                facts,
+                left.kind,
+            )
+        }
+        if left.kind == .invalid || right.kind == .invalid ||
+            left.kind != right.kind {
+            return invalid_target_condition_value()
+        }
+
+        result: Target_Condition_Value
+        result.kind = .boolean
+        if (operator == .equal_equal || operator == .bang_equal) &&
+            left.kind != .string_value {
+            result.boolean = target_condition_values_equal(left, right)
+            if operator == .bang_equal {
+                result.boolean = !result.boolean
+            }
+            return result
+        }
+        if left.kind != .unsigned_integer {
+            return invalid_target_condition_value()
+        }
+        switch operator {
+        case .less:
+            result.boolean = left.unsigned_integer < right.unsigned_integer
+        case .less_equal:
+            result.boolean = left.unsigned_integer <= right.unsigned_integer
+        case .greater:
+            result.boolean = left.unsigned_integer > right.unsigned_integer
+        case .greater_equal:
+            result.boolean = left.unsigned_integer >= right.unsigned_integer
+        case:
+            return invalid_target_condition_value()
+        }
+        return result
+    case:
+        return invalid_target_condition_value()
+    }
+}
+
+// materialize_workspace_target_declarations selects the supported target-only
+// package `when` frontier in deterministic rounds. Initial regions are in
+// canonical source order. Materializing one branch may append a nested `when`;
+// the growing loop visits that row later, matching the production fixed point
+// without rebuilding unconditional declarations or changing their Symbol_Ids.
+//
+// The accepted expression subset contains target fields, known
+// target.has_feature calls with simple literal arguments, boolean literals,
+// `!`, `&&`, `||`, categorical equality, and unsigned comparisons. Target
+// identity/file-tag strings are facts but Draft strings have no equality
+// operator, so they do not form a condition in this subset.
+// Named constants and general compile-time procedures remain a later product
+// graph. An expression outside this subset emits one source diagnostic and no
+// branch is guessed.
+pub materialize_workspace_target_declarations :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    facts: ^Target_Facts,
+    semantic: ^Semantic_Workspace,
+) -> bool {
+    if graph.failed || semantic.failed {
+        return false
+    }
+    assert(!semantic.target_declarations_materialized,
+        "workspace target declarations are already materialized")
+    assert(!semantic.public_names_bound,
+        "target declarations must precede public-name binding")
+
+    for package_index: usize = 0;
+        package_index < semantic.packages.length;
+        package_index += 1 {
+        semantic_package := &semantic.packages.data[package_index]
+        workspace_package := &graph.packages.data[package_index]
+        condition_index: usize = 0
+        for condition_index < semantic_package.conditional_declarations.length {
+            region := semantic_package.conditional_declarations.data[
+                condition_index
+            ]
+            assert(!region.materialized,
+                "conditional declaration was materialized twice")
+            source_row := compiler_workspace.file_at(
+                &workspace_package.loaded,
+                region.syntax.file_index,
+            )
+            tree := &source_row.tree
+            when_node := compiler_syntax.syntax_tree_node(
+                tree,
+                region.syntax.node,
+            )
+            children := compiler_syntax.syntax_tree_children(
+                tree,
+                region.syntax.node,
+            )
+            if when_node.kind != .when_declaration || len(children) < 2 {
+                append_diagnostic(
+                    semantic,
+                    .error,
+                    .unsupported_target_condition,
+                    semantic_package.workspace_package,
+                    region.syntax.file_index,
+                    when_node.range,
+                    .package_scope,
+                )
+                condition_index += 1
+                continue
+            }
+            condition_node := compiler_syntax.syntax_tree_node(
+                tree,
+                children[0],
+            )
+            value := evaluate_target_condition_expression(
+                graph,
+                semantic_package,
+                region.syntax.file_index,
+                tree,
+                children[0],
+                facts,
+                .boolean,
+            )
+            if value.kind != .boolean {
+                append_diagnostic(
+                    semantic,
+                    .error,
+                    .unsupported_target_condition,
+                    semantic_package.workspace_package,
+                    region.syntax.file_index,
+                    condition_node.range,
+                    .package_scope,
+                )
+                condition_index += 1
+                continue
+            }
+
+            semantic_package.conditional_declarations.data[
+                condition_index
+            ].materialized = true
+            array.append(
+                &semantic_package.conditional_selections,
+                Conditional_Selection{
+                    syntax = region.syntax,
+                    select_true = value.boolean,
+                },
+            )
+            collector := Collector{
+                graph = graph,
+                semantic = semantic,
+                semantic_package = semantic_package,
+                workspace_package = workspace_package,
+            }
+            if value.boolean {
+                collect_declaration_list(
+                    &collector,
+                    tree,
+                    region.syntax.file_index,
+                    children[1],
+                    region.scope,
+                    region.collection_context,
+                )
+            } else if len(children) >= 3 {
+                alternative := compiler_syntax.syntax_tree_node(
+                    tree,
+                    children[2],
+                )
+                if alternative.kind == .when_declaration {
+                    collect_item(
+                        &collector,
+                        tree,
+                        region.syntax.file_index,
+                        children[2],
+                        region.scope,
+                        region.collection_context,
+                    )
+                } else {
+                    collect_declaration_list(
+                        &collector,
+                        tree,
+                        region.syntax.file_index,
+                        children[2],
+                        region.scope,
+                        region.collection_context,
+                    )
+                }
+            }
+            condition_index += 1
+        }
+    }
+    if semantic.failed {
+        return false
+    }
+    semantic.target_declarations_materialized = true
+    return true
+}
+
 // bind_workspace_public_names builds the first cross-package name view only
-// after every package has a complete declaration table. Each accepted import
-// receives a contiguous span of references to the target package's direct
-// unconditional public declarations. File-local import aliases are not package
-// declarations, so this operation naturally enforces the specification's no-
-// re-export rule. Selected contents of `when` are not in the declaration table
-// yet and therefore cannot leak into this deliberately earlier view.
+// after every package has its declaration table for the caller's current
+// boundary. Each accepted import receives a contiguous span of references to
+// the target package's direct public declarations. Without target
+// materialization this is the deliberately earlier unconditional view; after
+// materialization it includes the selected target branches. File-local import
+// aliases are not package declarations, so this operation naturally enforces
+// the specification's no-re-export rule.
 //
 // This operation performs no type or constant work and emits no new user
 // diagnostic. The caller must not invoke it after declaration errors, and may
@@ -1387,6 +2297,7 @@ pub destroy_semantic_workspace :: proc(semantic: ^Semantic_Workspace) {
     array.destroy(&semantic.diagnostics)
     array.destroy(&semantic.packages)
     semantic.failed = false
+    semantic.target_declarations_materialized = false
     semantic.public_names_bound = false
 }
 
@@ -1406,6 +2317,77 @@ relative_file_name :: proc(
     return memory.owned_string_bytes(
         &compiler_workspace.file_at(loaded, file_index).relative_name,
     )
+}
+
+// dump_symbol_row writes one source-level symbol in the common qualification
+// schema. label distinguishes the initial declaration prefix from symbols
+// appended by selected `when` branches; every remaining field is identical.
+dump_symbol_row :: proc(
+    label: string,
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    package_index, symbol_index: usize,
+    output: ^compiler_text.Builder,
+) {
+    symbol := &semantic_package.symbols.data[symbol_index]
+    compiler_text.append_text(output, label)
+    compiler_text.append_unsigned(output, package_index)
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_unsigned(output, symbol_index)
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_unsigned(output, cast[usize](symbol.scope.value))
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_bytes(
+        output,
+        relative_file_name(
+            graph,
+            semantic_package.workspace_package,
+            symbol.syntax.file_index,
+        ),
+    )
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_bytes(
+        output,
+        symbol_name_bytes(graph, semantic_package, symbol),
+    )
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_text(output, symbol_kind_text(symbol.kind))
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_text(output, visibility_text(symbol.visibility))
+    compiler_text.append_byte(output, cast[u8](' '))
+    append_bool(output, symbol.flags.is_thread_local)
+    append_bool(output, symbol.flags.is_foreign)
+    append_bool(output, symbol.flags.exported)
+    append_bool(output, symbol.flags.parametric)
+    compiler_text.append_byte(output, cast[u8](' '))
+    if symbol.has_foreign_provider {
+        compiler_text.append_bytes(
+            output,
+            source_bytes(
+                graph,
+                semantic_package.workspace_package,
+                symbol.syntax.file_index,
+                symbol.foreign_provider_range,
+            ),
+        )
+    } else {
+        compiler_text.append_byte(output, cast[u8]('-'))
+    }
+    compiler_text.append_byte(output, cast[u8](' '))
+    if symbol.has_linker_name {
+        compiler_text.append_bytes(
+            output,
+            source_bytes(
+                graph,
+                semantic_package.workspace_package,
+                symbol.syntax.file_index,
+                symbol.linker_name_range,
+            ),
+        )
+    } else {
+        compiler_text.append_byte(output, cast[u8]('-'))
+    }
+    compiler_text.append_byte(output, cast[u8]('\n'))
 }
 
 // dump_workspace_declarations appends the stable migration view after the
@@ -1457,68 +2439,14 @@ pub dump_workspace_declarations :: proc(
         for symbol_index: usize = 0;
             symbol_index < semantic_package.symbols.length;
             symbol_index += 1 {
-            symbol := &semantic_package.symbols.data[symbol_index]
-            compiler_text.append_text(output, "symbol ")
-            compiler_text.append_unsigned(output, package_index)
-            compiler_text.append_byte(output, cast[u8](' '))
-            compiler_text.append_unsigned(output, symbol_index)
-            compiler_text.append_byte(output, cast[u8](' '))
-            compiler_text.append_unsigned(
+            dump_symbol_row(
+                "symbol ",
+                graph,
+                semantic_package,
+                package_index,
+                symbol_index,
                 output,
-                cast[usize](symbol.scope.value),
             )
-            compiler_text.append_byte(output, cast[u8](' '))
-            compiler_text.append_bytes(
-                output,
-                relative_file_name(
-                    graph,
-                    semantic_package.workspace_package,
-                    symbol.syntax.file_index,
-                ),
-            )
-            compiler_text.append_byte(output, cast[u8](' '))
-            compiler_text.append_bytes(
-                output,
-                symbol_name_bytes(graph, semantic_package, symbol),
-            )
-            compiler_text.append_byte(output, cast[u8](' '))
-            compiler_text.append_text(output, symbol_kind_text(symbol.kind))
-            compiler_text.append_byte(output, cast[u8](' '))
-            compiler_text.append_text(output, visibility_text(symbol.visibility))
-            compiler_text.append_byte(output, cast[u8](' '))
-            append_bool(output, symbol.flags.is_thread_local)
-            append_bool(output, symbol.flags.is_foreign)
-            append_bool(output, symbol.flags.exported)
-            append_bool(output, symbol.flags.parametric)
-            compiler_text.append_byte(output, cast[u8](' '))
-            if symbol.has_foreign_provider {
-                compiler_text.append_bytes(
-                    output,
-                    source_bytes(
-                        graph,
-                        semantic_package.workspace_package,
-                        symbol.syntax.file_index,
-                        symbol.foreign_provider_range,
-                    ),
-                )
-            } else {
-                compiler_text.append_byte(output, cast[u8]('-'))
-            }
-            compiler_text.append_byte(output, cast[u8](' '))
-            if symbol.has_linker_name {
-                compiler_text.append_bytes(
-                    output,
-                    source_bytes(
-                        graph,
-                        semantic_package.workspace_package,
-                        symbol.syntax.file_index,
-                        symbol.linker_name_range,
-                    ),
-                )
-            } else {
-                compiler_text.append_byte(output, cast[u8]('-'))
-            }
-            compiler_text.append_byte(output, cast[u8]('\n'))
         }
 
         for import_index: usize = 0;
@@ -1544,6 +2472,102 @@ pub dump_workspace_declarations :: proc(
                 cast[usize](edge.imported_package.value),
             )
             compiler_text.append_byte(output, cast[u8]('\n'))
+        }
+    }
+}
+
+// dump_workspace_target_declarations appends the selected target facts, every
+// declaration-condition decision in materialization order, and only the symbol
+// suffix appended by those decisions. The unconditional prefix count makes
+// stable Symbol_Id preservation explicit instead of requiring a consumer to
+// infer it from the preceding dump.
+pub dump_workspace_target_declarations :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    facts: ^Target_Facts,
+    semantic: ^Semantic_Workspace,
+    output: ^compiler_text.Builder,
+) {
+    assert(semantic.target_declarations_materialized,
+        "target declaration dump requires materialized conditions")
+    compiler_text.append_text(output, "target-profile ")
+    compiler_text.append_text(output, facts.identity)
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_text(output, facts.arch)
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_text(output, facts.os)
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_text(output, facts.abi)
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_text(output, facts.byte_order)
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_text(output, facts.object_format)
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_text(output, facts.file_tag)
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_unsigned(output, cast[usize](facts.pointer_bits))
+    compiler_text.append_byte(output, cast[u8](' '))
+    compiler_text.append_unsigned(output, cast[usize](facts.page_size))
+    compiler_text.append_byte(output, cast[u8]('\n'))
+
+    for package_index: usize = 0;
+        package_index < semantic.packages.length;
+        package_index += 1 {
+        semantic_package := &semantic.packages.data[package_index]
+        for selection_index: usize = 0;
+            selection_index < semantic_package.conditional_selections.length;
+            selection_index += 1 {
+            selection := semantic_package.conditional_selections.data[
+                selection_index
+            ]
+            compiler_text.append_text(output, "condition ")
+            compiler_text.append_unsigned(output, package_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_bytes(
+                output,
+                relative_file_name(
+                    graph,
+                    semantic_package.workspace_package,
+                    selection.syntax.file_index,
+                ),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](selection.syntax.node.value),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            append_bool(output, selection.select_true)
+            compiler_text.append_byte(output, cast[u8]('\n'))
+        }
+
+        assert(semantic_package.unconditional_symbol_count <=
+            semantic_package.symbols.length,
+            "unconditional symbol prefix exceeds selected declarations")
+        compiler_text.append_text(output, "selected-symbol-set ")
+        compiler_text.append_unsigned(output, package_index)
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_unsigned(
+            output,
+            semantic_package.unconditional_symbol_count,
+        )
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_unsigned(
+            output,
+            semantic_package.symbols.length -
+                semantic_package.unconditional_symbol_count,
+        )
+        compiler_text.append_byte(output, cast[u8]('\n'))
+        for symbol_index := semantic_package.unconditional_symbol_count;
+            symbol_index < semantic_package.symbols.length;
+            symbol_index += 1 {
+            dump_symbol_row(
+                "selected-symbol ",
+                graph,
+                semantic_package,
+                package_index,
+                symbol_index,
+                output,
+            )
         }
     }
 }
@@ -1745,6 +2769,11 @@ render_semantic_message :: proc(
         compiler_text.append_text(
             output,
             "procedure declaration requires one binding name",
+        )
+    case .unsupported_target_condition:
+        compiler_text.append_text(
+            output,
+            "self-hosted target 'when' requires a supported target-fact boolean expression",
         )
     }
 }

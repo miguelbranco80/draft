@@ -1,24 +1,24 @@
-// Bootstrap oracle for public declaration names and qualified import lookup.
+// Bootstrap oracle for public names and target-selected declarations.
 //
 // This non-installed qualification executable combines two production C++
 // boundaries without changing either one. The workspace loader and declaration
 // collector produce the exact graph, scopes, symbols, and early diagnostics
 // used by the previous migration gate. A separate complete provider-free
-// compilation then supplies canonical PackageInterface declarations and the
-// ImportedSymbol rows created by production interface binding. The dump keeps
-// the intersection with the raw collector's direct public symbols and maps
-// those names back to their source declaration SymbolIds. This qualifies the
-// unconditional public-name seam without pretending that the Draft stage has
-// already selected conditional declarations or reconstructed typed interfaces.
+// compilation then supplies canonical PackageInterface declarations,
+// ImportedSymbol rows, and published ConditionalSelections. The unconditional
+// command intersects interface rows with the raw collector. The target command
+// replays those production selections through
+// materialize_conditional_declaration on a fresh source-level package and
+// compares the appended SymbolId suffix plus the selected public-name view.
+// Neither mode pretends that Draft has rebuilt typed interface payloads.
 //
 // The early SourceManager owns every byte referenced by the graph and raw
 // semantic packages until their dump and diagnostics finish. The complete
 // compilation uses an independent SourceManager because its typed products are
-// consulted only for public-name acceptance; no FileId crosses between the two
-// lifetimes. Fixtures are fully valid and may contain public conditional
-// declarations, but the dump deliberately filters those names from both the
-// final interface and imported-symbol views because conditional selection and
-// typed interface reconstruction remain later self-hosting gates.
+// consulted only for public-name acceptance in unconditional mode. Target-mode
+// selection replay uses only compiled-source FileIds with the matching compiled
+// graph; no FileId crosses SourceManager lifetimes. Fixtures are fully valid.
+// Typed interface reconstruction remains a later self-hosting gate.
 
 #include "compile/compiler.h"
 #include "sema/analyzer.h"
@@ -152,6 +152,39 @@ using ImportSite = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>;
   return nullptr;
 }
 
+// Initial and selected declarations share one row schema. label is the only
+// phase distinction; every identity, source, flag, and native spelling comes
+// from the source-level SemanticPackage being qualified.
+void dump_symbol(
+    std::string_view label, const draft::WorkspacePackage &workspace,
+    const draft::SemanticPackage &semantic, std::size_t package_index,
+    std::size_t symbol_index, std::ostream &output) {
+  const draft::SymbolId id{static_cast<std::uint32_t>(symbol_index)};
+  const draft::Symbol &symbol = semantic.symbols.symbol(id);
+  const draft::NativeBinding *native = native_binding(semantic, id);
+  output << label << package_index << ' ' << symbol_index << ' '
+         << symbol.scope.value << ' '
+         << relative_file_name(workspace, symbol.syntax.file) << ' '
+         << symbol.name << ' ' << symbol_kind_text(symbol.kind) << ' '
+         << visibility_text(symbol.visibility) << ' '
+         << (symbol.flags.is_thread_local ? '1' : '0')
+         << (symbol.flags.foreign ? '1' : '0')
+         << (symbol.flags.exported ? '1' : '0')
+         << (symbol.flags.parametric ? '1' : '0') << ' ';
+  if (native != nullptr && !native->provider.empty()) {
+    output << native->provider;
+  } else {
+    output << '-';
+  }
+  output << ' ';
+  if (native != nullptr) {
+    output << native->linker_name_spelling;
+  } else {
+    output << '-';
+  }
+  output << '\n';
+}
+
 // The declaration portion remains byte-identical to the preceding phase gate.
 // Keeping it in this oracle proves that public-name binding consumed the same
 // raw package symbols rather than reconstructing a second declaration table.
@@ -178,30 +211,8 @@ void dump_declarations(
 
     for (std::size_t symbol_index = 0;
          symbol_index < semantic.symbols.symbol_count(); ++symbol_index) {
-      const draft::SymbolId id{static_cast<std::uint32_t>(symbol_index)};
-      const draft::Symbol &symbol = semantic.symbols.symbol(id);
-      const draft::NativeBinding *native = native_binding(semantic, id);
-      output << "symbol " << package_index << ' ' << symbol_index << ' '
-             << symbol.scope.value << ' '
-             << relative_file_name(workspace, symbol.syntax.file) << ' '
-             << symbol.name << ' ' << symbol_kind_text(symbol.kind) << ' '
-             << visibility_text(symbol.visibility) << ' '
-             << (symbol.flags.is_thread_local ? '1' : '0')
-             << (symbol.flags.foreign ? '1' : '0')
-             << (symbol.flags.exported ? '1' : '0')
-             << (symbol.flags.parametric ? '1' : '0') << ' ';
-      if (native != nullptr && !native->provider.empty()) {
-        output << native->provider;
-      } else {
-        output << '-';
-      }
-      output << ' ';
-      if (native != nullptr) {
-        output << native->linker_name_spelling;
-      } else {
-        output << '-';
-      }
-      output << '\n';
+      dump_symbol(
+          "symbol ", workspace, semantic, package_index, symbol_index, output);
     }
 
     for (const draft::ImportBinding &binding : semantic.imports) {
@@ -220,6 +231,100 @@ void dump_declarations(
   }
 }
 
+// Replaying production's completed selections through the production source
+// collector isolates the exact phase Draft is replacing. The fresh package has
+// no imported interface proxies or typed mutations, so its unconditional
+// SymbolId prefix matches the previous gate and each chosen branch appends in
+// the same materialization order as Draft. Selection replay is incremental:
+// passing production's complete final table while materializing an outer false
+// branch would let the collector consume a nested `else when` immediately,
+// rather than expose it as the next product in the recorded frontier.
+[[nodiscard]] bool rebuild_target_declarations(
+    const draft::SourceManager &sources,
+    const draft::CompileWorkspaceResult &compiled,
+    std::vector<draft::SemanticPackage> &selected_packages,
+    std::vector<std::vector<draft::ConditionalSelection>> &selected_conditions,
+    draft::DiagnosticSink &diagnostics) {
+  assert(compiled.ok);
+  selected_packages.reserve(compiled.graph.packages.size());
+  selected_conditions.resize(compiled.graph.packages.size());
+  for (std::size_t package_index = 0;
+       package_index < compiled.graph.packages.size(); ++package_index) {
+    assert(compiled.packages[package_index].has_value());
+    const draft::WorkspacePackage &workspace =
+        compiled.graph.packages[package_index];
+    const draft::ConditionalSelections &published =
+        compiled.packages[package_index]->declarations.selections;
+    selected_packages.push_back(draft::collect_package_declarations(
+        sources, workspace.loaded, diagnostics));
+    draft::SemanticPackage &selected = selected_packages.back();
+    draft::ConditionalSelections replayed;
+
+    std::size_t condition_index = 0;
+    while (condition_index < selected.conditional_declarations.size()) {
+      const draft::SyntaxReference site =
+          selected.conditional_declarations[condition_index].syntax;
+      const draft::ConditionalSelection *selection = published.find(site);
+      if (selection == nullptr) {
+        diagnostics.error(
+            draft::SourceRange::invalid(),
+            "production package has no selection for a target declaration");
+        return false;
+      }
+      selected_conditions[package_index].push_back(*selection);
+      replayed.entries.push_back(*selection);
+      if (!draft::materialize_conditional_declaration(
+              sources, workspace.loaded, replayed, site, selected,
+              diagnostics)) {
+        return false;
+      }
+      ++condition_index;
+    }
+  }
+  return !diagnostics.has_errors();
+}
+
+void dump_target_declarations(
+    const draft::TargetProfile &profile, const draft::WorkspaceGraph &graph,
+    const std::vector<draft::SemanticPackage> &unconditional_packages,
+    const std::vector<draft::SemanticPackage> &selected_packages,
+    const std::vector<std::vector<draft::ConditionalSelection>> &conditions,
+    std::ostream &output) {
+  assert(unconditional_packages.size() == selected_packages.size());
+  assert(selected_packages.size() == graph.packages.size());
+  assert(conditions.size() == selected_packages.size());
+  const draft::TargetFacts &facts = profile.facts;
+  output << "target-profile " << facts.identity << ' ' << facts.arch << ' '
+         << facts.os << ' ' << facts.abi << ' ' << facts.byte_order << ' '
+         << facts.object_format << ' ' << facts.file_tag << ' '
+         << facts.pointer_bits << ' ' << facts.page_size << '\n';
+
+  for (std::size_t package_index = 0;
+       package_index < selected_packages.size(); ++package_index) {
+    const draft::WorkspacePackage &workspace = graph.packages[package_index];
+    for (const draft::ConditionalSelection &selection :
+         conditions[package_index]) {
+      output << "condition " << package_index << ' '
+             << relative_file_name(workspace, selection.site.file) << ' '
+             << selection.site.node.value << ' '
+             << (selection.select_true ? '1' : '0') << '\n';
+    }
+
+    const std::size_t prefix =
+        unconditional_packages[package_index].symbols.symbol_count();
+    const draft::SemanticPackage &selected = selected_packages[package_index];
+    assert(prefix <= selected.symbols.symbol_count());
+    output << "selected-symbol-set " << package_index << ' ' << prefix << ' '
+           << selected.symbols.symbol_count() - prefix << '\n';
+    for (std::size_t symbol_index = prefix;
+         symbol_index < selected.symbols.symbol_count(); ++symbol_index) {
+      dump_symbol(
+          "selected-symbol ", workspace, selected, package_index,
+          symbol_index, output);
+    }
+  }
+}
+
 [[nodiscard]] std::optional<draft::SymbolId> public_source_symbol(
     const draft::SemanticPackage &package, std::string_view name) {
   const std::optional<draft::SymbolId> found =
@@ -233,31 +338,33 @@ void dump_declarations(
 
 // PackageInterface is the production authority for which public declarations
 // a valid dependency actually exports. ImportedSymbol is the authority for the
-// names bound beneath each consumer alias. The raw source symbol lookup maps
-// both products back into the ID domain compared with Draft.
+// names bound beneath each consumer alias. The supplied source-only package
+// table may be unconditional or target-materialized; its lookup maps both
+// products back into the exact phase-local ID domain compared with Draft.
 void dump_public_names(
-    const draft::WorkspaceGraph &raw_graph,
-    const std::vector<draft::SemanticPackage> &raw_packages,
+    const draft::WorkspaceGraph &source_graph,
+    const std::vector<draft::SemanticPackage> &source_packages,
     const draft::CompileWorkspaceResult &compiled,
     std::ostream &output) {
   assert(compiled.ok);
-  assert(compiled.packages.size() == raw_packages.size());
-  assert(compiled.graph.packages.size() == raw_packages.size());
+  assert(compiled.packages.size() == source_packages.size());
+  assert(compiled.graph.packages.size() == source_packages.size());
   const std::map<ImportSite, std::size_t> imports =
-      index_import_sites(raw_graph);
+      index_import_sites(source_graph);
 
   for (std::size_t package_index = 0;
-       package_index < raw_packages.size(); ++package_index) {
+       package_index < source_packages.size(); ++package_index) {
     assert(compiled.packages[package_index].has_value());
     const draft::CompiledPackage &compiled_package =
         *compiled.packages[package_index];
-    const draft::SemanticPackage &raw_package = raw_packages[package_index];
+    const draft::SemanticPackage &source_package =
+        source_packages[package_index];
     const draft::PackageInterface &interface = compiled_package.interface;
 
     std::size_t public_name_count = 0;
     for (const draft::InterfaceDeclaration &declaration :
          interface.declarations) {
-      if (public_source_symbol(raw_package, declaration.name).has_value()) {
+      if (public_source_symbol(source_package, declaration.name).has_value()) {
         ++public_name_count;
       }
     }
@@ -266,7 +373,7 @@ void dump_public_names(
     for (const draft::InterfaceDeclaration &declaration :
          interface.declarations) {
       const std::optional<draft::SymbolId> source =
-          public_source_symbol(raw_package, declaration.name);
+          public_source_symbol(source_package, declaration.name);
       if (!source.has_value()) continue;
       output << "public-name " << package_index << ' ' << source->value << ' '
              << declaration.name << '\n';
@@ -276,47 +383,48 @@ void dump_public_names(
         compiled_package.declarations.package;
     const std::vector<draft::ImportBinding> &bound_imports =
         bound.imports_for_read();
-    assert(bound_imports.size() == raw_package.imports.size());
+    assert(bound_imports.size() == source_package.imports.size());
     for (std::size_t binding_index = 0;
-         binding_index < raw_package.imports.size(); ++binding_index) {
-      const draft::ImportBinding &raw_binding =
-          raw_package.imports[binding_index];
+         binding_index < source_package.imports.size(); ++binding_index) {
+      const draft::ImportBinding &source_binding =
+          source_package.imports[binding_index];
       const draft::ImportBinding &bound_binding =
           bound_imports[binding_index];
-      assert(raw_binding.package_path == bound_binding.package_path);
+      assert(source_binding.package_path == bound_binding.package_path);
       const ImportSite key{
           static_cast<std::uint32_t>(package_index),
-          raw_binding.syntax.file.value,
-          raw_binding.syntax.node.value,
+          source_binding.syntax.file.value,
+          source_binding.syntax.node.value,
       };
       const auto found_edge = imports.find(key);
       assert(found_edge != imports.end());
-      const draft::PackageImport &edge = raw_graph.imports[found_edge->second];
+      const draft::PackageImport &edge =
+          source_graph.imports[found_edge->second];
 
       std::size_t member_count = 0;
       for (const draft::ImportedSymbol &imported :
            bound.imported_symbols_for_read()) {
         if (imported.import_symbol == bound_binding.symbol &&
             public_source_symbol(
-                raw_packages[edge.imported_package.value],
+                source_packages[edge.imported_package.value],
                 imported.public_name).has_value()) {
           ++member_count;
         }
       }
       output << "imported-package " << package_index << ' '
-             << raw_binding.symbol.value << ' '
+             << source_binding.symbol.value << ' '
              << edge.imported_package.value << ' ' << member_count << '\n';
 
       for (const draft::ImportedSymbol &imported :
            bound.imported_symbols_for_read()) {
         if (imported.import_symbol != bound_binding.symbol) continue;
         const draft::SemanticPackage &target =
-            raw_packages[edge.imported_package.value];
+            source_packages[edge.imported_package.value];
         const std::optional<draft::SymbolId> source =
             public_source_symbol(target, imported.public_name);
         if (!source.has_value()) continue;
         output << "imported-name " << package_index << ' '
-               << raw_binding.symbol.value << ' '
+               << source_binding.symbol.value << ' '
                << edge.imported_package.value << ' ' << source->value << ' '
                << imported.public_name << '\n';
       }
@@ -342,8 +450,13 @@ void dump_public_names(
 } // namespace
 
 int main(int argc, char **argv) {
+  const bool public_names_command =
+      argc >= 2 && std::string_view(argv[1]) == "workspace-public-names";
+  const bool target_declarations_command =
+      argc >= 2 &&
+      std::string_view(argv[1]) == "workspace-target-declarations";
   if (argc < 11 || (argc - 11) % 4 != 0 ||
-      std::string_view(argv[1]) != "workspace-public-names" ||
+      (!public_names_command && !target_declarations_command) ||
       std::string_view(argv[3]) != "--workspace" ||
       std::string_view(argv[5]) != "--core" ||
       std::string_view(argv[7]) != "--core-identity" ||
@@ -354,7 +467,12 @@ int main(int argc, char **argv) {
            "  draft-bootstrap-workspace-public-names workspace-public-names "
            "<root-package> --workspace <workspace> --core <core-root> "
            "--core-identity <identity> --target <selector> [--dependency "
-           "<prefix> <root> <identity>]...\n";
+           "<prefix> <root> <identity>]...\n"
+           "  draft-bootstrap-workspace-public-names "
+           "workspace-target-declarations <root-package> --workspace "
+           "<workspace> --core <core-root> --core-identity <identity> "
+           "--target <selector> [--dependency <prefix> <root> "
+           "<identity>]...\n";
     return EXIT_FAILURE;
   }
 
@@ -387,25 +505,45 @@ int main(int argc, char **argv) {
   }
 
   std::optional<draft::CompileWorkspaceResult> compiled;
+  draft::TargetProfile target_profile;
   draft::SourceManager compiled_sources;
   draft::DiagnosticSink compiled_diagnostics;
   if (loaded.ok && !raw_diagnostics.has_errors()) {
     draft::CompileWorkspaceOptions compile_options;
     std::string reason;
     if (!draft::select_builtin_target_profile(
-            argv[10], compile_options.target, reason)) {
+            argv[10], target_profile, reason)) {
       std::cerr << "error: " << reason << '\n';
       return EXIT_FAILURE;
     }
+    compile_options.target = target_profile;
     compile_options.workspace = workspace_options;
     compiled.emplace(draft::compile_workspace(
         compiled_sources, argv[2], compile_options, compiled_diagnostics));
   }
 
+  std::vector<draft::SemanticPackage> selected_packages;
+  std::vector<std::vector<draft::ConditionalSelection>> selected_conditions;
+  draft::DiagnosticSink selection_diagnostics;
+  bool selected_ok = !target_declarations_command;
+  if (target_declarations_command && compiled.has_value() && compiled->ok) {
+    selected_ok = rebuild_target_declarations(
+        compiled_sources, *compiled, selected_packages, selected_conditions,
+        selection_diagnostics);
+  }
+
   dump_workspace_graph(loaded.graph, std::cout);
   if (loaded.ok) dump_declarations(loaded.graph, raw_packages, std::cout);
   if (compiled.has_value() && compiled->ok) {
-    dump_public_names(loaded.graph, raw_packages, *compiled, std::cout);
+    if (target_declarations_command && selected_ok) {
+      dump_target_declarations(
+          target_profile, compiled->graph, raw_packages, selected_packages,
+          selected_conditions, std::cout);
+      dump_public_names(
+          compiled->graph, selected_packages, *compiled, std::cout);
+    } else if (public_names_command) {
+      dump_public_names(loaded.graph, raw_packages, *compiled, std::cout);
+    }
   }
 
   const draft::DiagnosticSink normalized_raw =
@@ -415,10 +553,13 @@ int main(int argc, char **argv) {
       normalized_diagnostics(compiled_diagnostics);
   std::cerr << draft::render_diagnostics(
       compiled_sources, normalized_compiled);
+  std::cerr << draft::render_diagnostics(
+      compiled_sources, selection_diagnostics);
   if (!std::cout || !std::cerr) return EXIT_FAILURE;
   return loaded.ok && !raw_diagnostics.has_errors() &&
           compiled.has_value() && compiled->ok &&
-          !compiled_diagnostics.has_errors()
+          !compiled_diagnostics.has_errors() && selected_ok &&
+          !selection_diagnostics.has_errors()
       ? EXIT_SUCCESS
       : EXIT_FAILURE;
 }
