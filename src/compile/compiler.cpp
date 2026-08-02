@@ -4186,12 +4186,34 @@ completed_declaration_dependencies(const CompileWorkspaceResult &result,
           sources, result.graph.packages[owner.value].loaded,
           package.declaration_discovery.selections,
           package.declaration_discovery.package, diagnostics);
-      const PackageSemanticProducts &package_products =
+      PackageSemanticProducts &package_products =
           result.semantic_products.packages[owner.value];
+      const std::size_t previous_condition_count =
+          package_products.conditions.size();
       if (!append_package_condition_products(
               result, package_products.declaration_inputs, owner, package,
               diagnostics)) {
         return false;
+      }
+      // A nested `else when` row did not exist when PackageNameSet last
+      // blocked. Attach each newly appended condition before publishing this
+      // frozen wave; otherwise both the condition and the source-mutating name
+      // barrier become ready together, and the barrier could observe a branch
+      // which has not yet been selected and materialized.
+      if (package_products.conditions.size() > previous_condition_count) {
+        const std::span<const SemanticProductId> new_conditions(
+            package_products.conditions.data() + previous_condition_count,
+            package_products.conditions.size() - previous_condition_count);
+        std::string dependency_error;
+        if (!extend_waiting_semantic_product_dependencies(
+                result.semantic_graph, package_products.name_set,
+                new_conditions, dependency_error)) {
+          diagnostics.error(
+              SourceRange::invalid(),
+              "cannot extend package name-set condition dependencies: " +
+                  dependency_error);
+          return false;
+        }
       }
     }
     for (std::size_t task_index = 0; task_index < wave.products.size();

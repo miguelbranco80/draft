@@ -184,6 +184,35 @@ SemanticProductId append_completed_semantic_product(
   return id;
 }
 
+bool extend_waiting_semantic_product_dependencies(
+    SemanticProductGraph &graph, SemanticProductId product,
+    std::span<const SemanticProductId> dependencies, std::string &reason) {
+  reason.clear();
+  if (!id_in_graph(graph, product)) {
+    reason = "cannot extend an out-of-range semantic product";
+    return false;
+  }
+  if (graph.products[product.value].state != SemanticProductState::Waiting) {
+    reason = "only a waiting semantic product can receive dependencies";
+    return false;
+  }
+
+  // Canonicalize before touching the target row so a bad dependency ID or
+  // self-edge leaves the graph exactly as the caller supplied it.
+  std::vector<SemanticProductId> canonical;
+  if (!canonical_dependencies(graph, dependencies, product, canonical,
+                              reason)) {
+    return false;
+  }
+  std::vector<SemanticProductId> merged =
+      graph.products[product.value].dependencies;
+  merged.insert(merged.end(), canonical.begin(), canonical.end());
+  std::sort(merged.begin(), merged.end(), product_id_less);
+  merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+  graph.products[product.value].dependencies = std::move(merged);
+  return true;
+}
+
 bool supersede_semantic_products(SemanticProductGraph &graph,
                                  std::span<const SemanticProductId> products,
                                  std::string &reason) {

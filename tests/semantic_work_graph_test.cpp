@@ -126,6 +126,64 @@ void test_discovered_dependency_requeues_product(TestState &state) {
                     draft::SemanticReadyWaveStatus::Complete);
 }
 
+// A producer can reveal a new prerequisite for an already-waiting barrier
+// while its own frozen wave is still Running. Extending that non-wave consumer
+// before publication must keep the new producer and the source-mutating
+// barrier in separate ready waves.
+void test_coordinator_extends_waiting_consumer(TestState &state) {
+  draft::SemanticProductGraph graph;
+  const auto outer =
+      append(state, graph, draft::SemanticProductKind::ConstantValue);
+  const auto names =
+      append(state, graph, draft::SemanticProductKind::PackageNameSet, {outer});
+  draft::SemanticReadyWave wave = draft::freeze_semantic_ready_wave(graph);
+  EXPECT(state,
+         wave.products == std::vector<draft::SemanticProductId>({outer}));
+
+  const auto nested =
+      append(state, graph, draft::SemanticProductKind::ConstantValue);
+  std::string reason;
+  EXPECT(state,
+         draft::extend_waiting_semantic_product_dependencies(
+             graph, names,
+             std::vector<draft::SemanticProductId>{nested, nested}, reason));
+  EXPECT(state, reason.empty());
+  EXPECT(state, graph.products[names.value].dependencies ==
+                    std::vector<draft::SemanticProductId>({outer, nested}));
+
+  draft::DiagnosticSink diagnostics;
+  publish(state, graph, wave, std::vector<draft::SemanticProductOutcome>(1),
+          diagnostics);
+  wave = draft::freeze_semantic_ready_wave(graph);
+  EXPECT(state,
+         wave.products == std::vector<draft::SemanticProductId>({nested}));
+  publish(state, graph, wave, std::vector<draft::SemanticProductOutcome>(1),
+          diagnostics);
+  wave = draft::freeze_semantic_ready_wave(graph);
+  EXPECT(state,
+         wave.products == std::vector<draft::SemanticProductId>({names}));
+}
+
+void test_running_product_dependency_extension_is_rejected(TestState &state) {
+  draft::SemanticProductGraph graph;
+  const auto running =
+      append(state, graph, draft::SemanticProductKind::ConstantValue);
+  const draft::SemanticReadyWave wave =
+      draft::freeze_semantic_ready_wave(graph);
+  EXPECT(state,
+         wave.products == std::vector<draft::SemanticProductId>({running}));
+  const auto appended =
+      append(state, graph, draft::SemanticProductKind::TypeIdentity);
+
+  std::string reason;
+  EXPECT(state, !draft::extend_waiting_semantic_product_dependencies(
+                    graph, running,
+                    std::vector<draft::SemanticProductId>{appended}, reason));
+  EXPECT(state,
+         reason == "only a waiting semantic product can receive dependencies");
+  EXPECT(state, graph.products[running.value].dependencies.empty());
+}
+
 void test_synthesis_wait_suspends_consumers(TestState &state) {
   draft::SemanticProductGraph graph;
   const auto opaque =
@@ -304,6 +362,8 @@ int main() {
   TestState state;
   test_dependency_waves_are_canonical(state);
   test_discovered_dependency_requeues_product(state);
+  test_coordinator_extends_waiting_consumer(state);
+  test_running_product_dependency_extension_is_rejected(state);
   test_synthesis_wait_suspends_consumers(state);
   test_diagnostics_publish_in_product_order(state);
   test_uncollapsed_cycle_stalls(state);

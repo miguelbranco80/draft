@@ -31,7 +31,9 @@ generic query framework.
 - The graph is dynamic rather than one closed DAG. Checking can discover
   canonical generic instances, layout demands, procedure-flow edges, and ready
   synthesis obligations. New nodes and edges are published between frozen work
-  waves.
+  waves. A coordinator may also extend an already-waiting consumer while a
+  different frozen wave is being published; it may never change a Running
+  task's frozen inputs.
 - Cycles have explicit meanings. Illegal declaration or inline-layout cycles are
   diagnosed. Legal recursive procedures and effect propagation are solved as
   strongly connected components. No hidden recursive `ensure_*` call or broad
@@ -123,6 +125,13 @@ For each wave, the coordinator:
 6. appends discovered nodes and dependency edges;
 7. publishes diagnostics in canonical semantic and source order; and
 8. repeats until the selected graph is complete or diagnosed.
+
+Conditional declaration chains exercise the dynamic-edge rule directly. Once
+an outer condition selects an `else when` branch, the coordinator appends the
+newly reachable condition product and extends the waiting package-name barrier
+with that product before publishing the outer wave. The nested condition and
+the source-mutating barrier therefore cannot enter the same ready wave, and the
+barrier cannot close over source whose selection is still unknown.
 
 Compile-time resource limits are task-local or otherwise deterministically
 accounted. A shared schedule-sensitive instruction or memory budget is invalid.

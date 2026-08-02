@@ -114,9 +114,10 @@ struct SemanticProduct {
   std::string failure;
 };
 
-// The graph is append-only. New products may be appended after workers finish
-// a frozen wave and before their outcomes are published. Existing rows change
-// only through the state transitions performed by the operations below.
+// The product table is append-only. New products may be appended after workers
+// finish a frozen wave and before their outcomes are published. Existing rows
+// change only through the state and dependency transitions performed by the
+// operations below.
 struct SemanticProductGraph {
   std::vector<SemanticProduct> products;
 };
@@ -177,6 +178,18 @@ append_semantic_product(SemanticProductGraph &graph, SemanticProductKind kind,
 // normal Waiting row and publish an outcome.
 [[nodiscard]] SemanticProductId append_completed_semantic_product(
     SemanticProductGraph &graph, SemanticProductKind kind,
+    std::span<const SemanticProductId> dependencies, std::string &reason);
+
+// Extends one Waiting consumer with coordinator-discovered dependencies. This
+// operation exists for graph structure revealed while a different frozen wave
+// is being published: for example, selecting one `else when` branch can append
+// the next condition product, which must hold the already-waiting package-name
+// barrier open. The target may not be Running or terminal, because changing a
+// frozen task's inputs would invalidate its private result. The complete input
+// set is validated before mutation, then merged into the row's canonical
+// sorted dependency vector. Empty and duplicate inputs are harmless no-ops.
+[[nodiscard]] bool extend_waiting_semantic_product_dependencies(
+    SemanticProductGraph &graph, SemanticProductId product,
     std::span<const SemanticProductId> dependencies, std::string &reason);
 
 // Marks products from an earlier selected source generation as Superseded.
