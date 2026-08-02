@@ -14,5 +14,8 @@
 - [x] Reserve `^` for pointers and use binary `~`/`~=` for XOR.
 - [ ] Add freestanding and embedded target support.
 - [ ] Complete cross-target sanitizer, race, and coverage profiles.
+- [ ] Measure self-hosted imported-name memory and lookup performance after
+      typed package interfaces exist; the current direct representation stores
+      one public-name row per import alias and performs linear member lookup.
 - [x] Add portable terminal resize observation with POSIX notifications.
 - [x] Add Unicode grapheme and display-width support to `core/tui`.
