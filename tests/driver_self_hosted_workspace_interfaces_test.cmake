@@ -1,7 +1,7 @@
 # Exact differential test for the first self-hosted typed package interface.
 #
 # Both executables emit the established graph, declaration, target-selection,
-# and public-name prefix before the new canonical scalar/procedure type graph.
+# and public-name prefix before the canonical scalar/structural type graph.
 # Imported rows are compared through structural consumer-local type shapes so
 # unrelated production-only private interning cannot affect the result. Scratch
 # is process-unique below the caller-provided binary directory.
@@ -108,14 +108,27 @@ file(MAKE_DIRECTORY
 )
 file(WRITE "${interface_workspace}/values/package.draft"
   "package values\n"
+  "pub Count :: 4\n"
   "pub Index :: u32\n"
   "pub Limit :: 42\n"
   "pub Enabled :: true\n"
   "pub Label :: \"ready\"\n"
   "pub Forward :: Later\n"
   "Later :: u16\n"
-  "pub Storage: Index\n"
-  "pub transform :: proc(value: Index) -> bool { return Enabled; }\n"
+  "pub Forward_View :: Later_View\n"
+  "Later_View :: []Index\n"
+  "pub Index_Pointer :: ^Index\n"
+  "pub Index_Multi :: [^]Index\n"
+  "pub Index_Slice :: []Index\n"
+  "pub Index_Array :: [Count]Index\n"
+  "pub Forward_Array :: [Later_Count]Index\n"
+  "Later_Count :: Count\n"
+  "pub Index_Tuple :: (Index_Pointer, Index_Array)\n"
+  "pub Transformer :: proc(value: Index_Slice) -> Index_Pointer\n"
+  "pub Page_Array :: [target.page_size]u8\n"
+  "pub Storage: Index_Array\n"
+  "pub transform :: proc(values: Index_Slice, cursor: Index_Multi) -> Index_Pointer { return nil; }\n"
+  "pub pair :: proc(pointer: Index_Pointer, values: Index_Array) -> (Index_Pointer, Index_Array) { return (pointer, values); }\n"
 )
 file(WRITE "${interface_workspace}/app/package.draft"
   "package app\n"
@@ -124,8 +137,18 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Local_Limit :: values.Limit\n"
   "pub Local_Enabled :: values.Enabled\n"
   "pub Local_Label :: values.Label\n"
-  "pub Storage: values.Index\n"
-  "pub copy :: proc(value: values.Index) -> bool { return values.Enabled; }\n"
+  "pub Local_Pointer :: values.Index_Pointer\n"
+  "pub Local_Multi :: values.Index_Multi\n"
+  "pub Local_Slice :: values.Index_Slice\n"
+  "pub Local_Array :: values.Index_Array\n"
+  "pub Local_Tuple :: values.Index_Tuple\n"
+  "pub Local_Transformer :: values.Transformer\n"
+  "pub Nested_Array :: [2]values.Index_Array\n"
+  "pub Imported_Count_Array :: [values.Count]values.Index\n"
+  "pub Direct_Tuple :: ([]values.Index, ^values.Index_Tuple)\n"
+  "pub Storage: values.Index_Array\n"
+  "pub Cursor: values.Index_Multi\n"
+  "pub copy :: proc(value: []values.Index, cursor: [^]values.Index) -> ^values.Index { return nil; }\n"
   "main :: proc() {}\n"
 )
 
@@ -135,7 +158,7 @@ foreach(target
     x86_64-linux
     x86_64-windows)
   compare_interfaces(
-    "scalar-procedure-${target}"
+    "scalar-structural-${target}"
     "${interface_workspace}/app"
     "${interface_workspace}"
     "${interface_core}"
@@ -148,7 +171,33 @@ endforeach()
 expect_next_interface_failure(
   unsupported-aggregate
   "package app\npub Record :: struct { value: u32; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar or procedure declaration"
+  "self-hosted typed interface requires a supported scalar or structural declaration"
+)
+
+# Distinct types are nominal identities even when their underlying storage is a
+# supported scalar, so they remain outside this structural slice.
+expect_next_interface_failure(
+  unsupported-distinct
+  "package app\npub Handle :: distinct u32\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar or structural declaration"
+)
+
+# Array counts reuse the current scalar constant-product evaluator. Arithmetic
+# remains a later constant-evaluation slice and must not be guessed or folded by
+# a second array-only implementation.
+expect_next_interface_failure(
+  unsupported-array-count-arithmetic
+  "package app\npub Bytes :: [2 + 2]u8\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar or structural declaration"
+)
+
+# A concrete uint is not an implicit usize merely because both current target
+# widths are 64 bits. Only an untyped representable constant or exact usize may
+# supply the fixed-array count.
+expect_next_interface_failure(
+  unsupported-array-count-type
+  "package app\npub Bytes :: [target.pointer_bits]u8\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar or structural declaration"
 )
 
 # Local declaration cycles remain visible graph edges and receive a distinct
@@ -160,5 +209,5 @@ expect_next_interface_failure(
 )
 
 message(STATUS
-  "draftc-next typed interfaces matched production scalar/procedure graphs")
+  "draftc-next typed interfaces matched production scalar/structural graphs")
 file(REMOVE_RECURSE "${run_root}")

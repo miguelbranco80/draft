@@ -556,11 +556,13 @@ selects the package `when` frontier through target facts and demand-driven local
 scalar constant products, then rebuilds that public view.
 `workspace-interfaces` continues dependency-first through canonical
 predeclared/named scalar types, scalar constants, explicitly typed globals,
-fixed procedure signatures, and consumer-local imported type/value
-reconstruction. Aggregate, pointer/view, distinct, parametric, foreign/export,
-procedure-contract, and general constant/type forms remain an explicit staging
-failure. It is a build-tree development artifact, not an installed public
-command:
+pointer/multi-pointer/slice/fixed-array/tuple structures, fixed procedure types
+and signatures, and consumer-local imported type/value reconstruction. Array
+counts reuse the scalar product graph for positive untyped or exact `usize`
+values. Nominal aggregates, distinct/SIMD/parametric types, foreign/export,
+procedure contracts, arithmetic counts, and general constant/type forms remain
+an explicit staging failure. It is a build-tree development artifact, not an
+installed public command:
 
 ```sh
 cmake --build build --target \
@@ -621,13 +623,16 @@ feature strings, short-circuit validation, selected-branch constants feeding
 nested conditions, dormant unrelated constants, and fail-closed demanded
 arithmetic/cycles. Arithmetic and aggregate values, imported constants, types,
 and compile-time procedures remain outside this target-selection evaluator. The
-typed-interface differential then compares canonical reachable scalar/procedure
-type rows, declaration classifications, scalar constant payloads, and imported
-consumer-local type/value shapes on all four targets. Its supported fixture
-includes forward local aliases, qualified imported aliases, typed globals, and
-fixed procedure signatures; aggregate types and local type cycles must fail at
-the exact self-hosting boundary. Do not infer support for the production
-interface's remaining type constructors or contracts from this narrow gate.
+typed-interface differential then compares canonical reachable
+scalar/structural type rows, fixed-array counts, declaration classifications,
+scalar constant payloads, and imported consumer-local type/value shapes on all
+four targets. Its supported fixture includes forward local type/count aliases,
+qualified imported aliases and counts, structural globals, fixed procedure
+types/signatures, tuple results, and target page-size arrays. Nominal aggregates,
+distinct types, unsupported count expressions/types, and local type cycles must
+fail at the exact self-hosting boundary. Do not infer support for the production
+interface's remaining nominal/parametric constructors or contracts from this
+narrow gate.
 Keep the bootstrap path until a replacement phase has this oracle; passing
 focused Draft tests alone is not replacement evidence.
 

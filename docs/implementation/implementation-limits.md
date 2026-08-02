@@ -192,7 +192,7 @@ boundary and no alternate-emitter fallback for unsupported operations.
 
 Status: build-tree source, lexer, parser, folder-package, canonical import-graph,
 declaration-name, unconditional qualified-name, target-conditional declaration,
-and scalar/procedure typed-interface replacement; not a Draft language or
+and scalar/structural typed-interface replacement; not a Draft language or
 public CLI limit.
 
 On a supported native host, the build graph uses C++ `draftc` to produce an O2
@@ -217,13 +217,17 @@ the chosen source declarations without rebuilding the unconditional Symbol-ID
 prefix, then rebuilds the public alias spans. `workspace-interfaces` continues
 dependency-first through a deliberately closed typed subset: every package gets
 the production-order predeclared scalar table; demanded public declarations
-classify type aliases versus boolean/unsigned/string constants; named scalar
-types assign explicit globals and fixed non-parametric Draft procedure
-signatures; reachable types and constants are rewritten into canonical
-package-interface IDs; and each imported declaration is reconstructed in the
-consumer Type-ID domain beneath its file-local alias. Forward local type aliases
-and qualified imported type/value aliases are supported. Aggregate,
-pointer/view, distinct, parametric, foreign/export, procedure-contract, and
+classify type aliases versus boolean/unsigned/string constants; named scalars
+and the structural `^T`, `[^]T`, `[]T`, `[N]T`, `(T, U)`, and ordinary fixed
+`proc` forms type aliases, explicit globals, and procedure signatures; reachable
+types and constants are rewritten into canonical package-interface IDs; and
+each imported declaration is reconstructed in the consumer Type-ID domain
+beneath its file-local alias. Fixed-array counts reuse the existing scalar
+product graph and currently accept positive representable untyped integers or
+exact `usize` values from local names, imported constants, and target facts.
+Forward local type/count aliases and qualified imported type/value aliases are
+supported. Nominal aggregates, distinct and SIMD types, parametric forms,
+foreign/export declarations, procedure contracts, arithmetic array counts, and
 general constant/type forms fail explicitly at this interface boundary.
 Imported constants remain unavailable to the earlier package-`when` selector.
 Deeper nominal member lookup, full type/body checking, elaboration, MIR, LLVM,
@@ -256,14 +260,18 @@ symbol references, canonical targets, alias locality, and source ordering for
 that earlier view. Conditional public names are deliberately filtered out of
 that earlier command's oracle and Draft result; the later target-declaration
 command rebuilds them after selection. Neither view is yet a serialized or
-typed package interface. The typed-interface differential then compares the
-canonical reachable scalar/procedure type rows, declaration classifications,
-constant payloads, and consumer-local imported type/value shapes with production
-on all four targets. Its focused fixture covers forward local aliases, qualified
-imported aliases, scalar globals, and fixed procedure signatures; separate
-fixtures require aggregate types and local type cycles to fail at the exact
-self-hosting boundary. This evidence applies only to that closed subset, not to
-the full production PackageInterface vocabulary or serialization.
+typed package interface. The typed-interface differential then compares
+canonical reachable scalar/structural type rows, including array element counts,
+declaration classifications, constant payloads, and consumer-local imported
+type/value shapes with production on all four targets. Its focused fixture
+covers forward local type and array-count dependencies, qualified imported
+type/value/count aliases, pointer/multi-pointer/slice/array/tuple/procedure type
+aliases, structural globals and procedure signatures, tuple results, and
+target-dependent page-size arrays. Separate fixtures require nominal aggregates,
+distinct types, unsupported array-count expressions/types, and local type cycles
+to fail at the exact self-hosting boundary. This evidence applies only to that
+closed subset, not to the full production PackageInterface vocabulary or
+serialization.
 
 The target-declaration differential replays the production compiler's published
 condition selections through its source collector and compares Draft's selected

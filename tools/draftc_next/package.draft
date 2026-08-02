@@ -10,8 +10,8 @@
 // imported-name lookup; `workspace-target-declarations` materializes package
 // `when` through target facts and demand-driven local scalar constant products,
 // then rebinds that public view; `workspace-interfaces` continues through the
-// first canonical typed declaration/interface graph and consumer-local import
-// reconstruction.
+// canonical scalar, pointer/view, fixed-array, tuple, and procedure declaration
+// interface graph and consumer-local import reconstruction.
 // Every command
 // renders the same stdout/stderr bytes and exit status as its C++ bootstrap
 // oracle. Keeping the commands phase-bounded makes bootstrap replacement

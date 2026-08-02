@@ -13,12 +13,13 @@
 // declarations into source-ordered imported-name rows, giving `alias.member` a
 // stable cross-package Symbol_Reference without copying spellings. The first
 // typed continuation installs the predeclared scalar table, demands public
-// declaration/value products, builds canonical scalar/procedure interface type
+// declaration/value products, builds canonical scalar/structural interface type
 // graphs, and reconstructs each dependency row into consumer-local Type_Ids.
-// Its closed subset covers named scalar aliases/constants, explicit scalar
-// globals, and fixed Draft procedure signatures. Remaining constructors,
-// contracts, body checking, and general constant evaluation stay behind an
-// explicit diagnostic rather than receiving provisional semantics.
+// Its closed subset covers named scalar aliases/constants, pointers,
+// multi-pointers, slices, fixed arrays, tuples, explicit globals, and fixed
+// Draft procedure signatures. Nominal aggregates and distinct types, contracts,
+// body checking, and general constant evaluation stay behind an explicit
+// diagnostic rather than receiving provisional semantics.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
 // ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
@@ -270,8 +271,9 @@ pub Imported_Name :: struct {
 // The distinct name is required because Draft already predeclares Type_Kind as
 // the public reflection result enum; reusing it would bind annotations to that
 // language type instead of this staging representation.
-// This slice constructs every predeclared scalar plus structural procedures;
-// aggregate, pointer/view, distinct, and parametric constructors remain a
+// This slice constructs every predeclared scalar plus the pointer, multi-pointer,
+// slice, fixed-array, tuple, and procedure structural families. Nominal
+// aggregates, distinct types, SIMD, and parametric constructors remain a
 // diagnosed staging boundary even though their final enum cases are reserved.
 pub Semantic_Type_Kind :: enum u8 {
     invalid_type,
@@ -305,15 +307,18 @@ pub Semantic_Type_Kind :: enum u8 {
 }
 
 // Semantic_Type is one package-local type identity. Scalar rows use name and
-// bit_width; endian rows additionally use element. Procedure rows use one
-// contiguous source-order span in Semantic_Package.type_members containing
-// fixed parameter types followed by the result type. name points only at a
-// process literal in this slice, so the row owns no allocation.
+// bit_width; endian, pointer, multi-pointer, slice, and array rows additionally
+// use element. Array rows use the positive element_count as part of identity.
+// Tuple rows use one contiguous source-order span in
+// Semantic_Package.type_members; procedure rows use the same representation
+// with fixed parameter types followed by the result type. name points only at
+// a process literal in this slice, so the row owns no allocation.
 pub Semantic_Type :: struct {
     kind: Semantic_Type_Kind,
     name: string,
     bit_width: u32,
     element: Type_Id,
+    element_count: u64,
     member_begin: usize,
     member_count: usize,
 }
@@ -351,15 +356,17 @@ Compile_Time_Value :: struct {
 }
 
 // Interface_Type is a package-independent graph row. element and the member
-// span refer only to the same package's interface type table. Rows are appended
-// lazily in public declaration discovery order, matching production's
-// InterfaceBuilder and installing a placeholder before following children so
-// later recursive nominal graphs have an honest seam.
+// span refer only to the same package's interface type table; element_count is
+// the positive fixed-array length and otherwise zero. Rows are appended lazily
+// in public declaration discovery order, matching production's InterfaceBuilder
+// and installing a placeholder before following children so later recursive
+// nominal graphs have an honest seam.
 pub Interface_Type :: struct {
     kind: Semantic_Type_Kind,
     name: string,
     bit_width: u32,
     element: Interface_Type_Id,
+    element_count: u64,
     member_begin: usize,
     member_count: usize,
 }
@@ -1717,6 +1724,103 @@ find_builtin_type :: proc(
     return (invalid_type_id(), false)
 }
 
+// intern_element_type returns the canonical identity for one pointer-like
+// structural constructor. Only the three element-only kinds admitted by this
+// phase are valid callers; keeping that invariant here prevents an enum value
+// from silently constructing an incomplete array, SIMD, or nominal row. The
+// direct scan preserves append order as the semantic ordering authority.
+intern_element_type :: proc(
+    semantic_package: ^Semantic_Package,
+    kind: Semantic_Type_Kind,
+    element: Type_Id,
+) -> Type_Id {
+    assert(kind == .pointer_type || kind == .multi_pointer_type ||
+        kind == .slice_type,
+        "element-only type interner received an unsupported kind")
+    assert(type_id_valid(element),
+        "element-only type interner received an invalid element")
+    for index: usize = 0; index < semantic_package.types.length; index += 1 {
+        candidate := &semantic_package.types.data[index]
+        if candidate.kind == kind && candidate.element.value == element.value {
+            return Type_Id{value = cast[u32](index)}
+        }
+    }
+    return append_semantic_type(semantic_package, Semantic_Type{
+        kind = kind,
+        element = element,
+    })
+}
+
+// intern_array_type returns the canonical fixed-array identity. count is
+// already a checked positive compile-time usize value; zero is source failure,
+// never an incomplete row. Element and count together form structural identity.
+intern_array_type :: proc(
+    semantic_package: ^Semantic_Package,
+    element: Type_Id,
+    count: u64,
+) -> Type_Id {
+    assert(type_id_valid(element),
+        "array type interner received an invalid element")
+    assert(count != 0, "array type interner received a zero element count")
+    for index: usize = 0; index < semantic_package.types.length; index += 1 {
+        candidate := &semantic_package.types.data[index]
+        if candidate.kind == .array_type &&
+            candidate.element.value == element.value &&
+            candidate.element_count == count {
+            return Type_Id{value = cast[u32](index)}
+        }
+    }
+    return append_semantic_type(semantic_package, Semantic_Type{
+        kind = .array_type,
+        element = element,
+        element_count = count,
+    })
+}
+
+// intern_tuple_type returns the canonical ordered product identity. A Draft 1
+// tuple has at least two members; the parser has already distinguished grouped
+// syntax, but this layer retains the semantic invariant. The member span is
+// appended only after the direct scan proves no equal tuple already exists.
+intern_tuple_type :: proc(
+    semantic_package: ^Semantic_Package,
+    members: []Type_Id,
+) -> Type_Id {
+    assert(len(members) >= 2, "tuple type has fewer than two members")
+    for index: usize = 0; index < semantic_package.types.length; index += 1 {
+        candidate := &semantic_package.types.data[index]
+        if candidate.kind != .tuple_type ||
+            candidate.member_count != len(members) {
+            continue
+        }
+        equal := true
+        for member_index: usize = 0;
+            member_index < len(members);
+            member_index += 1 {
+            if semantic_package.type_members.data[
+                    candidate.member_begin + member_index
+                ].value != members[member_index].value {
+                equal = false
+                break
+            }
+        }
+        if equal {
+            return Type_Id{value = cast[u32](index)}
+        }
+    }
+    begin := semantic_package.type_members.length
+    for member in members {
+        assert(type_id_valid(member),
+            "tuple type interner received an invalid member")
+        array.append(&semantic_package.type_members, member)
+    }
+    return append_semantic_type(semantic_package, Semantic_Type{
+        kind = .tuple_type,
+        element = invalid_type_id(),
+        member_begin = begin,
+        member_count = len(members),
+    })
+}
+
 // intern_procedure_type returns the canonical structural identity for fixed
 // parameter types followed by one result type. The direct scan is deliberate:
 // interface fixtures are small, ordering stays inspectable, and a measured
@@ -2407,7 +2511,11 @@ target_field_value :: proc(
         value.static_type = Type_Id{value = 22}
         value.unsigned_integer = facts.page_size
     }
-    assert(semantic_package.types.length == 62,
+    // Target selection observes exactly the builtin table, while later typed
+    // array counts may ask for page_size after earlier declarations have
+    // interned structural rows. Those appends do not disturb the canonical
+    // builtin prefix or the fixed Type_Ids used above.
+    assert(semantic_package.types.length >= 62,
         "target facts require the canonical builtin type prefix")
     return value
 }
@@ -2669,13 +2777,15 @@ evaluate_target_condition_expression :: proc(
     node := compiler_syntax.syntax_tree_node(tree, id)
     children := compiler_syntax.syntax_tree_children(tree, id)
     switch node.kind {
-    case .named_type:
-        (resolved, found_type) := resolve_named_type_syntax(
+    case .named_type, .pointer_type, .multi_pointer_type, .slice_type,
+        .array_type, .tuple_type, .procedure_type:
+        (resolved, found_type) := resolve_type_syntax(
             graph,
             semantic_package,
             file_index,
             tree,
             id,
+            facts,
             blocked_symbol,
         )
         if !found_type {
@@ -2685,6 +2795,43 @@ evaluate_target_condition_expression :: proc(
         value.kind = .type_value
         value.static_type = Type_Id{value = 53}
         value.type_value = resolved
+        return value
+    case .tuple_expression:
+        // Parenthesized comma syntax is expression-ambiguous at parse time.
+        // It becomes a tuple type value exactly when every source-ordered child
+        // evaluates to a type value; ordinary tuple constants remain outside
+        // this scalar/structural interface evaluator.
+        if len(children) < 2 {
+            return invalid_compile_time_value()
+        }
+        members: array.Dynamic[Type_Id]
+        array.init(&members)
+        for child_id in children {
+            child := evaluate_target_condition_expression(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                child_id,
+                facts,
+                blocked_symbol,
+                .type_value,
+            )
+            if child.kind != .type_value {
+                array.destroy(&members)
+                return invalid_compile_time_value()
+            }
+            array.append(&members, child.type_value)
+        }
+        type_value := intern_tuple_type(
+            semantic_package,
+            array.view(&members),
+        )
+        array.destroy(&members)
+        value: Compile_Time_Value
+        value.kind = .type_value
+        value.static_type = Type_Id{value = 53}
+        value.type_value = type_value
         return value
     case .literal_expression:
         if node.token_begin + 1 != node.token_end {
@@ -3152,8 +3299,8 @@ append_unsupported_condition_diagnostic :: proc(
 
 // append_unsupported_typed_interface_diagnostic marks a declaration demanded
 // by public interface construction which exceeds the deliberately narrow
-// scalar/procedure slice. The message describes implementation coverage, not a
-// language rejection.
+// scalar/structural slice. The message describes implementation coverage, not
+// a language rejection.
 append_unsupported_typed_interface_diagnostic :: proc(
     semantic: ^Semantic_Workspace,
     semantic_package: ^Semantic_Package,
@@ -3680,8 +3827,7 @@ pub bind_workspace_public_names :: proc(
 // declaration_type_syntax returns the first explicit type child in one source
 // declaration. It deliberately does not use declaration_payload: a variable
 // initializer is the final payload while the declared type appears earlier.
-// This slice accepts one scalar named type and leaves every other constructor
-// to resolve_type_syntax's diagnosed boundary.
+// Constructor validity remains the responsibility of resolve_type_syntax.
 declaration_type_syntax :: proc(
     tree: ^compiler_syntax.Syntax_Tree,
     declaration_id: compiler_syntax.Node_Id,
@@ -3698,26 +3844,152 @@ declaration_type_syntax :: proc(
     return (compiler_syntax.Node_Id{}, false)
 }
 
-// resolve_type_syntax is the explicit staging seam for declaration types. The
-// representation already reserves the full canonical vocabulary, but only
-// named scalar aliases are constructed until pointer/view/aggregate layout and
-// their semantic rules move together.
+// resolve_type_syntax constructs the closed structural vocabulary admitted by
+// this typed-interface slice. It resolves children recursively, interns exact
+// package-local identities, and reports the first unpublished local constant or
+// type through blocked_symbol. Array counts reuse the shared scalar compile-time
+// evaluator, so literals, named local/imported untyped-or-usize constants, and
+// target usize facts follow one dependency mechanism. Nominal aggregates,
+// distinct types, SIMD, C procedure types, and parametric forms fail at this
+// seam.
 resolve_type_syntax :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     semantic_package: ^Semantic_Package,
     file_index: usize,
     tree: ^compiler_syntax.Syntax_Tree,
     id: compiler_syntax.Node_Id,
+    facts: ^Target_Facts,
     blocked_symbol: ^Symbol_Id,
 ) -> (Type_Id, bool) {
     node := compiler_syntax.syntax_tree_node(tree, id)
+    children := compiler_syntax.syntax_tree_children(tree, id)
     if node.kind == .named_type {
+        // The parser represents a parenthesized grouped type as named_type with
+        // one child. Its tokens are not a qualified spelling, so unwrap it here
+        // before the leaf resolver examines exact name tokens.
+        if len(children) == 1 {
+            return resolve_type_syntax(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                children[0],
+                facts,
+                blocked_symbol,
+            )
+        }
         return resolve_named_type_syntax(
             graph,
             semantic_package,
             file_index,
             tree,
             id,
+            blocked_symbol,
+        )
+    }
+    if node.kind == .pointer_type || node.kind == .multi_pointer_type ||
+        node.kind == .slice_type {
+        if len(children) != 1 {
+            return (invalid_type_id(), false)
+        }
+        (element, resolved) := resolve_type_syntax(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            children[0],
+            facts,
+            blocked_symbol,
+        )
+        if !resolved {
+            return (invalid_type_id(), false)
+        }
+        kind: Semantic_Type_Kind = .pointer_type
+        if node.kind == .multi_pointer_type {
+            kind = .multi_pointer_type
+        } else if node.kind == .slice_type {
+            kind = .slice_type
+        }
+        return (intern_element_type(semantic_package, kind, element), true)
+    }
+    if node.kind == .array_type {
+        if len(children) != 2 {
+            return (invalid_type_id(), false)
+        }
+        count := evaluate_target_condition_expression(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            children[0],
+            facts,
+            blocked_symbol,
+            .unsigned_integer,
+        )
+        count_converts_to_usize := count.kind == .unsigned_integer &&
+            (count.static_type.value == 2 || count.static_type.value == 22)
+        if !count_converts_to_usize || count.unsigned_integer == 0 {
+            return (invalid_type_id(), false)
+        }
+        (element, resolved) := resolve_type_syntax(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            children[1],
+            facts,
+            blocked_symbol,
+        )
+        if !resolved {
+            return (invalid_type_id(), false)
+        }
+        return (
+            intern_array_type(
+                semantic_package,
+                element,
+                count.unsigned_integer,
+            ),
+            true,
+        )
+    }
+    if node.kind == .tuple_type {
+        if len(children) < 2 {
+            return (invalid_type_id(), false)
+        }
+        members: array.Dynamic[Type_Id]
+        array.init(&members)
+        for child_id in children {
+            (member, resolved) := resolve_type_syntax(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                child_id,
+                facts,
+                blocked_symbol,
+            )
+            if !resolved {
+                array.destroy(&members)
+                return (invalid_type_id(), false)
+            }
+            array.append(&members, member)
+        }
+        result := intern_tuple_type(semantic_package, array.view(&members))
+        array.destroy(&members)
+        return (result, true)
+    }
+    if node.kind == .procedure_type {
+        first := &tree.tokens.data[cast[usize](node.token_begin)]
+        if first.kind == .keyword_c {
+            return (invalid_type_id(), false)
+        }
+        return resolve_procedure_signature(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            id,
+            facts,
             blocked_symbol,
         )
     }
@@ -3736,6 +4008,7 @@ resolve_procedure_signature :: proc(
     file_index: usize,
     tree: ^compiler_syntax.Syntax_Tree,
     procedure_id: compiler_syntax.Node_Id,
+    facts: ^Target_Facts,
     blocked_symbol: ^Symbol_Id,
 ) -> (Type_Id, bool) {
     procedure := compiler_syntax.syntax_tree_node(tree, procedure_id)
@@ -3786,6 +4059,7 @@ resolve_procedure_signature :: proc(
                     file_index,
                     tree,
                     parameter_type_id,
+                    facts,
                     blocked_symbol,
                 )
                 if !resolved {
@@ -3813,6 +4087,7 @@ resolve_procedure_signature :: proc(
                 file_index,
                 tree,
                 result_children[0],
+                facts,
                 blocked_symbol,
             )
             if !resolved {
@@ -3843,6 +4118,7 @@ complete_typed_declaration_product :: proc(
     semantic: ^Semantic_Workspace,
     semantic_package: ^Semantic_Package,
     workspace_package: ^compiler_workspace.Workspace_Package,
+    facts: ^Target_Facts,
     product_id: Compile_Time_Product_Id,
 ) {
     product_index := cast[usize](product_id.value)
@@ -3908,6 +4184,7 @@ complete_typed_declaration_product :: proc(
                 symbol.syntax.file_index,
                 tree,
                 type_syntax,
+                facts,
                 &blocked_symbol,
             )
         }
@@ -3923,6 +4200,7 @@ complete_typed_declaration_product :: proc(
                 symbol.syntax.file_index,
                 tree,
                 payload,
+                facts,
                 &blocked_symbol,
             )
         }
@@ -4083,6 +4361,7 @@ type_package_public_declarations :: proc(
                 semantic,
                 semantic_package,
                 workspace_package,
+                facts,
                 ready,
             )
         case .condition:
@@ -4175,6 +4454,7 @@ translate_interface_type :: proc(
             name = local.name,
             bit_width = local.bit_width,
             element = translated_element,
+            element_count = local.element_count,
             member_begin = member_begin,
             member_count = local.member_count,
         }
@@ -4263,9 +4543,11 @@ build_package_interface :: proc(
 
 // import_interface_type reconstructs one dependency interface identity in the
 // consumer's local Type_Id domain. Predeclared scalar rows reuse the consumer's
-// canonical builtins by exact kind/name; structural procedures recursively
-// reconstruct members and use the local interner. Every successful mapping is
-// memoized by dependency package plus interface ID.
+// canonical builtins by exact kind/name. Pointer-like and array rows recursively
+// rebuild their element, while tuple/procedure rows recursively rebuild their
+// ordered member span; every structural root then passes through the matching
+// consumer interner. Every successful mapping is memoized by dependency package
+// plus interface ID.
 import_interface_type :: proc(
     semantic: ^Semantic_Workspace,
     consumer: ^Semantic_Package,
@@ -4291,7 +4573,50 @@ import_interface_type :: proc(
     ]
     local_type := invalid_type_id()
 
-    if source_type.kind == .procedure_type {
+    if source_type.kind == .pointer_type ||
+        source_type.kind == .multi_pointer_type ||
+        source_type.kind == .slice_type {
+        if !interface_type_id_valid(source_type.element) {
+            return (invalid_type_id(), false)
+        }
+        (local_element, imported) := import_interface_type(
+            semantic,
+            consumer,
+            target_package,
+            source_type.element,
+        )
+        if imported {
+            local_type = intern_element_type(
+                consumer,
+                source_type.kind,
+                local_element,
+            )
+        }
+    } else if source_type.kind == .array_type {
+        if !interface_type_id_valid(source_type.element) ||
+            source_type.element_count == 0 {
+            return (invalid_type_id(), false)
+        }
+        (local_element, imported) := import_interface_type(
+            semantic,
+            consumer,
+            target_package,
+            source_type.element,
+        )
+        if imported {
+            local_type = intern_array_type(
+                consumer,
+                local_element,
+                source_type.element_count,
+            )
+        }
+    } else if source_type.kind == .tuple_type ||
+        source_type.kind == .procedure_type {
+        if (source_type.kind == .tuple_type && source_type.member_count < 2) ||
+            (source_type.kind == .procedure_type &&
+                source_type.member_count == 0) {
+            return (invalid_type_id(), false)
+        }
         members: array.Dynamic[Type_Id]
         array.init(&members)
         valid := true
@@ -4314,7 +4639,14 @@ import_interface_type :: proc(
             array.append(&members, local_member)
         }
         if valid {
-            local_type = intern_procedure_type(consumer, array.view(&members))
+            if source_type.kind == .tuple_type {
+                local_type = intern_tuple_type(consumer, array.view(&members))
+            } else {
+                local_type = intern_procedure_type(
+                    consumer,
+                    array.view(&members),
+                )
+            }
         }
         array.destroy(&members)
     } else {
@@ -5127,10 +5459,10 @@ append_type_name :: proc(output: ^compiler_text.Builder, name: string) {
 }
 
 // append_local_type_shape renders a consumer-local type without exposing its
-// process-local Type_Id. Procedure children are expanded structurally; named
-// scalar leaves include kind and spelling. This is what makes imported type
-// reconstruction comparable even when a complete production compilation has
-// interned unrelated private types earlier.
+// process-local Type_Id. Structural children are expanded using canonical Draft
+// syntax while named scalar leaves include kind and spelling. This is what makes
+// imported type reconstruction comparable even when a complete production
+// compilation has interned unrelated private types earlier.
 append_local_type_shape :: proc(
     semantic_package: ^Semantic_Package,
     type_id: Type_Id,
@@ -5140,6 +5472,48 @@ append_local_type_shape :: proc(
         cast[usize](type_id.value) < semantic_package.types.length,
         "typed import dump received an invalid local type")
     semantic_type := &semantic_package.types.data[cast[usize](type_id.value)]
+    if semantic_type.kind == .pointer_type ||
+        semantic_type.kind == .multi_pointer_type ||
+        semantic_type.kind == .slice_type {
+        if semantic_type.kind == .pointer_type {
+            compiler_text.append_byte(output, cast[u8]('^'))
+        } else if semantic_type.kind == .multi_pointer_type {
+            compiler_text.append_text(output, "[^]")
+        } else {
+            compiler_text.append_text(output, "[]")
+        }
+        append_local_type_shape(semantic_package, semantic_type.element, output)
+        return
+    }
+    if semantic_type.kind == .array_type {
+        compiler_text.append_byte(output, cast[u8]('['))
+        compiler_text.append_unsigned(
+            output,
+            cast[usize](semantic_type.element_count),
+        )
+        compiler_text.append_byte(output, cast[u8](']'))
+        append_local_type_shape(semantic_package, semantic_type.element, output)
+        return
+    }
+    if semantic_type.kind == .tuple_type {
+        compiler_text.append_byte(output, cast[u8]('('))
+        for index: usize = 0;
+            index < semantic_type.member_count;
+            index += 1 {
+            if index != 0 {
+                compiler_text.append_byte(output, cast[u8](','))
+            }
+            append_local_type_shape(
+                semantic_package,
+                semantic_package.type_members.data[
+                    semantic_type.member_begin + index
+                ],
+                output,
+            )
+        }
+        compiler_text.append_byte(output, cast[u8](')'))
+        return
+    }
     if semantic_type.kind == .procedure_type {
         compiler_text.append_text(output, "procedure(")
         parameter_count := semantic_type.member_count - 1
@@ -5317,6 +5691,11 @@ pub dump_workspace_interfaces :: proc(
                 compiler_text.append_text(output, "invalid")
             }
             compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](interface_type.element_count),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
             compiler_text.append_unsigned(output, interface_type.member_count)
             for member_index: usize = 0;
                 member_index < interface_type.member_count;
@@ -5480,7 +5859,7 @@ render_semantic_message :: proc(
     case .unsupported_typed_interface:
         compiler_text.append_text(
             output,
-            "self-hosted typed interface requires a supported scalar or procedure declaration",
+            "self-hosted typed interface requires a supported scalar or structural declaration",
         )
     case .cyclic_typed_interface:
         compiler_text.append_text(

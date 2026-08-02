@@ -11,8 +11,8 @@
 // materialize_conditional_declaration on a fresh source-level package and
 // compares the appended SymbolId suffix plus the selected public-name view.
 // The interface command retains that complete prefix, then emits the reachable
-// production scalar/procedure interface graph and structurally normalized
-// consumer-local imported types and values.
+// production scalar/closed-structural interface graph and structurally
+// normalized consumer-local imported types and values.
 //
 // The early SourceManager owns every byte referenced by the graph and raw
 // semantic packages until their dump and diagnostics finish. The complete
@@ -504,11 +504,39 @@ void append_interface_constant(
 // Imported TypeIds are deliberately normalized structurally. A complete
 // production compilation interns many private types which are outside this
 // migration slice, so comparing process-local integers would measure unrelated
-// work rather than consumer-side interface reconstruction.
+// work rather than consumer-side interface reconstruction. Structural children
+// use canonical Draft syntax, while scalar leaves retain kind and spelling.
 void append_local_type_shape(
     const draft::TypeStore &types, draft::TypeId id, std::ostream &output) {
   assert(id.is_valid());
   const draft::Type &type = types.type(id);
+  if (type.kind == draft::TypeKind::Pointer ||
+      type.kind == draft::TypeKind::MultiPointer ||
+      type.kind == draft::TypeKind::Slice) {
+    if (type.kind == draft::TypeKind::Pointer) {
+      output << '^';
+    } else if (type.kind == draft::TypeKind::MultiPointer) {
+      output << "[^]";
+    } else {
+      output << "[]";
+    }
+    append_local_type_shape(types, type.element, output);
+    return;
+  }
+  if (type.kind == draft::TypeKind::Array) {
+    output << '[' << type.element_count << ']';
+    append_local_type_shape(types, type.element, output);
+    return;
+  }
+  if (type.kind == draft::TypeKind::Tuple) {
+    output << '(';
+    for (std::size_t index = 0; index < type.members.size(); ++index) {
+      if (index != 0) output << ',';
+      append_local_type_shape(types, type.members[index], output);
+    }
+    output << ')';
+    return;
+  }
   if (type.kind == draft::TypeKind::Procedure) {
     assert(!type.members.empty());
     output << "procedure(";
@@ -539,9 +567,10 @@ void append_local_constant(
 }
 
 // The typed-interface dump is intentionally narrower than PackageInterface's
-// final serialization contract. It compares the canonical scalar/procedure
-// graph moved in this slice and verifies that every dependency declaration was
-// reconstructed as a consumer-local proxy type/value beneath the exact alias.
+// final serialization contract. It compares the canonical scalar and closed
+// structural graph moved so far and verifies that every dependency declaration
+// was reconstructed as a consumer-local proxy type/value beneath the exact
+// alias.
 void dump_interfaces(
     const draft::WorkspaceGraph &source_graph,
     const std::vector<draft::SemanticPackage> &source_packages,
@@ -573,7 +602,7 @@ void dump_interfaces(
       } else {
         output << "invalid";
       }
-      output << ' ' << type.members.size();
+      output << ' ' << type.element_count << ' ' << type.members.size();
       for (draft::InterfaceTypeId member : type.members) {
         output << ' ' << member.value;
       }

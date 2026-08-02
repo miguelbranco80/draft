@@ -691,7 +691,7 @@ endif()
 # remains the bootstrap and semantic oracle; it compiles draftc-next for the
 # native host, while the next-stage driver exposes replaced source, syntax,
 # package-graph, declaration-name, unconditional qualified-name, and target-
-# conditional declaration phases plus a closed scalar/procedure typed-interface
+# conditional declaration phases plus a closed scalar/structural typed-interface
 # slice. Keeping the output out of the install set prevents a partial command
 # surface from being mistaken for the released compiler contract.
 file(GLOB_RECURSE DRAFTC_NEXT_DRAFT_SOURCES CONFIGURE_DEPENDS
@@ -1257,7 +1257,7 @@ if(BUILD_TESTING)
     # bind beneath each file-local alias. Its second command also replays the
     # production compiler's published target-condition selections through the
     # source collector. Its third command compares the canonical typed
-    # scalar/procedure interface graph and consumer-local import reconstruction.
+    # scalar/structural interface graph and consumer-local import reconstruction.
     add_executable(
       draft_workspace_public_names_oracle
       tools/bootstrap_workspace_public_names.cpp)

@@ -343,16 +343,20 @@ procedures still fail explicitly at this target-selection boundary.
 `workspace-interfaces` preserves the complete target/public-name prefix, then
 prints each package's canonical reachable interface type graph and selected
 public declaration rows. It supports predeclared and named scalar aliases,
-boolean/unsigned/string constants, explicitly typed scalar globals, and fixed
-non-parametric Draft procedure signatures. Packages are processed
-dependency-first; each producer interface type/value is reconstructed in the
-consumer's local type domain, and imported rows print structural type shapes so
-process-local Type IDs do not enter the qualification contract. Forward local
-type aliases and qualified imported type/value aliases are included. Aggregate,
-pointer/view, distinct, parametric, foreign/export, procedure-contract, and
-general constant/type forms fail explicitly rather than receiving a fallback
-interface. Imported constants are available here only after the dependency
-interface exists; the earlier package-`when` command still cannot consume them.
+boolean/unsigned/string constants, `^T`, `[^]T`, `[]T`, positive fixed arrays,
+tuples, explicitly typed structural globals, ordinary fixed procedure types,
+and non-parametric Draft procedure signatures. Fixed-array counts may use
+representable untyped integers or exact `usize` values already produced by the
+local/imported scalar dependency graph. Packages are processed dependency-first;
+each producer interface type/value is reconstructed in the consumer's local
+type domain, and imported rows print structural type shapes so process-local
+Type IDs do not enter the qualification contract. Forward local type/count
+aliases and qualified imported type/value/count aliases are included. Nominal
+aggregates, distinct/SIMD/parametric types, foreign/export declarations,
+procedure contracts, arithmetic count expressions, and general constant/type
+forms fail explicitly rather than receiving a fallback interface. Imported
+constants are available here only after the dependency interface exists; the
+earlier package-`when` command still cannot consume them.
 These are qualification commands rather than the public compiler. Public
 semantic compilation and later commands continue to use `build/draftc` until
 their own replacement gates are complete.
