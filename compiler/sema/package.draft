@@ -13,13 +13,14 @@
 // declarations into source-ordered imported-name rows, giving `alias.member` a
 // stable cross-package Symbol_Reference without copying spellings. The first
 // typed continuation installs the predeclared scalar table, demands public
-// declaration/value products, builds canonical scalar/structural interface type
-// graphs, and reconstructs each dependency row into consumer-local Type_Ids.
+// declaration/value products, builds canonical scalar/structural/distinct
+// interface type graphs, and reconstructs each dependency row into
+// consumer-local Type_Ids.
 // Its closed subset covers named scalar aliases/constants, pointers,
 // multi-pointers, slices, fixed arrays, tuples, explicit globals, and fixed
-// Draft procedure signatures. Nominal aggregates and distinct types, contracts,
-// body checking, and general constant evaluation stay behind an explicit
-// diagnostic rather than receiving provisional semantics.
+// Draft procedure signatures and declaration-owned distinct types. Nominal
+// aggregates, contracts, body checking, and general constant evaluation stay
+// behind an explicit diagnostic rather than receiving provisional semantics.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
 // ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
@@ -47,9 +48,12 @@
 // module until that bootstrap limitation is repaired; splitting the package now
 // would turn correct Scope/Semantic_Package pointers into type mismatches.
 //
-// Relevant specification: docs/specification/01-core-language.md sections 3-4,
-// especially file-local imports, package-wide declaration visibility, and
-// compile-time `when` contributing its selected declarations without a scope.
+// Relevant specification: docs/specification/01-core-language.md sections 3-4
+// and its expression rules for distinct identity, plus
+// docs/specification/02-types-memory-runtime.md section 5. These cover
+// file-local imports, package-wide declaration visibility, compile-time `when`
+// contributing selected declarations without a scope, and distinct types
+// retaining underlying layout while remaining nominally unequal.
 package compiler_sema
 
 import core/array
@@ -272,9 +276,10 @@ pub Imported_Name :: struct {
 // the public reflection result enum; reusing it would bind annotations to that
 // language type instead of this staging representation.
 // This slice constructs every predeclared scalar plus the pointer, multi-pointer,
-// slice, fixed-array, tuple, and procedure structural families. Nominal
-// aggregates, distinct types, SIMD, and parametric constructors remain a
-// diagnosed staging boundary even though their final enum cases are reserved.
+// slice, fixed-array, tuple, and procedure structural families plus named
+// distinct declarations. Nominal aggregates, SIMD, and parametric constructors
+// remain a diagnosed staging boundary even though their final enum cases are
+// reserved.
 pub Semantic_Type_Kind :: enum u8 {
     invalid_type,
     void_type,
@@ -307,15 +312,23 @@ pub Semantic_Type_Kind :: enum u8 {
 }
 
 // Semantic_Type is one package-local type identity. Scalar rows use name and
-// bit_width; endian, pointer, multi-pointer, slice, and array rows additionally
-// use element. Array rows use the positive element_count as part of identity.
+// bit_width; endian, pointer, multi-pointer, slice, array, and distinct rows
+// additionally use element. Array rows use the positive element_count as part
+// of identity. A distinct row uses the three nominal byte views as its exact
+// semantic key; name remains empty because qualified diagnostic display can be
+// synthesized from that key without allocating a redundant joined spelling.
 // Tuple rows use one contiguous source-order span in
 // Semantic_Package.type_members; procedure rows use the same representation
 // with fixed parameter types followed by the result type. name points only at
-// a process literal in this slice, so the row owns no allocation.
+// a process literal in this slice. Nominal views borrow either the owning
+// Workspace_Package identity/source name or a dependency interface row; the
+// workspace graph outlives every semantic package, so the row owns no allocation.
 pub Semantic_Type :: struct {
     kind: Semantic_Type_Kind,
     name: string,
+    nominal_root_identity: []u8,
+    nominal_root_relative_path: []u8,
+    nominal_public_name: []u8,
     bit_width: u32,
     element: Type_Id,
     element_count: u64,
@@ -357,13 +370,19 @@ Compile_Time_Value :: struct {
 
 // Interface_Type is a package-independent graph row. element and the member
 // span refer only to the same package's interface type table; element_count is
-// the positive fixed-array length and otherwise zero. Rows are appended lazily
-// in public declaration discovery order, matching production's InterfaceBuilder
-// and installing a placeholder before following children so later recursive
-// nominal graphs have an honest seam.
+// the positive fixed-array length and otherwise zero. A distinct row carries
+// the defining package's content identity, package-relative path, and original
+// declaration name. Those byte views are persistent semantic identity: an
+// importing package copies them unchanged when it re-exports the type. Rows are
+// appended lazily in public declaration discovery order, matching production's
+// InterfaceBuilder and installing a placeholder before following children so
+// later recursive nominal graphs have an honest seam.
 pub Interface_Type :: struct {
     kind: Semantic_Type_Kind,
     name: string,
+    nominal_root_identity: []u8,
+    nominal_root_relative_path: []u8,
+    nominal_public_name: []u8,
     bit_width: u32,
     element: Interface_Type_Id,
     element_count: u64,
@@ -402,8 +421,9 @@ pub Interface_Declaration :: struct {
 
 // Imported_Type memoizes one dependency Interface_Type_Id reconstruction in a
 // consumer package. target_package plus interface_type is the lookup key;
-// local_type belongs exclusively to the consumer. Rows are command-local and
-// never serialized or used for output ordering.
+// local_type belongs exclusively to the consumer. A second path to the same
+// distinct may have another memo row but converges through the nominal interner.
+// Rows are command-local and never serialized or used for output ordering.
 Imported_Type :: struct {
     target_package: compiler_workspace.Package_Id,
     interface_type: Interface_Type_Id,
@@ -1863,6 +1883,49 @@ intern_procedure_type :: proc(
     })
 }
 
+// intern_distinct_type returns the one package-local row for a declaration's
+// persistent nominal identity. Unlike structural interning, equality is not
+// based on the underlying type: two declarations over u32 remain different.
+// Reconstructing the same foreign distinct through two import paths does reuse
+// the row, because root content identity, package-relative path, and original
+// declaration name together denote one Draft type. A repeated key with a
+// different underlying Type_Id is an inconsistent interface graph and is
+// rejected by returning invalid rather than silently changing type meaning.
+intern_distinct_type :: proc(
+    semantic_package: ^Semantic_Package,
+    root_identity, root_relative_path, public_name: []u8,
+    underlying: Type_Id,
+) -> Type_Id {
+    assert(len(root_identity) != 0 && len(root_relative_path) != 0 &&
+        len(public_name) != 0,
+        "distinct type has an incomplete nominal identity")
+    assert(type_id_valid(underlying),
+        "distinct type has an invalid underlying type")
+    for index: usize = 0; index < semantic_package.types.length; index += 1 {
+        candidate := &semantic_package.types.data[index]
+        if candidate.kind != .distinct_named_type ||
+            !bytes_equal(candidate.nominal_root_identity, root_identity) ||
+            !bytes_equal(
+                candidate.nominal_root_relative_path,
+                root_relative_path,
+            ) ||
+            !bytes_equal(candidate.nominal_public_name, public_name) {
+            continue
+        }
+        if candidate.element.value != underlying.value {
+            return invalid_type_id()
+        }
+        return Type_Id{value = cast[u32](index)}
+    }
+    return append_semantic_type(semantic_package, Semantic_Type{
+        kind = .distinct_named_type,
+        nominal_root_identity = root_identity,
+        nominal_root_relative_path = root_relative_path,
+        nominal_public_name = public_name,
+        element = underlying,
+    })
+}
+
 init_semantic_package :: proc(
     semantic_package: ^Semantic_Package,
     id: compiler_workspace.Package_Id,
@@ -3299,8 +3362,8 @@ append_unsupported_condition_diagnostic :: proc(
 
 // append_unsupported_typed_interface_diagnostic marks a declaration demanded
 // by public interface construction which exceeds the deliberately narrow
-// scalar/structural slice. The message describes implementation coverage, not
-// a language rejection.
+// scalar/structural/distinct slice. The message describes implementation
+// coverage, not a language rejection.
 append_unsupported_typed_interface_diagnostic :: proc(
     semantic: ^Semantic_Workspace,
     semantic_package: ^Semantic_Package,
@@ -3347,13 +3410,15 @@ append_unsupported_compile_time_diagnostic :: proc(
     }
 }
 
-// run_named_scalar_constant_product evaluates exactly one declaration payload
-// against already completed scalar constants and target facts. It never calls
-// another declaration evaluator. A missing local value attaches one graph edge
-// and discards the provisional invalid result; only a complete attempt publishes
-// value. Grouped constants and the broader Draft constant vocabulary remain
-// outside this staging slice and fail only when a `when` actually demands them.
-run_named_scalar_constant_product :: proc(
+// run_named_constant_product evaluates exactly one declaration payload
+// against already completed scalar constants and target facts. A named
+// `distinct T` is handled here, rather than by the structural type resolver,
+// because its identity belongs to the declaration symbol and package. It never
+// calls another declaration evaluator. A missing local value attaches one graph
+// edge and discards the provisional invalid result; only a complete attempt
+// publishes value. Grouped constants and the broader Draft constant vocabulary
+// remain outside this staging slice and fail only when a `when` demands them.
+run_named_constant_product :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     facts: ^Target_Facts,
     semantic: ^Semantic_Workspace,
@@ -3404,15 +3469,59 @@ run_named_scalar_constant_product :: proc(
 
     payload := compiler_syntax.syntax_tree_node(tree, payload_id)
     blocked_symbol := invalid_symbol_id()
-    value := evaluate_target_condition_expression(
-        graph,
-        semantic_package,
-        symbol.syntax.file_index,
-        tree,
-        payload_id,
-        facts,
-        &blocked_symbol,
-    )
+    value := invalid_compile_time_value()
+    if payload.kind == .distinct_type {
+        payload_children := compiler_syntax.syntax_tree_children(
+            tree,
+            payload_id,
+        )
+        if len(payload_children) == 1 {
+            (underlying, resolved) := resolve_type_syntax(
+                graph,
+                semantic_package,
+                symbol.syntax.file_index,
+                tree,
+                payload_children[0],
+                facts,
+                &blocked_symbol,
+            )
+            if resolved {
+                root_identity := memory.owned_string_bytes(
+                    &workspace_package.identity.root_identity,
+                )
+                root_relative_path := memory.owned_string_bytes(
+                    &workspace_package.identity.root_relative_path,
+                )
+                public_name := symbol_name_bytes(
+                    graph,
+                    semantic_package,
+                    symbol,
+                )
+                distinct_type := intern_distinct_type(
+                    semantic_package,
+                    root_identity,
+                    root_relative_path,
+                    public_name,
+                    underlying,
+                )
+                if type_id_valid(distinct_type) {
+                    value.kind = .type_value
+                    value.static_type = Type_Id{value = 53}
+                    value.type_value = distinct_type
+                }
+            }
+        }
+    } else {
+        value = evaluate_target_condition_expression(
+            graph,
+            semantic_package,
+            symbol.syntax.file_index,
+            tree,
+            payload_id,
+            facts,
+            &blocked_symbol,
+        )
+    }
     if value.kind == .invalid {
         if symbol_id_valid(blocked_symbol) &&
             block_compile_time_product(
@@ -3726,7 +3835,7 @@ pub materialize_workspace_target_declarations :: proc(
                     ready,
                 )
             case .constant:
-                run_named_scalar_constant_product(
+                run_named_constant_product(
                     graph,
                     facts,
                     semantic,
@@ -3849,9 +3958,11 @@ declaration_type_syntax :: proc(
 // package-local identities, and reports the first unpublished local constant or
 // type through blocked_symbol. Array counts reuse the shared scalar compile-time
 // evaluator, so literals, named local/imported untyped-or-usize constants, and
-// target usize facts follow one dependency mechanism. Nominal aggregates,
-// distinct types, SIMD, C procedure types, and parametric forms fail at this
-// seam.
+// target usize facts follow one dependency mechanism. Declaration-owned
+// distinct syntax is intentionally constructed by the constant product which
+// has the defining symbol; seeing it recursively here is invalid just as in
+// production. Nominal aggregates, SIMD, C procedure types, and parametric forms
+// fail at this seam.
 resolve_type_syntax :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     semantic_package: ^Semantic_Package,
@@ -4346,7 +4457,7 @@ type_package_public_declarations :: proc(
         ]
         switch product.kind {
         case .constant:
-            run_named_scalar_constant_product(
+            run_named_constant_product(
                 graph,
                 facts,
                 semantic,
@@ -4452,6 +4563,9 @@ translate_interface_type :: proc(
         Interface_Type{
             kind = local.kind,
             name = local.name,
+            nominal_root_identity = local.nominal_root_identity,
+            nominal_root_relative_path = local.nominal_root_relative_path,
+            nominal_public_name = local.nominal_public_name,
             bit_width = local.bit_width,
             element = translated_element,
             element_count = local.element_count,
@@ -4546,8 +4660,10 @@ build_package_interface :: proc(
 // canonical builtins by exact kind/name. Pointer-like and array rows recursively
 // rebuild their element, while tuple/procedure rows recursively rebuild their
 // ordered member span; every structural root then passes through the matching
-// consumer interner. Every successful mapping is memoized by dependency package
-// plus interface ID.
+// consumer interner. Distinct rows recursively rebuild their underlying type
+// and use the producer's three-part nominal key, so direct and transitive import
+// paths converge without rebaptizing the type in the consumer. Every successful
+// mapping is memoized by dependency package plus interface ID.
 import_interface_type :: proc(
     semantic: ^Semantic_Workspace,
     consumer: ^Semantic_Package,
@@ -4649,6 +4765,29 @@ import_interface_type :: proc(
             }
         }
         array.destroy(&members)
+    } else if source_type.kind == .distinct_named_type {
+        complete_identity := len(source_type.nominal_root_identity) != 0 &&
+            len(source_type.nominal_root_relative_path) != 0 &&
+            len(source_type.nominal_public_name) != 0
+        if !complete_identity ||
+            !interface_type_id_valid(source_type.element) {
+            return (invalid_type_id(), false)
+        }
+        (local_underlying, imported) := import_interface_type(
+            semantic,
+            consumer,
+            target_package,
+            source_type.element,
+        )
+        if imported {
+            local_type = intern_distinct_type(
+                consumer,
+                source_type.nominal_root_identity,
+                source_type.nominal_root_relative_path,
+                source_type.nominal_public_name,
+                local_underlying,
+            )
+        }
     } else {
         for index: usize = 0; index < consumer.types.length; index += 1 {
             candidate := &consumer.types.data[index]
@@ -5458,11 +5597,26 @@ append_type_name :: proc(output: ^compiler_text.Builder, name: string) {
     }
 }
 
+// append_type_name_bytes is the borrowed-byte counterpart used by nominal
+// identity fields. Empty is rendered as the same explicit '-' sentinel as an
+// empty process string so every interface row retains a fixed field count.
+append_type_name_bytes :: proc(
+    output: ^compiler_text.Builder,
+    name: []u8,
+) {
+    if len(name) == 0 {
+        compiler_text.append_byte(output, cast[u8]('-'))
+    } else {
+        compiler_text.append_bytes(output, name)
+    }
+}
+
 // append_local_type_shape renders a consumer-local type without exposing its
 // process-local Type_Id. Structural children are expanded using canonical Draft
-// syntax while named scalar leaves include kind and spelling. This is what makes
-// imported type reconstruction comparable even when a complete production
-// compilation has interned unrelated private types earlier.
+// syntax, distinct rows include their package-qualified nominal identity and
+// underlying shape, and named scalar leaves include kind and spelling. This is
+// what makes imported type reconstruction comparable even when a complete
+// production compilation has interned unrelated private types earlier.
 append_local_type_shape :: proc(
     semantic_package: ^Semantic_Package,
     type_id: Type_Id,
@@ -5537,6 +5691,28 @@ append_local_type_shape :: proc(
             ],
             output,
         )
+        return
+    }
+    if semantic_type.kind == .distinct_named_type {
+        compiler_text.append_text(output, "distinct:")
+        compiler_text.append_bytes(
+            output,
+            semantic_type.nominal_root_identity,
+        )
+        compiler_text.append_byte(output, cast[u8](':'))
+        compiler_text.append_bytes(
+            output,
+            semantic_type.nominal_root_relative_path,
+        )
+        compiler_text.append_byte(output, cast[u8]('.'))
+        compiler_text.append_bytes(output, semantic_type.nominal_public_name)
+        compiler_text.append_byte(output, cast[u8]('('))
+        append_local_type_shape(
+            semantic_package,
+            semantic_type.element,
+            output,
+        )
+        compiler_text.append_byte(output, cast[u8](')'))
         return
     }
     compiler_text.append_text(
@@ -5675,7 +5851,29 @@ pub dump_workspace_interfaces :: proc(
                 semantic_type_kind_text(interface_type.kind),
             )
             compiler_text.append_byte(output, cast[u8](' '))
-            append_type_name(output, interface_type.name)
+            if interface_type.kind == .distinct_named_type {
+                append_type_name_bytes(
+                    output,
+                    interface_type.nominal_public_name,
+                )
+            } else {
+                append_type_name(output, interface_type.name)
+            }
+            compiler_text.append_byte(output, cast[u8](' '))
+            append_type_name_bytes(
+                output,
+                interface_type.nominal_root_identity,
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            append_type_name_bytes(
+                output,
+                interface_type.nominal_root_relative_path,
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            append_type_name_bytes(
+                output,
+                interface_type.nominal_public_name,
+            )
             compiler_text.append_byte(output, cast[u8](' '))
             compiler_text.append_unsigned(
                 output,
@@ -5859,7 +6057,7 @@ render_semantic_message :: proc(
     case .unsupported_typed_interface:
         compiler_text.append_text(
             output,
-            "self-hosted typed interface requires a supported scalar or structural declaration",
+            "self-hosted typed interface requires a supported scalar, structural, or distinct declaration",
         )
     case .cyclic_typed_interface:
         compiler_text.append_text(

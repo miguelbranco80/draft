@@ -345,14 +345,18 @@ prints each package's canonical reachable interface type graph and selected
 public declaration rows. It supports predeclared and named scalar aliases,
 boolean/unsigned/string constants, `^T`, `[^]T`, `[]T`, positive fixed arrays,
 tuples, explicitly typed structural globals, ordinary fixed procedure types,
-and non-parametric Draft procedure signatures. Fixed-array counts may use
+declaration-owned distinct types, and non-parametric Draft procedure signatures.
+Fixed-array counts may use
 representable untyped integers or exact `usize` values already produced by the
 local/imported scalar dependency graph. Packages are processed dependency-first;
 each producer interface type/value is reconstructed in the consumer's local
-type domain, and imported rows print structural type shapes so process-local
-Type IDs do not enter the qualification contract. Forward local type/count
-aliases and qualified imported type/value/count aliases are included. Nominal
-aggregates, distinct/SIMD/parametric types, foreign/export declarations,
+type domain, and imported rows print structural/nominal type shapes so
+process-local Type IDs do not enter the qualification contract. Each distinct
+interface row prints its defining root identity, root-relative package path,
+original declaration name, and translated underlying edge, making re-exported
+identity directly inspectable. Forward local type/count aliases and qualified
+imported type/value/count aliases are included. Nominal aggregates,
+SIMD/parametric types, foreign/export declarations,
 procedure contracts, arithmetic count expressions, and general constant/type
 forms fail explicitly rather than receiving a fallback interface. Imported
 constants are available here only after the dependency interface exists; the

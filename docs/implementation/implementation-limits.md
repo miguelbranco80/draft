@@ -192,8 +192,8 @@ boundary and no alternate-emitter fallback for unsupported operations.
 
 Status: build-tree source, lexer, parser, folder-package, canonical import-graph,
 declaration-name, unconditional qualified-name, target-conditional declaration,
-and scalar/structural typed-interface replacement; not a Draft language or
-public CLI limit.
+and scalar/structural/distinct typed-interface replacement; not a Draft language
+or public CLI limit.
 
 On a supported native host, the build graph uses C++ `draftc` to produce an O2
 Draft executable named `draftc-next`. Its accepted commands are
@@ -219,14 +219,18 @@ dependency-first through a deliberately closed typed subset: every package gets
 the production-order predeclared scalar table; demanded public declarations
 classify type aliases versus boolean/unsigned/string constants; named scalars
 and the structural `^T`, `[^]T`, `[]T`, `[N]T`, `(T, U)`, and ordinary fixed
-`proc` forms type aliases, explicit globals, and procedure signatures; reachable
+`proc` forms plus declaration-owned `distinct T` type aliases, explicit globals,
+and procedure signatures; reachable
 types and constants are rewritten into canonical package-interface IDs; and
 each imported declaration is reconstructed in the consumer Type-ID domain
 beneath its file-local alias. Fixed-array counts reuse the existing scalar
 product graph and currently accept positive representable untyped integers or
 exact `usize` values from local names, imported constants, and target facts.
 Forward local type/count aliases and qualified imported type/value aliases are
-supported. Nominal aggregates, distinct and SIMD types, parametric forms,
+supported. Distinct interface rows retain the defining root content identity,
+root-relative package path, and original declaration name across direct and
+transitive imports; their underlying type is rebuilt in each consumer. Nominal
+aggregates, SIMD types, parametric forms,
 foreign/export declarations, procedure contracts, arithmetic array counts, and
 general constant/type forms fail explicitly at this interface boundary.
 Imported constants remain unavailable to the earlier package-`when` selector.
@@ -261,15 +265,18 @@ that earlier view. Conditional public names are deliberately filtered out of
 that earlier command's oracle and Draft result; the later target-declaration
 command rebuilds them after selection. Neither view is yet a serialized or
 typed package interface. The typed-interface differential then compares
-canonical reachable scalar/structural type rows, including array element counts,
-declaration classifications, constant payloads, and consumer-local imported
-type/value shapes with production on all four targets. Its focused fixture
+canonical reachable scalar/structural/distinct type rows, including array
+element counts, declaration classifications, constant payloads, and
+consumer-local imported type/value shapes with production on all four targets.
+Its focused fixture
 covers forward local type and array-count dependencies, qualified imported
 type/value/count aliases, pointer/multi-pointer/slice/array/tuple/procedure type
 aliases, structural globals and procedure signatures, tuple results, and
-target-dependent page-size arrays. Separate fixtures require nominal aggregates,
-distinct types, unsupported array-count expressions/types, and local type cycles
-to fail at the exact self-hosting boundary. This evidence applies only to that
+target-dependent page-size arrays, distinct declarations with identical and
+structural underlyings, private distinct exposure, and identity-preserving
+transitive re-export. Separate fixtures require nominal aggregates, SIMD types,
+unsupported array-count expressions/types, and local type cycles to fail at the
+exact self-hosting boundary. This evidence applies only to that
 closed subset, not to the full production PackageInterface vocabulary or
 serialization.
 

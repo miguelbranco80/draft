@@ -1,10 +1,11 @@
 # Exact differential test for the first self-hosted typed package interface.
 #
 # Both executables emit the established graph, declaration, target-selection,
-# and public-name prefix before the canonical scalar/structural type graph.
-# Imported rows are compared through structural consumer-local type shapes so
-# unrelated production-only private interning cannot affect the result. Scratch
-# is process-unique below the caller-provided binary directory.
+# and public-name prefix before the canonical scalar/structural/nominal type
+# graph.
+# Imported rows are compared through structural/nominal consumer-local type
+# shapes so unrelated production-only private interning cannot affect the
+# result. Scratch is process-unique below the caller-provided binary directory.
 
 foreach(required ORACLE DRAFTC_NEXT SOURCE_ROOT TEST_ROOT HOST_TARGET)
   if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
@@ -103,6 +104,7 @@ set(interface_workspace "${interface_root}/workspace")
 set(interface_core "${interface_root}/core")
 file(MAKE_DIRECTORY
   "${interface_workspace}/app"
+  "${interface_workspace}/middle"
   "${interface_workspace}/values"
   "${interface_core}"
 )
@@ -110,6 +112,11 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "package values\n"
   "pub Count :: 4\n"
   "pub Index :: u32\n"
+  "pub Duration :: distinct i64\n"
+  "pub Epoch :: distinct i64\n"
+  "Private_Count :: distinct u32\n"
+  "pub Private_Count_View :: Private_Count\n"
+  "pub Handle :: distinct ^Index\n"
   "pub Limit :: 42\n"
   "pub Enabled :: true\n"
   "pub Label :: \"ready\"\n"
@@ -121,18 +128,30 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Index_Multi :: [^]Index\n"
   "pub Index_Slice :: []Index\n"
   "pub Index_Array :: [Count]Index\n"
+  "pub Duration_Array :: [Count]Duration\n"
   "pub Forward_Array :: [Later_Count]Index\n"
   "Later_Count :: Count\n"
   "pub Index_Tuple :: (Index_Pointer, Index_Array)\n"
   "pub Transformer :: proc(value: Index_Slice) -> Index_Pointer\n"
   "pub Page_Array :: [target.page_size]u8\n"
   "pub Storage: Index_Array\n"
+  "pub Current: Duration\n"
   "pub transform :: proc(values: Index_Slice, cursor: Index_Multi) -> Index_Pointer { return nil; }\n"
+  "pub keep_duration :: proc(value: Duration) -> Duration { return value; }\n"
   "pub pair :: proc(pointer: Index_Pointer, values: Index_Array) -> (Index_Pointer, Index_Array) { return (pointer, values); }\n"
+)
+file(WRITE "${interface_workspace}/middle/package.draft"
+  "package middle\n"
+  "import values\n"
+  "pub Duration :: values.Duration\n"
+  "pub Private_Count :: values.Private_Count_View\n"
+  "pub Wrapped :: distinct values.Duration\n"
+  "pub Wrapped_Array :: [2]Wrapped\n"
 )
 file(WRITE "${interface_workspace}/app/package.draft"
   "package app\n"
   "import values\n"
+  "import middle\n"
   "pub Local_Index :: values.Index\n"
   "pub Local_Limit :: values.Limit\n"
   "pub Local_Enabled :: values.Enabled\n"
@@ -143,6 +162,14 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Local_Array :: values.Index_Array\n"
   "pub Local_Tuple :: values.Index_Tuple\n"
   "pub Local_Transformer :: values.Transformer\n"
+  "pub Direct_Duration :: values.Duration\n"
+  "pub Via_Middle_Duration :: middle.Duration\n"
+  "pub Reexported_Private_Count :: middle.Private_Count\n"
+  "pub Middle_Wrapped :: middle.Wrapped\n"
+  "pub Local_Duration :: distinct i64\n"
+  "pub Nested_Distinct :: distinct values.Duration\n"
+  "pub Local_Duration_Array :: [2]Local_Duration\n"
+  "pub Imported_Duration_Array :: [2]middle.Duration\n"
   "pub Nested_Array :: [2]values.Index_Array\n"
   "pub Imported_Count_Array :: [values.Count]values.Index\n"
   "pub Direct_Tuple :: ([]values.Index, ^values.Index_Tuple)\n"
@@ -171,15 +198,15 @@ endforeach()
 expect_next_interface_failure(
   unsupported-aggregate
   "package app\npub Record :: struct { value: u32; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar or structural declaration"
+  "self-hosted typed interface requires a supported scalar, structural, or distinct declaration"
 )
 
-# Distinct types are nominal identities even when their underlying storage is a
-# supported scalar, so they remain outside this structural slice.
+# SIMD remains outside the closed type vocabulary even though its element and
+# lane count would otherwise be supported.
 expect_next_interface_failure(
-  unsupported-distinct
-  "package app\npub Handle :: distinct u32\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar or structural declaration"
+  unsupported-simd
+  "package app\npub Lanes :: simd[4]u32\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, or distinct declaration"
 )
 
 # Array counts reuse the current scalar constant-product evaluator. Arithmetic
@@ -188,7 +215,7 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-array-count-arithmetic
   "package app\npub Bytes :: [2 + 2]u8\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar or structural declaration"
+  "self-hosted typed interface requires a supported scalar, structural, or distinct declaration"
 )
 
 # A concrete uint is not an implicit usize merely because both current target
@@ -197,7 +224,7 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-array-count-type
   "package app\npub Bytes :: [target.pointer_bits]u8\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar or structural declaration"
+  "self-hosted typed interface requires a supported scalar, structural, or distinct declaration"
 )
 
 # Local declaration cycles remain visible graph edges and receive a distinct
@@ -209,5 +236,5 @@ expect_next_interface_failure(
 )
 
 message(STATUS
-  "draftc-next typed interfaces matched production scalar/structural graphs")
+  "draftc-next typed interfaces matched production scalar/structural/distinct graphs")
 file(REMOVE_RECURSE "${run_root}")

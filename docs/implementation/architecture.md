@@ -106,16 +106,20 @@ selected source table. The subsequent `workspace-interfaces` boundary installs
 the production-order predeclared scalar table, demands selected public
 declaration products, classifies scalar constants versus type aliases, types
 named scalars plus pointer, multi-pointer, slice, fixed-array, tuple, and
-ordinary fixed-procedure structures, and lazily translates their reachable
-types and values into package-independent interface IDs. It
+ordinary fixed-procedure structures plus declaration-owned `distinct` types,
+and lazily translates their reachable types and values into package-independent
+interface IDs. A distinct row carries the defining root content identity,
+root-relative package path, and declaration name; importing and re-exporting
+copy that key unchanged while rebuilding the underlying type locally. It
 then reconstructs each dependency declaration in the consumer's Type-ID domain
 beneath the exact file-local import alias. The current closed subset accepts
 named scalar aliases (including forward local aliases and qualified imported
 aliases), boolean/unsigned/string constants over the existing evaluator,
-structural type aliases and globals, and non-parametric Draft procedures with
-fixed structural parameters and results. Positive fixed-array counts may use
+structural/distinct type aliases and globals, and non-parametric Draft
+procedures with fixed supported parameters and results. Positive fixed-array
+counts may use
 representable untyped or exact `usize` values already available through the
-scalar product graph. Nominal aggregates, distinct/SIMD/parametric types,
+scalar product graph. Nominal aggregates, SIMD/parametric types,
 foreign/export declarations, procedure contracts, arithmetic count expressions,
 and general constant/type work remain a diagnosed interface staging boundary.
 Imported constants are
@@ -170,12 +174,15 @@ must receive condition, type, layout, and constant product identities before
 the package-name barrier can close. Cyclic or demanded out-of-vocabulary
 constants fail explicitly without selecting a branch. The real staging graph
 exercises both sides of core/c_abi's target branch. The typed-interface
-differential then compares canonical scalar/structural graphs, fixed-array
-counts, and consumer-local type/value reconstruction across all four targets.
+differential then compares canonical scalar/structural/distinct graphs,
+fixed-array counts, and consumer-local type/value reconstruction across all four
+targets.
 It includes forward local type/count aliases, imported type/value/count aliases,
 all five moved data structures, structural globals and fixed procedures, target
-page-size arrays, and explicit nominal/unsupported-count/cycle failures. General
-constant evaluation, nominal and parametric type constructors, procedure
+page-size arrays, distinct declarations over scalar, structural, private, and
+imported distinct types, transitive identity-preserving re-exports, and explicit
+aggregate/unsupported-count/cycle failures. General constant evaluation,
+member-bearing nominal and parametric type constructors, procedure
 contracts, and body typing are the next semantic product slices.
 
 The staging graph uses physical core source because the C++ bootstrap must

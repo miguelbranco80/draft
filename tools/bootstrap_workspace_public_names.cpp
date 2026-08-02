@@ -11,8 +11,8 @@
 // materialize_conditional_declaration on a fresh source-level package and
 // compares the appended SymbolId suffix plus the selected public-name view.
 // The interface command retains that complete prefix, then emits the reachable
-// production scalar/closed-structural interface graph and structurally
-// normalized consumer-local imported types and values.
+// production scalar/closed-structural/distinct interface graph and normalized
+// consumer-local imported types and values.
 //
 // The early SourceManager owns every byte referenced by the graph and raw
 // semantic packages until their dump and diagnostics finish. The complete
@@ -505,7 +505,8 @@ void append_interface_constant(
 // production compilation interns many private types which are outside this
 // migration slice, so comparing process-local integers would measure unrelated
 // work rather than consumer-side interface reconstruction. Structural children
-// use canonical Draft syntax, while scalar leaves retain kind and spelling.
+// use canonical Draft syntax, scalar leaves retain kind and spelling, and a
+// distinct row includes its qualified nominal name plus underlying shape.
 void append_local_type_shape(
     const draft::TypeStore &types, draft::TypeId id, std::ostream &output) {
   assert(id.is_valid());
@@ -548,6 +549,12 @@ void append_local_type_shape(
     append_local_type_shape(types, type.members.back(), output);
     return;
   }
+  if (type.kind == draft::TypeKind::Distinct) {
+    output << "distinct:" << type.name << '(';
+    append_local_type_shape(types, type.element, output);
+    output << ')';
+    return;
+  }
   output << type_kind_text(type.kind) << ':'
          << (type.name.empty() ? "-" : type.name);
 }
@@ -567,10 +574,12 @@ void append_local_constant(
 }
 
 // The typed-interface dump is intentionally narrower than PackageInterface's
-// final serialization contract. It compares the canonical scalar and closed
-// structural graph moved so far and verifies that every dependency declaration
-// was reconstructed as a consumer-local proxy type/value beneath the exact
-// alias.
+// final serialization contract. It compares the canonical scalar, structural,
+// and distinct graph moved so far and verifies that every dependency
+// declaration was reconstructed as a consumer-local proxy type/value beneath
+// the exact alias. A nominal row's diagnostic name differs before and after
+// import, so the oracle normalizes that field to the original public name and
+// prints the complete persistent identity beside it.
 void dump_interfaces(
     const draft::WorkspaceGraph &source_graph,
     const std::vector<draft::SemanticPackage> &source_packages,
@@ -593,9 +602,21 @@ void dump_interfaces(
     for (std::size_t type_index = 0; type_index < interface.types.size();
          ++type_index) {
       const draft::InterfaceType &type = interface.types[type_index];
+      const bool nominal = type.kind == draft::TypeKind::Distinct;
       output << "interface-type " << package_index << ' ' << type_index << ' '
              << type_kind_text(type.kind) << ' '
-             << (type.name.empty() ? "-" : type.name) << ' '
+             << (nominal ? type.nominal_public_name
+                         : (type.name.empty() ? "-" : type.name))
+             << ' '
+             << (type.nominal_root_identity.empty()
+                     ? "-" : type.nominal_root_identity)
+             << ' '
+             << (type.nominal_root_relative_path.empty()
+                     ? "-" : type.nominal_root_relative_path)
+             << ' '
+             << (type.nominal_public_name.empty()
+                     ? "-" : type.nominal_public_name)
+             << ' '
              << type.bit_width << ' ';
       if (type.element.is_valid()) {
         output << type.element.value;
