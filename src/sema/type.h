@@ -419,11 +419,12 @@ private:
   [[nodiscard]] TypeLayout aggregate_layout(const std::vector<TypeId> &members) const;
   [[nodiscard]] bool contains_compile_time_type(
       TypeId id, std::vector<TypeId> &active) const;
-  // Procedure signatures may intern tuples while a nominal member is still a
-  // forward-declared shell. Completing that nominal must publish any newly
-  // computable tuple layout before body checking or MIR observes the tuple.
-  // A fixpoint handles tuples nested inside other pending tuples.
-  void complete_pending_tuple_layouts();
+  // Structural aliases and signatures may intern arrays, tuples, or distinct
+  // wrappers while a nominal dependency is still a forward-declared shell.
+  // Completing that nominal must publish every newly computable derived layout
+  // before body checking, interface emission, or MIR observes the canonical
+  // row. A fixpoint handles arbitrary nesting in append-only TypeId order.
+  void complete_pending_derived_layouts();
 
   struct BuiltinName {
     std::string name;

@@ -2,7 +2,7 @@
 #
 # Both executables emit the established graph, declaration, target-selection,
 # and public-name prefix before the canonical scalar/structural/nominal type
-# graph.
+# graph, including exact natural-layout struct fields and offsets.
 # Imported rows are compared through structural/nominal consumer-local type
 # shapes so unrelated production-only private interning cannot affect the
 # result. Scratch is process-unique below the caller-provided binary directory.
@@ -114,9 +114,15 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Index :: u32\n"
   "pub Duration :: distinct i64\n"
   "pub Epoch :: distinct i64\n"
+  "pub Pair :: struct { left: u8; right: u32; tail: u16; }\n"
+  "pub Grouped :: struct { first, second: u16; marker: u8; }\n"
+  "pub Node :: struct { next: ^Node; payload: Index; }\n"
   "Private_Count :: distinct u32\n"
   "pub Private_Count_View :: Private_Count\n"
+  "Private_Record :: struct { count: Private_Count; pair: Pair; }\n"
+  "pub Private_Record_View :: Private_Record\n"
   "pub Handle :: distinct ^Index\n"
+  "pub Pair_Kind :: distinct Pair\n"
   "pub Limit :: 42\n"
   "pub Enabled :: true\n"
   "pub Label :: \"ready\"\n"
@@ -129,6 +135,8 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Index_Slice :: []Index\n"
   "pub Index_Array :: [Count]Index\n"
   "pub Duration_Array :: [Count]Duration\n"
+  "pub Pair_Array :: [Count]Pair\n"
+  "pub Pair_Pointer :: ^Pair\n"
   "pub Forward_Array :: [Later_Count]Index\n"
   "Later_Count :: Count\n"
   "pub Index_Tuple :: (Index_Pointer, Index_Array)\n"
@@ -136,17 +144,22 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Page_Array :: [target.page_size]u8\n"
   "pub Storage: Index_Array\n"
   "pub Current: Duration\n"
+  "pub Current_Pair: Pair\n"
   "pub transform :: proc(values: Index_Slice, cursor: Index_Multi) -> Index_Pointer { return nil; }\n"
   "pub keep_duration :: proc(value: Duration) -> Duration { return value; }\n"
   "pub pair :: proc(pointer: Index_Pointer, values: Index_Array) -> (Index_Pointer, Index_Array) { return (pointer, values); }\n"
+  "pub visit :: proc(node: ^Node, pair: Pair) -> ^Node { return node; }\n"
 )
 file(WRITE "${interface_workspace}/middle/package.draft"
   "package middle\n"
   "import values\n"
   "pub Duration :: values.Duration\n"
   "pub Private_Count :: values.Private_Count_View\n"
+  "pub Pair :: values.Pair\n"
+  "pub Private_Record :: values.Private_Record_View\n"
   "pub Wrapped :: distinct values.Duration\n"
   "pub Wrapped_Array :: [2]Wrapped\n"
+  "pub Wrapper :: struct { pair: values.Pair; duration: values.Duration; next: ^Wrapper; }\n"
 )
 file(WRITE "${interface_workspace}/app/package.draft"
   "package app\n"
@@ -164,6 +177,10 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Local_Transformer :: values.Transformer\n"
   "pub Direct_Duration :: values.Duration\n"
   "pub Via_Middle_Duration :: middle.Duration\n"
+  "pub Direct_Pair :: values.Pair\n"
+  "pub Via_Middle_Pair :: middle.Pair\n"
+  "pub Reexported_Private_Record :: middle.Private_Record\n"
+  "pub Middle_Wrapper :: middle.Wrapper\n"
   "pub Reexported_Private_Count :: middle.Private_Count\n"
   "pub Middle_Wrapped :: middle.Wrapped\n"
   "pub Local_Duration :: distinct i64\n"
@@ -173,6 +190,8 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Nested_Array :: [2]values.Index_Array\n"
   "pub Imported_Count_Array :: [values.Count]values.Index\n"
   "pub Direct_Tuple :: ([]values.Index, ^values.Index_Tuple)\n"
+  "pub Pair_Grid :: [2]values.Pair_Array\n"
+  "pub Envelope :: struct { pair: values.Pair; wrapper: middle.Wrapper; next: ^Envelope; grid: [2]values.Pair; }\n"
   "pub Storage: values.Index_Array\n"
   "pub Cursor: values.Index_Multi\n"
   "pub copy :: proc(value: []values.Index, cursor: [^]values.Index) -> ^values.Index { return nil; }\n"
@@ -185,7 +204,7 @@ foreach(target
     x86_64-linux
     x86_64-windows)
   compare_interfaces(
-    "scalar-structural-${target}"
+    "scalar-structural-struct-${target}"
     "${interface_workspace}/app"
     "${interface_workspace}"
     "${interface_core}"
@@ -196,9 +215,33 @@ endforeach()
 # Unsupported canonical constructors must fail as an implementation boundary,
 # not be flattened into a scalar or silently omitted from the public interface.
 expect_next_interface_failure(
-  unsupported-aggregate
-  "package app\npub Record :: struct { value: u32; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, or distinct declaration"
+  unsupported-enum
+  "package app\npub State :: enum { ready; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+)
+
+# The first aggregate slice is deliberately only ordinary natural layout.
+# Packed fields and C/explicit-alignment aggregates must remain fail-closed
+# until their distinct layout contracts move together.
+expect_next_interface_failure(
+  unsupported-packed-struct
+  "package app\npub Record :: struct { packed value: u32; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+)
+expect_next_interface_failure(
+  unsupported-bit-field-struct
+  "package app\npub Record :: struct { bits(3) value: u8; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+)
+expect_next_interface_failure(
+  unsupported-c-struct
+  "package app\npub Record :: c struct { value: u32; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+)
+expect_next_interface_failure(
+  unsupported-aligned-struct
+  "package app\npub Record :: align(16) struct { value: u32; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
 )
 
 # SIMD remains outside the closed type vocabulary even though its element and
@@ -206,7 +249,7 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-simd
   "package app\npub Lanes :: simd[4]u32\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, or distinct declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
 )
 
 # Array counts reuse the current scalar constant-product evaluator. Arithmetic
@@ -215,7 +258,7 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-array-count-arithmetic
   "package app\npub Bytes :: [2 + 2]u8\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, or distinct declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
 )
 
 # A concrete uint is not an implicit usize merely because both current target
@@ -224,7 +267,7 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-array-count-type
   "package app\npub Bytes :: [target.pointer_bits]u8\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, or distinct declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
 )
 
 # Local declaration cycles remain visible graph edges and receive a distinct
@@ -235,6 +278,19 @@ expect_next_interface_failure(
   "self-hosted typed interface contains a cyclic declaration dependency"
 )
 
+# A nominal shell permits pointer recursion but does not make direct by-value
+# recursion layoutable. The latter remains an explicit scheduler cycle.
+expect_next_interface_failure(
+  cyclic-self-struct-layout
+  "package app\npub Node :: struct { next: Node; }\nmain :: proc() {}\n"
+  "self-hosted typed interface contains a cyclic declaration dependency"
+)
+expect_next_interface_failure(
+  cyclic-struct-layout
+  "package app\npub First :: struct { second: Second; }\nSecond :: struct { first: First; }\nmain :: proc() {}\n"
+  "self-hosted typed interface contains a cyclic declaration dependency"
+)
+
 message(STATUS
-  "draftc-next typed interfaces matched production scalar/structural/distinct graphs")
+  "draftc-next typed interfaces matched production scalar/structural/distinct/struct graphs")
 file(REMOVE_RECURSE "${run_root}")

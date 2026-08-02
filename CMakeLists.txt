@@ -691,9 +691,10 @@ endif()
 # remains the bootstrap and semantic oracle; it compiles draftc-next for the
 # native host, while the next-stage driver exposes replaced source, syntax,
 # package-graph, declaration-name, unconditional qualified-name, and target-
-# conditional declaration phases plus a closed scalar/structural typed-interface
-# slice. Keeping the output out of the install set prevents a partial command
-# surface from being mistaken for the released compiler contract.
+# conditional declaration phases plus a closed scalar/structural/distinct and
+# ordinary natural-layout struct interface slice. Keeping the output out of the
+# install set prevents a partial command surface from being mistaken for the
+# released compiler contract.
 file(GLOB_RECURSE DRAFTC_NEXT_DRAFT_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/core/*.draft"
   "${CMAKE_CURRENT_SOURCE_DIR}/compiler/*.draft"

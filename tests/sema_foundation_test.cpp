@@ -348,6 +348,43 @@ void test_natural_layout_product(TestState &state) {
   EXPECT(state, package.aggregate_members[0].offset == 0);
   EXPECT(state, package.aggregate_members[1].offset == 8);
 
+  // A structural or distinct wrapper can be interned while its nominal
+  // element is only a shell. Publishing that shell's layout must repair the
+  // existing canonical rows transitively; Draft distinct values have their
+  // underlying layout, and arrays/tuples cannot retain a stale unknown layout.
+  const draft::TypeId pending = package.types.begin_nominal(
+      draft::TypeKind::Struct,
+      "Pending_Derived_Layout",
+      draft::SourceRange::invalid());
+  const draft::TypeId pending_array = package.types.array(pending, 2);
+  const draft::TypeId pending_distinct = package.types.distinct(
+      "Pending_Distinct", pending, draft::SourceRange::invalid());
+  const draft::TypeId pending_tuple = package.types.tuple(
+      {*u8, pending_distinct, pending_array});
+  EXPECT(state, !package.types.type(pending_array).layout.known);
+  EXPECT(state, !package.types.type(pending_distinct).layout.known);
+  EXPECT(state, !package.types.type(pending_tuple).layout.known);
+  package.types.publish_nominal_members(pending);
+  package.types.publish_nominal_member_types(pending, {*u64});
+  package.types.publish_nominal_natural_layout(
+      pending, {true, 8, 8}, {0});
+  EXPECT(
+      state,
+      package.types.type(pending_array).layout ==
+          draft::TypeLayout({true, 16, 8}));
+  EXPECT(
+      state,
+      package.types.type(pending_distinct).layout ==
+          draft::TypeLayout({true, 8, 8}));
+  EXPECT(
+      state,
+      package.types.type(pending_tuple).layout ==
+          draft::TypeLayout({true, 32, 8}));
+  EXPECT(
+      state,
+      package.types.type(pending_tuple).member_offsets ==
+          std::vector<std::uint64_t>({0, 8, 16}));
+
   const draft::TypeId recursive = package.types.begin_nominal(
       draft::TypeKind::Struct,
       "Recursive",

@@ -658,40 +658,66 @@ TypeId TypeStore::tuple(const std::vector<TypeId> &members) {
   return add(std::move(result));
 }
 
-void TypeStore::complete_pending_tuple_layouts() {
+void TypeStore::complete_pending_derived_layouts() {
   bool made_progress = true;
   while (made_progress) {
     made_progress = false;
     for (std::size_t local_index = 0; local_index < types_.size();
          ++local_index) {
       Type &pending = types_[local_index];
-      if (pending.kind != TypeKind::Tuple || pending.layout.known ||
-          pending.owner_evaluated_type_application) {
+      if (pending.layout.known || pending.owner_evaluated_type_application) {
         continue;
       }
-      const TypeLayout layout = aggregate_layout(pending.members);
+
+      TypeLayout layout;
+      if (pending.kind == TypeKind::Distinct) {
+        // Specification 01-core-language, "Conversions and operators": a
+        // user-defined distinct type has its underlying layout. The wrapper may
+        // have been interned while that underlying nominal was still a shell.
+        layout = type(pending.element).layout;
+      } else if (pending.kind == TypeKind::Array &&
+                 pending.element_count != 0 &&
+                 !pending.element_count_expression.is_valid() &&
+                 !pending.owner_evaluated_element_count) {
+        const TypeLayout element = type(pending.element).layout;
+        if (element.known &&
+            element.size <= std::numeric_limits<std::uint64_t>::max() /
+                                pending.element_count) {
+          layout = {
+              true,
+              element.size * pending.element_count,
+              element.alignment,
+          };
+        }
+      } else if (pending.kind == TypeKind::Tuple) {
+        layout = aggregate_layout(pending.members);
+      } else {
+        continue;
+      }
       if (!layout.known) continue;
 
-      // Compute the semantic member byte offsets at the same moment as the
-      // total layout. Publishing one without the other would let LLVM choose
-      // field zero for a later nonzero-offset tuple operand.
-      std::vector<std::uint64_t> offsets;
-      offsets.reserve(pending.members.size());
-      std::uint64_t next_offset = 0;
-      for (TypeId member : pending.members) {
-        const TypeLayout member_layout = type(member).layout;
-        const std::optional<std::uint64_t> offset =
-            round_up(next_offset, member_layout.alignment);
-        assert(offset.has_value());
-        offsets.push_back(*offset);
-        next_offset = *offset + member_layout.size;
+      if (pending.kind == TypeKind::Tuple) {
+        // Compute semantic member byte offsets at the same moment as the total
+        // tuple layout. Publishing one without the other would let LLVM choose
+        // field zero for a later nonzero-offset tuple operand.
+        std::vector<std::uint64_t> offsets;
+        offsets.reserve(pending.members.size());
+        std::uint64_t next_offset = 0;
+        for (TypeId member : pending.members) {
+          const TypeLayout member_layout = type(member).layout;
+          const std::optional<std::uint64_t> offset =
+              round_up(next_offset, member_layout.alignment);
+          assert(offset.has_value());
+          offsets.push_back(*offset);
+          next_offset = *offset + member_layout.size;
+        }
+        pending.member_offsets = std::move(offsets);
+        pending.member_bit_offsets.reserve(pending.member_offsets.size());
+        for (std::uint64_t offset : pending.member_offsets) {
+          pending.member_bit_offsets.push_back(offset * 8U);
+        }
       }
       pending.layout = layout;
-      pending.member_offsets = std::move(offsets);
-      pending.member_bit_offsets.reserve(pending.member_offsets.size());
-      for (std::uint64_t offset : pending.member_offsets) {
-        pending.member_bit_offsets.push_back(offset * 8U);
-      }
       completion_[local_index].natural_layout = TypeFacetState::Complete;
       made_progress = true;
     }
@@ -879,11 +905,11 @@ void TypeStore::publish_nominal_natural_layout(
   assert(member_bit_offsets.size() == nominal.member_offsets.size());
   nominal.member_bit_offsets = std::move(member_bit_offsets);
   facets.natural_layout = TypeFacetState::Complete;
-  // A return tuple can be interned from a procedure signature before a struct
-  // declared in another selected package file is laid out. Body checking later
-  // reuses that exact TypeId, so repair the canonical row here rather than
-  // asking each consumer to rediscover layout.
-  complete_pending_tuple_layouts();
+  // Structural and distinct dependents can be interned before a struct declared
+  // in another selected package file is laid out. Later phases reuse those exact
+  // TypeIds, so repair every canonical derived row here rather than asking each
+  // consumer to rediscover layout.
+  complete_pending_derived_layouts();
 }
 
 bool TypeStore::is_integer(TypeId id) const {

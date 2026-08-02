@@ -13,14 +13,15 @@
 // declarations into source-ordered imported-name rows, giving `alias.member` a
 // stable cross-package Symbol_Reference without copying spellings. The first
 // typed continuation installs the predeclared scalar table, demands public
-// declaration/value products, builds canonical scalar/structural/distinct
+// declaration/value products, builds canonical scalar/structural/nominal
 // interface type graphs, and reconstructs each dependency row into
 // consumer-local Type_Ids.
 // Its closed subset covers named scalar aliases/constants, pointers,
 // multi-pointers, slices, fixed arrays, tuples, explicit globals, and fixed
-// Draft procedure signatures and declaration-owned distinct types. Nominal
-// aggregates, contracts, body checking, and general constant evaluation stay
-// behind an explicit diagnostic rather than receiving provisional semantics.
+// Draft procedure signatures, declaration-owned distinct types, and ordinary
+// natural-layout structs. Other nominal aggregates, specialized struct layout,
+// contracts, body checking, and general constant evaluation stay behind an
+// explicit diagnostic rather than receiving provisional semantics.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
 // ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
@@ -52,8 +53,9 @@
 // and its expression rules for distinct identity, plus
 // docs/specification/02-types-memory-runtime.md section 5. These cover
 // file-local imports, package-wide declaration visibility, compile-time `when`
-// contributing selected declarations without a scope, and distinct types
-// retaining underlying layout while remaining nominally unequal.
+// contributing selected declarations without a scope, distinct types retaining
+// underlying layout while remaining nominally unequal, and source-order natural
+// aggregate field placement.
 package compiler_sema
 
 import core/array
@@ -169,9 +171,11 @@ pub Scope_Kind :: enum u8 {
     file_scope,
 }
 
-// Symbol_Kind is the declaration collector's best source-only classification.
-// unresolved_declaration preserves the intentional ambiguity of `Name :: X`
-// until X has been resolved as a type value or ordinary constant.
+// Symbol_Kind is primarily the declaration collector's best source-only
+// classification. unresolved_declaration preserves the intentional ambiguity
+// of `Name :: X` until X has been resolved as a type value or ordinary
+// constant. field is reserved for named struct-member interface packets; the
+// current collector does not insert fields into package/file scopes.
 pub Symbol_Kind :: enum u8 {
     import_alias,
     unresolved_declaration,
@@ -179,6 +183,7 @@ pub Symbol_Kind :: enum u8 {
     constant,
     variable,
     procedure,
+    field,
 }
 
 // Visibility describes Draft package visibility only. Native linker export is
@@ -277,9 +282,9 @@ pub Imported_Name :: struct {
 // language type instead of this staging representation.
 // This slice constructs every predeclared scalar plus the pointer, multi-pointer,
 // slice, fixed-array, tuple, and procedure structural families plus named
-// distinct declarations. Nominal aggregates, SIMD, and parametric constructors
-// remain a diagnosed staging boundary even though their final enum cases are
-// reserved.
+// distinct declarations and ordinary natural-layout structs. Enums, variants,
+// unions, SIMD, specialized struct layout, and parametric constructors remain a
+// diagnosed staging boundary even though their final enum cases are reserved.
 pub Semantic_Type_Kind :: enum u8 {
     invalid_type,
     void_type,
@@ -311,29 +316,52 @@ pub Semantic_Type_Kind :: enum u8 {
     meta_type_value,
 }
 
-// Semantic_Type is one package-local type identity. Scalar rows use name and
-// bit_width; endian, pointer, multi-pointer, slice, array, and distinct rows
+// Semantic_Type is one package-local type identity. layout_known, byte_size,
+// and byte_alignment contain the target-natural value layout; alignment is a
+// positive power of two even when layout is unavailable. Scalar rows use name
+// and bit_width; endian, pointer, multi-pointer, slice, array, and distinct rows
 // additionally use element. Array rows use the positive element_count as part
-// of identity. A distinct row uses the three nominal byte views as its exact
-// semantic key; name remains empty because qualified diagnostic display can be
-// synthesized from that key without allocating a redundant joined spelling.
+// of identity. A distinct or struct row uses the three nominal byte views as
+// its exact semantic key; name remains empty because qualified diagnostic
+// display can be synthesized without allocating a redundant joined spelling.
 // Tuple rows use one contiguous source-order span in
 // Semantic_Package.type_members; procedure rows use the same representation
 // with fixed parameter types followed by the result type. name points only at
 // a process literal in this slice. Nominal views borrow either the owning
 // Workspace_Package identity/source name or a dependency interface row; the
-// workspace graph outlives every semantic package, so the row owns no allocation.
+// workspace graph outlives every semantic package, so the row owns no
+// allocation. nominal_member_begin/count address Semantic_Package.nominal_members
+// only for completed structs; structural member_begin/count continue to address
+// the ordered Type_Id span used by tuples, procedures, and struct member types.
 pub Semantic_Type :: struct {
     kind: Semantic_Type_Kind,
     name: string,
     nominal_root_identity: []u8,
     nominal_root_relative_path: []u8,
     nominal_public_name: []u8,
+    layout_known: bool,
+    byte_size: u64,
+    byte_alignment: u32,
     bit_width: u32,
     element: Type_Id,
     element_count: u64,
     member_begin: usize,
     member_count: usize,
+    nominal_member_begin: usize,
+    nominal_member_count: usize,
+}
+
+// Semantic_Nominal_Member is one source-order field in a completed local or
+// reconstructed struct. name borrows source/interface storage, type belongs to
+// the containing package's Type_Id domain, and byte_offset is the natural Draft
+// offset. The current closed slice admits only Symbol_Kind.field and natural
+// field placement; retaining kind makes the interface packet explicit without
+// pretending enum or variant members are already implemented.
+Semantic_Nominal_Member :: struct {
+    name: []u8,
+    kind: Symbol_Kind,
+    type: Type_Id,
+    byte_offset: u64,
 }
 
 // Compile_Time_Value_Kind is the closed value domain currently publishable by
@@ -370,10 +398,12 @@ Compile_Time_Value :: struct {
 
 // Interface_Type is a package-independent graph row. element and the member
 // span refer only to the same package's interface type table; element_count is
-// the positive fixed-array length and otherwise zero. A distinct row carries
-// the defining package's content identity, package-relative path, and original
-// declaration name. Those byte views are persistent semantic identity: an
-// importing package copies them unchanged when it re-exports the type. Rows are
+// the positive fixed-array length and otherwise zero. Distinct and struct rows
+// carry the defining package's content identity, package-relative path, and
+// original declaration name. Those byte views are persistent semantic
+// identity: an importing package copies them unchanged when it re-exports the
+// type. Layout fields and nominal_member_begin/count carry the complete
+// natural-layout struct packet without producer-local IDs. Rows are
 // appended lazily in public declaration discovery order, matching production's
 // InterfaceBuilder and installing a placeholder before following children so
 // later recursive nominal graphs have an honest seam.
@@ -383,11 +413,26 @@ pub Interface_Type :: struct {
     nominal_root_identity: []u8,
     nominal_root_relative_path: []u8,
     nominal_public_name: []u8,
+    layout_known: bool,
+    byte_size: u64,
+    byte_alignment: u32,
     bit_width: u32,
     element: Interface_Type_Id,
     element_count: u64,
     member_begin: usize,
     member_count: usize,
+    nominal_member_begin: usize,
+    nominal_member_count: usize,
+}
+
+// Interface_Nominal_Member is Semantic_Nominal_Member after its Type_Id has
+// been translated into the producer's interface graph. Names and offsets are
+// package-independent semantic facts; the row owns no allocation.
+Interface_Nominal_Member :: struct {
+    name: []u8,
+    kind: Symbol_Kind,
+    type: Interface_Type_Id,
+    byte_offset: u64,
 }
 
 // Interface_Constant_Value is Compile_Time_Value after every Type_Id has been
@@ -421,9 +466,11 @@ pub Interface_Declaration :: struct {
 
 // Imported_Type memoizes one dependency Interface_Type_Id reconstruction in a
 // consumer package. target_package plus interface_type is the lookup key;
-// local_type belongs exclusively to the consumer. A second path to the same
-// distinct may have another memo row but converges through the nominal interner.
-// Rows are command-local and never serialized or used for output ordering.
+// local_type belongs exclusively to the consumer. Struct import installs this
+// row immediately after creating its nominal shell, before following recursive
+// members. A second path to the same nominal type may have another memo row but
+// converges through the nominal interner. Rows are command-local and never
+// serialized or used for output ordering.
 Imported_Type :: struct {
     target_package: compiler_workspace.Package_Id,
     interface_type: Interface_Type_Id,
@@ -529,10 +576,12 @@ pub Semantic_Package :: struct {
     imported_names: array.Dynamic[Imported_Name],
     types: array.Dynamic[Semantic_Type],
     type_members: array.Dynamic[Type_Id],
+    nominal_members: array.Dynamic[Semantic_Nominal_Member],
     imported_types: array.Dynamic[Imported_Type],
     imported_typed_names: array.Dynamic[Imported_Typed_Name],
     interface_types: array.Dynamic[Interface_Type],
     interface_type_members: array.Dynamic[Interface_Type_Id],
+    interface_nominal_members: array.Dynamic[Interface_Nominal_Member],
     interface_type_translations: array.Dynamic[Interface_Type_Id],
     interface_declarations: array.Dynamic[Interface_Declaration],
     conditional_declarations: array.Dynamic[Conditional_Declaration],
@@ -652,6 +701,7 @@ pub symbol_kind_text :: proc(kind: Symbol_Kind) -> string {
     case .constant: return "constant"
     case .variable: return "variable"
     case .procedure: return "procedure"
+    case .field: return "field"
     }
     return "unknown"
 }
@@ -1504,11 +1554,20 @@ append_builtin_type :: proc(
     name: string,
     bit_width: u32 = 0,
 ) -> Type_Id {
+    layout_known := bit_width != 0
+    byte_size := cast[u64](bit_width / 8)
+    byte_alignment := bit_width / 8
+    if byte_alignment == 0 {
+        byte_alignment = 1
+    }
     return append_semantic_type(
         semantic_package,
         Semantic_Type{
             kind = kind,
             name = name,
+            layout_known = layout_known,
+            byte_size = byte_size,
+            byte_alignment = byte_alignment,
             bit_width = bit_width,
             element = invalid_type_id(),
         },
@@ -1524,11 +1583,15 @@ append_endian_type :: proc(
     native: Type_Id,
     bit_width: u32,
 ) {
+    native_type := &semantic_package.types.data[cast[usize](native.value)]
     append_semantic_type(
         semantic_package,
         Semantic_Type{
             kind = .endian_scalar_type,
             name = name,
+            layout_known = native_type.layout_known,
+            byte_size = native_type.byte_size,
+            byte_alignment = native_type.byte_alignment,
             bit_width = bit_width,
             element = native,
         },
@@ -1542,15 +1605,23 @@ append_endian_type :: proc(
 init_semantic_types :: proc(semantic_package: ^Semantic_Package) {
     array.init(&semantic_package.types)
     array.init(&semantic_package.type_members)
+    array.init(&semantic_package.nominal_members)
     array.init(&semantic_package.imported_types)
     array.init(&semantic_package.imported_typed_names)
     array.init(&semantic_package.interface_types)
     array.init(&semantic_package.interface_type_members)
+    array.init(&semantic_package.interface_nominal_members)
     array.init(&semantic_package.interface_type_translations)
     array.init(&semantic_package.interface_declarations)
 
     append_builtin_type(semantic_package, .invalid_type, "<invalid>")
-    append_builtin_type(semantic_package, .void_type, "<void>")
+    append_semantic_type(semantic_package, Semantic_Type{
+        kind = .void_type,
+        name = "<void>",
+        layout_known = true,
+        byte_alignment = 1,
+        element = invalid_type_id(),
+    })
     append_builtin_type(
         semantic_package,
         .untyped_integer_type,
@@ -1634,6 +1705,9 @@ init_semantic_types :: proc(semantic_package: ^Semantic_Package) {
         Semantic_Type{
             kind = .rune_type,
             name = "rune",
+            layout_known = true,
+            byte_size = 4,
+            byte_alignment = 4,
             bit_width = 32,
             element = i32_type,
         },
@@ -1664,53 +1738,84 @@ init_semantic_types :: proc(semantic_package: ^Semantic_Package) {
 
     append_builtin_type(semantic_package, .raw_pointer_type, "rawptr", 64)
     append_builtin_type(semantic_package, .c_string_type, "cstring", 64)
-    append_builtin_type(semantic_package, .string_type, "string")
+    append_semantic_type(semantic_package, Semantic_Type{
+        kind = .string_type,
+        name = "string",
+        layout_known = true,
+        byte_size = 16,
+        byte_alignment = 8,
+        element = invalid_type_id(),
+    })
     append_builtin_type(semantic_package, .meta_type_value, "type")
     append_semantic_type(semantic_package, Semantic_Type{
         kind = .enumeration_type,
         name = "Type_Kind",
+        layout_known = true,
+        byte_size = 1,
+        byte_alignment = 1,
         bit_width = 8,
         element = u8_type,
     })
     append_semantic_type(semantic_package, Semantic_Type{
         kind = .enumeration_type,
         name = "Type_Byte_Order",
+        layout_known = true,
+        byte_size = 1,
+        byte_alignment = 1,
         bit_width = 8,
         element = u8_type,
     })
     append_semantic_type(semantic_package, Semantic_Type{
         kind = .enumeration_type,
         name = "Calling_Convention",
+        layout_known = true,
+        byte_size = 1,
+        byte_alignment = 1,
         bit_width = 8,
         element = u8_type,
     })
     append_semantic_type(semantic_package, Semantic_Type{
         kind = .enumeration_type,
         name = "Target_Architecture",
+        layout_known = true,
+        byte_size = 1,
+        byte_alignment = 1,
         bit_width = 8,
         element = u8_type,
     })
     append_semantic_type(semantic_package, Semantic_Type{
         kind = .enumeration_type,
         name = "Target_Operating_System",
+        layout_known = true,
+        byte_size = 1,
+        byte_alignment = 1,
         bit_width = 8,
         element = u8_type,
     })
     append_semantic_type(semantic_package, Semantic_Type{
         kind = .enumeration_type,
         name = "Target_ABI",
+        layout_known = true,
+        byte_size = 1,
+        byte_alignment = 1,
         bit_width = 8,
         element = u8_type,
     })
     append_semantic_type(semantic_package, Semantic_Type{
         kind = .enumeration_type,
         name = "Target_Byte_Order",
+        layout_known = true,
+        byte_size = 1,
+        byte_alignment = 1,
         bit_width = 8,
         element = u8_type,
     })
     append_semantic_type(semantic_package, Semantic_Type{
         kind = .enumeration_type,
         name = "Target_Object_Format",
+        layout_known = true,
+        byte_size = 1,
+        byte_alignment = 1,
         bit_width = 8,
         element = u8_type,
     })
@@ -1718,6 +1823,75 @@ init_semantic_types :: proc(semantic_package: ^Semantic_Package) {
         "self-hosted builtin type order diverged from production")
     assert(uint_type.value == 20 && usize_type.value == 22,
         "natural integer builtin IDs diverged from production")
+}
+
+
+// Natural_Layout is the target-independent result shared by structural tuple
+// construction and ordinary struct completion. known is false only while one
+// member still lacks layout; overflow is reported separately by the caller so
+// an impossible size cannot be confused with a schedulable dependency.
+Natural_Layout :: struct {
+    known: bool,
+    overflow: bool,
+    size: u64,
+    alignment: u32,
+}
+
+// aligned_offset rounds one byte position to a positive member alignment.
+// Layout arithmetic is source-controlled, so overflow returns false rather
+// than wrapping and manufacturing a smaller aggregate.
+aligned_offset :: proc(value: u64, alignment: u32) -> (u64, bool) {
+    assert(alignment != 0, "type layout has zero alignment")
+    divisor := cast[u64](alignment)
+    remainder := value % divisor
+    if remainder == 0 {
+        return (value, true)
+    }
+    increment := divisor - remainder
+    if value > ~cast[u64](0) - increment {
+        return (0, false)
+    }
+    return (value + increment, true)
+}
+
+// compute_natural_layout applies Draft's source-order aggregate algorithm to
+// an already resolved list of member types. It deliberately does not retain
+// offsets: tuples need only the aggregate layout, while struct completion uses
+// the companion operation below to publish offsets with its named fields.
+compute_natural_layout :: proc(
+    semantic_package: ^Semantic_Package,
+    members: []Type_Id,
+) -> Natural_Layout {
+    result := Natural_Layout{alignment = 1}
+    for member_id in members {
+        assert(type_id_valid(member_id) &&
+            cast[usize](member_id.value) < semantic_package.types.length,
+            "natural layout received an invalid member type")
+        member := &semantic_package.types.data[cast[usize](member_id.value)]
+        if !member.layout_known {
+            return result
+        }
+        (offset, aligned) := aligned_offset(
+            result.size,
+            member.byte_alignment,
+        )
+        if !aligned || member.byte_size > ~cast[u64](0) - offset {
+            result.overflow = true
+            return result
+        }
+        result.size = offset + member.byte_size
+        if member.byte_alignment > result.alignment {
+            result.alignment = member.byte_alignment
+        }
+    }
+    (final_size, aligned) := aligned_offset(result.size, result.alignment)
+    if !aligned {
+        result.overflow = true
+        return result
+    }
+    result.known = true
+    result.size = final_size
+    return result
 }
 
 // find_builtin_type performs exact predeclared lookup. byte is a true alias of
@@ -1765,8 +1939,16 @@ intern_element_type :: proc(
             return Type_Id{value = cast[u32](index)}
         }
     }
+    layout_size: u64 = 8
+    layout_alignment: u32 = 8
+    if kind == .slice_type {
+        layout_size = 16
+    }
     return append_semantic_type(semantic_package, Semantic_Type{
         kind = kind,
+        layout_known = true,
+        byte_size = layout_size,
+        byte_alignment = layout_alignment,
         element = element,
     })
 }
@@ -1787,11 +1969,39 @@ intern_array_type :: proc(
         if candidate.kind == .array_type &&
             candidate.element.value == element.value &&
             candidate.element_count == count {
+            element_type := &semantic_package.types.data[
+                cast[usize](element.value)
+            ]
+            candidate.layout_known = element_type.layout_known
+            candidate.byte_alignment = element_type.byte_alignment
+            candidate.byte_size = 0
+            if candidate.layout_known {
+                if element_type.byte_size != 0 &&
+                    count > ~cast[u64](0) / element_type.byte_size {
+                    candidate.layout_known = false
+                } else {
+                    candidate.byte_size = element_type.byte_size * count
+                }
+            }
             return Type_Id{value = cast[u32](index)}
+        }
+    }
+    element_type := &semantic_package.types.data[cast[usize](element.value)]
+    layout_known := element_type.layout_known
+    byte_size: u64 = 0
+    if layout_known {
+        if element_type.byte_size != 0 &&
+            count > ~cast[u64](0) / element_type.byte_size {
+            layout_known = false
+        } else {
+            byte_size = element_type.byte_size * count
         }
     }
     return append_semantic_type(semantic_package, Semantic_Type{
         kind = .array_type,
+        layout_known = layout_known,
+        byte_size = byte_size,
+        byte_alignment = element_type.byte_alignment,
         element = element,
         element_count = count,
     })
@@ -1824,6 +2034,10 @@ intern_tuple_type :: proc(
             }
         }
         if equal {
+            layout := compute_natural_layout(semantic_package, members)
+            candidate.layout_known = layout.known
+            candidate.byte_size = layout.size
+            candidate.byte_alignment = layout.alignment
             return Type_Id{value = cast[u32](index)}
         }
     }
@@ -1833,8 +2047,12 @@ intern_tuple_type :: proc(
             "tuple type interner received an invalid member")
         array.append(&semantic_package.type_members, member)
     }
+    layout := compute_natural_layout(semantic_package, members)
     return append_semantic_type(semantic_package, Semantic_Type{
         kind = .tuple_type,
+        layout_known = layout.known,
+        byte_size = layout.size,
+        byte_alignment = layout.alignment,
         element = invalid_type_id(),
         member_begin = begin,
         member_count = len(members),
@@ -1877,6 +2095,9 @@ intern_procedure_type :: proc(
     }
     return append_semantic_type(semantic_package, Semantic_Type{
         kind = .procedure_type,
+        layout_known = true,
+        byte_size = 8,
+        byte_alignment = 8,
         element = invalid_type_id(),
         member_begin = begin,
         member_count = len(members),
@@ -1915,15 +2136,274 @@ intern_distinct_type :: proc(
         if candidate.element.value != underlying.value {
             return invalid_type_id()
         }
+        source := &semantic_package.types.data[cast[usize](underlying.value)]
+        candidate.layout_known = source.layout_known
+        candidate.byte_size = source.byte_size
+        candidate.byte_alignment = source.byte_alignment
         return Type_Id{value = cast[u32](index)}
     }
+    source := &semantic_package.types.data[cast[usize](underlying.value)]
     return append_semantic_type(semantic_package, Semantic_Type{
         kind = .distinct_named_type,
         nominal_root_identity = root_identity,
         nominal_root_relative_path = root_relative_path,
         nominal_public_name = public_name,
+        layout_known = source.layout_known,
+        byte_size = source.byte_size,
+        byte_alignment = source.byte_alignment,
         element = underlying,
     })
+}
+
+// intern_struct_type_shell returns the one package-local identity for a named
+// struct before its fields or natural layout are necessarily complete. The
+// shell is the semantic recursion seam: pointer fields may refer to it, while a
+// by-value use observes layout_known == false and becomes an explicit product
+// dependency rather than recursing through syntax.
+intern_struct_type_shell :: proc(
+    semantic_package: ^Semantic_Package,
+    root_identity, root_relative_path, public_name: []u8,
+) -> Type_Id {
+    assert(len(root_identity) != 0 && len(root_relative_path) != 0 &&
+        len(public_name) != 0,
+        "struct type has an incomplete nominal identity")
+    for index: usize = 0; index < semantic_package.types.length; index += 1 {
+        candidate := &semantic_package.types.data[index]
+        if candidate.kind == .struct_type &&
+            bytes_equal(candidate.nominal_root_identity, root_identity) &&
+            bytes_equal(
+                candidate.nominal_root_relative_path,
+                root_relative_path,
+            ) &&
+            bytes_equal(candidate.nominal_public_name, public_name) {
+            return Type_Id{value = cast[u32](index)}
+        }
+    }
+    return append_semantic_type(semantic_package, Semantic_Type{
+        kind = .struct_type,
+        nominal_root_identity = root_identity,
+        nominal_root_relative_path = root_relative_path,
+        nominal_public_name = public_name,
+        byte_alignment = 1,
+        element = invalid_type_id(),
+    })
+}
+
+// missing_layout_symbol traces a structural type whose layout is not yet known
+// to the local nominal declaration that owns its completion product. Pointer,
+// slice, and procedure values stop before their pointee/signature because their
+// own layout is already known. The currently admitted by-value constructors are
+// acyclic until they reach an incomplete struct shell; direct and mutual
+// by-value struct cycles therefore produce ordinary product edges.
+missing_layout_symbol :: proc(
+    semantic_package: ^Semantic_Package,
+    type_id: Type_Id,
+) -> (Symbol_Id, bool) {
+    if !type_id_valid(type_id) ||
+        cast[usize](type_id.value) >= semantic_package.types.length {
+        return (invalid_symbol_id(), false)
+    }
+    semantic_type := &semantic_package.types.data[cast[usize](type_id.value)]
+    if semantic_type.layout_known {
+        return (invalid_symbol_id(), false)
+    }
+    if semantic_type.kind == .struct_type {
+        for index: usize = 0;
+            index < semantic_package.symbols.length;
+            index += 1 {
+            if semantic_package.symbols.data[index].type.value == type_id.value {
+                return (Symbol_Id{value = cast[u32](index)}, true)
+            }
+        }
+        return (invalid_symbol_id(), false)
+    }
+    if semantic_type.kind == .array_type ||
+        semantic_type.kind == .distinct_named_type {
+        return missing_layout_symbol(semantic_package, semantic_type.element)
+    }
+    if semantic_type.kind == .tuple_type {
+        for index: usize = 0; index < semantic_type.member_count; index += 1 {
+            (dependency, found) := missing_layout_symbol(
+                semantic_package,
+                semantic_package.type_members.data[
+                    semantic_type.member_begin + index
+                ],
+            )
+            if found {
+                return (dependency, true)
+            }
+        }
+    }
+    return (invalid_symbol_id(), false)
+}
+
+// complete_plain_struct_type resolves exactly the ordinary Draft 1 struct
+// subset and publishes its type-member span, named-field span, offsets, and
+// natural layout together. A field node must have one unmodified type child;
+// C representation, explicit aggregate alignment, packed/bit fields, selected
+// member regions, synthesized members, and member directives remain at the
+// diagnosed staging boundary. Temporary rows prevent a blocked attempt from
+// leaking a partial member packet into the stable package tables.
+complete_plain_struct_type :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    struct_id: compiler_syntax.Node_Id,
+    struct_type: Type_Id,
+    facts: ^Target_Facts,
+    blocked_symbol: ^Symbol_Id,
+) -> bool {
+    struct_row := &semantic_package.types.data[cast[usize](struct_type.value)]
+    if struct_row.layout_known {
+        return true
+    }
+    node := compiler_syntax.syntax_tree_node(tree, struct_id)
+    children := compiler_syntax.syntax_tree_children(tree, struct_id)
+    if node.kind != .struct_type || len(children) != 1 {
+        return false
+    }
+    member_list := compiler_syntax.syntax_tree_node(tree, children[0])
+    if member_list.kind != .member_list {
+        return false
+    }
+
+    field_types: array.Dynamic[Type_Id]
+    fields: array.Dynamic[Semantic_Nominal_Member]
+    array.init(&field_types)
+    array.init(&fields)
+    valid := true
+    for field_id in compiler_syntax.syntax_tree_children(tree, children[0]) {
+        field := compiler_syntax.syntax_tree_node(tree, field_id)
+        field_children := compiler_syntax.syntax_tree_children(tree, field_id)
+        if field.kind != .field_member || len(field_children) != 1 ||
+            !node_is_type_syntax(
+                compiler_syntax.syntax_tree_node(
+                    tree,
+                    field_children[0],
+                ).kind,
+            ) {
+            valid = false
+            break
+        }
+        (field_type, resolved) := resolve_type_syntax(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            field_children[0],
+            facts,
+            blocked_symbol,
+        )
+        if !resolved {
+            valid = false
+            break
+        }
+        type_node := compiler_syntax.syntax_tree_node(tree, field_children[0])
+        name_count: usize = 0
+        for token_index := field.token_begin;
+            token_index < type_node.token_begin;
+            token_index += 1 {
+            token := &tree.tokens.data[cast[usize](token_index)]
+            if !token_is_contextual_name(token.kind) {
+                continue
+            }
+            name := source_bytes(
+                graph,
+                semantic_package.workspace_package,
+                file_index,
+                token.range,
+            )
+            if bytes_equal_text(name, "_") {
+                valid = false
+                break
+            }
+            duplicate := false
+            for existing in array.view(&fields) {
+                if bytes_equal(existing.name, name) {
+                    duplicate = true
+                    break
+                }
+            }
+            if duplicate {
+                valid = false
+                break
+            }
+            array.append(&field_types, field_type)
+            array.append(&fields, Semantic_Nominal_Member{
+                name = name,
+                kind = .field,
+                type = field_type,
+            })
+            name_count += 1
+        }
+        if !valid || name_count == 0 {
+            valid = false
+            break
+        }
+    }
+    if !valid || fields.length == 0 {
+        array.destroy(&fields)
+        array.destroy(&field_types)
+        return false
+    }
+
+    layout := compute_natural_layout(
+        semantic_package,
+        array.view(&field_types),
+    )
+    if !layout.known {
+        if !layout.overflow {
+            for field_type in array.view(&field_types) {
+                (dependency, found) := missing_layout_symbol(
+                    semantic_package,
+                    field_type,
+                )
+                if found {
+                    blocked_symbol^ = dependency
+                    break
+                }
+            }
+        }
+        array.destroy(&fields)
+        array.destroy(&field_types)
+        return false
+    }
+
+    next_offset: u64 = 0
+    for index: usize = 0; index < fields.length; index += 1 {
+        field_type := &semantic_package.types.data[
+            cast[usize](fields.data[index].type.value)
+        ]
+        (offset, aligned) := aligned_offset(
+            next_offset,
+            field_type.byte_alignment,
+        )
+        assert(aligned && field_type.byte_size <= ~cast[u64](0) - offset,
+            "completed natural layout changed during struct publication")
+        fields.data[index].byte_offset = offset
+        next_offset = offset + field_type.byte_size
+    }
+
+    member_begin := semantic_package.type_members.length
+    nominal_member_begin := semantic_package.nominal_members.length
+    for field_type in array.view(&field_types) {
+        array.append(&semantic_package.type_members, field_type)
+    }
+    for field in array.view(&fields) {
+        array.append(&semantic_package.nominal_members, field)
+    }
+    completed := &semantic_package.types.data[cast[usize](struct_type.value)]
+    completed.layout_known = true
+    completed.byte_size = layout.size
+    completed.byte_alignment = layout.alignment
+    completed.member_begin = member_begin
+    completed.member_count = field_types.length
+    completed.nominal_member_begin = nominal_member_begin
+    completed.nominal_member_count = fields.length
+    array.destroy(&fields)
+    array.destroy(&field_types)
+    return true
 }
 
 init_semantic_package :: proc(
@@ -1957,10 +2437,12 @@ destroy_semantic_package :: proc(semantic_package: ^Semantic_Package) {
     array.destroy(&semantic_package.graph_import_edges)
     array.destroy(&semantic_package.interface_declarations)
     array.destroy(&semantic_package.interface_type_translations)
+    array.destroy(&semantic_package.interface_nominal_members)
     array.destroy(&semantic_package.interface_type_members)
     array.destroy(&semantic_package.interface_types)
     array.destroy(&semantic_package.imported_typed_names)
     array.destroy(&semantic_package.imported_types)
+    array.destroy(&semantic_package.nominal_members)
     array.destroy(&semantic_package.type_members)
     array.destroy(&semantic_package.types)
     array.destroy(&semantic_package.compile_time_products)
@@ -2720,10 +3202,12 @@ binary_operator :: proc(
 
 // resolve_named_type_syntax maps the only type syntax admitted by this first
 // typed-interface slice: one predeclared/local name or one exact import member.
-// Local aliases consume only completed constant products and report the first
-// unpublished Symbol_Id through blocked_symbol. Qualified names consume the
-// consumer-local reconstruction built from a dependency interface; producer
-// Type_Ids never cross this boundary.
+// Local aliases normally consume completed constant products and report the
+// first unpublished Symbol_Id through blocked_symbol. A nominal struct shell is
+// the one exception: once its own constant attempt has installed symbol.type,
+// recursive fields may name that identity before layout is complete. Qualified
+// names consume the consumer-local reconstruction built from a dependency
+// interface; producer Type_Ids never cross this boundary.
 resolve_named_type_syntax :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     semantic_package: ^Semantic_Package,
@@ -2765,6 +3249,14 @@ resolve_named_type_syntax :: proc(
         if symbol.kind != .type && symbol.kind != .unresolved_declaration &&
             symbol.kind != .constant {
             return (invalid_type_id(), false)
+        }
+        if type_id_valid(symbol.type) {
+            provisional := &semantic_package.types.data[
+                cast[usize](symbol.type.value)
+            ]
+            if provisional.kind == .struct_type {
+                return (symbol.type, true)
+            }
         }
         (value, complete) := completed_constant_value(
             semantic_package,
@@ -3412,12 +3904,13 @@ append_unsupported_compile_time_diagnostic :: proc(
 
 // run_named_constant_product evaluates exactly one declaration payload
 // against already completed scalar constants and target facts. A named
-// `distinct T` is handled here, rather than by the structural type resolver,
-// because its identity belongs to the declaration symbol and package. It never
-// calls another declaration evaluator. A missing local value attaches one graph
-// edge and discards the provisional invalid result; only a complete attempt
-// publishes value. Grouped constants and the broader Draft constant vocabulary
-// remain outside this staging slice and fail only when a `when` demands them.
+// `distinct T` and ordinary `struct { ... }` are handled here, rather than by
+// the structural type resolver, because their identity belongs to the
+// declaration symbol and package. A struct installs its nominal shell before
+// resolving fields so pointer recursion is direct; unavailable by-value layout
+// attaches one graph edge. Only a complete attempt publishes the constant
+// value. Grouped constants and the broader Draft constant vocabulary remain
+// outside this staging slice and fail only when a consumer demands them.
 run_named_constant_product :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     facts: ^Target_Facts,
@@ -3470,7 +3963,40 @@ run_named_constant_product :: proc(
     payload := compiler_syntax.syntax_tree_node(tree, payload_id)
     blocked_symbol := invalid_symbol_id()
     value := invalid_compile_time_value()
-    if payload.kind == .distinct_type {
+    if payload.kind == .struct_type {
+        root_identity := memory.owned_string_bytes(
+            &workspace_package.identity.root_identity,
+        )
+        root_relative_path := memory.owned_string_bytes(
+            &workspace_package.identity.root_relative_path,
+        )
+        public_name := symbol_name_bytes(
+            graph,
+            semantic_package,
+            symbol,
+        )
+        struct_type := intern_struct_type_shell(
+            semantic_package,
+            root_identity,
+            root_relative_path,
+            public_name,
+        )
+        symbol.type = struct_type
+        if complete_plain_struct_type(
+            graph,
+            semantic_package,
+            symbol.syntax.file_index,
+            tree,
+            payload_id,
+            struct_type,
+            facts,
+            &blocked_symbol,
+        ) {
+            value.kind = .type_value
+            value.static_type = Type_Id{value = 53}
+            value.type_value = struct_type
+        }
+    } else if payload.kind == .distinct_type {
         payload_children := compiler_syntax.syntax_tree_children(
             tree,
             payload_id,
@@ -3505,9 +4031,23 @@ run_named_constant_product :: proc(
                     underlying,
                 )
                 if type_id_valid(distinct_type) {
-                    value.kind = .type_value
-                    value.static_type = Type_Id{value = 53}
-                    value.type_value = distinct_type
+                    symbol.type = distinct_type
+                    distinct_row := &semantic_package.types.data[
+                        cast[usize](distinct_type.value)
+                    ]
+                    if distinct_row.layout_known {
+                        value.kind = .type_value
+                        value.static_type = Type_Id{value = 53}
+                        value.type_value = distinct_type
+                    } else {
+                        (dependency, found) := missing_layout_symbol(
+                            semantic_package,
+                            underlying,
+                        )
+                        if found {
+                            blocked_symbol = dependency
+                        }
+                    }
                 }
             }
         }
@@ -3961,8 +4501,8 @@ declaration_type_syntax :: proc(
 // target usize facts follow one dependency mechanism. Declaration-owned
 // distinct syntax is intentionally constructed by the constant product which
 // has the defining symbol; seeing it recursively here is invalid just as in
-// production. Nominal aggregates, SIMD, C procedure types, and parametric forms
-// fail at this seam.
+// production. Enums, variants, unions, specialized struct forms, SIMD, C
+// procedure types, and parametric forms fail at this seam.
 resolve_type_syntax :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     semantic_package: ^Semantic_Package,
@@ -4500,9 +5040,10 @@ ensure_interface_translation_table :: proc(
 
 // translate_interface_type lazily copies one local type graph into the
 // package-independent interface domain. It publishes the memoized placeholder
-// before following children, then gathers translated members in temporary
-// storage so the final member span remains contiguous even when recursion
-// appends other rows first.
+// before following children, then gathers structural and named members in
+// temporary storage so both final spans remain contiguous even when recursion
+// appends other rows first. Struct layout and offsets are copied as semantic
+// target facts, never recomputed from producer-local IDs during publication.
 translate_interface_type :: proc(
     semantic_package: ^Semantic_Package,
     local_type: Type_Id,
@@ -4559,6 +5100,33 @@ translate_interface_type :: proc(
     }
     array.destroy(&translated_members)
 
+    translated_nominal_members: array.Dynamic[Interface_Nominal_Member]
+    array.init(&translated_nominal_members)
+    for member_index: usize = 0;
+        member_index < local.nominal_member_count;
+        member_index += 1 {
+        member := &semantic_package.nominal_members.data[
+            local.nominal_member_begin + member_index
+        ]
+        array.append(
+            &translated_nominal_members,
+            Interface_Nominal_Member{
+                name = member.name,
+                kind = member.kind,
+                type = translate_interface_type(
+                    semantic_package,
+                    member.type,
+                ),
+                byte_offset = member.byte_offset,
+            },
+        )
+    }
+    nominal_member_begin := semantic_package.interface_nominal_members.length
+    for member in array.view(&translated_nominal_members) {
+        array.append(&semantic_package.interface_nominal_members, member)
+    }
+    array.destroy(&translated_nominal_members)
+
     semantic_package.interface_types.data[cast[usize](interface_id.value)] =
         Interface_Type{
             kind = local.kind,
@@ -4566,11 +5134,16 @@ translate_interface_type :: proc(
             nominal_root_identity = local.nominal_root_identity,
             nominal_root_relative_path = local.nominal_root_relative_path,
             nominal_public_name = local.nominal_public_name,
+            layout_known = local.layout_known,
+            byte_size = local.byte_size,
+            byte_alignment = local.byte_alignment,
             bit_width = local.bit_width,
             element = translated_element,
             element_count = local.element_count,
             member_begin = member_begin,
             member_count = local.member_count,
+            nominal_member_begin = nominal_member_begin,
+            nominal_member_count = local.nominal_member_count,
         }
     return interface_id
 }
@@ -4655,15 +5228,177 @@ build_package_interface :: proc(
     semantic_package.typed_interface_built = true
 }
 
+// complete_imported_struct_type validates and reconstructs one ordinary struct
+// packet after its consumer-local shell and import memo have been installed.
+// Member interface IDs are imported in source order, natural layout is
+// independently recomputed, and every published size/alignment/offset is
+// checked before becoming consumer state. Reconstructing an already complete
+// nominal through another dependency path verifies exact member identity rather
+// than silently accepting inconsistent interface graphs.
+complete_imported_struct_type :: proc(
+    semantic: ^Semantic_Workspace,
+    consumer: ^Semantic_Package,
+    target_package: compiler_workspace.Package_Id,
+    source_type: ^Interface_Type,
+    local_type: Type_Id,
+) -> bool {
+    target := &semantic.packages.data[cast[usize](target_package.value)]
+    if !source_type.layout_known || source_type.byte_alignment == 0 ||
+        source_type.member_count == 0 ||
+        source_type.member_count != source_type.nominal_member_count ||
+        source_type.member_begin > target.interface_type_members.length ||
+        source_type.member_count >
+            target.interface_type_members.length - source_type.member_begin ||
+        source_type.nominal_member_begin >
+            target.interface_nominal_members.length ||
+        source_type.nominal_member_count >
+            target.interface_nominal_members.length -
+                source_type.nominal_member_begin {
+        return false
+    }
+
+    fields: array.Dynamic[Semantic_Nominal_Member]
+    field_types: array.Dynamic[Type_Id]
+    array.init(&fields)
+    array.init(&field_types)
+    valid := true
+    for index: usize = 0; index < source_type.member_count; index += 1 {
+        source_member_type := target.interface_type_members.data[
+            source_type.member_begin + index
+        ]
+        source_member := &target.interface_nominal_members.data[
+            source_type.nominal_member_begin + index
+        ]
+        if source_member.kind != .field ||
+            source_member.type.value != source_member_type.value ||
+            len(source_member.name) == 0 {
+            valid = false
+            break
+        }
+        for prior in array.view(&fields) {
+            if bytes_equal(prior.name, source_member.name) {
+                valid = false
+                break
+            }
+        }
+        if !valid {
+            break
+        }
+        (member_type, imported) := import_interface_type(
+            semantic,
+            consumer,
+            target_package,
+            source_member_type,
+        )
+        if !imported {
+            valid = false
+            break
+        }
+        array.append(&field_types, member_type)
+        array.append(&fields, Semantic_Nominal_Member{
+            name = source_member.name,
+            kind = .field,
+            type = member_type,
+        })
+    }
+    if !valid {
+        array.destroy(&field_types)
+        array.destroy(&fields)
+        return false
+    }
+
+    layout := compute_natural_layout(consumer, array.view(&field_types))
+    if !layout.known || layout.overflow ||
+        layout.size != source_type.byte_size ||
+        layout.alignment != source_type.byte_alignment {
+        array.destroy(&field_types)
+        array.destroy(&fields)
+        return false
+    }
+    next_offset: u64 = 0
+    for index: usize = 0; index < fields.length; index += 1 {
+        member_type := &consumer.types.data[
+            cast[usize](fields.data[index].type.value)
+        ]
+        (offset, aligned) := aligned_offset(
+            next_offset,
+            member_type.byte_alignment,
+        )
+        if !aligned || member_type.byte_size > ~cast[u64](0) - offset ||
+            offset != target.interface_nominal_members.data[
+                source_type.nominal_member_begin + index
+            ].byte_offset {
+            valid = false
+            break
+        }
+        fields.data[index].byte_offset = offset
+        next_offset = offset + member_type.byte_size
+    }
+    if !valid {
+        array.destroy(&field_types)
+        array.destroy(&fields)
+        return false
+    }
+
+    local := &consumer.types.data[cast[usize](local_type.value)]
+    if local.layout_known {
+        valid = local.byte_size == layout.size &&
+            local.byte_alignment == layout.alignment &&
+            local.member_count == field_types.length &&
+            local.nominal_member_count == fields.length
+        if valid {
+            for index: usize = 0; index < fields.length; index += 1 {
+                existing_type := consumer.type_members.data[
+                    local.member_begin + index
+                ]
+                existing := &consumer.nominal_members.data[
+                    local.nominal_member_begin + index
+                ]
+                if existing_type.value != field_types.data[index].value ||
+                    existing.type.value != fields.data[index].type.value ||
+                    existing.kind != fields.data[index].kind ||
+                    existing.byte_offset != fields.data[index].byte_offset ||
+                    !bytes_equal(existing.name, fields.data[index].name) {
+                    valid = false
+                    break
+                }
+            }
+        }
+    } else {
+        member_begin := consumer.type_members.length
+        nominal_member_begin := consumer.nominal_members.length
+        for field_type in array.view(&field_types) {
+            array.append(&consumer.type_members, field_type)
+        }
+        for field in array.view(&fields) {
+            array.append(&consumer.nominal_members, field)
+        }
+        local = &consumer.types.data[cast[usize](local_type.value)]
+        local.layout_known = true
+        local.byte_size = layout.size
+        local.byte_alignment = layout.alignment
+        local.member_begin = member_begin
+        local.member_count = field_types.length
+        local.nominal_member_begin = nominal_member_begin
+        local.nominal_member_count = fields.length
+    }
+    array.destroy(&field_types)
+    array.destroy(&fields)
+    return valid
+}
+
 // import_interface_type reconstructs one dependency interface identity in the
 // consumer's local Type_Id domain. Predeclared scalar rows reuse the consumer's
 // canonical builtins by exact kind/name. Pointer-like and array rows recursively
 // rebuild their element, while tuple/procedure rows recursively rebuild their
 // ordered member span; every structural root then passes through the matching
-// consumer interner. Distinct rows recursively rebuild their underlying type
-// and use the producer's three-part nominal key, so direct and transitive import
-// paths converge without rebaptizing the type in the consumer. Every successful
-// mapping is memoized by dependency package plus interface ID.
+// consumer interner. Distinct rows recursively rebuild their underlying type.
+// Struct rows memoize a nominal shell before rebuilding and validating their
+// named member packet. Both nominal families use the producer's three-part key,
+// so direct and transitive import paths converge without rebaptizing the type
+// in the consumer. Every successful mapping is memoized by dependency package
+// plus interface ID; the early struct memo is retained only in a workspace that
+// will fail if packet validation does not complete.
 import_interface_type :: proc(
     semantic: ^Semantic_Workspace,
     consumer: ^Semantic_Package,
@@ -4689,7 +5424,35 @@ import_interface_type :: proc(
     ]
     local_type := invalid_type_id()
 
-    if source_type.kind == .pointer_type ||
+    if source_type.kind == .struct_type {
+        complete_identity := len(source_type.nominal_root_identity) != 0 &&
+            len(source_type.nominal_root_relative_path) != 0 &&
+            len(source_type.nominal_public_name) != 0
+        if !complete_identity {
+            return (invalid_type_id(), false)
+        }
+        local_type = intern_struct_type_shell(
+            consumer,
+            source_type.nominal_root_identity,
+            source_type.nominal_root_relative_path,
+            source_type.nominal_public_name,
+        )
+        array.append(&consumer.imported_types, Imported_Type{
+            target_package = target_package,
+            interface_type = interface_type,
+            local_type = local_type,
+        })
+        if !complete_imported_struct_type(
+            semantic,
+            consumer,
+            target_package,
+            &source_type,
+            local_type,
+        ) {
+            return (invalid_type_id(), false)
+        }
+        return (local_type, true)
+    } else if source_type.kind == .pointer_type ||
         source_type.kind == .multi_pointer_type ||
         source_type.kind == .slice_type {
         if !interface_type_id_valid(source_type.element) {
@@ -4799,6 +5562,12 @@ import_interface_type :: proc(
         }
     }
     if !type_id_valid(local_type) {
+        return (invalid_type_id(), false)
+    }
+    local_row := &consumer.types.data[cast[usize](local_type.value)]
+    if local_row.layout_known != source_type.layout_known ||
+        local_row.byte_size != source_type.byte_size ||
+        local_row.byte_alignment != source_type.byte_alignment {
         return (invalid_type_id(), false)
     }
     array.append(&consumer.imported_types, Imported_Type{
@@ -5613,10 +6382,12 @@ append_type_name_bytes :: proc(
 
 // append_local_type_shape renders a consumer-local type without exposing its
 // process-local Type_Id. Structural children are expanded using canonical Draft
-// syntax, distinct rows include their package-qualified nominal identity and
-// underlying shape, and named scalar leaves include kind and spelling. This is
-// what makes imported type reconstruction comparable even when a complete
-// production compilation has interned unrelated private types earlier.
+// syntax, struct rows terminate at their package-qualified nominal identity,
+// distinct rows include that identity plus their underlying shape, and named
+// scalar leaves include kind and spelling. Struct termination is essential for
+// recursive graphs and leaves the field packet to the interface-type rows. This
+// is what makes imported reconstruction comparable even when production has
+// interned unrelated private types earlier.
 append_local_type_shape :: proc(
     semantic_package: ^Semantic_Package,
     type_id: Type_Id,
@@ -5713,6 +6484,21 @@ append_local_type_shape :: proc(
             output,
         )
         compiler_text.append_byte(output, cast[u8](')'))
+        return
+    }
+    if semantic_type.kind == .struct_type {
+        compiler_text.append_text(output, "struct:")
+        compiler_text.append_bytes(
+            output,
+            semantic_type.nominal_root_identity,
+        )
+        compiler_text.append_byte(output, cast[u8](':'))
+        compiler_text.append_bytes(
+            output,
+            semantic_type.nominal_root_relative_path,
+        )
+        compiler_text.append_byte(output, cast[u8]('.'))
+        compiler_text.append_bytes(output, semantic_type.nominal_public_name)
         return
     }
     compiler_text.append_text(
@@ -5851,7 +6637,8 @@ pub dump_workspace_interfaces :: proc(
                 semantic_type_kind_text(interface_type.kind),
             )
             compiler_text.append_byte(output, cast[u8](' '))
-            if interface_type.kind == .distinct_named_type {
+            if interface_type.kind == .distinct_named_type ||
+                interface_type.kind == .struct_type {
                 append_type_name_bytes(
                     output,
                     interface_type.nominal_public_name,
@@ -5873,6 +6660,18 @@ pub dump_workspace_interfaces :: proc(
             append_type_name_bytes(
                 output,
                 interface_type.nominal_public_name,
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            append_bool(output, interface_type.layout_known)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](interface_type.byte_size),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](interface_type.byte_alignment),
             )
             compiler_text.append_byte(output, cast[u8](' '))
             compiler_text.append_unsigned(
@@ -5904,6 +6703,35 @@ pub dump_workspace_interfaces :: proc(
                     cast[usize](semantic_package.interface_type_members.data[
                         interface_type.member_begin + member_index
                     ].value),
+                )
+            }
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                interface_type.nominal_member_count,
+            )
+            for member_index: usize = 0;
+                member_index < interface_type.nominal_member_count;
+                member_index += 1 {
+                member := &semantic_package.interface_nominal_members.data[
+                    interface_type.nominal_member_begin + member_index
+                ]
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_bytes(output, member.name)
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_text(
+                    output,
+                    symbol_kind_text(member.kind),
+                )
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_unsigned(
+                    output,
+                    cast[usize](member.type.value),
+                )
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_unsigned(
+                    output,
+                    cast[usize](member.byte_offset),
                 )
             }
             compiler_text.append_byte(output, cast[u8]('\n'))
@@ -6057,7 +6885,7 @@ render_semantic_message :: proc(
     case .unsupported_typed_interface:
         compiler_text.append_text(
             output,
-            "self-hosted typed interface requires a supported scalar, structural, or distinct declaration",
+            "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration",
         )
     case .cyclic_typed_interface:
         compiler_text.append_text(

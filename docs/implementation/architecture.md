@@ -107,19 +107,25 @@ the production-order predeclared scalar table, demands selected public
 declaration products, classifies scalar constants versus type aliases, types
 named scalars plus pointer, multi-pointer, slice, fixed-array, tuple, and
 ordinary fixed-procedure structures plus declaration-owned `distinct` types,
-and lazily translates their reachable types and values into package-independent
-interface IDs. A distinct row carries the defining root content identity,
-root-relative package path, and declaration name; importing and re-exporting
-copy that key unchanged while rebuilding the underlying type locally. It
+ordinary named `struct` declarations with natural fields, and lazily translates
+their reachable types and values into package-independent interface IDs. A
+struct shell receives its defining root content identity, root-relative package
+path, and declaration name before field resolution, so `^Node` recursion is
+finite while direct by-value cycles remain product edges. Completion publishes
+one source-order packet of field names/types, natural byte offsets, total size,
+and alignment. Distinct and struct rows preserve the three-part nominal key;
+importing and re-exporting copy it unchanged while rebuilding underlying or
+member types locally and independently checking the struct layout packet. It
 then reconstructs each dependency declaration in the consumer's Type-ID domain
 beneath the exact file-local import alias. The current closed subset accepts
 named scalar aliases (including forward local aliases and qualified imported
 aliases), boolean/unsigned/string constants over the existing evaluator,
-structural/distinct type aliases and globals, and non-parametric Draft
-procedures with fixed supported parameters and results. Positive fixed-array
-counts may use
+structural/distinct/ordinary-struct type aliases and globals, and non-parametric
+Draft procedures with fixed supported parameters and results. Positive fixed-
+array counts may use
 representable untyped or exact `usize` values already available through the
-scalar product graph. Nominal aggregates, SIMD/parametric types,
+scalar product graph. Enums, variants, unions, packed/bit fields, C or explicit-
+alignment structs, member `when`/synthesis/directives, SIMD/parametric types,
 foreign/export declarations, procedure contracts, arithmetic count expressions,
 and general constant/type work remain a diagnosed interface staging boundary.
 Imported constants are
@@ -174,16 +180,17 @@ must receive condition, type, layout, and constant product identities before
 the package-name barrier can close. Cyclic or demanded out-of-vocabulary
 constants fail explicitly without selecting a branch. The real staging graph
 exercises both sides of core/c_abi's target branch. The typed-interface
-differential then compares canonical scalar/structural/distinct graphs,
-fixed-array counts, and consumer-local type/value reconstruction across all four
-targets.
+differential then compares canonical scalar/structural/distinct/ordinary-struct
+graphs, fixed-array counts, exact natural layouts, and consumer-local type/value
+reconstruction across all four targets.
 It includes forward local type/count aliases, imported type/value/count aliases,
 all five moved data structures, structural globals and fixed procedures, target
 page-size arrays, distinct declarations over scalar, structural, private, and
-imported distinct types, transitive identity-preserving re-exports, and explicit
-aggregate/unsupported-count/cycle failures. General constant evaluation,
-member-bearing nominal and parametric type constructors, procedure
-contracts, and body typing are the next semantic product slices.
+imported distinct types, plain/grouped/recursive structs, private and transitive
+struct re-exports, structs nested in arrays/procedures/other structs, and
+explicit specialized-aggregate/unsupported-count/by-value-cycle failures.
+General constant evaluation, remaining nominal and parametric type constructors,
+procedure contracts, and body typing are the next semantic product slices.
 
 The staging graph uses physical core source because the C++ bootstrap must
 compile `draftc-next` before it can run. The installed bootstrap's immutable

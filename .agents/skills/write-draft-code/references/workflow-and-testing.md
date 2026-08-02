@@ -557,13 +557,18 @@ scalar constant products, then rebuilds that public view.
 `workspace-interfaces` continues dependency-first through canonical
 predeclared/named scalar types, scalar constants, explicitly typed globals,
 pointer/multi-pointer/slice/fixed-array/tuple structures, fixed procedure types
-and signatures, declaration-owned distinct types, and consumer-local imported
-type/value reconstruction. Array
+and signatures, declaration-owned distinct types, ordinary named natural-layout
+structs, and consumer-local imported type/value reconstruction. Array
 counts reuse the scalar product graph for positive untyped or exact `usize`
 values. Distinct interface identity uses the defining content root,
 root-relative package path, and original declaration name, and survives
 transitive re-export while the underlying graph is rebuilt locally. Nominal
-aggregates, SIMD/parametric types, foreign/export,
+structs use the same persistent identity and retain source-order field names,
+translated types, natural byte offsets, total size, and alignment. Pointer
+recursion, grouped fields, private/transitive exposure, and struct nesting in
+the other supported constructors are covered. Enums, variants, unions,
+packed/bit fields, C or explicitly aligned structs, selected/synthesized/member-
+directive regions, SIMD/parametric types, foreign/export,
 procedure contracts, arithmetic counts, and general constant/type forms remain
 an explicit staging failure. It is a build-tree development artifact, not an
 installed public command:
@@ -628,17 +633,20 @@ nested conditions, dormant unrelated constants, and fail-closed demanded
 arithmetic/cycles. Arithmetic and aggregate values, imported constants, types,
 and compile-time procedures remain outside this target-selection evaluator. The
 typed-interface differential then compares canonical reachable
-scalar/structural/distinct type rows, fixed-array counts, declaration
-classifications, scalar constant payloads, and imported consumer-local
-type/value shapes on all four targets. Its supported fixture includes forward
+scalar/structural/distinct/ordinary-struct type rows, fixed-array counts, exact
+natural struct layouts, declaration classifications, scalar constant payloads,
+and imported consumer-local type/value shapes on all four targets. Its supported
+fixture includes forward
 local type/count aliases,
 qualified imported aliases and counts, structural globals, fixed procedure
 types/signatures, tuple results, target page-size arrays, separate same-underlying
-distinct declarations, private distinct exposure, distinct-over-distinct, and
-identity-preserving transitive re-export. Nominal aggregates, SIMD types,
-unsupported count expressions/types, and local type cycles must fail at the
-exact self-hosting boundary. Do not infer support for the production interface's
-remaining member-bearing nominal/parametric constructors or contracts from this
+distinct declarations, private distinct exposure, distinct-over-distinct,
+identity-preserving transitive re-export, plain/grouped/pointer-recursive
+structs, private and transitive struct exposure, and struct arrays/procedure
+signatures. Enums, specialized struct layouts/members, SIMD types, unsupported
+count expressions/types, and local alias or by-value layout cycles must fail at
+the exact self-hosting boundary. Do not infer support for the production
+interface's remaining nominal/parametric constructors or contracts from this
 narrow gate.
 Keep the bootstrap path until a replacement phase has this oracle; passing
 focused Draft tests alone is not replacement evidence.
