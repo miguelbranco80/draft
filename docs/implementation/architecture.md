@@ -84,11 +84,18 @@ scope per parsed file, collects ordinary declarations in canonical file/source
 order, classifies source-only declaration categories and visibility/flags,
 diagnoses direct-scope duplicates, and binds each accepted file-local import
 alias to the exact canonical graph edge for its source ImportClause. Its names
-and ranges borrow the graph-owned source rather than copying spellings. It does
-not yet import dependency public declarations, resolve ambiguous constant/type
-aliases, materialize conditional declarations, or assign types. The staging
-executable is deliberately absent from the install set until a coherent public
-compiler command surface exists.
+and ranges borrow the graph-owned source rather than copying spellings. The
+`workspace-public-names` boundary then gives every direct unconditional public
+declaration a stable `(Package_Id, Symbol_Id)` reference and gives each import
+binding one contiguous source-ordered span of those references. Two-part
+`alias.member` lookup first resolves the file-local alias, then returns that
+cross-package reference without copying a name or creating a typed proxy.
+Imports themselves remain outside package scope, so they cannot re-export
+names. This is a source-name view, not the canonical typed interface: it does
+not yet materialize conditional declarations, resolve ambiguous constant/type
+aliases, reconstruct interface types/constants/contracts, or assign types. The
+staging executable is deliberately absent from the install set until a coherent
+public compiler command surface exists.
 
 Replacement proceeds at phase boundaries rather than by mixing C++ and Draft
 inside a phase. C++ `draftc lex` and `draftc syntax` remain independent single-
@@ -112,7 +119,14 @@ deferred `when` declarations, and graph failure propagation. Later semantic
 work can therefore consume canonical Draft-owned package rows, concrete trees,
 semantic identities, import edges, package declaration name sets, and file-
 local alias bindings directly; it does not need a compatibility call back into
-the C++ parser, workspace loader, or declaration collector.
+the C++ parser, workspace loader, or declaration collector. The public-name
+differential additionally intersects the production compiler's final accepted
+PackageInterface/ImportedSymbol rows with those direct source declarations and
+compares defining symbol identities, visibility filtering, per-file aliases,
+canonical targets, and member order. It covers the real compiler graph,
+workspace/dependency/core boundaries, all four target file selectors, and
+earlier graph/declaration failures. Conditional public declarations remain
+explicitly absent on both sides of this earlier gate.
 
 The staging graph uses physical core source because the C++ bootstrap must
 compile `draftc-next` before it can run. The installed bootstrap's immutable
@@ -146,10 +160,10 @@ CLI contract.
 
 This boundary does not couple the self-hosted frontend to LLVM. LLVM 22 remains
 part of the C++ bootstrap and native backend; the Draft source, diagnostic,
-syntax, workspace, and declaration-name packages depend only on ordinary core
+syntax, workspace, and semantic-name packages depend only on ordinary core
 allocation, filesystem, formatting, and OS facilities. Backend migration can
-happen later behind MIR/target interfaces without delaying source-to-semantic-
-name-set self-hosting.
+happen later behind MIR/target interfaces without delaying source-to-qualified-
+name self-hosting.
 
 ```text
  Source/package loader

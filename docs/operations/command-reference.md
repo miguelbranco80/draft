@@ -293,6 +293,11 @@ build/draftc-next workspace-declarations path/to/root-package \
   --core path/to/core --core-identity pinned-core-identity \
   --target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows \
   [--dependency prefix path/to/dependency pinned-content-identity]...
+build/draftc-next workspace-public-names path/to/root-package \
+  --workspace path/to/workspace \
+  --core path/to/core --core-identity pinned-core-identity \
+  --target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows \
+  [--dependency prefix path/to/dependency pinned-content-identity]...
 ```
 
 `package-syntax` prints the target-selected files in canonical bytewise order,
@@ -309,9 +314,14 @@ declarations, file scopes, source-only declaration categories/flags, and each
 accepted file-local alias bound to its canonical import target. It diagnoses
 direct-scope duplicates but deliberately stops before dependency public-
 interface import, ambiguous constant/type resolution, conditional declaration
-materialization, and typing. These are qualification commands rather than the
-public compiler. Public semantic compilation and later commands continue to use
-`build/draftc` until their own replacement gates are complete.
+materialization, and typing. `workspace-public-names` appends each direct
+unconditional public declaration and each file-local alias's ordered members as
+stable defining package/symbol references. It exercises two-part
+`alias.member` lookup but omits conditional public declarations, typed interface
+graphs/constants/contracts, and deeper nominal members. These are qualification
+commands rather than the public compiler. Public semantic compilation and later
+commands continue to use `build/draftc` until their own replacement gates are
+complete.
 
 `check` runs the provider-free front end and semantic pipeline. If the program
 contains saved `...` expansions, it loads and revalidates them. It never starts

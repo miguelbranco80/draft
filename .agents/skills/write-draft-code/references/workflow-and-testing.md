@@ -550,12 +550,15 @@ the Draft-written staging driver at O2. It currently implements `lex`, `syntax`,
 target-qualified folder-package loading through `package-syntax`, canonical
 recursive import-graph loading through `workspace-syntax`, and package
 declarations plus file-local import aliases through `workspace-declarations`.
-It is a build-tree development artifact, not an installed public command:
+`workspace-public-names` adds direct unconditional public declarations and
+two-part qualified lookup through those aliases. It is a build-tree development
+artifact, not an installed public command:
 
 ```sh
 cmake --build build --target \
   draftc_next draft_package_syntax_oracle draft_workspace_syntax_oracle \
-  draft_workspace_declarations_oracle --parallel
+  draft_workspace_declarations_oracle \
+  draft_workspace_public_names_oracle --parallel
 build/draftc-next lex compiler/syntax/lexer.draft
 build/draftc-next syntax compiler/syntax/parser.draft
 build/draftc-next package-syntax compiler/syntax --target aarch64-macos
@@ -565,8 +568,11 @@ build/draftc-next workspace-syntax tools/draftc_next \
 build/draftc-next workspace-declarations tools/draftc_next \
   --workspace . --core core --core-identity local-core-qualification \
   --target aarch64-macos
+build/draftc-next workspace-public-names tools/draftc_next \
+  --workspace . --core core --core-identity local-core-qualification \
+  --target aarch64-macos
 ctest --test-dir build --output-on-failure \
-  -R '^draft_self_hosted_(frontend_units|lexer_differential|parser_differential|package_syntax_differential|workspace_syntax_differential|workspace_declarations_differential)$'
+  -R '^draft_self_hosted_(frontend_units|lexer_differential|parser_differential|package_syntax_differential|workspace_syntax_differential|workspace_declarations_differential|workspace_public_names_differential)$'
 ```
 
 The single-file differential tests compare C++ `draftc lex`/`draftc syntax`
@@ -586,9 +592,15 @@ physical paths. The workspace-declarations differential compares package/file
 scope IDs, accepted symbols, source-only category/visibility/flags, native
 spellings, canonical import targets, exact duplicate/modifier diagnostics, all
 four target selectors, and graph-failure propagation. It deliberately stops
-before dependency public-interface import and typing. Keep the bootstrap path
-until a replacement phase has this oracle; passing focused Draft tests alone is
-not replacement evidence.
+before dependency public-interface import and typing. The public-name
+differential intersects final production PackageInterface and ImportedSymbol
+rows with direct unconditional source declarations, then compares defining
+symbol IDs, private-name exclusion, no import re-export, alias locality,
+canonical targets, source order, all target file selectors, and earlier-phase
+failure propagation. Conditional public declarations and typed interface
+payloads remain outside that gate. Keep the bootstrap path until a replacement
+phase has this oracle; passing focused Draft tests alone is not replacement
+evidence.
 
 For a frontend performance investigation, build the two explicitly requested
 standalone targets from a Release CMake tree, then run the comparison on one

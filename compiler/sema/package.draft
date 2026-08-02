@@ -5,16 +5,22 @@
 // type and body work may read: a package scope shared by every source file, one
 // child file scope per parsed Draft file, ordinary declarations in canonical
 // file/source order, and import aliases bound to the exact canonical graph edge
-// selected for that ImportClause. It deliberately does not import public
-// dependency declarations, classify ambiguous constant/type aliases, evaluate
-// `when`, or assign TypeIds. Those operations require later semantic products.
+// selected for that ImportClause. A subsequent operation projects the direct
+// unconditional public declarations of every target package into source-
+// ordered imported-name rows, giving `alias.member` a stable cross-package
+// Symbol_Reference without copying spellings. This is intentionally a source
+// declaration-name view, not the canonical typed package interface: ambiguous
+// constant/type aliases, conditional `when`, types, constants, procedure
+// contracts, and nominal members require later semantic products.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
 // ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
 // which must therefore outlive every lookup, dump, diagnostic render, and final
 // destroy. Symbol and Scope IDs are stable u32 table indices until destroy.
 // Package rows remain aligned with Workspace_Graph.packages, while file indices
-// remain aligned with each nested Package.files table.
+// remain aligned with each nested Package.files table. Imported name spans are
+// contiguous per Import_Binding and retain references into the target package's
+// stable Symbol table.
 //
 // Collection follows the production C++ order exactly. All file scopes are
 // allocated before any names; imports occupy only their file scope; declarations
@@ -56,6 +62,15 @@ pub Scope_Id :: struct {
 // value represents a diagnosed duplicate which published no binding.
 pub Symbol_Id :: struct {
     value: u32,
+}
+
+// Symbol_Reference is the first name identity which may cross a package
+// boundary. package_id selects one Semantic_Workspace package row and symbol
+// then indexes that row's stable symbol table. Equality is semantic only within
+// the owning workspace result; the pair is not serialized across compiler runs.
+pub Symbol_Reference :: struct {
+    package_id: compiler_workspace.Package_Id,
+    symbol: Symbol_Id,
 }
 
 // scope_id_valid distinguishes a table row from the package-parent sentinel.
@@ -158,9 +173,24 @@ pub Semantic_File :: struct {
 // Import_Binding connects one accepted file-local alias symbol to the exact
 // source occurrence already resolved by Workspace_Graph. graph_import_index
 // therefore provides both canonical target Package_Id and normalized path.
+// imported_name_begin/count describe one contiguous span in the consumer's
+// Semantic_Package.imported_names after bind_workspace_public_names succeeds;
+// both are zero before that phase.
 pub Import_Binding :: struct {
     symbol: Symbol_Id,
     graph_import_index: usize,
+    imported_name_begin: usize,
+    imported_name_count: usize,
+}
+
+// Imported_Name is one file-local alias member. declaration points directly to
+// the target package's public source symbol; its spelling and source range are
+// therefore borrowed through the graph and target Semantic_Package rather than
+// copied into the consumer. Rows are ordered by import occurrence, then target
+// package declaration order.
+pub Imported_Name :: struct {
+    import_symbol: Symbol_Id,
+    declaration: Symbol_Reference,
 }
 
 // Semantic_Package owns every collected row for one aligned workspace package.
@@ -173,6 +203,7 @@ pub Semantic_Package :: struct {
     symbols: array.Dynamic[Symbol],
     files: array.Dynamic[Semantic_File],
     imports: array.Dynamic[Import_Binding],
+    imported_names: array.Dynamic[Imported_Name],
     graph_import_edges: array.Dynamic[usize],
 }
 
@@ -200,11 +231,13 @@ Semantic_Diagnostic :: struct {
 
 // Semantic_Workspace owns package rows aligned to the canonical input graph and
 // a single cross-package diagnostic sequence. failed is true exactly when an
-// error (not a note) was appended.
+// error (not a note) was appended. public_names_bound changes once, after every
+// package declaration table is complete and the imported-name spans are ready.
 pub Semantic_Workspace :: struct {
     packages: array.Dynamic[Semantic_Package],
     diagnostics: array.Dynamic[Semantic_Diagnostic],
     failed: bool,
+    public_names_bound: bool,
 }
 
 Collection_Context :: struct {
@@ -1099,6 +1132,7 @@ init_semantic_package :: proc(
     array.init(&semantic_package.symbols)
     array.init(&semantic_package.files)
     array.init(&semantic_package.imports)
+    array.init(&semantic_package.imported_names)
     array.init(&semantic_package.graph_import_edges)
 }
 
@@ -1109,6 +1143,7 @@ destroy_semantic_package :: proc(semantic_package: ^Semantic_Package) {
         array.destroy(&semantic_package.scopes.data[index].symbols)
     }
     array.destroy(&semantic_package.graph_import_edges)
+    array.destroy(&semantic_package.imported_names)
     array.destroy(&semantic_package.imports)
     array.destroy(&semantic_package.files)
     array.destroy(&semantic_package.symbols)
@@ -1128,6 +1163,7 @@ pub collect_workspace_declarations :: proc(
 ) -> bool {
     array.init(&semantic.packages)
     array.init(&semantic.diagnostics)
+    semantic.public_names_bound = false
     if graph.failed {
         semantic.failed = true
         return false
@@ -1169,6 +1205,178 @@ pub collect_workspace_declarations :: proc(
     return !semantic.failed
 }
 
+// bind_workspace_public_names builds the first cross-package name view only
+// after every package has a complete declaration table. Each accepted import
+// receives a contiguous span of references to the target package's direct
+// unconditional public declarations. File-local import aliases are not package
+// declarations, so this operation naturally enforces the specification's no-
+// re-export rule. Selected contents of `when` are not in the declaration table
+// yet and therefore cannot leak into this deliberately earlier view.
+//
+// This operation performs no type or constant work and emits no new user
+// diagnostic. The caller must not invoke it after declaration errors, and may
+// invoke it exactly once for one Semantic_Workspace. Canonical graph/package
+// order and target declaration order completely determine the result.
+pub bind_workspace_public_names :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic: ^Semantic_Workspace,
+) -> bool {
+    if graph.failed || semantic.failed {
+        return false
+    }
+    assert(!semantic.public_names_bound,
+        "workspace public names are already bound")
+    assert(semantic.packages.length == graph.packages.length,
+        "semantic package table is not aligned with workspace graph")
+
+    for consumer_index: usize = 0;
+        consumer_index < semantic.packages.length;
+        consumer_index += 1 {
+        consumer := &semantic.packages.data[consumer_index]
+        for binding_index: usize = 0;
+            binding_index < consumer.imports.length;
+            binding_index += 1 {
+            binding := &consumer.imports.data[binding_index]
+            assert(binding.graph_import_index < graph.imports.length,
+                "semantic import edge exceeds workspace graph")
+            edge := &graph.imports.data[binding.graph_import_index]
+            assert(cast[usize](edge.importing_package.value) == consumer_index,
+                "semantic import edge belongs to another consumer")
+            assert(compiler_workspace.package_id_valid(edge.imported_package) &&
+                cast[usize](edge.imported_package.value) <
+                    semantic.packages.length,
+                "semantic import target is outside package table")
+
+            binding.imported_name_begin = consumer.imported_names.length
+            target := &semantic.packages.data[
+                cast[usize](edge.imported_package.value)
+            ]
+            target_scope := &target.scopes.data[
+                cast[usize](target.package_scope.value)
+            ]
+            for target_index: usize = 0;
+                target_index < target_scope.symbols.length;
+                target_index += 1 {
+                target_symbol_id := target_scope.symbols.data[target_index]
+                target_symbol := &target.symbols.data[
+                    cast[usize](target_symbol_id.value)
+                ]
+                if target_symbol.visibility != .public {
+                    continue
+                }
+                array.append(&consumer.imported_names, Imported_Name{
+                    import_symbol = binding.symbol,
+                    declaration = Symbol_Reference{
+                        package_id = edge.imported_package,
+                        symbol = target_symbol_id,
+                    },
+                })
+            }
+            binding.imported_name_count =
+                consumer.imported_names.length - binding.imported_name_begin
+        }
+    }
+    semantic.public_names_bound = true
+    return true
+}
+
+// lookup_import_member resolves one member beneath an already-resolved import
+// alias. It searches only that binding's contiguous target-interface span and
+// returns the target package/symbol identity, never a consumer-local copy.
+// Absence is an ordinary lookup result; malformed IDs indicate a compiler
+// invariant violation because callers obtain import symbols from lookup.
+pub lookup_import_member :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic: ^Semantic_Workspace,
+    consumer_package: compiler_workspace.Package_Id,
+    import_symbol: Symbol_Id,
+    member_name: []u8,
+) -> (Symbol_Reference, bool) {
+    assert(semantic.public_names_bound,
+        "import member lookup requires bound public names")
+    assert(compiler_workspace.package_id_valid(consumer_package) &&
+        cast[usize](consumer_package.value) < semantic.packages.length,
+        "import member lookup package is invalid")
+    consumer := &semantic.packages.data[
+        cast[usize](consumer_package.value)
+    ]
+    assert(symbol_id_valid(import_symbol) &&
+        cast[usize](import_symbol.value) < consumer.symbols.length,
+        "import member lookup symbol is invalid")
+
+    for binding_index: usize = 0;
+        binding_index < consumer.imports.length;
+        binding_index += 1 {
+        binding := &consumer.imports.data[binding_index]
+        if binding.symbol.value != import_symbol.value {
+            continue
+        }
+        assert(binding.imported_name_begin <= consumer.imported_names.length &&
+            binding.imported_name_count <=
+                consumer.imported_names.length - binding.imported_name_begin,
+            "imported name span exceeds consumer table")
+        end := binding.imported_name_begin + binding.imported_name_count
+        for index := binding.imported_name_begin; index < end; index += 1 {
+            imported := consumer.imported_names.data[index]
+            target := &semantic.packages.data[
+                cast[usize](imported.declaration.package_id.value)
+            ]
+            target_symbol := &target.symbols.data[
+                cast[usize](imported.declaration.symbol.value)
+            ]
+            if bytes_equal(
+                symbol_name_bytes(graph, target, target_symbol),
+                member_name,
+            ) {
+                return (imported.declaration, true)
+            }
+        }
+        empty: Symbol_Reference
+        return (empty, false)
+    }
+    empty: Symbol_Reference
+    return (empty, false)
+}
+
+// lookup_qualified_name performs the exact two-stage lookup for
+// `alias.member`: lexical lookup selects a file-local import alias, then the
+// alias's bound public-name span selects a target declaration. A package
+// declaration which shadows the requested alias is not treated as an import.
+// Deeper aggregate/nominal selection belongs to typed member resolution.
+pub lookup_qualified_name :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic: ^Semantic_Workspace,
+    consumer_package: compiler_workspace.Package_Id,
+    lexical_scope: Scope_Id,
+    alias_name, member_name: []u8,
+) -> (Symbol_Reference, bool) {
+    assert(compiler_workspace.package_id_valid(consumer_package) &&
+        cast[usize](consumer_package.value) < semantic.packages.length,
+        "qualified lookup package is invalid")
+    consumer := &semantic.packages.data[
+        cast[usize](consumer_package.value)
+    ]
+    (alias, found_alias) := lookup(
+        graph,
+        consumer,
+        lexical_scope,
+        alias_name,
+    )
+    if !found_alias || consumer.symbols.data[
+        cast[usize](alias.value)
+    ].kind != .import_alias {
+        empty: Symbol_Reference
+        return (empty, false)
+    }
+    return lookup_import_member(
+        graph,
+        semantic,
+        consumer_package,
+        alias,
+        member_name,
+    )
+}
+
 // destroy_semantic_workspace releases every table. The borrowed graph is not
 // touched and may be destroyed only after this call if diagnostics or dumps are
 // no longer needed.
@@ -1179,6 +1387,7 @@ pub destroy_semantic_workspace :: proc(semantic: ^Semantic_Workspace) {
     array.destroy(&semantic.diagnostics)
     array.destroy(&semantic.packages)
     semantic.failed = false
+    semantic.public_names_bound = false
 }
 
 append_bool :: proc(output: ^compiler_text.Builder, value: bool) {
@@ -1335,6 +1544,157 @@ pub dump_workspace_declarations :: proc(
                 cast[usize](edge.imported_package.value),
             )
             compiler_text.append_byte(output, cast[u8]('\n'))
+        }
+    }
+}
+
+// dump_workspace_public_names appends the stable cross-package name view after
+// the declaration dump. Public rows retain their defining Symbol_Id; imported
+// rows retain the local alias, canonical target package, and exact defining
+// Symbol_Id. Before writing each imported row the function repeats the public
+// lookup operation and asserts identity equality, so the migration output also
+// qualifies the lookup path rather than only the stored table layout.
+pub dump_workspace_public_names :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic: ^Semantic_Workspace,
+    output: ^compiler_text.Builder,
+) {
+    assert(semantic.public_names_bound,
+        "public name dump requires bound workspace names")
+    for package_index: usize = 0;
+        package_index < semantic.packages.length;
+        package_index += 1 {
+        semantic_package := &semantic.packages.data[package_index]
+        package_scope := &semantic_package.scopes.data[
+            cast[usize](semantic_package.package_scope.value)
+        ]
+        public_count: usize = 0
+        for symbol_index: usize = 0;
+            symbol_index < package_scope.symbols.length;
+            symbol_index += 1 {
+            symbol := &semantic_package.symbols.data[
+                cast[usize](package_scope.symbols.data[symbol_index].value)
+            ]
+            if symbol.visibility == .public {
+                public_count += 1
+            }
+        }
+
+        compiler_text.append_text(output, "public-name-set ")
+        compiler_text.append_unsigned(output, package_index)
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_unsigned(output, public_count)
+        compiler_text.append_byte(output, cast[u8]('\n'))
+        for symbol_index: usize = 0;
+            symbol_index < package_scope.symbols.length;
+            symbol_index += 1 {
+            symbol_id := package_scope.symbols.data[symbol_index]
+            symbol := &semantic_package.symbols.data[
+                cast[usize](symbol_id.value)
+            ]
+            if symbol.visibility != .public {
+                continue
+            }
+            compiler_text.append_text(output, "public-name ")
+            compiler_text.append_unsigned(output, package_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](symbol_id.value),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_bytes(
+                output,
+                symbol_name_bytes(graph, semantic_package, symbol),
+            )
+            compiler_text.append_byte(output, cast[u8]('\n'))
+        }
+
+        for binding_index: usize = 0;
+            binding_index < semantic_package.imports.length;
+            binding_index += 1 {
+            binding := &semantic_package.imports.data[binding_index]
+            edge := &graph.imports.data[binding.graph_import_index]
+            compiler_text.append_text(output, "imported-package ")
+            compiler_text.append_unsigned(output, package_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](binding.symbol.value),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](edge.imported_package.value),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                binding.imported_name_count,
+            )
+            compiler_text.append_byte(output, cast[u8]('\n'))
+
+            begin := binding.imported_name_begin
+            end := begin + binding.imported_name_count
+            for imported_index := begin;
+                imported_index < end;
+                imported_index += 1 {
+                imported := semantic_package.imported_names.data[
+                    imported_index
+                ]
+                target := &semantic.packages.data[
+                    cast[usize](imported.declaration.package_id.value)
+                ]
+                target_symbol := &target.symbols.data[
+                    cast[usize](imported.declaration.symbol.value)
+                ]
+                member_name := symbol_name_bytes(
+                    graph,
+                    target,
+                    target_symbol,
+                )
+                alias_symbol := &semantic_package.symbols.data[
+                    cast[usize](binding.symbol.value)
+                ]
+                (resolved, found) := lookup_qualified_name(
+                    graph,
+                    semantic,
+                    semantic_package.workspace_package,
+                    alias_symbol.scope,
+                    symbol_name_bytes(
+                        graph,
+                        semantic_package,
+                        alias_symbol,
+                    ),
+                    member_name,
+                )
+                assert(found &&
+                    resolved.package_id.value ==
+                        imported.declaration.package_id.value &&
+                    resolved.symbol.value == imported.declaration.symbol.value,
+                    "imported name dump disagrees with qualified lookup")
+
+                compiler_text.append_text(output, "imported-name ")
+                compiler_text.append_unsigned(output, package_index)
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_unsigned(
+                    output,
+                    cast[usize](binding.symbol.value),
+                )
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_unsigned(
+                    output,
+                    cast[usize](imported.declaration.package_id.value),
+                )
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_unsigned(
+                    output,
+                    cast[usize](imported.declaration.symbol.value),
+                )
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_bytes(output, member_name)
+                compiler_text.append_byte(output, cast[u8]('\n'))
+            }
         }
     }
 }
