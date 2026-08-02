@@ -553,8 +553,14 @@ declarations plus file-local import aliases through `workspace-declarations`.
 `workspace-public-names` adds direct unconditional public declarations and
 two-part qualified lookup through those aliases. `workspace-target-declarations`
 selects the package `when` frontier through target facts and demand-driven local
-scalar constant products, then rebuilds that public view. It is a build-tree
-development artifact, not an installed public command:
+scalar constant products, then rebuilds that public view.
+`workspace-interfaces` continues dependency-first through canonical
+predeclared/named scalar types, scalar constants, explicitly typed globals,
+fixed procedure signatures, and consumer-local imported type/value
+reconstruction. Aggregate, pointer/view, distinct, parametric, foreign/export,
+procedure-contract, and general constant/type forms remain an explicit staging
+failure. It is a build-tree development artifact, not an installed public
+command:
 
 ```sh
 cmake --build build --target \
@@ -576,8 +582,11 @@ build/draftc-next workspace-public-names tools/draftc_next \
 build/draftc-next workspace-target-declarations tools/draftc_next \
   --workspace . --core core --core-identity local-core-qualification \
   --target aarch64-macos
+build/draftc-next workspace-interfaces path/to/supported/root-package \
+  --workspace path/to/workspace --core path/to/core \
+  --core-identity local-core-qualification --target aarch64-macos
 ctest --test-dir build --output-on-failure \
-  -R '^draft_self_hosted_(frontend_units|lexer_differential|parser_differential|package_syntax_differential|workspace_syntax_differential|workspace_declarations_differential|workspace_public_names_differential|workspace_target_declarations_differential)$'
+  -R '^draft_self_hosted_(frontend_units|lexer_differential|parser_differential|package_syntax_differential|workspace_syntax_differential|workspace_declarations_differential|workspace_public_names_differential|workspace_target_declarations_differential|workspace_interfaces_differential)$'
 ```
 
 The single-file differential tests compare C++ `draftc lex`/`draftc syntax`
@@ -611,9 +620,16 @@ checks forward and chained local constants, target-derived named values, named
 feature strings, short-circuit validation, selected-branch constants feeding
 nested conditions, dormant unrelated constants, and fail-closed demanded
 arithmetic/cycles. Arithmetic and aggregate values, imported constants, types,
-and compile-time procedures remain outside this staging evaluator. Keep the
-bootstrap path until a replacement phase has this oracle; passing focused Draft
-tests alone is not replacement evidence.
+and compile-time procedures remain outside this target-selection evaluator. The
+typed-interface differential then compares canonical reachable scalar/procedure
+type rows, declaration classifications, scalar constant payloads, and imported
+consumer-local type/value shapes on all four targets. Its supported fixture
+includes forward local aliases, qualified imported aliases, typed globals, and
+fixed procedure signatures; aggregate types and local type cycles must fail at
+the exact self-hosting boundary. Do not infer support for the production
+interface's remaining type constructors or contracts from this narrow gate.
+Keep the bootstrap path until a replacement phase has this oracle; passing
+focused Draft tests alone is not replacement evidence.
 
 For a frontend performance investigation, build the two explicitly requested
 standalone targets from a Release CMake tree, then run the comparison on one

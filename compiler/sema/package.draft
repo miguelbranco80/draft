@@ -1,4 +1,4 @@
-// Deterministic declaration names and file-local import aliases.
+// Deterministic declarations, typed package interfaces, and local imports.
 //
 // This package is the first self-hosted semantic phase. It consumes one closed
 // compiler_workspace.Workspace_Graph and constructs the name set which later
@@ -11,11 +11,14 @@
 // exactly one branch to the same package scope without rebuilding an earlier
 // symbol. A subsequent operation projects the resulting direct public
 // declarations into source-ordered imported-name rows, giving `alias.member` a
-// stable cross-package Symbol_Reference without copying spellings. This is
-// intentionally a source declaration-name view, not the canonical typed
-// package interface: imported/general constants, ambiguous constant/type
-// classification, types, procedure contracts, and nominal members require
-// later semantic products.
+// stable cross-package Symbol_Reference without copying spellings. The first
+// typed continuation installs the predeclared scalar table, demands public
+// declaration/value products, builds canonical scalar/procedure interface type
+// graphs, and reconstructs each dependency row into consumer-local Type_Ids.
+// Its closed subset covers named scalar aliases/constants, explicit scalar
+// globals, and fixed Draft procedure signatures. Remaining constructors,
+// contracts, body checking, and general constant evaluation stay behind an
+// explicit diagnostic rather than receiving provisional semantics.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
 // ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
@@ -25,7 +28,9 @@
 // remain aligned with each nested Package.files table. Conditional regions,
 // selections, and compile-time product values borrow syntax from those same
 // files. Imported name spans are contiguous per Import_Binding and retain
-// references into the target package's stable Symbol table.
+// references into the target package's stable Symbol table. Interface type IDs
+// are package-independent within one producer graph; imported typed rows own no
+// allocation and contain only consumer Type_Ids plus graph/source-backed text.
 //
 // Collection follows the production C++ order exactly. All file scopes are
 // allocated before any names; imports occupy only their file scope; declarations
@@ -57,6 +62,8 @@ import compiler/workspace as compiler_workspace
 Invalid_Scope_Value :: ~cast[u32](0)
 Invalid_Symbol_Value :: ~cast[u32](0)
 Invalid_Compile_Time_Product_Value :: ~cast[u32](0)
+Invalid_Type_Value :: ~cast[u32](0)
+Invalid_Interface_Type_Value :: ~cast[u32](0)
 
 // Scope_Id is an index into one Semantic_Package.scopes table. The all-ones
 // value is the package scope's parent sentinel; IDs never cross package rows.
@@ -67,6 +74,22 @@ pub Scope_Id :: struct {
 // Symbol_Id is an index into one Semantic_Package.symbols table. The all-ones
 // value represents a diagnosed duplicate which published no binding.
 pub Symbol_Id :: struct {
+    value: u32,
+}
+
+// Type_Id is an index into one Semantic_Package.types table. Type IDs are
+// package-local even for builtins: a structural procedure reconstructed from
+// an imported interface must use the consumer's IDs, never the producer's.
+// The all-ones value is invalid. Rows are append-only and may move in storage;
+// semantic data therefore retains IDs rather than pointers.
+pub Type_Id :: struct {
+    value: u32,
+}
+
+// Interface_Type_Id is local to one package's canonical interface type graph.
+// It is never interchangeable with Type_Id. Import reconstructs each graph row
+// into the consumer Type_Id domain before a qualified name becomes typed.
+pub Interface_Type_Id :: struct {
     value: u32,
 }
 
@@ -97,6 +120,16 @@ pub symbol_id_valid :: proc(id: Symbol_Id) -> bool {
     return id.value != Invalid_Symbol_Value
 }
 
+// type_id_valid distinguishes a package type row from an unfinished semantic
+// product. Zero is a valid row containing the explicit invalid builtin.
+pub type_id_valid :: proc(id: Type_Id) -> bool {
+    return id.value != Invalid_Type_Value
+}
+
+interface_type_id_valid :: proc(id: Interface_Type_Id) -> bool {
+    return id.value != Invalid_Interface_Type_Value
+}
+
 compile_time_product_id_valid :: proc(id: Compile_Time_Product_Id) -> bool {
     return id.value != Invalid_Compile_Time_Product_Value
 }
@@ -107,6 +140,14 @@ invalid_scope_id :: proc() -> Scope_Id {
 
 invalid_symbol_id :: proc() -> Symbol_Id {
     return Symbol_Id{value = Invalid_Symbol_Value}
+}
+
+invalid_type_id :: proc() -> Type_Id {
+    return Type_Id{value = Invalid_Type_Value}
+}
+
+invalid_interface_type_id :: proc() -> Interface_Type_Id {
+    return Interface_Type_Id{value = Invalid_Interface_Type_Value}
 }
 
 invalid_compile_time_product_id :: proc() -> Compile_Time_Product_Id {
@@ -176,6 +217,10 @@ pub Symbol :: struct {
     foreign_provider_range: compiler_source.Source_Range,
     has_linker_name: bool,
     linker_name_range: compiler_source.Source_Range,
+    // type becomes valid only after this declaration's typed product
+    // completes. Source declaration collection never guesses an ambiguous
+    // `Name :: expression` result.
+    type: Type_Id,
 }
 
 // Scope owns direct Symbol_Ids in canonical declaration order. parent is
@@ -205,6 +250,8 @@ pub Import_Binding :: struct {
     graph_import_index: usize,
     imported_name_begin: usize,
     imported_name_count: usize,
+    typed_name_begin: usize,
+    typed_name_count: usize,
 }
 
 // Imported_Name is one file-local alias member. declaration points directly to
@@ -215,6 +262,162 @@ pub Import_Binding :: struct {
 pub Imported_Name :: struct {
     import_symbol: Symbol_Id,
     declaration: Symbol_Reference,
+}
+
+// Semantic_Type_Kind is the first self-hosted subset of the specification's
+// canonical type vocabulary. The order follows production TypeKind so
+// later rows can be added without changing the identity of an existing kind.
+// The distinct name is required because Draft already predeclares Type_Kind as
+// the public reflection result enum; reusing it would bind annotations to that
+// language type instead of this staging representation.
+// This slice constructs every predeclared scalar plus structural procedures;
+// aggregate, pointer/view, distinct, and parametric constructors remain a
+// diagnosed staging boundary even though their final enum cases are reserved.
+pub Semantic_Type_Kind :: enum u8 {
+    invalid_type,
+    void_type,
+    untyped_integer_type,
+    untyped_float_type,
+    boolean_type,
+    boolean_storage_type,
+    signed_integer_type,
+    unsigned_integer_type,
+    float_type,
+    rune_type,
+    endian_scalar_type,
+    raw_pointer_type,
+    c_string_type,
+    string_type,
+    pointer_type,
+    multi_pointer_type,
+    slice_type,
+    array_type,
+    tuple_type,
+    procedure_type,
+    simd_vector_type,
+    struct_type,
+    enumeration_type,
+    variant_type,
+    union_type,
+    distinct_named_type,
+    type_parameter_type,
+    meta_type_value,
+}
+
+// Semantic_Type is one package-local type identity. Scalar rows use name and
+// bit_width; endian rows additionally use element. Procedure rows use one
+// contiguous source-order span in Semantic_Package.type_members containing
+// fixed parameter types followed by the result type. name points only at a
+// process literal in this slice, so the row owns no allocation.
+pub Semantic_Type :: struct {
+    kind: Semantic_Type_Kind,
+    name: string,
+    bit_width: u32,
+    element: Type_Id,
+    member_begin: usize,
+    member_count: usize,
+}
+
+// Compile_Time_Value_Kind is the closed value domain currently publishable by
+// the self-hosted constant products. The five target categories remain
+// distinct until the general enum representation arrives. type_value names an
+// exact Type_Id and therefore never crosses a package interface directly.
+Compile_Time_Value_Kind :: enum u8 {
+    invalid,
+    boolean,
+    unsigned_integer,
+    string_value,
+    architecture,
+    operating_system,
+    abi,
+    byte_order,
+    object_format,
+    type_value,
+}
+
+// Compile_Time_Value owns no allocation. static_type and type_value use the
+// owning Semantic_Package's Type_Id domain. Text is either a process-lifetime
+// target/builtin spelling or a source-backed view selected by text_from_source;
+// the workspace graph outlives every value and imported copy.
+Compile_Time_Value :: struct {
+    kind: Compile_Time_Value_Kind,
+    static_type: Type_Id,
+    boolean: bool,
+    unsigned_integer: u64,
+    profile_text: string,
+    source_text: []u8,
+    text_from_source: bool,
+    type_value: Type_Id,
+}
+
+// Interface_Type is a package-independent graph row. element and the member
+// span refer only to the same package's interface type table. Rows are appended
+// lazily in public declaration discovery order, matching production's
+// InterfaceBuilder and installing a placeholder before following children so
+// later recursive nominal graphs have an honest seam.
+pub Interface_Type :: struct {
+    kind: Semantic_Type_Kind,
+    name: string,
+    bit_width: u32,
+    element: Interface_Type_Id,
+    member_begin: usize,
+    member_count: usize,
+}
+
+// Interface_Constant_Value is Compile_Time_Value after every Type_Id has been
+// rewritten into the package-independent interface graph. Text remains a
+// borrowed immutable spelling; no source coordinate or physical path enters
+// interface identity.
+Interface_Constant_Value :: struct {
+    kind: Compile_Time_Value_Kind,
+    static_type: Interface_Type_Id,
+    boolean: bool,
+    unsigned_integer: u64,
+    profile_text: string,
+    source_text: []u8,
+    text_from_source: bool,
+    type_value: Interface_Type_Id,
+}
+
+// Interface_Declaration is one public package binding in final selected source
+// order. source_symbol is retained only for this process-level migration oracle;
+// persistent interface identity is the declaration name plus its canonical
+// type/value graph. type is always valid on a completed interface row.
+pub Interface_Declaration :: struct {
+    source_symbol: Symbol_Id,
+    name: []u8,
+    kind: Symbol_Kind,
+    flags: Symbol_Flags,
+    type: Interface_Type_Id,
+    has_constant: bool,
+    constant: Interface_Constant_Value,
+}
+
+// Imported_Type memoizes one dependency Interface_Type_Id reconstruction in a
+// consumer package. target_package plus interface_type is the lookup key;
+// local_type belongs exclusively to the consumer. Rows are command-local and
+// never serialized or used for output ordering.
+Imported_Type :: struct {
+    target_package: compiler_workspace.Package_Id,
+    interface_type: Interface_Type_Id,
+    local_type: Type_Id,
+}
+
+// Imported_Typed_Name is the typed continuation of Imported_Name. declaration
+// retains producer source identity, interface_ordinal selects the exact public
+// interface row, kind preserves type declarations without manufacturing a
+// constant, and local_type/constant have already been reconstructed into the
+// consumer Type_Id domain. Rows follow import occurrence then producer public
+// declaration order.
+pub Imported_Typed_Name :: struct {
+    import_symbol: Symbol_Id,
+    declaration: Symbol_Reference,
+    interface_ordinal: usize,
+    name: []u8,
+    kind: Symbol_Kind,
+    local_type: Type_Id,
+    has_constant: bool,
+    constant: Compile_Time_Value,
 }
 
 // Conditional_Declaration is one unmaterialized package-level `when`. syntax
@@ -237,51 +440,32 @@ pub Conditional_Selection :: struct {
     select_true: bool,
 }
 
-// Target_Condition_Value_Kind is the intentionally closed scalar domain moved
-// by the current self-hosted constant products. The categorical kinds remain
-// distinct even though their payload is text: target.os and target.arch cannot
-// compare merely because two alternatives have different spellings.
-Target_Condition_Value_Kind :: enum u8 {
-    invalid,
-    boolean,
-    unsigned_integer,
-    string_value,
-    architecture,
-    operating_system,
-    abi,
-    byte_order,
-    object_format,
-}
-
-// Target_Condition_Value owns no allocation. A textual value is either a
-// profile literal (profile_text) or a source-backed contextual/string spelling
-// (source_text); text_from_source selects the active borrowed view. Source
-// views borrow the Workspace_Graph for the complete semantic workspace
-// lifetime. Values are copied into completed constant products.
-Target_Condition_Value :: struct {
-    kind: Target_Condition_Value_Kind,
-    boolean: bool,
-    unsigned_integer: u64,
-    profile_text: string,
-    source_text: []u8,
-    text_from_source: bool,
-}
-
 // Compile_Time_Product_Kind distinguishes a named scalar constant value from a
-// package branch decision. Conditions use condition_index; constants use
-// symbol. The inactive identity field is invalid/zero and has no meaning.
+// package branch decision or declaration type. Conditions use condition_index;
+// declarations and constants use symbol. Declaration rows remain dormant until
+// interface construction demands a public binding or one of its dependencies.
 Compile_Time_Product_Kind :: enum u8 {
     condition,
+    declaration,
     constant,
+}
+
+// Compile_Time_Use selects the staging diagnostic at the one shared constant
+// evaluator boundary. It is an enum rather than a boolean because the caller
+// is choosing a semantic consumer, not toggling an implementation detail.
+Compile_Time_Use :: enum u8 {
+    target_selection,
+    typed_interface,
 }
 
 // Compile_Time_Product_State is monotonic. dormant constant rows preserve the
 // production source-order index without evaluating unrelated constants.
 // waiting rows are demanded and may name one exact unpublished prerequisite;
-// complete rows own one immutable scalar value or selected branch; error is
-// terminal. A blocked attempt records only its first missing value, then is
-// retried after that product completes, so the single dependency field is the
-// complete ready-edge set for the current attempt rather than hidden recursion.
+// complete rows own one immutable scalar value, declaration classification, or
+// selected branch; error is terminal. A blocked attempt records only its first
+// missing value, then is retried after that product completes. The single
+// dependency field is the complete ready-edge set for the current attempt
+// rather than hidden recursion.
 Compile_Time_Product_State :: enum u8 {
     dormant,
     waiting,
@@ -293,15 +477,16 @@ Compile_Time_Product_State :: enum u8 {
 // compile-time table. Conditions are appended in discovered site order before
 // currently visible constant candidates; selected branches extend that same
 // order. dependency names another row in this table and never a Symbol_Id from
-// another package. value is meaningful only for a completed constant product.
-// The row owns no allocation and may move when its Dynamic table grows.
+// another package. value is meaningful for a completed constant and may be
+// retained by its declaration product; declaration type identity lives on the
+// Symbol. The row owns no allocation and may move when its Dynamic table grows.
 Compile_Time_Product :: struct {
     kind: Compile_Time_Product_Kind,
     state: Compile_Time_Product_State,
     symbol: Symbol_Id,
     condition_index: usize,
     dependency: Compile_Time_Product_Id,
-    value: Target_Condition_Value,
+    value: Compile_Time_Value,
 }
 
 // Semantic_Package owns every collected row for one aligned workspace package.
@@ -315,6 +500,14 @@ pub Semantic_Package :: struct {
     files: array.Dynamic[Semantic_File],
     imports: array.Dynamic[Import_Binding],
     imported_names: array.Dynamic[Imported_Name],
+    types: array.Dynamic[Semantic_Type],
+    type_members: array.Dynamic[Type_Id],
+    imported_types: array.Dynamic[Imported_Type],
+    imported_typed_names: array.Dynamic[Imported_Typed_Name],
+    interface_types: array.Dynamic[Interface_Type],
+    interface_type_members: array.Dynamic[Interface_Type_Id],
+    interface_type_translations: array.Dynamic[Interface_Type_Id],
+    interface_declarations: array.Dynamic[Interface_Declaration],
     conditional_declarations: array.Dynamic[Conditional_Declaration],
     conditional_selections: array.Dynamic[Conditional_Selection],
     compile_time_products: array.Dynamic[Compile_Time_Product],
@@ -322,6 +515,7 @@ pub Semantic_Package :: struct {
     indexed_compile_time_symbol_count: usize,
     unconditional_symbol_count: usize,
     graph_import_edges: array.Dynamic[usize],
+    typed_interface_built: bool,
 }
 
 Diagnostic_Code :: enum u8 {
@@ -333,6 +527,8 @@ Diagnostic_Code :: enum u8 {
     grouped_type,
     grouped_procedure,
     unsupported_target_condition,
+    unsupported_typed_interface,
+    cyclic_typed_interface,
 }
 
 // Semantic_Diagnostic is one source-backed row in deterministic collection
@@ -359,6 +555,7 @@ pub Semantic_Workspace :: struct {
     failed: bool,
     target_declarations_materialized: bool,
     public_names_bound: bool,
+    typed_interfaces_built: bool,
 }
 
 Collection_Context :: struct {
@@ -958,6 +1155,7 @@ collect_declaration :: proc(
                 collection_context.has_foreign_provider
             symbol.foreign_provider_range =
                 collection_context.foreign_provider_range
+            symbol.type = invalid_type_id()
             if flags.is_foreign || flags.exported {
                 symbol.has_linker_name = true
                 symbol.linker_name_range = token.range
@@ -1257,6 +1455,310 @@ collect_package :: proc(collector: ^Collector) {
         collector.semantic_package.symbols.length
 }
 
+// append_semantic_type assigns the next stable package-local Type_Id. The
+// caller supplies a complete plain row and retains no pointer across growth.
+append_semantic_type :: proc(
+    semantic_package: ^Semantic_Package,
+    semantic_type: Semantic_Type,
+) -> Type_Id {
+    assert(semantic_package.types.length < cast[usize](Invalid_Type_Value),
+        "semantic type table exceeds u32 identity space")
+    id := Type_Id{value = cast[u32](semantic_package.types.length)}
+    array.append(&semantic_package.types, semantic_type)
+    return id
+}
+
+// append_builtin_type installs one predeclared scalar or scalar-like row. Its
+// element is invalid unless the caller later fills an endian/compiler-enum
+// relationship. Builtin names are process literals and require no cleanup.
+append_builtin_type :: proc(
+    semantic_package: ^Semantic_Package,
+    kind: Semantic_Type_Kind,
+    name: string,
+    bit_width: u32 = 0,
+) -> Type_Id {
+    return append_semantic_type(
+        semantic_package,
+        Semantic_Type{
+            kind = kind,
+            name = name,
+            bit_width = bit_width,
+            element = invalid_type_id(),
+        },
+    )
+}
+
+// append_endian_type records the native scalar behind one byte-order-specific
+// storage identity. The spelling is still retained for deterministic dumps and
+// direct predeclared lookup.
+append_endian_type :: proc(
+    semantic_package: ^Semantic_Package,
+    name: string,
+    native: Type_Id,
+    bit_width: u32,
+) {
+    append_semantic_type(
+        semantic_package,
+        Semantic_Type{
+            kind = .endian_scalar_type,
+            name = name,
+            bit_width = bit_width,
+            element = native,
+        },
+    )
+}
+
+// init_semantic_types reproduces the production TypeStore's fixed builtin
+// order. Process-local numeric equality is not persistent identity, but keeping
+// the same order makes debugging and later differential expansion direct. All
+// four current targets use 64-bit natural/pointer integers.
+init_semantic_types :: proc(semantic_package: ^Semantic_Package) {
+    array.init(&semantic_package.types)
+    array.init(&semantic_package.type_members)
+    array.init(&semantic_package.imported_types)
+    array.init(&semantic_package.imported_typed_names)
+    array.init(&semantic_package.interface_types)
+    array.init(&semantic_package.interface_type_members)
+    array.init(&semantic_package.interface_type_translations)
+    array.init(&semantic_package.interface_declarations)
+
+    append_builtin_type(semantic_package, .invalid_type, "<invalid>")
+    append_builtin_type(semantic_package, .void_type, "<void>")
+    append_builtin_type(
+        semantic_package,
+        .untyped_integer_type,
+        "<untyped integer>",
+    )
+    append_builtin_type(
+        semantic_package,
+        .untyped_float_type,
+        "<untyped float>",
+    )
+    append_builtin_type(semantic_package, .boolean_type, "bool", 8)
+    append_builtin_type(semantic_package, .boolean_storage_type, "b8", 8)
+    append_builtin_type(semantic_package, .boolean_storage_type, "b16", 16)
+    append_builtin_type(semantic_package, .boolean_storage_type, "b32", 32)
+    append_builtin_type(semantic_package, .boolean_storage_type, "b64", 64)
+    append_builtin_type(semantic_package, .signed_integer_type, "i8", 8)
+    append_builtin_type(semantic_package, .signed_integer_type, "i16", 16)
+    i32_type := append_builtin_type(
+        semantic_package,
+        .signed_integer_type,
+        "i32",
+        32,
+    )
+    append_builtin_type(semantic_package, .signed_integer_type, "i64", 64)
+    append_builtin_type(semantic_package, .signed_integer_type, "i128", 128)
+    u8_type := append_builtin_type(
+        semantic_package,
+        .unsigned_integer_type,
+        "u8",
+        8,
+    )
+    u16_type := append_builtin_type(
+        semantic_package,
+        .unsigned_integer_type,
+        "u16",
+        16,
+    )
+    u32_type := append_builtin_type(
+        semantic_package,
+        .unsigned_integer_type,
+        "u32",
+        32,
+    )
+    u64_type := append_builtin_type(
+        semantic_package,
+        .unsigned_integer_type,
+        "u64",
+        64,
+    )
+    u128_type := append_builtin_type(
+        semantic_package,
+        .unsigned_integer_type,
+        "u128",
+        128,
+    )
+    append_builtin_type(semantic_package, .signed_integer_type, "int", 64)
+    uint_type := append_builtin_type(
+        semantic_package,
+        .unsigned_integer_type,
+        "uint",
+        64,
+    )
+    append_builtin_type(semantic_package, .signed_integer_type, "isize", 64)
+    usize_type := append_builtin_type(
+        semantic_package,
+        .unsigned_integer_type,
+        "usize",
+        64,
+    )
+    append_builtin_type(
+        semantic_package,
+        .unsigned_integer_type,
+        "uintptr",
+        64,
+    )
+    f16_type := append_builtin_type(semantic_package, .float_type, "f16", 16)
+    f32_type := append_builtin_type(semantic_package, .float_type, "f32", 32)
+    f64_type := append_builtin_type(semantic_package, .float_type, "f64", 64)
+    append_semantic_type(
+        semantic_package,
+        Semantic_Type{
+            kind = .rune_type,
+            name = "rune",
+            bit_width = 32,
+            element = i32_type,
+        },
+    )
+
+    append_endian_type(semantic_package, "i16le", Type_Id{value = 10}, 16)
+    append_endian_type(semantic_package, "i16be", Type_Id{value = 10}, 16)
+    append_endian_type(semantic_package, "i32le", i32_type, 32)
+    append_endian_type(semantic_package, "i32be", i32_type, 32)
+    append_endian_type(semantic_package, "i64le", Type_Id{value = 12}, 64)
+    append_endian_type(semantic_package, "i64be", Type_Id{value = 12}, 64)
+    append_endian_type(semantic_package, "i128le", Type_Id{value = 13}, 128)
+    append_endian_type(semantic_package, "i128be", Type_Id{value = 13}, 128)
+    append_endian_type(semantic_package, "u16le", u16_type, 16)
+    append_endian_type(semantic_package, "u16be", u16_type, 16)
+    append_endian_type(semantic_package, "u32le", u32_type, 32)
+    append_endian_type(semantic_package, "u32be", u32_type, 32)
+    append_endian_type(semantic_package, "u64le", u64_type, 64)
+    append_endian_type(semantic_package, "u64be", u64_type, 64)
+    append_endian_type(semantic_package, "u128le", u128_type, 128)
+    append_endian_type(semantic_package, "u128be", u128_type, 128)
+    append_endian_type(semantic_package, "f16le", f16_type, 16)
+    append_endian_type(semantic_package, "f16be", f16_type, 16)
+    append_endian_type(semantic_package, "f32le", f32_type, 32)
+    append_endian_type(semantic_package, "f32be", f32_type, 32)
+    append_endian_type(semantic_package, "f64le", f64_type, 64)
+    append_endian_type(semantic_package, "f64be", f64_type, 64)
+
+    append_builtin_type(semantic_package, .raw_pointer_type, "rawptr", 64)
+    append_builtin_type(semantic_package, .c_string_type, "cstring", 64)
+    append_builtin_type(semantic_package, .string_type, "string")
+    append_builtin_type(semantic_package, .meta_type_value, "type")
+    append_semantic_type(semantic_package, Semantic_Type{
+        kind = .enumeration_type,
+        name = "Type_Kind",
+        bit_width = 8,
+        element = u8_type,
+    })
+    append_semantic_type(semantic_package, Semantic_Type{
+        kind = .enumeration_type,
+        name = "Type_Byte_Order",
+        bit_width = 8,
+        element = u8_type,
+    })
+    append_semantic_type(semantic_package, Semantic_Type{
+        kind = .enumeration_type,
+        name = "Calling_Convention",
+        bit_width = 8,
+        element = u8_type,
+    })
+    append_semantic_type(semantic_package, Semantic_Type{
+        kind = .enumeration_type,
+        name = "Target_Architecture",
+        bit_width = 8,
+        element = u8_type,
+    })
+    append_semantic_type(semantic_package, Semantic_Type{
+        kind = .enumeration_type,
+        name = "Target_Operating_System",
+        bit_width = 8,
+        element = u8_type,
+    })
+    append_semantic_type(semantic_package, Semantic_Type{
+        kind = .enumeration_type,
+        name = "Target_ABI",
+        bit_width = 8,
+        element = u8_type,
+    })
+    append_semantic_type(semantic_package, Semantic_Type{
+        kind = .enumeration_type,
+        name = "Target_Byte_Order",
+        bit_width = 8,
+        element = u8_type,
+    })
+    append_semantic_type(semantic_package, Semantic_Type{
+        kind = .enumeration_type,
+        name = "Target_Object_Format",
+        bit_width = 8,
+        element = u8_type,
+    })
+    assert(semantic_package.types.length == 62,
+        "self-hosted builtin type order diverged from production")
+    assert(uint_type.value == 20 && usize_type.value == 22,
+        "natural integer builtin IDs diverged from production")
+}
+
+// find_builtin_type performs exact predeclared lookup. byte is a true alias of
+// u8 and therefore returns the existing row rather than creating a second type.
+find_builtin_type :: proc(
+    semantic_package: ^Semantic_Package,
+    name: []u8,
+) -> (Type_Id, bool) {
+    if bytes_equal_text(name, "byte") {
+        return (Type_Id{value = 14}, true)
+    }
+    for index: usize = 0; index < semantic_package.types.length; index += 1 {
+        candidate := &semantic_package.types.data[index]
+        if strings_equal(candidate.name, "<invalid>") ||
+            strings_equal(candidate.name, "<void>") ||
+            strings_equal(candidate.name, "<untyped integer>") ||
+            strings_equal(candidate.name, "<untyped float>") {
+            continue
+        }
+        if bytes_equal_text(name, candidate.name) {
+            return (Type_Id{value = cast[u32](index)}, true)
+        }
+    }
+    return (invalid_type_id(), false)
+}
+
+// intern_procedure_type returns the canonical structural identity for fixed
+// parameter types followed by one result type. The direct scan is deliberate:
+// interface fixtures are small, ordering stays inspectable, and a measured
+// deterministic index can later replace only this lookup mechanism.
+intern_procedure_type :: proc(
+    semantic_package: ^Semantic_Package,
+    members: []Type_Id,
+) -> Type_Id {
+    assert(len(members) != 0, "procedure type has no result member")
+    for index: usize = 0; index < semantic_package.types.length; index += 1 {
+        candidate := &semantic_package.types.data[index]
+        if candidate.kind != .procedure_type ||
+            candidate.member_count != len(members) {
+            continue
+        }
+        equal := true
+        for member_index: usize = 0;
+            member_index < len(members);
+            member_index += 1 {
+            if semantic_package.type_members.data[
+                    candidate.member_begin + member_index
+                ].value != members[member_index].value {
+                equal = false
+                break
+            }
+        }
+        if equal {
+            return Type_Id{value = cast[u32](index)}
+        }
+    }
+    begin := semantic_package.type_members.length
+    for member in members {
+        array.append(&semantic_package.type_members, member)
+    }
+    return append_semantic_type(semantic_package, Semantic_Type{
+        kind = .procedure_type,
+        element = invalid_type_id(),
+        member_begin = begin,
+        member_count = len(members),
+    })
+}
+
 init_semantic_package :: proc(
     semantic_package: ^Semantic_Package,
     id: compiler_workspace.Package_Id,
@@ -1268,6 +1770,7 @@ init_semantic_package :: proc(
     array.init(&semantic_package.files)
     array.init(&semantic_package.imports)
     array.init(&semantic_package.imported_names)
+    init_semantic_types(semantic_package)
     array.init(&semantic_package.conditional_declarations)
     array.init(&semantic_package.conditional_selections)
     array.init(&semantic_package.compile_time_products)
@@ -1275,6 +1778,7 @@ init_semantic_package :: proc(
     semantic_package.indexed_compile_time_symbol_count = 0
     semantic_package.unconditional_symbol_count = 0
     array.init(&semantic_package.graph_import_edges)
+    semantic_package.typed_interface_built = false
 }
 
 destroy_semantic_package :: proc(semantic_package: ^Semantic_Package) {
@@ -1284,6 +1788,14 @@ destroy_semantic_package :: proc(semantic_package: ^Semantic_Package) {
         array.destroy(&semantic_package.scopes.data[index].symbols)
     }
     array.destroy(&semantic_package.graph_import_edges)
+    array.destroy(&semantic_package.interface_declarations)
+    array.destroy(&semantic_package.interface_type_translations)
+    array.destroy(&semantic_package.interface_type_members)
+    array.destroy(&semantic_package.interface_types)
+    array.destroy(&semantic_package.imported_typed_names)
+    array.destroy(&semantic_package.imported_types)
+    array.destroy(&semantic_package.type_members)
+    array.destroy(&semantic_package.types)
     array.destroy(&semantic_package.compile_time_products)
     array.destroy(&semantic_package.conditional_selections)
     array.destroy(&semantic_package.conditional_declarations)
@@ -1297,6 +1809,7 @@ destroy_semantic_package :: proc(semantic_package: ^Semantic_Package) {
     semantic_package.indexed_condition_count = 0
     semantic_package.indexed_compile_time_symbol_count = 0
     semantic_package.unconditional_symbol_count = 0
+    semantic_package.typed_interface_built = false
 }
 
 // collect_workspace_declarations constructs every package row, indexes graph
@@ -1313,6 +1826,7 @@ pub collect_workspace_declarations :: proc(
     semantic.failed = false
     semantic.target_declarations_materialized = false
     semantic.public_names_bound = false
+    semantic.typed_interfaces_built = false
     if graph.failed {
         semantic.failed = true
         return false
@@ -1436,9 +1950,11 @@ pub select_builtin_target_facts :: proc(
     return (empty, false)
 }
 
-invalid_target_condition_value :: proc() -> Target_Condition_Value {
-    value: Target_Condition_Value
+invalid_compile_time_value :: proc() -> Compile_Time_Value {
+    value: Compile_Time_Value
     value.kind = .invalid
+    value.static_type = invalid_type_id()
+    value.type_value = invalid_type_id()
     return value
 }
 
@@ -1478,11 +1994,31 @@ find_constant_product :: proc(
     return (invalid_compile_time_product_id(), false)
 }
 
+// find_declaration_product returns the stable type/classification producer for
+// one package binding. Every visible package symbol receives exactly one row
+// before either the condition or interface scheduler can demand it.
+find_declaration_product :: proc(
+    semantic_package: ^Semantic_Package,
+    symbol: Symbol_Id,
+) -> (Compile_Time_Product_Id, bool) {
+    for index: usize = 0;
+        index < semantic_package.compile_time_products.length;
+        index += 1 {
+        product := &semantic_package.compile_time_products.data[index]
+        if product.kind == .declaration &&
+            product.symbol.value == symbol.value {
+            return (Compile_Time_Product_Id{value = cast[u32](index)}, true)
+        }
+    }
+    return (invalid_compile_time_product_id(), false)
+}
+
 // index_visible_compile_time_products extends the package product table after
 // initial collection and after each selected branch. Newly reachable condition
-// sites precede newly visible constants, matching the production work graph.
-// Constant candidates remain dormant until an expression demands them: this
-// narrow evaluator must not reject an unrelated valid Draft constant merely
+// sites precede newly visible declaration and constant rows, matching the
+// production work graph's source-mutation frontier. Both later product kinds
+// remain dormant until a condition or typed public interface demands them: the
+// narrow staging evaluator must not reject an unrelated declaration merely
 // because its aggregate, type, or procedural vocabulary has not moved yet.
 index_visible_compile_time_products :: proc(
     semantic_package: ^Semantic_Package,
@@ -1504,17 +2040,26 @@ index_visible_compile_time_products :: proc(
         symbol_index := semantic_package.indexed_compile_time_symbol_count
         semantic_package.indexed_compile_time_symbol_count += 1
         symbol := &semantic_package.symbols.data[symbol_index]
-        if symbol.scope.value != semantic_package.package_scope.value ||
-            (symbol.kind != .constant &&
-                symbol.kind != .unresolved_declaration) {
+        if symbol.scope.value != semantic_package.package_scope.value {
             continue
         }
-        product: Compile_Time_Product
-        product.kind = .constant
-        product.state = .dormant
-        product.symbol = Symbol_Id{value = cast[u32](symbol_index)}
-        product.dependency = invalid_compile_time_product_id()
-        append_compile_time_product(semantic_package, product)
+        symbol_id := Symbol_Id{value = cast[u32](symbol_index)}
+        declaration_product: Compile_Time_Product
+        declaration_product.kind = .declaration
+        declaration_product.state = .dormant
+        declaration_product.symbol = symbol_id
+        declaration_product.dependency = invalid_compile_time_product_id()
+        append_compile_time_product(semantic_package, declaration_product)
+
+        if symbol.kind == .constant ||
+            symbol.kind == .unresolved_declaration || symbol.kind == .type {
+            constant_product: Compile_Time_Product
+            constant_product.kind = .constant
+            constant_product.state = .dormant
+            constant_product.symbol = symbol_id
+            constant_product.dependency = invalid_compile_time_product_id()
+            append_compile_time_product(semantic_package, constant_product)
+        }
     }
 }
 
@@ -1524,7 +2069,7 @@ index_visible_compile_time_products :: proc(
 completed_constant_value :: proc(
     semantic_package: ^Semantic_Package,
     symbol: Symbol_Id,
-) -> (Target_Condition_Value, bool) {
+) -> (Compile_Time_Value, bool) {
     (product_id, found) := find_constant_product(semantic_package, symbol)
     if found {
         product := &semantic_package.compile_time_products.data[
@@ -1534,7 +2079,7 @@ completed_constant_value :: proc(
             return (product.value, true)
         }
     }
-    return (invalid_target_condition_value(), false)
+    return (invalid_compile_time_value(), false)
 }
 
 // demand_constant_product changes exactly one dormant constant to waiting and
@@ -1558,8 +2103,28 @@ demand_constant_product :: proc(
     return (product_id, true)
 }
 
+// demand_declaration_product activates one public declaration or local
+// dependency. Publication is monotonic; an already completed/error row retains
+// its terminal state and identity.
+demand_declaration_product :: proc(
+    semantic_package: ^Semantic_Package,
+    symbol: Symbol_Id,
+) -> (Compile_Time_Product_Id, bool) {
+    (product_id, found) := find_declaration_product(semantic_package, symbol)
+    if !found {
+        return (invalid_compile_time_product_id(), false)
+    }
+    product := &semantic_package.compile_time_products.data[
+        cast[usize](product_id.value)
+    ]
+    if product.state == .dormant {
+        product.state = .waiting
+    }
+    return (product_id, true)
+}
+
 target_condition_text_equal :: proc(
-    left, right: Target_Condition_Value,
+    left, right: Compile_Time_Value,
 ) -> bool {
     if left.text_from_source {
         if right.text_from_source {
@@ -1574,7 +2139,7 @@ target_condition_text_equal :: proc(
 }
 
 target_condition_values_equal :: proc(
-    left, right: Target_Condition_Value,
+    left, right: Compile_Time_Value,
 ) -> bool {
     if left.kind != right.kind {
         return false
@@ -1596,7 +2161,7 @@ target_condition_values_equal :: proc(
 // enum vocabularies before equality is evaluated. Comparing target.os with
 // `.aarch64`, for example, is a semantic error rather than a false condition.
 target_alternative_known :: proc(
-    kind: Target_Condition_Value_Kind,
+    kind: Compile_Time_Value_Kind,
     spelling: []u8,
 ) -> bool {
     switch kind {
@@ -1687,42 +2252,163 @@ target_member_name :: proc(
     )
 }
 
+// lookup_imported_typed_name resolves one already-tokenized two-part qualified
+// name. Returning the plain row by value copies no ownership: every text/type
+// field remains a view or stable ID owned by the semantic workspace.
+lookup_imported_typed_name :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    alias_name, member_name: []u8,
+) -> (Imported_Typed_Name, bool) {
+    file_scope := invalid_scope_id()
+    for index: usize = 0; index < semantic_package.files.length; index += 1 {
+        semantic_file := semantic_package.files.data[index]
+        if semantic_file.file_index == file_index {
+            file_scope = semantic_file.scope
+            break
+        }
+    }
+    if !scope_id_valid(file_scope) {
+        empty: Imported_Typed_Name
+        return (empty, false)
+    }
+    (alias_symbol, found_alias) := lookup_direct(
+        graph,
+        semantic_package,
+        file_scope,
+        alias_name,
+    )
+    if !found_alias {
+        empty: Imported_Typed_Name
+        return (empty, false)
+    }
+    for index: usize = 0;
+        index < semantic_package.imported_typed_names.length;
+        index += 1 {
+        imported := semantic_package.imported_typed_names.data[index]
+        if imported.import_symbol.value == alias_symbol.value &&
+            bytes_equal(imported.name, member_name) {
+            return (imported, true)
+        }
+    }
+    empty: Imported_Typed_Name
+    return (empty, false)
+}
+
+// imported_typed_constant resolves one exact two-part `alias.member` against
+// the consumer rows already reconstructed from a dependency interface. A type
+// declaration is projected as a local meta-type value; an ordinary constant is
+// copied from its reconstructed row. During target selection these rows are
+// still empty, so both remain an explicit later-phase boundary. No dependency
+// syntax or producer Type_Id is consulted here.
+imported_typed_constant :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    member_id: compiler_syntax.Node_Id,
+) -> (Compile_Time_Value, bool) {
+    member := compiler_syntax.syntax_tree_node(tree, member_id)
+    if member.kind != .member_expression || member.child_count != 1 ||
+        member.token_end == 0 {
+        return (invalid_compile_time_value(), false)
+    }
+    children := compiler_syntax.syntax_tree_children(tree, member_id)
+    base := compiler_syntax.syntax_tree_node(tree, children[0])
+    if base.kind != .name_expression {
+        return (invalid_compile_time_value(), false)
+    }
+    alias_name := node_source_bytes(
+        graph,
+        semantic_package,
+        file_index,
+        tree,
+        children[0],
+    )
+    final_token := &tree.tokens.data[cast[usize](member.token_end - 1)]
+    if !token_is_contextual_name(final_token.kind) {
+        return (invalid_compile_time_value(), false)
+    }
+    member_name := source_bytes(
+        graph,
+        semantic_package.workspace_package,
+        file_index,
+        final_token.range,
+    )
+
+    (imported, found_imported) := lookup_imported_typed_name(
+        graph,
+        semantic_package,
+        file_index,
+        alias_name,
+        member_name,
+    )
+    if found_imported {
+        if imported.kind == .type {
+            value: Compile_Time_Value
+            value.kind = .type_value
+            value.static_type = Type_Id{value = 53}
+            value.type_value = imported.local_type
+            return (value, true)
+        }
+        if imported.has_constant {
+            return (imported.constant, true)
+        }
+    }
+    return (invalid_compile_time_value(), false)
+}
+
 // target_field_value projects one recognized member spelling into its distinct
 // semantic category. An unknown member leaves kind invalid so the enclosing
 // condition fails at its source range without inventing a target fact.
 target_field_value :: proc(
+    semantic_package: ^Semantic_Package,
     name: []u8,
     facts: ^Target_Facts,
-) -> Target_Condition_Value {
-    value: Target_Condition_Value
+) -> Compile_Time_Value {
+    value: Compile_Time_Value
+    value.static_type = invalid_type_id()
+    value.type_value = invalid_type_id()
     if bytes_equal_text(name, "identity") {
         value.kind = .string_value
+        value.static_type = Type_Id{value = 52}
         value.profile_text = facts.identity
     } else if bytes_equal_text(name, "arch") {
         value.kind = .architecture
+        value.static_type = Type_Id{value = 57}
         value.profile_text = facts.arch
     } else if bytes_equal_text(name, "os") {
         value.kind = .operating_system
+        value.static_type = Type_Id{value = 58}
         value.profile_text = facts.os
     } else if bytes_equal_text(name, "abi") {
         value.kind = .abi
+        value.static_type = Type_Id{value = 59}
         value.profile_text = facts.abi
     } else if bytes_equal_text(name, "byte_order") {
         value.kind = .byte_order
+        value.static_type = Type_Id{value = 60}
         value.profile_text = facts.byte_order
     } else if bytes_equal_text(name, "object_format") {
         value.kind = .object_format
+        value.static_type = Type_Id{value = 61}
         value.profile_text = facts.object_format
     } else if bytes_equal_text(name, "file_tag") {
         value.kind = .string_value
+        value.static_type = Type_Id{value = 52}
         value.profile_text = facts.file_tag
     } else if bytes_equal_text(name, "pointer_bits") {
         value.kind = .unsigned_integer
+        value.static_type = Type_Id{value = 20}
         value.unsigned_integer = facts.pointer_bits
     } else if bytes_equal_text(name, "page_size") {
         value.kind = .unsigned_integer
+        value.static_type = Type_Id{value = 22}
         value.unsigned_integer = facts.page_size
     }
+    assert(semantic_package.types.length == 62,
+        "target facts require the canonical builtin type prefix")
     return value
 }
 
@@ -1861,6 +2547,105 @@ binary_operator :: proc(
     return (.end_of_file, false)
 }
 
+// resolve_named_type_syntax maps the only type syntax admitted by this first
+// typed-interface slice: one predeclared/local name or one exact import member.
+// Local aliases consume only completed constant products and report the first
+// unpublished Symbol_Id through blocked_symbol. Qualified names consume the
+// consumer-local reconstruction built from a dependency interface; producer
+// Type_Ids never cross this boundary.
+resolve_named_type_syntax :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    id: compiler_syntax.Node_Id,
+    blocked_symbol: ^Symbol_Id,
+) -> (Type_Id, bool) {
+    node := compiler_syntax.syntax_tree_node(tree, id)
+    if node.kind != .named_type {
+        return (invalid_type_id(), false)
+    }
+    token_count := node.token_end - node.token_begin
+    if token_count == 1 {
+        token := &tree.tokens.data[cast[usize](node.token_begin)]
+        if !token_is_contextual_name(token.kind) {
+            return (invalid_type_id(), false)
+        }
+        name := source_bytes(
+            graph,
+            semantic_package.workspace_package,
+            file_index,
+            token.range,
+        )
+        (builtin, found_builtin) := find_builtin_type(semantic_package, name)
+        if found_builtin {
+            return (builtin, true)
+        }
+        (symbol_id, found_symbol) := lookup_direct(
+            graph,
+            semantic_package,
+            semantic_package.package_scope,
+            name,
+        )
+        if !found_symbol {
+            return (invalid_type_id(), false)
+        }
+        symbol := &semantic_package.symbols.data[cast[usize](symbol_id.value)]
+        if symbol.kind != .type && symbol.kind != .unresolved_declaration &&
+            symbol.kind != .constant {
+            return (invalid_type_id(), false)
+        }
+        (value, complete) := completed_constant_value(
+            semantic_package,
+            symbol_id,
+        )
+        if complete && value.kind == .type_value {
+            return (value.type_value, true)
+        }
+        if !symbol_id_valid(blocked_symbol^) {
+            blocked_symbol^ = symbol_id
+        }
+        return (invalid_type_id(), false)
+    }
+    if token_count != 3 {
+        return (invalid_type_id(), false)
+    }
+    first := &tree.tokens.data[cast[usize](node.token_begin)]
+    separator := &tree.tokens.data[cast[usize](node.token_begin + 1)]
+    last := &tree.tokens.data[cast[usize](node.token_begin + 2)]
+    if !token_is_contextual_name(first.kind) || separator.kind != .dot ||
+        !token_is_contextual_name(last.kind) {
+        return (invalid_type_id(), false)
+    }
+    alias_name := source_bytes(
+        graph,
+        semantic_package.workspace_package,
+        file_index,
+        first.range,
+    )
+    member_name := source_bytes(
+        graph,
+        semantic_package.workspace_package,
+        file_index,
+        last.range,
+    )
+    (imported, found_imported) := lookup_imported_typed_name(
+        graph,
+        semantic_package,
+        file_index,
+        alias_name,
+        member_name,
+    )
+    if found_imported && imported.kind == .type {
+        return (imported.local_type, true)
+    }
+    if found_imported && imported.has_constant &&
+        imported.constant.kind == .type_value {
+        return (imported.constant.type_value, true)
+    }
+    return (invalid_type_id(), false)
+}
+
 // evaluate_target_condition_expression checks one syntax expression against
 // the closed scalar domain. expected supplies contextual enum type information
 // to `.alternative` nodes. A name consumes only a completed local constant
@@ -1879,19 +2664,38 @@ evaluate_target_condition_expression :: proc(
     id: compiler_syntax.Node_Id,
     facts: ^Target_Facts,
     blocked_symbol: ^Symbol_Id,
-    expected: Target_Condition_Value_Kind = .invalid,
-) -> Target_Condition_Value {
+    expected: Compile_Time_Value_Kind = .invalid,
+) -> Compile_Time_Value {
     node := compiler_syntax.syntax_tree_node(tree, id)
     children := compiler_syntax.syntax_tree_children(tree, id)
     switch node.kind {
+    case .named_type:
+        (resolved, found_type) := resolve_named_type_syntax(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            id,
+            blocked_symbol,
+        )
+        if !found_type {
+            return invalid_compile_time_value()
+        }
+        value: Compile_Time_Value
+        value.kind = .type_value
+        value.static_type = Type_Id{value = 53}
+        value.type_value = resolved
+        return value
     case .literal_expression:
         if node.token_begin + 1 != node.token_end {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         token := &tree.tokens.data[cast[usize](node.token_begin)]
         if token.kind == .keyword_true || token.kind == .keyword_false {
-            value: Target_Condition_Value
+            value: Compile_Time_Value
             value.kind = .boolean
+            value.static_type = Type_Id{value = 4}
+            value.type_value = invalid_type_id()
             value.boolean = token.kind == .keyword_true
             return value
         }
@@ -1905,8 +2709,10 @@ evaluate_target_condition_expression :: proc(
                 ),
             )
             if valid {
-                value: Target_Condition_Value
+                value: Compile_Time_Value
                 value.kind = .unsigned_integer
+                value.static_type = Type_Id{value = 2}
+                value.type_value = invalid_type_id()
                 value.unsigned_integer = integer
                 return value
             }
@@ -1919,13 +2725,15 @@ evaluate_target_condition_expression :: proc(
             node,
         )
         if valid_text {
-            value: Target_Condition_Value
+            value: Compile_Time_Value
             value.kind = .string_value
+            value.static_type = Type_Id{value = 52}
+            value.type_value = invalid_type_id()
             value.source_text = text
             value.text_from_source = true
             return value
         }
-        return invalid_target_condition_value()
+        return invalid_compile_time_value()
     case .name_expression:
         name := node_source_bytes(
             graph,
@@ -1934,6 +2742,14 @@ evaluate_target_condition_expression :: proc(
             tree,
             id,
         )
+        (builtin, found_builtin) := find_builtin_type(semantic_package, name)
+        if found_builtin {
+            value: Compile_Time_Value
+            value.kind = .type_value
+            value.static_type = Type_Id{value = 53}
+            value.type_value = builtin
+            return value
+        }
         (symbol_id, found) := lookup_direct(
             graph,
             semantic_package,
@@ -1941,12 +2757,12 @@ evaluate_target_condition_expression :: proc(
             name,
         )
         if !found {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         symbol := &semantic_package.symbols.data[cast[usize](symbol_id.value)]
-        if symbol.kind != .constant &&
+        if symbol.kind != .constant && symbol.kind != .type &&
             symbol.kind != .unresolved_declaration {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         (value, complete) := completed_constant_value(
             semantic_package,
@@ -1958,15 +2774,15 @@ evaluate_target_condition_expression :: proc(
         if !symbol_id_valid(blocked_symbol^) {
             blocked_symbol^ = symbol_id
         }
-        return invalid_target_condition_value()
+        return invalid_compile_time_value()
     case .contextual_alternative_expression:
         if expected != .architecture && expected != .operating_system &&
             expected != .abi && expected != .byte_order &&
             expected != .object_format {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         if node.token_end < node.token_begin + 2 {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         token := &tree.tokens.data[cast[usize](node.token_end - 1)]
         spelling := source_bytes(
@@ -1976,10 +2792,19 @@ evaluate_target_condition_expression :: proc(
             token.range,
         )
         if !target_alternative_known(expected, spelling) {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
-        value: Target_Condition_Value
+        value: Compile_Time_Value
         value.kind = expected
+        value.type_value = invalid_type_id()
+        switch expected {
+        case .architecture: value.static_type = Type_Id{value = 57}
+        case .operating_system: value.static_type = Type_Id{value = 58}
+        case .abi: value.static_type = Type_Id{value = 59}
+        case .byte_order: value.static_type = Type_Id{value = 60}
+        case .object_format: value.static_type = Type_Id{value = 61}
+        case: value.static_type = invalid_type_id()
+        }
         value.source_text = spelling
         value.text_from_source = true
         return value
@@ -1992,9 +2817,19 @@ evaluate_target_condition_expression :: proc(
             id,
         )
         if is_target_member {
-            return target_field_value(member, facts)
+            return target_field_value(semantic_package, member, facts)
         }
-        return invalid_target_condition_value()
+        (imported, found_imported) := imported_typed_constant(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            id,
+        )
+        if found_imported {
+            return imported
+        }
+        return invalid_compile_time_value()
     case .group_expression:
         if len(children) == 1 {
             return evaluate_target_condition_expression(
@@ -2008,11 +2843,11 @@ evaluate_target_condition_expression :: proc(
                 expected,
             )
         }
-        return invalid_target_condition_value()
+        return invalid_compile_time_value()
     case .unary_expression:
         if len(children) != 1 ||
             tree.tokens.data[cast[usize](node.token_begin)].kind != .bang {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         operand := evaluate_target_condition_expression(
             graph,
@@ -2025,13 +2860,13 @@ evaluate_target_condition_expression :: proc(
             .boolean,
         )
         if operand.kind != .boolean {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         operand.boolean = !operand.boolean
         return operand
     case .call_expression:
         if len(children) != 2 {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         (member, is_target_member) := target_member_name(
             graph,
@@ -2041,7 +2876,7 @@ evaluate_target_condition_expression :: proc(
             children[0],
         )
         if !is_target_member || !bytes_equal_text(member, "has_feature") {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         argument := evaluate_target_condition_expression(
             graph,
@@ -2054,19 +2889,21 @@ evaluate_target_condition_expression :: proc(
             .string_value,
         )
         if argument.kind != .string_value || !argument.text_from_source {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         (enabled, known) := target_feature(facts, argument.source_text)
         if !known {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
-        value: Target_Condition_Value
+        value: Compile_Time_Value
         value.kind = .boolean
+        value.static_type = Type_Id{value = 4}
+        value.type_value = invalid_type_id()
         value.boolean = enabled
         return value
     case .binary_expression:
         if len(children) != 2 {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         left_node := compiler_syntax.syntax_tree_node(tree, children[0])
         right_node := compiler_syntax.syntax_tree_node(tree, children[1])
@@ -2076,7 +2913,7 @@ evaluate_target_condition_expression :: proc(
             right_node,
         )
         if !have_operator {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         if operator == .logical_and || operator == .logical_or {
             left := evaluate_target_condition_expression(
@@ -2090,7 +2927,7 @@ evaluate_target_condition_expression :: proc(
                 .boolean,
             )
             if left.kind != .boolean {
-                return invalid_target_condition_value()
+                return invalid_compile_time_value()
             }
             right := evaluate_target_condition_expression(
                 graph,
@@ -2103,10 +2940,12 @@ evaluate_target_condition_expression :: proc(
                 .boolean,
             )
             if right.kind != .boolean {
-                return invalid_target_condition_value()
+                return invalid_compile_time_value()
             }
-            result: Target_Condition_Value
+            result: Compile_Time_Value
             result.kind = .boolean
+            result.static_type = Type_Id{value = 4}
+            result.type_value = invalid_type_id()
             if operator == .logical_and {
                 result.boolean = left.boolean && right.boolean
             } else {
@@ -2115,8 +2954,8 @@ evaluate_target_condition_expression :: proc(
             return result
         }
 
-        left: Target_Condition_Value
-        right: Target_Condition_Value
+        left: Compile_Time_Value
+        right: Compile_Time_Value
         if left_node.kind == .contextual_alternative_expression {
             right = evaluate_target_condition_expression(
                 graph,
@@ -2160,13 +2999,22 @@ evaluate_target_condition_expression :: proc(
         }
         if left.kind == .invalid || right.kind == .invalid ||
             left.kind != right.kind {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
 
-        result: Target_Condition_Value
+        result: Compile_Time_Value
         result.kind = .boolean
+        result.static_type = Type_Id{value = 4}
+        result.type_value = invalid_type_id()
         if (operator == .equal_equal || operator == .bang_equal) &&
             left.kind != .string_value {
+            if left.kind == .type_value {
+                result.boolean = left.type_value.value == right.type_value.value
+                if operator == .bang_equal {
+                    result.boolean = !result.boolean
+                }
+                return result
+            }
             result.boolean = target_condition_values_equal(left, right)
             if operator == .bang_equal {
                 result.boolean = !result.boolean
@@ -2174,7 +3022,7 @@ evaluate_target_condition_expression :: proc(
             return result
         }
         if left.kind != .unsigned_integer {
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         switch operator {
         case .less:
@@ -2186,11 +3034,11 @@ evaluate_target_condition_expression :: proc(
         case .greater_equal:
             result.boolean = left.unsigned_integer >= right.unsigned_integer
         case:
-            return invalid_target_condition_value()
+            return invalid_compile_time_value()
         }
         return result
     case:
-        return invalid_target_condition_value()
+        return invalid_compile_time_value()
     }
 }
 
@@ -2302,6 +3150,56 @@ append_unsupported_condition_diagnostic :: proc(
     )
 }
 
+// append_unsupported_typed_interface_diagnostic marks a declaration demanded
+// by public interface construction which exceeds the deliberately narrow
+// scalar/procedure slice. The message describes implementation coverage, not a
+// language rejection.
+append_unsupported_typed_interface_diagnostic :: proc(
+    semantic: ^Semantic_Workspace,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    range: compiler_source.Source_Range,
+) {
+    append_diagnostic(
+        semantic,
+        .error,
+        .unsupported_typed_interface,
+        semantic_package.workspace_package,
+        file_index,
+        range,
+        .package_scope,
+    )
+}
+
+// append_unsupported_compile_time_diagnostic preserves the semantic consumer
+// which demanded a shared constant product. Target selection and typed
+// publication use the same evaluator and graph row, but their staging failures
+// identify different replacement boundaries.
+append_unsupported_compile_time_diagnostic :: proc(
+    semantic: ^Semantic_Workspace,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    range: compiler_source.Source_Range,
+    use: Compile_Time_Use,
+) {
+    switch use {
+    case .target_selection:
+        append_unsupported_condition_diagnostic(
+            semantic,
+            semantic_package,
+            file_index,
+            range,
+        )
+    case .typed_interface:
+        append_unsupported_typed_interface_diagnostic(
+            semantic,
+            semantic_package,
+            file_index,
+            range,
+        )
+    }
+}
+
 // run_named_scalar_constant_product evaluates exactly one declaration payload
 // against already completed scalar constants and target facts. It never calls
 // another declaration evaluator. A missing local value attaches one graph edge
@@ -2315,6 +3213,7 @@ run_named_scalar_constant_product :: proc(
     semantic_package: ^Semantic_Package,
     workspace_package: ^compiler_workspace.Workspace_Package,
     product_id: Compile_Time_Product_Id,
+    use: Compile_Time_Use,
 ) {
     product_index := cast[usize](product_id.value)
     product := semantic_package.compile_time_products.data[product_index]
@@ -2343,11 +3242,12 @@ run_named_scalar_constant_product :: proc(
             pattern_name_count(tree, children[0]) == 1
     }
     if !valid_declaration {
-        append_unsupported_condition_diagnostic(
+        append_unsupported_compile_time_diagnostic(
             semantic,
             semantic_package,
             symbol.syntax.file_index,
             declaration.range,
+            use,
         )
         semantic_package.compile_time_products.data[
             product_index
@@ -2375,11 +3275,12 @@ run_named_scalar_constant_product :: proc(
             ) {
             return
         }
-        append_unsupported_condition_diagnostic(
+        append_unsupported_compile_time_diagnostic(
             semantic,
             semantic_package,
             symbol.syntax.file_index,
             payload.range,
+            use,
         )
         semantic_package.compile_time_products.data[
             product_index
@@ -2685,7 +3586,11 @@ pub materialize_workspace_target_declarations :: proc(
                     semantic_package,
                     workspace_package,
                     ready,
+                    .target_selection,
                 )
+            case .declaration:
+                assert(false,
+                    "target selection scheduled a dormant declaration product")
             }
         }
     }
@@ -2769,6 +3674,877 @@ pub bind_workspace_public_names :: proc(
         }
     }
     semantic.public_names_bound = true
+    return true
+}
+
+// declaration_type_syntax returns the first explicit type child in one source
+// declaration. It deliberately does not use declaration_payload: a variable
+// initializer is the final payload while the declared type appears earlier.
+// This slice accepts one scalar named type and leaves every other constructor
+// to resolve_type_syntax's diagnosed boundary.
+declaration_type_syntax :: proc(
+    tree: ^compiler_syntax.Syntax_Tree,
+    declaration_id: compiler_syntax.Node_Id,
+) -> (compiler_syntax.Node_Id, bool) {
+    for child_id in compiler_syntax.syntax_tree_children(
+        tree,
+        declaration_id,
+    ) {
+        child := compiler_syntax.syntax_tree_node(tree, child_id)
+        if node_is_type_syntax(child.kind) {
+            return (child_id, true)
+        }
+    }
+    return (compiler_syntax.Node_Id{}, false)
+}
+
+// resolve_type_syntax is the explicit staging seam for declaration types. The
+// representation already reserves the full canonical vocabulary, but only
+// named scalar aliases are constructed until pointer/view/aggregate layout and
+// their semantic rules move together.
+resolve_type_syntax :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    id: compiler_syntax.Node_Id,
+    blocked_symbol: ^Symbol_Id,
+) -> (Type_Id, bool) {
+    node := compiler_syntax.syntax_tree_node(tree, id)
+    if node.kind == .named_type {
+        return resolve_named_type_syntax(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            id,
+            blocked_symbol,
+        )
+    }
+    return (invalid_type_id(), false)
+}
+
+// resolve_procedure_signature constructs the structural procedure type from
+// fixed parameters followed by one result. Every parameter must have exactly
+// one supported type and at least one source name; grouped names repeat that
+// type in source order. Defaults, bodies, and local declarations do not affect
+// the published procedure identity. Static packs were classified parametric
+// during collection and are rejected by the caller.
+resolve_procedure_signature :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    procedure_id: compiler_syntax.Node_Id,
+    blocked_symbol: ^Symbol_Id,
+) -> (Type_Id, bool) {
+    procedure := compiler_syntax.syntax_tree_node(tree, procedure_id)
+    if procedure.kind != .procedure && procedure.kind != .procedure_type {
+        return (invalid_type_id(), false)
+    }
+    members: array.Dynamic[Type_Id]
+    array.init(&members)
+    result_type := Type_Id{value = 1}
+    valid := true
+
+    for child_id in compiler_syntax.syntax_tree_children(tree, procedure_id) {
+        child := compiler_syntax.syntax_tree_node(tree, child_id)
+        if child.kind == .parameter_list {
+            for parameter_id in compiler_syntax.syntax_tree_children(
+                tree,
+                child_id,
+            ) {
+                parameter := compiler_syntax.syntax_tree_node(
+                    tree,
+                    parameter_id,
+                )
+                if parameter.kind != .parameter {
+                    valid = false
+                    break
+                }
+                parameter_type_id: compiler_syntax.Node_Id
+                have_parameter_type := false
+                for part_id in compiler_syntax.syntax_tree_children(
+                    tree,
+                    parameter_id,
+                ) {
+                    part := compiler_syntax.syntax_tree_node(tree, part_id)
+                    if node_is_type_syntax(part.kind) {
+                        parameter_type_id = part_id
+                        have_parameter_type = true
+                        break
+                    }
+                }
+                name_count := pattern_name_count(tree, parameter_id)
+                if !have_parameter_type || name_count == 0 {
+                    valid = false
+                    break
+                }
+                (parameter_type, resolved) := resolve_type_syntax(
+                    graph,
+                    semantic_package,
+                    file_index,
+                    tree,
+                    parameter_type_id,
+                    blocked_symbol,
+                )
+                if !resolved {
+                    valid = false
+                    break
+                }
+                for name_index: usize = 0;
+                    name_index < name_count;
+                    name_index += 1 {
+                    array.append(&members, parameter_type)
+                }
+            }
+        } else if child.kind == .result_clause {
+            result_children := compiler_syntax.syntax_tree_children(
+                tree,
+                child_id,
+            )
+            if len(result_children) != 1 {
+                valid = false
+                break
+            }
+            (resolved_result, resolved) := resolve_type_syntax(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                result_children[0],
+                blocked_symbol,
+            )
+            if !resolved {
+                valid = false
+                break
+            }
+            result_type = resolved_result
+        }
+    }
+
+    if !valid {
+        array.destroy(&members)
+        return (invalid_type_id(), false)
+    }
+    array.append(&members, result_type)
+    type_id := intern_procedure_type(semantic_package, array.view(&members))
+    array.destroy(&members)
+    return (type_id, true)
+}
+
+// complete_typed_declaration_product resolves one public declaration or one
+// local type/value dependency. Constants reuse the same product and evaluator
+// as target selection. Variables publish their explicit named type; procedures
+// publish a canonical fixed signature. Unsupported syntax fails closed at the
+// declaration range and never manufactures a fallback type.
+complete_typed_declaration_product :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic: ^Semantic_Workspace,
+    semantic_package: ^Semantic_Package,
+    workspace_package: ^compiler_workspace.Workspace_Package,
+    product_id: Compile_Time_Product_Id,
+) {
+    product_index := cast[usize](product_id.value)
+    product := semantic_package.compile_time_products.data[product_index]
+    assert(product.kind == .declaration && product.state == .waiting,
+        "typed declaration product is not ready")
+    symbol_index := cast[usize](product.symbol.value)
+    assert(symbol_index < semantic_package.symbols.length,
+        "typed declaration symbol exceeds semantic table")
+    symbol := &semantic_package.symbols.data[symbol_index]
+    source_row := compiler_workspace.file_at(
+        &workspace_package.loaded,
+        symbol.syntax.file_index,
+    )
+    tree := &source_row.tree
+    declaration := compiler_syntax.syntax_tree_node(tree, symbol.syntax.node)
+    blocked_symbol := invalid_symbol_id()
+    resolved_type := invalid_type_id()
+    resolved := false
+    declaration_value := invalid_compile_time_value()
+
+    if symbol.flags.parametric || symbol.flags.is_foreign ||
+        symbol.flags.exported {
+        resolved = false
+    } else if symbol.kind == .constant || symbol.kind == .type ||
+        symbol.kind == .unresolved_declaration {
+        (constant_product, found_constant) := demand_constant_product(
+            semantic_package,
+            product.symbol,
+        )
+        if found_constant {
+            constant := &semantic_package.compile_time_products.data[
+                cast[usize](constant_product.value)
+            ]
+            if constant.state != .complete {
+                semantic_package.compile_time_products.data[
+                    product_index
+                ].dependency = constant_product
+                return
+            }
+            declaration_value = constant.value
+            if declaration_value.kind == .type_value {
+                resolved_type = declaration_value.type_value
+                resolved = type_id_valid(resolved_type)
+                symbol.kind = .type
+            } else {
+                resolved_type = declaration_value.static_type
+                resolved = type_id_valid(resolved_type)
+                if resolved {
+                    symbol.kind = .constant
+                }
+            }
+        }
+    } else if symbol.kind == .variable {
+        (type_syntax, have_type) := declaration_type_syntax(
+            tree,
+            symbol.syntax.node,
+        )
+        if have_type {
+            (resolved_type, resolved) = resolve_type_syntax(
+                graph,
+                semantic_package,
+                symbol.syntax.file_index,
+                tree,
+                type_syntax,
+                &blocked_symbol,
+            )
+        }
+    } else if symbol.kind == .procedure {
+        (payload, have_payload) := declaration_payload(
+            tree,
+            symbol.syntax.node,
+        )
+        if have_payload {
+            (resolved_type, resolved) = resolve_procedure_signature(
+                graph,
+                semantic_package,
+                symbol.syntax.file_index,
+                tree,
+                payload,
+                &blocked_symbol,
+            )
+        }
+    }
+
+    if !resolved && symbol_id_valid(blocked_symbol) &&
+        block_compile_time_product(
+            semantic_package,
+            product_id,
+            blocked_symbol,
+        ) {
+        return
+    }
+    if !resolved {
+        append_unsupported_typed_interface_diagnostic(
+            semantic,
+            semantic_package,
+            symbol.syntax.file_index,
+            declaration.range,
+        )
+        semantic_package.compile_time_products.data[
+            product_index
+        ].state = .error
+        return
+    }
+
+    symbol.type = resolved_type
+    semantic_package.compile_time_products.data[
+        product_index
+    ].value = declaration_value
+    semantic_package.compile_time_products.data[
+        product_index
+    ].dependency = invalid_compile_time_product_id()
+    semantic_package.compile_time_products.data[
+        product_index
+    ].state = .complete
+}
+
+// first_ready_typed_product selects one demanded declaration or scalar value
+// whose current prerequisite is complete. Product table order supplies the
+// deterministic tie-break. Conditions are already terminal after target
+// materialization and dormant unrelated private products remain untouched.
+first_ready_typed_product :: proc(
+    semantic_package: ^Semantic_Package,
+) -> (Compile_Time_Product_Id, bool) {
+    for index: usize = 0;
+        index < semantic_package.compile_time_products.length;
+        index += 1 {
+        product := &semantic_package.compile_time_products.data[index]
+        if product.state != .waiting || product.kind == .condition {
+            continue
+        }
+        if !compile_time_product_id_valid(product.dependency) ||
+            semantic_package.compile_time_products.data[
+                cast[usize](product.dependency.value)
+            ].state == .complete {
+            return (Compile_Time_Product_Id{value = cast[u32](index)}, true)
+        }
+    }
+    return (invalid_compile_time_product_id(), false)
+}
+
+// diagnose_typed_product_cycle reports the first source-ordered demanded row
+// left waiting when no ready edge exists. The product graph contains one exact
+// dependency per attempt, so this state is a real local value/type cycle rather
+// than a scheduling accident.
+diagnose_typed_product_cycle :: proc(
+    semantic: ^Semantic_Workspace,
+    semantic_package: ^Semantic_Package,
+) {
+    for index: usize = 0;
+        index < semantic_package.compile_time_products.length;
+        index += 1 {
+        product := &semantic_package.compile_time_products.data[index]
+        if product.state != .waiting || product.kind == .condition {
+            continue
+        }
+        symbol := &semantic_package.symbols.data[
+            cast[usize](product.symbol.value)
+        ]
+        append_diagnostic(
+            semantic,
+            .error,
+            .cyclic_typed_interface,
+            semantic_package.workspace_package,
+            symbol.syntax.file_index,
+            symbol.name_range,
+            .package_scope,
+        )
+        semantic_package.compile_time_products.data[index].state = .error
+        return
+    }
+}
+
+// type_package_public_declarations demands exactly the selected public symbol
+// set, then executes its local prerequisite graph. Private declarations remain
+// dormant unless a public type/value names them. Procedure bodies are outside
+// interface identity and are intentionally not traversed.
+type_package_public_declarations :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    facts: ^Target_Facts,
+    semantic: ^Semantic_Workspace,
+    semantic_package: ^Semantic_Package,
+    workspace_package: ^compiler_workspace.Workspace_Package,
+) -> bool {
+    index_visible_compile_time_products(semantic_package)
+    package_scope := &semantic_package.scopes.data[
+        cast[usize](semantic_package.package_scope.value)
+    ]
+    for index: usize = 0; index < package_scope.symbols.length; index += 1 {
+        symbol_id := package_scope.symbols.data[index]
+        symbol := &semantic_package.symbols.data[cast[usize](symbol_id.value)]
+        if symbol.visibility == .public {
+            (ignored, found) := demand_declaration_product(
+                semantic_package,
+                symbol_id,
+            )
+            assert(found && compile_time_product_id_valid(ignored),
+                "public symbol has no declaration product")
+        }
+    }
+
+    for !semantic.failed {
+        (ready, found_ready) := first_ready_typed_product(semantic_package)
+        if !found_ready {
+            waiting := false
+            for index: usize = 0;
+                index < semantic_package.compile_time_products.length;
+                index += 1 {
+                product := &semantic_package.compile_time_products.data[index]
+                if product.state == .waiting && product.kind != .condition {
+                    waiting = true
+                    break
+                }
+            }
+            if waiting {
+                diagnose_typed_product_cycle(semantic, semantic_package)
+            }
+            break
+        }
+        product := semantic_package.compile_time_products.data[
+            cast[usize](ready.value)
+        ]
+        switch product.kind {
+        case .constant:
+            run_named_scalar_constant_product(
+                graph,
+                facts,
+                semantic,
+                semantic_package,
+                workspace_package,
+                ready,
+                .typed_interface,
+            )
+        case .declaration:
+            complete_typed_declaration_product(
+                graph,
+                semantic,
+                semantic_package,
+                workspace_package,
+                ready,
+            )
+        case .condition:
+            assert(false, "typed scheduler selected a condition product")
+        }
+    }
+    return !semantic.failed
+}
+
+// ensure_interface_translation_table maintains one parallel memo slot for each
+// current package-local type. Type construction is complete before interface
+// publication for this slice, but growing to the observed length here keeps
+// the ownership invariant local and explicit.
+ensure_interface_translation_table :: proc(
+    semantic_package: ^Semantic_Package,
+) {
+    for semantic_package.interface_type_translations.length <
+        semantic_package.types.length {
+        array.append(
+            &semantic_package.interface_type_translations,
+            invalid_interface_type_id(),
+        )
+    }
+}
+
+// translate_interface_type lazily copies one local type graph into the
+// package-independent interface domain. It publishes the memoized placeholder
+// before following children, then gathers translated members in temporary
+// storage so the final member span remains contiguous even when recursion
+// appends other rows first.
+translate_interface_type :: proc(
+    semantic_package: ^Semantic_Package,
+    local_type: Type_Id,
+) -> Interface_Type_Id {
+    assert(type_id_valid(local_type) &&
+        cast[usize](local_type.value) < semantic_package.types.length,
+        "interface translation received an invalid local type")
+    ensure_interface_translation_table(semantic_package)
+    translation_index := cast[usize](local_type.value)
+    existing := semantic_package.interface_type_translations.data[
+        translation_index
+    ]
+    if interface_type_id_valid(existing) {
+        return existing
+    }
+
+    assert(semantic_package.interface_types.length <
+        cast[usize](Invalid_Interface_Type_Value),
+        "interface type table exceeds u32 identity space")
+    interface_id := Interface_Type_Id{
+        value = cast[u32](semantic_package.interface_types.length),
+    }
+    placeholder: Interface_Type
+    placeholder.element = invalid_interface_type_id()
+    array.append(&semantic_package.interface_types, placeholder)
+    semantic_package.interface_type_translations.data[
+        translation_index
+    ] = interface_id
+
+    local := semantic_package.types.data[translation_index]
+    translated_element := invalid_interface_type_id()
+    if type_id_valid(local.element) {
+        translated_element = translate_interface_type(
+            semantic_package,
+            local.element,
+        )
+    }
+    translated_members: array.Dynamic[Interface_Type_Id]
+    array.init(&translated_members)
+    for member_index: usize = 0;
+        member_index < local.member_count;
+        member_index += 1 {
+        member := semantic_package.type_members.data[
+            local.member_begin + member_index
+        ]
+        array.append(
+            &translated_members,
+            translate_interface_type(semantic_package, member),
+        )
+    }
+    member_begin := semantic_package.interface_type_members.length
+    for member in array.view(&translated_members) {
+        array.append(&semantic_package.interface_type_members, member)
+    }
+    array.destroy(&translated_members)
+
+    semantic_package.interface_types.data[cast[usize](interface_id.value)] =
+        Interface_Type{
+            kind = local.kind,
+            name = local.name,
+            bit_width = local.bit_width,
+            element = translated_element,
+            member_begin = member_begin,
+            member_count = local.member_count,
+        }
+    return interface_id
+}
+
+// translate_interface_constant rewrites both type-bearing positions of one
+// completed local value through the canonical interface graph. Scalar payloads
+// and borrowed text are otherwise copied unchanged.
+translate_interface_constant :: proc(
+    semantic_package: ^Semantic_Package,
+    value: Compile_Time_Value,
+) -> Interface_Constant_Value {
+    result: Interface_Constant_Value
+    result.kind = value.kind
+    result.boolean = value.boolean
+    result.unsigned_integer = value.unsigned_integer
+    result.profile_text = value.profile_text
+    result.source_text = value.source_text
+    result.text_from_source = value.text_from_source
+    result.static_type = translate_interface_type(
+        semantic_package,
+        value.static_type,
+    )
+    result.type_value = invalid_interface_type_id()
+    if value.kind == .type_value {
+        result.type_value = translate_interface_type(
+            semantic_package,
+            value.type_value,
+        )
+    }
+    return result
+}
+
+// build_package_interface publishes selected public declarations in their
+// canonical package-scope order. Every declaration product is terminal before
+// entry, so this pass only translates stable types and optional constants; it
+// performs no syntax resolution and cannot create a new dependency.
+build_package_interface :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+) {
+    package_scope := &semantic_package.scopes.data[
+        cast[usize](semantic_package.package_scope.value)
+    ]
+    for index: usize = 0; index < package_scope.symbols.length; index += 1 {
+        symbol_id := package_scope.symbols.data[index]
+        symbol := &semantic_package.symbols.data[cast[usize](symbol_id.value)]
+        if symbol.visibility != .public {
+            continue
+        }
+        assert(type_id_valid(symbol.type),
+            "public symbol reached interface publication without a type")
+        interface_declaration: Interface_Declaration
+        interface_declaration.source_symbol = symbol_id
+        interface_declaration.name = symbol_name_bytes(
+            graph,
+            semantic_package,
+            symbol,
+        )
+        interface_declaration.kind = symbol.kind
+        interface_declaration.flags = symbol.flags
+        interface_declaration.type = translate_interface_type(
+            semantic_package,
+            symbol.type,
+        )
+        (constant, completed_constant) := completed_constant_value(
+            semantic_package,
+            symbol_id,
+        )
+        has_constant := completed_constant && symbol.kind != .type
+        interface_declaration.has_constant = has_constant
+        if has_constant {
+            interface_declaration.constant = translate_interface_constant(
+                semantic_package,
+                constant,
+            )
+        }
+        array.append(
+            &semantic_package.interface_declarations,
+            interface_declaration,
+        )
+    }
+    semantic_package.typed_interface_built = true
+}
+
+// import_interface_type reconstructs one dependency interface identity in the
+// consumer's local Type_Id domain. Predeclared scalar rows reuse the consumer's
+// canonical builtins by exact kind/name; structural procedures recursively
+// reconstruct members and use the local interner. Every successful mapping is
+// memoized by dependency package plus interface ID.
+import_interface_type :: proc(
+    semantic: ^Semantic_Workspace,
+    consumer: ^Semantic_Package,
+    target_package: compiler_workspace.Package_Id,
+    interface_type: Interface_Type_Id,
+) -> (Type_Id, bool) {
+    for index: usize = 0; index < consumer.imported_types.length; index += 1 {
+        imported := consumer.imported_types.data[index]
+        if imported.target_package.value == target_package.value &&
+            imported.interface_type.value == interface_type.value {
+            return (imported.local_type, true)
+        }
+    }
+    assert(cast[usize](target_package.value) < semantic.packages.length,
+        "typed import target exceeds semantic package table")
+    target := &semantic.packages.data[cast[usize](target_package.value)]
+    if !interface_type_id_valid(interface_type) ||
+        cast[usize](interface_type.value) >= target.interface_types.length {
+        return (invalid_type_id(), false)
+    }
+    source_type := target.interface_types.data[
+        cast[usize](interface_type.value)
+    ]
+    local_type := invalid_type_id()
+
+    if source_type.kind == .procedure_type {
+        members: array.Dynamic[Type_Id]
+        array.init(&members)
+        valid := true
+        for member_index: usize = 0;
+            member_index < source_type.member_count;
+            member_index += 1 {
+            source_member := target.interface_type_members.data[
+                source_type.member_begin + member_index
+            ]
+            (local_member, imported) := import_interface_type(
+                semantic,
+                consumer,
+                target_package,
+                source_member,
+            )
+            if !imported {
+                valid = false
+                break
+            }
+            array.append(&members, local_member)
+        }
+        if valid {
+            local_type = intern_procedure_type(consumer, array.view(&members))
+        }
+        array.destroy(&members)
+    } else {
+        for index: usize = 0; index < consumer.types.length; index += 1 {
+            candidate := &consumer.types.data[index]
+            if candidate.kind == source_type.kind &&
+                strings_equal(candidate.name, source_type.name) {
+                local_type = Type_Id{value = cast[u32](index)}
+                break
+            }
+        }
+    }
+    if !type_id_valid(local_type) {
+        return (invalid_type_id(), false)
+    }
+    array.append(&consumer.imported_types, Imported_Type{
+        target_package = target_package,
+        interface_type = interface_type,
+        local_type = local_type,
+    })
+    return (local_type, true)
+}
+
+// import_interface_constant is the inverse of interface publication for one
+// consumer. Both interface type IDs are reconstructed locally before the value
+// is exposed beneath an import alias.
+import_interface_constant :: proc(
+    semantic: ^Semantic_Workspace,
+    consumer: ^Semantic_Package,
+    target_package: compiler_workspace.Package_Id,
+    value: Interface_Constant_Value,
+) -> (Compile_Time_Value, bool) {
+    result: Compile_Time_Value
+    result.kind = value.kind
+    result.boolean = value.boolean
+    result.unsigned_integer = value.unsigned_integer
+    result.profile_text = value.profile_text
+    result.source_text = value.source_text
+    result.text_from_source = value.text_from_source
+    (static_type, valid_static_type) := import_interface_type(
+        semantic,
+        consumer,
+        target_package,
+        value.static_type,
+    )
+    if !valid_static_type {
+        return (invalid_compile_time_value(), false)
+    }
+    result.static_type = static_type
+    result.type_value = invalid_type_id()
+    if value.kind == .type_value {
+        (type_value, valid_type_value) := import_interface_type(
+            semantic,
+            consumer,
+            target_package,
+            value.type_value,
+        )
+        if !valid_type_value {
+            return (invalid_compile_time_value(), false)
+        }
+        result.type_value = type_value
+    }
+    return (result, true)
+}
+
+// bind_package_typed_imports replaces source-only public-name references with
+// consumer-local type/value rows. Each import alias receives one contiguous
+// span in producer public order. Failure is reported at the alias declaration;
+// no partially reconstructed row is published after that point.
+bind_package_typed_imports :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic: ^Semantic_Workspace,
+    consumer: ^Semantic_Package,
+) -> bool {
+    for binding_index: usize = 0;
+        binding_index < consumer.imports.length;
+        binding_index += 1 {
+        binding := &consumer.imports.data[binding_index]
+        edge := &graph.imports.data[binding.graph_import_index]
+        target := &semantic.packages.data[
+            cast[usize](edge.imported_package.value)
+        ]
+        assert(target.typed_interface_built,
+            "typed import dependency has no published interface")
+        binding.typed_name_begin = consumer.imported_typed_names.length
+        for ordinal: usize = 0;
+            ordinal < target.interface_declarations.length;
+            ordinal += 1 {
+            declaration := target.interface_declarations.data[ordinal]
+            (local_type, imported_type) := import_interface_type(
+                semantic,
+                consumer,
+                edge.imported_package,
+                declaration.type,
+            )
+            if !imported_type {
+                symbol := &consumer.symbols.data[
+                    cast[usize](binding.symbol.value)
+                ]
+                append_unsupported_typed_interface_diagnostic(
+                    semantic,
+                    consumer,
+                    symbol.syntax.file_index,
+                    symbol.name_range,
+                )
+                return false
+            }
+            imported_name: Imported_Typed_Name
+            imported_name.import_symbol = binding.symbol
+            imported_name.declaration = Symbol_Reference{
+                package_id = edge.imported_package,
+                symbol = declaration.source_symbol,
+            }
+            imported_name.interface_ordinal = ordinal
+            imported_name.name = declaration.name
+            imported_name.kind = declaration.kind
+            imported_name.local_type = local_type
+            imported_name.has_constant = declaration.has_constant
+            if declaration.has_constant {
+                (constant, imported_constant) := import_interface_constant(
+                    semantic,
+                    consumer,
+                    edge.imported_package,
+                    declaration.constant,
+                )
+                if !imported_constant {
+                    symbol := &consumer.symbols.data[
+                        cast[usize](binding.symbol.value)
+                    ]
+                    append_unsupported_typed_interface_diagnostic(
+                        semantic,
+                        consumer,
+                        symbol.syntax.file_index,
+                        symbol.name_range,
+                    )
+                    return false
+                }
+                imported_name.constant = constant
+            }
+            array.append(&consumer.imported_typed_names, imported_name)
+        }
+        binding.typed_name_count =
+            consumer.imported_typed_names.length - binding.typed_name_begin
+    }
+    return true
+}
+
+// package_typed_dependencies_ready checks only the source import occurrences
+// owned by this consumer. Duplicate imports do not change readiness. The graph
+// loader has already rejected package cycles, so a complete scan with no ready
+// package is an internal invariant violation rather than user input recovery.
+package_typed_dependencies_ready :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic: ^Semantic_Workspace,
+    semantic_package: ^Semantic_Package,
+) -> bool {
+    for index: usize = 0; index < semantic_package.imports.length; index += 1 {
+        binding := &semantic_package.imports.data[index]
+        edge := &graph.imports.data[binding.graph_import_index]
+        if !semantic.packages.data[
+            cast[usize](edge.imported_package.value)
+        ].typed_interface_built {
+            return false
+        }
+    }
+    return true
+}
+
+// build_workspace_typed_interfaces is the first self-hosted typed package
+// boundary. It visits packages dependency-first, reconstructs imported public
+// types/values, executes demanded local declaration products, and publishes a
+// canonical interface graph. The source graph and earlier public-name view
+// remain borrowed and unchanged.
+pub build_workspace_typed_interfaces :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    facts: ^Target_Facts,
+    semantic: ^Semantic_Workspace,
+) -> bool {
+    if graph.failed || semantic.failed {
+        return false
+    }
+    assert(semantic.target_declarations_materialized,
+        "typed interfaces require target declaration materialization")
+    assert(semantic.public_names_bound,
+        "typed interfaces require bound public names")
+    assert(!semantic.typed_interfaces_built,
+        "workspace typed interfaces are already built")
+
+    built_count: usize = 0
+    for built_count < semantic.packages.length && !semantic.failed {
+        progressed := false
+        for package_index: usize = 0;
+            package_index < semantic.packages.length;
+            package_index += 1 {
+            semantic_package := &semantic.packages.data[package_index]
+            if semantic_package.typed_interface_built ||
+                !package_typed_dependencies_ready(
+                    graph,
+                    semantic,
+                    semantic_package,
+                ) {
+                continue
+            }
+            if !bind_package_typed_imports(
+                graph,
+                semantic,
+                semantic_package,
+            ) {
+                return false
+            }
+            if !type_package_public_declarations(
+                graph,
+                facts,
+                semantic,
+                semantic_package,
+                &graph.packages.data[package_index],
+            ) {
+                return false
+            }
+            build_package_interface(graph, semantic_package)
+            built_count += 1
+            progressed = true
+        }
+        assert(progressed,
+            "acyclic workspace has no ready typed-interface package")
+    }
+    if semantic.failed {
+        return false
+    }
+    semantic.typed_interfaces_built = true
     return true
 }
 
@@ -2881,6 +4657,7 @@ pub destroy_semantic_workspace :: proc(semantic: ^Semantic_Workspace) {
     semantic.failed = false
     semantic.target_declarations_materialized = false
     semantic.public_names_bound = false
+    semantic.typed_interfaces_built = false
 }
 
 append_bool :: proc(output: ^compiler_text.Builder, value: bool) {
@@ -3305,6 +5082,349 @@ pub dump_workspace_public_names :: proc(
     }
 }
 
+// semantic_type_kind_text is the stable migration-dump spelling shared with
+// the production TypeKind oracle. It is descriptive output, not persistent
+// interface identity.
+semantic_type_kind_text :: proc(kind: Semantic_Type_Kind) -> string {
+    switch kind {
+    case .invalid_type: return "invalid"
+    case .void_type: return "void"
+    case .untyped_integer_type: return "untyped-integer"
+    case .untyped_float_type: return "untyped-float"
+    case .boolean_type: return "bool"
+    case .boolean_storage_type: return "boolean-storage"
+    case .signed_integer_type: return "signed-integer"
+    case .unsigned_integer_type: return "unsigned-integer"
+    case .float_type: return "float"
+    case .rune_type: return "rune"
+    case .endian_scalar_type: return "endian-scalar"
+    case .raw_pointer_type: return "raw-pointer"
+    case .c_string_type: return "c-string"
+    case .string_type: return "string"
+    case .pointer_type: return "pointer"
+    case .multi_pointer_type: return "multi-pointer"
+    case .slice_type: return "slice"
+    case .array_type: return "array"
+    case .tuple_type: return "tuple"
+    case .procedure_type: return "procedure"
+    case .simd_vector_type: return "simd"
+    case .struct_type: return "struct"
+    case .enumeration_type: return "enum"
+    case .variant_type: return "variant"
+    case .union_type: return "union"
+    case .distinct_named_type: return "distinct"
+    case .type_parameter_type: return "type-parameter"
+    case .meta_type_value: return "meta-type"
+    }
+}
+
+append_type_name :: proc(output: ^compiler_text.Builder, name: string) {
+    if len(name) == 0 {
+        compiler_text.append_byte(output, cast[u8]('-'))
+    } else {
+        compiler_text.append_text(output, name)
+    }
+}
+
+// append_local_type_shape renders a consumer-local type without exposing its
+// process-local Type_Id. Procedure children are expanded structurally; named
+// scalar leaves include kind and spelling. This is what makes imported type
+// reconstruction comparable even when a complete production compilation has
+// interned unrelated private types earlier.
+append_local_type_shape :: proc(
+    semantic_package: ^Semantic_Package,
+    type_id: Type_Id,
+    output: ^compiler_text.Builder,
+) {
+    assert(type_id_valid(type_id) &&
+        cast[usize](type_id.value) < semantic_package.types.length,
+        "typed import dump received an invalid local type")
+    semantic_type := &semantic_package.types.data[cast[usize](type_id.value)]
+    if semantic_type.kind == .procedure_type {
+        compiler_text.append_text(output, "procedure(")
+        parameter_count := semantic_type.member_count - 1
+        for index: usize = 0; index < parameter_count; index += 1 {
+            if index != 0 {
+                compiler_text.append_byte(output, cast[u8](','))
+            }
+            append_local_type_shape(
+                semantic_package,
+                semantic_package.type_members.data[
+                    semantic_type.member_begin + index
+                ],
+                output,
+            )
+        }
+        compiler_text.append_text(output, ")->")
+        append_local_type_shape(
+            semantic_package,
+            semantic_package.type_members.data[
+                semantic_type.member_begin + parameter_count
+            ],
+            output,
+        )
+        return
+    }
+    compiler_text.append_text(
+        output,
+        semantic_type_kind_text(semantic_type.kind),
+    )
+    compiler_text.append_byte(output, cast[u8](':'))
+    append_type_name(output, semantic_type.name)
+}
+
+append_interface_constant :: proc(
+    value: ^Interface_Constant_Value,
+    output: ^compiler_text.Builder,
+) {
+    switch value.kind {
+    case .boolean:
+        compiler_text.append_text(output, "bool ")
+        append_bool(output, value.boolean)
+    case .unsigned_integer:
+        compiler_text.append_text(output, "integer ")
+        compiler_text.append_unsigned(
+            output,
+            cast[usize](value.unsigned_integer),
+        )
+    case .string_value:
+        compiler_text.append_text(output, "string ")
+        text_length := len(value.source_text) if value.text_from_source else
+            len(value.profile_text)
+        compiler_text.append_unsigned(output, text_length)
+        compiler_text.append_byte(output, cast[u8](' '))
+        if value.text_from_source {
+            compiler_text.append_bytes(output, value.source_text)
+        } else {
+            compiler_text.append_text(output, value.profile_text)
+        }
+    case .type_value:
+        compiler_text.append_text(output, "type ")
+        compiler_text.append_unsigned(
+            output,
+            cast[usize](value.type_value.value),
+        )
+    case .architecture, .operating_system, .abi, .byte_order, .object_format:
+        compiler_text.append_text(output, "target-category ")
+        if value.text_from_source {
+            compiler_text.append_bytes(output, value.source_text)
+        } else {
+            compiler_text.append_text(output, value.profile_text)
+        }
+    case .invalid:
+        compiler_text.append_text(output, "invalid")
+    }
+}
+
+append_local_constant :: proc(
+    semantic_package: ^Semantic_Package,
+    value: ^Compile_Time_Value,
+    output: ^compiler_text.Builder,
+) {
+    switch value.kind {
+    case .boolean:
+        compiler_text.append_text(output, "bool ")
+        append_bool(output, value.boolean)
+    case .unsigned_integer:
+        compiler_text.append_text(output, "integer ")
+        compiler_text.append_unsigned(
+            output,
+            cast[usize](value.unsigned_integer),
+        )
+    case .string_value:
+        compiler_text.append_text(output, "string ")
+        text_length := len(value.source_text) if value.text_from_source else
+            len(value.profile_text)
+        compiler_text.append_unsigned(output, text_length)
+        compiler_text.append_byte(output, cast[u8](' '))
+        if value.text_from_source {
+            compiler_text.append_bytes(output, value.source_text)
+        } else {
+            compiler_text.append_text(output, value.profile_text)
+        }
+    case .type_value:
+        compiler_text.append_text(output, "type ")
+        append_local_type_shape(semantic_package, value.type_value, output)
+    case .architecture, .operating_system, .abi, .byte_order, .object_format:
+        compiler_text.append_text(output, "target-category ")
+        if value.text_from_source {
+            compiler_text.append_bytes(output, value.source_text)
+        } else {
+            compiler_text.append_text(output, value.profile_text)
+        }
+    case .invalid:
+        compiler_text.append_text(output, "invalid")
+    }
+}
+
+// dump_workspace_interfaces appends the canonical producer interfaces and the
+// consumer-local typed import view. Interface rows may expose their own IDs;
+// imported rows use structural type shapes so unrelated local interning order
+// cannot affect qualification output.
+pub dump_workspace_interfaces :: proc(
+    semantic: ^Semantic_Workspace,
+    output: ^compiler_text.Builder,
+) {
+    assert(semantic.typed_interfaces_built,
+        "typed interface dump requires a completed workspace phase")
+    for package_index: usize = 0;
+        package_index < semantic.packages.length;
+        package_index += 1 {
+        semantic_package := &semantic.packages.data[package_index]
+        compiler_text.append_text(output, "interface-package ")
+        compiler_text.append_unsigned(output, package_index)
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_unsigned(
+            output,
+            semantic_package.interface_types.length,
+        )
+        compiler_text.append_byte(output, cast[u8](' '))
+        compiler_text.append_unsigned(
+            output,
+            semantic_package.interface_declarations.length,
+        )
+        compiler_text.append_byte(output, cast[u8]('\n'))
+
+        for type_index: usize = 0;
+            type_index < semantic_package.interface_types.length;
+            type_index += 1 {
+            interface_type := &semantic_package.interface_types.data[
+                type_index
+            ]
+            compiler_text.append_text(output, "interface-type ")
+            compiler_text.append_unsigned(output, package_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(output, type_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_text(
+                output,
+                semantic_type_kind_text(interface_type.kind),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            append_type_name(output, interface_type.name)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](interface_type.bit_width),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            if interface_type_id_valid(interface_type.element) {
+                compiler_text.append_unsigned(
+                    output,
+                    cast[usize](interface_type.element.value),
+                )
+            } else {
+                compiler_text.append_text(output, "invalid")
+            }
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(output, interface_type.member_count)
+            for member_index: usize = 0;
+                member_index < interface_type.member_count;
+                member_index += 1 {
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_unsigned(
+                    output,
+                    cast[usize](semantic_package.interface_type_members.data[
+                        interface_type.member_begin + member_index
+                    ].value),
+                )
+            }
+            compiler_text.append_byte(output, cast[u8]('\n'))
+        }
+
+        for declaration_index: usize = 0;
+            declaration_index < semantic_package.interface_declarations.length;
+            declaration_index += 1 {
+            declaration := &semantic_package.interface_declarations.data[
+                declaration_index
+            ]
+            compiler_text.append_text(output, "interface-declaration ")
+            compiler_text.append_unsigned(output, package_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(output, declaration_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_bytes(output, declaration.name)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_text(output, symbol_kind_text(declaration.kind))
+            compiler_text.append_byte(output, cast[u8](' '))
+            append_bool(output, declaration.flags.is_thread_local)
+            append_bool(output, declaration.flags.is_foreign)
+            append_bool(output, declaration.flags.exported)
+            append_bool(output, declaration.flags.parametric)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](declaration.type.value),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            if declaration.has_constant {
+                append_interface_constant(&declaration.constant, output)
+            } else {
+                compiler_text.append_text(output, "none")
+            }
+            compiler_text.append_byte(output, cast[u8]('\n'))
+        }
+
+        for binding_index: usize = 0;
+            binding_index < semantic_package.imports.length;
+            binding_index += 1 {
+            binding := &semantic_package.imports.data[binding_index]
+            compiler_text.append_text(output, "typed-import ")
+            compiler_text.append_unsigned(output, package_index)
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(
+                output,
+                cast[usize](binding.symbol.value),
+            )
+            compiler_text.append_byte(output, cast[u8](' '))
+            compiler_text.append_unsigned(output, binding.typed_name_count)
+            compiler_text.append_byte(output, cast[u8]('\n'))
+
+            end := binding.typed_name_begin + binding.typed_name_count
+            for imported_index := binding.typed_name_begin;
+                imported_index < end;
+                imported_index += 1 {
+                imported := &semantic_package.imported_typed_names.data[
+                    imported_index
+                ]
+                compiler_text.append_text(output, "typed-import-name ")
+                compiler_text.append_unsigned(output, package_index)
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_unsigned(
+                    output,
+                    cast[usize](binding.symbol.value),
+                )
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_unsigned(
+                    output,
+                    cast[usize](imported.declaration.package_id.value),
+                )
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_unsigned(output, imported.interface_ordinal)
+                compiler_text.append_byte(output, cast[u8](' '))
+                compiler_text.append_bytes(output, imported.name)
+                compiler_text.append_byte(output, cast[u8](' '))
+                append_local_type_shape(
+                    semantic_package,
+                    imported.local_type,
+                    output,
+                )
+                compiler_text.append_byte(output, cast[u8](' '))
+                if imported.has_constant {
+                    append_local_constant(
+                        semantic_package,
+                        &imported.constant,
+                        output,
+                    )
+                } else {
+                    compiler_text.append_text(output, "none")
+                }
+                compiler_text.append_byte(output, cast[u8]('\n'))
+            }
+        }
+    }
+}
+
 render_semantic_message :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     diagnostic: ^Semantic_Diagnostic,
@@ -3356,6 +5476,16 @@ render_semantic_message :: proc(
         compiler_text.append_text(
             output,
             "self-hosted package 'when' requires a supported scalar constant expression",
+        )
+    case .unsupported_typed_interface:
+        compiler_text.append_text(
+            output,
+            "self-hosted typed interface requires a supported scalar or procedure declaration",
+        )
+    case .cyclic_typed_interface:
+        compiler_text.append_text(
+            output,
+            "self-hosted typed interface contains a cyclic declaration dependency",
         )
     }
 }

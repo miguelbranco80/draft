@@ -102,10 +102,21 @@ literals, boolean composition, categorical equality, and unsigned comparisons.
 Exactly one selected declaration list is appended to the existing package
 scope. Initial Symbol IDs remain stable; nested `else when` rows enter a later
 deterministic materialization round. Public alias spans are rebuilt from that
-selected source table. This is still a source-name view, not the canonical typed
-interface: arithmetic and aggregate constants, imported constants, compile-time
-procedures in conditions, ambiguous constant/type classification, interface
-types/constants/contracts, and type assignment remain later semantic products.
+selected source table. The subsequent `workspace-interfaces` boundary installs
+the production-order predeclared scalar table, demands selected public
+declaration products, classifies scalar constants versus type aliases, types
+explicit scalar globals and fixed procedure signatures, and lazily translates
+their reachable types and values into package-independent interface IDs. It
+then reconstructs each dependency declaration in the consumer's Type-ID domain
+beneath the exact file-local import alias. The current closed subset accepts
+named scalar aliases (including forward local aliases and qualified imported
+aliases), boolean/unsigned/string constants over the existing evaluator,
+explicitly typed scalar globals, and non-parametric Draft procedures with fixed
+named scalar parameters and results. Aggregate, pointer/view, distinct,
+parametric, foreign/export, procedure-contract, and general constant/type work
+remains a diagnosed interface staging boundary. Imported constants are
+available while building dependent interfaces but not during the earlier
+package-`when` phase, whose dependency interfaces do not yet exist.
 The staging executable is deliberately absent from the install set until a
 coherent public compiler command surface exists.
 
@@ -154,8 +165,13 @@ also guards the production scheduler rule that a selected declaration frontier
 must receive condition, type, layout, and constant product identities before
 the package-name barrier can close. Cyclic or demanded out-of-vocabulary
 constants fail explicitly without selecting a branch. The real staging graph
-exercises both sides of core/c_abi's target branch. General constant evaluation
-and typed package interfaces are the next semantic product slices.
+exercises both sides of core/c_abi's target branch. The typed-interface
+differential then compares canonical scalar/procedure graphs and consumer-local
+type/value reconstruction across all four targets. It includes forward local
+aliases, imported type and value aliases, scalar globals, fixed procedure
+signatures, and explicit aggregate/cycle failures. General constant evaluation,
+the remaining type constructors, procedure contracts, and body typing are the
+next semantic product slices.
 
 The staging graph uses physical core source because the C++ bootstrap must
 compile `draftc-next` before it can run. The installed bootstrap's immutable

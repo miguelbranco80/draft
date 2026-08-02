@@ -191,8 +191,9 @@ boundary and no alternate-emitter fallback for unsupported operations.
 ## Self-hosted frontend staging limits
 
 Status: build-tree source, lexer, parser, folder-package, canonical import-graph,
-declaration-name, unconditional qualified-name, and target-conditional
-declaration replacement; not a Draft language or public CLI limit.
+declaration-name, unconditional qualified-name, target-conditional declaration,
+and scalar/procedure typed-interface replacement; not a Draft language or
+public CLI limit.
 
 On a supported native host, the build graph uses C++ `draftc` to produce an O2
 Draft executable named `draftc-next`. Its accepted commands are
@@ -213,12 +214,21 @@ and demand-driven local scalar constant products over that same vocabulary.
 Forward and chained names publish once through explicit product edges; cycles
 stall visibly; constants which no condition demands remain dormant. It appends
 the chosen source declarations without rebuilding the unconditional Symbol-ID
-prefix, then rebuilds the public alias spans. Arithmetic and aggregate
-constants, imported constants, types, compile-time procedures, typed
-dependency-interface reconstruction, deeper nominal member lookup, ambiguous
-constant/type classification, type checking, elaboration, MIR, LLVM, artifacts,
-and linking have not moved to it yet. The C++ driver remains the public compiler
-and compatibility oracle.
+prefix, then rebuilds the public alias spans. `workspace-interfaces` continues
+dependency-first through a deliberately closed typed subset: every package gets
+the production-order predeclared scalar table; demanded public declarations
+classify type aliases versus boolean/unsigned/string constants; named scalar
+types assign explicit globals and fixed non-parametric Draft procedure
+signatures; reachable types and constants are rewritten into canonical
+package-interface IDs; and each imported declaration is reconstructed in the
+consumer Type-ID domain beneath its file-local alias. Forward local type aliases
+and qualified imported type/value aliases are supported. Aggregate,
+pointer/view, distinct, parametric, foreign/export, procedure-contract, and
+general constant/type forms fail explicitly at this interface boundary.
+Imported constants remain unavailable to the earlier package-`when` selector.
+Deeper nominal member lookup, full type/body checking, elaboration, MIR, LLVM,
+artifacts, and linking have not moved to the staging driver. The C++ driver
+remains the public compiler and compatibility oracle.
 
 The Draft lexer has the same token spellings, ranges, semicolon insertion,
 diagnostic rendering, stdout/stderr bytes, and exit behavior as the bootstrap
@@ -246,7 +256,15 @@ symbol references, canonical targets, alias locality, and source ordering for
 that earlier view. Conditional public names are deliberately filtered out of
 that earlier command's oracle and Draft result; the later target-declaration
 command rebuilds them after selection. Neither view is yet a serialized or
-typed package interface.
+typed package interface. The typed-interface differential then compares the
+canonical reachable scalar/procedure type rows, declaration classifications,
+constant payloads, and consumer-local imported type/value shapes with production
+on all four targets. Its focused fixture covers forward local aliases, qualified
+imported aliases, scalar globals, and fixed procedure signatures; separate
+fixtures require aggregate types and local type cycles to fail at the exact
+self-hosting boundary. This evidence applies only to that closed subset, not to
+the full production PackageInterface vocabulary or serialization.
+
 The target-declaration differential replays the production compiler's published
 condition selections through its source collector and compares Draft's selected
 condition order, stable symbol suffix, source classification/flags, and rebuilt

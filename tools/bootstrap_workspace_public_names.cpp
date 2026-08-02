@@ -1,4 +1,4 @@
-// Bootstrap oracle for public names and target-selected declarations.
+// Bootstrap oracle for public names, target declarations, and typed interfaces.
 //
 // This non-installed qualification executable combines two production C++
 // boundaries without changing either one. The workspace loader and declaration
@@ -10,15 +10,17 @@
 // replays those production selections through
 // materialize_conditional_declaration on a fresh source-level package and
 // compares the appended SymbolId suffix plus the selected public-name view.
-// Neither mode pretends that Draft has rebuilt typed interface payloads.
+// The interface command retains that complete prefix, then emits the reachable
+// production scalar/procedure interface graph and structurally normalized
+// consumer-local imported types and values.
 //
 // The early SourceManager owns every byte referenced by the graph and raw
 // semantic packages until their dump and diagnostics finish. The complete
 // compilation uses an independent SourceManager because its typed products are
 // consulted only for public-name acceptance in unconditional mode. Target-mode
 // selection replay uses only compiled-source FileIds with the matching compiled
-// graph; no FileId crosses SourceManager lifetimes. Fixtures are fully valid.
-// Typed interface reconstruction remains a later self-hosting gate.
+// graph; no FileId crosses SourceManager lifetimes. The interface fixture is
+// fully valid and intentionally stays inside Draft's diagnosed staging subset.
 
 #include "compile/compiler.h"
 #include "sema/analyzer.h"
@@ -72,6 +74,42 @@ namespace {
   case draft::SymbolKind::VariantAlternative: return "variant-alternative";
   case draft::SymbolKind::TypeParameter: return "type-parameter";
   case draft::SymbolKind::ValueParameter: return "value-parameter";
+  }
+  return "unknown";
+}
+
+// Keep the oracle spelling independent of host enum ordinals and identical to
+// the Draft dump's closed canonical kind vocabulary.
+[[nodiscard]] const char *type_kind_text(draft::TypeKind kind) {
+  switch (kind) {
+  case draft::TypeKind::Invalid: return "invalid";
+  case draft::TypeKind::Void: return "void";
+  case draft::TypeKind::UntypedInteger: return "untyped-integer";
+  case draft::TypeKind::UntypedFloat: return "untyped-float";
+  case draft::TypeKind::Bool: return "bool";
+  case draft::TypeKind::BooleanStorage: return "boolean-storage";
+  case draft::TypeKind::SignedInteger: return "signed-integer";
+  case draft::TypeKind::UnsignedInteger: return "unsigned-integer";
+  case draft::TypeKind::Float: return "float";
+  case draft::TypeKind::Rune: return "rune";
+  case draft::TypeKind::EndianScalar: return "endian-scalar";
+  case draft::TypeKind::RawPointer: return "raw-pointer";
+  case draft::TypeKind::CString: return "c-string";
+  case draft::TypeKind::String: return "string";
+  case draft::TypeKind::Pointer: return "pointer";
+  case draft::TypeKind::MultiPointer: return "multi-pointer";
+  case draft::TypeKind::Slice: return "slice";
+  case draft::TypeKind::Array: return "array";
+  case draft::TypeKind::Tuple: return "tuple";
+  case draft::TypeKind::Procedure: return "procedure";
+  case draft::TypeKind::Simd: return "simd";
+  case draft::TypeKind::Struct: return "struct";
+  case draft::TypeKind::Enum: return "enum";
+  case draft::TypeKind::Variant: return "variant";
+  case draft::TypeKind::Union: return "union";
+  case draft::TypeKind::Distinct: return "distinct";
+  case draft::TypeKind::TypeParameter: return "type-parameter";
+  case draft::TypeKind::MetaType: return "meta-type";
   }
   return "unknown";
 }
@@ -432,6 +470,197 @@ void dump_public_names(
   }
 }
 
+// Render only the constant payload facts compared by this migration gate.
+// Type indices are already in the producer InterfaceTypeId domain.
+void append_interface_constant(
+    const draft::ConstantValue &value, std::ostream &output) {
+  switch (value.kind) {
+  case draft::ConstantKind::Bool:
+    output << "bool " << (value.boolean ? '1' : '0');
+    return;
+  case draft::ConstantKind::Integer:
+    output << "integer " << value.integer.to_decimal();
+    return;
+  case draft::ConstantKind::String:
+    output << "string " << value.text.size() << ' ' << value.text;
+    return;
+  case draft::ConstantKind::Type:
+    output << "type " << value.type_index;
+    return;
+  case draft::ConstantKind::EnumLabel:
+    output << "target-category " << value.text;
+    return;
+  case draft::ConstantKind::Unavailable:
+  case draft::ConstantKind::Nil:
+  case draft::ConstantKind::Float:
+  case draft::ConstantKind::Aggregate:
+  case draft::ConstantKind::Procedure:
+  case draft::ConstantKind::Target:
+    output << "invalid";
+    return;
+  }
+}
+
+// Imported TypeIds are deliberately normalized structurally. A complete
+// production compilation interns many private types which are outside this
+// migration slice, so comparing process-local integers would measure unrelated
+// work rather than consumer-side interface reconstruction.
+void append_local_type_shape(
+    const draft::TypeStore &types, draft::TypeId id, std::ostream &output) {
+  assert(id.is_valid());
+  const draft::Type &type = types.type(id);
+  if (type.kind == draft::TypeKind::Procedure) {
+    assert(!type.members.empty());
+    output << "procedure(";
+    for (std::size_t index = 0; index + 1 < type.members.size(); ++index) {
+      if (index != 0) output << ',';
+      append_local_type_shape(types, type.members[index], output);
+    }
+    output << ")->";
+    append_local_type_shape(types, type.members.back(), output);
+    return;
+  }
+  output << type_kind_text(type.kind) << ':'
+         << (type.name.empty() ? "-" : type.name);
+}
+
+// Imported type constants have already been rewritten back to a consumer
+// TypeId. Expand that ID structurally; every other scalar payload is domain-
+// independent and shares the producer renderer.
+void append_local_constant(
+    const draft::TypeStore &types, const draft::ConstantValue &value,
+    std::ostream &output) {
+  if (value.kind != draft::ConstantKind::Type) {
+    append_interface_constant(value, output);
+    return;
+  }
+  output << "type ";
+  append_local_type_shape(types, draft::TypeId{value.type_index}, output);
+}
+
+// The typed-interface dump is intentionally narrower than PackageInterface's
+// final serialization contract. It compares the canonical scalar/procedure
+// graph moved in this slice and verifies that every dependency declaration was
+// reconstructed as a consumer-local proxy type/value beneath the exact alias.
+void dump_interfaces(
+    const draft::WorkspaceGraph &source_graph,
+    const std::vector<draft::SemanticPackage> &source_packages,
+    const draft::CompileWorkspaceResult &compiled, std::ostream &output) {
+  assert(compiled.ok);
+  assert(source_packages.size() == compiled.packages.size());
+  const std::map<ImportSite, std::size_t> imports =
+      index_import_sites(source_graph);
+
+  for (std::size_t package_index = 0;
+       package_index < compiled.packages.size(); ++package_index) {
+    assert(compiled.packages[package_index].has_value());
+    const draft::CompiledPackage &compiled_package =
+        *compiled.packages[package_index];
+    const draft::PackageInterface &interface = compiled_package.interface;
+    output << "interface-package " << package_index << ' '
+           << interface.types.size() << ' ' << interface.declarations.size()
+           << '\n';
+
+    for (std::size_t type_index = 0; type_index < interface.types.size();
+         ++type_index) {
+      const draft::InterfaceType &type = interface.types[type_index];
+      output << "interface-type " << package_index << ' ' << type_index << ' '
+             << type_kind_text(type.kind) << ' '
+             << (type.name.empty() ? "-" : type.name) << ' '
+             << type.bit_width << ' ';
+      if (type.element.is_valid()) {
+        output << type.element.value;
+      } else {
+        output << "invalid";
+      }
+      output << ' ' << type.members.size();
+      for (draft::InterfaceTypeId member : type.members) {
+        output << ' ' << member.value;
+      }
+      output << '\n';
+    }
+
+    for (std::size_t declaration_index = 0;
+         declaration_index < interface.declarations.size();
+         ++declaration_index) {
+      const draft::InterfaceDeclaration &declaration =
+          interface.declarations[declaration_index];
+      output << "interface-declaration " << package_index << ' '
+             << declaration_index << ' ' << declaration.name << ' '
+             << symbol_kind_text(declaration.kind) << ' '
+             << (declaration.flags.is_thread_local ? '1' : '0')
+             << (declaration.flags.foreign ? '1' : '0')
+             << (declaration.flags.exported ? '1' : '0')
+             << (declaration.flags.parametric ? '1' : '0') << ' '
+             << declaration.type.value << ' ';
+      if (declaration.has_constant) {
+        append_interface_constant(declaration.constant, output);
+      } else {
+        output << "none";
+      }
+      output << '\n';
+    }
+
+    const draft::SemanticPackage &source_package =
+        source_packages[package_index];
+    const draft::SemanticPackage &bound =
+        compiled_package.declarations.package;
+    const std::vector<draft::ImportBinding> &bound_imports =
+        bound.imports_for_read();
+    assert(bound_imports.size() == source_package.imports.size());
+    for (std::size_t binding_index = 0;
+         binding_index < source_package.imports.size(); ++binding_index) {
+      const draft::ImportBinding &source_binding =
+          source_package.imports[binding_index];
+      const draft::ImportBinding &bound_binding = bound_imports[binding_index];
+      const ImportSite key{
+          static_cast<std::uint32_t>(package_index),
+          source_binding.syntax.file.value,
+          source_binding.syntax.node.value,
+      };
+      const auto found_edge = imports.find(key);
+      assert(found_edge != imports.end());
+      const draft::PackageImport &edge =
+          source_graph.imports[found_edge->second];
+      assert(compiled.packages[edge.imported_package.value].has_value());
+      const draft::PackageInterface &target_interface =
+          compiled.packages[edge.imported_package.value]->interface;
+
+      output << "typed-import " << package_index << ' '
+             << source_binding.symbol.value << ' '
+             << target_interface.declarations.size() << '\n';
+      for (std::size_t ordinal = 0;
+           ordinal < target_interface.declarations.size(); ++ordinal) {
+        const draft::InterfaceDeclaration &target_declaration =
+            target_interface.declarations[ordinal];
+        const draft::ImportedSymbol *matched = nullptr;
+        for (const draft::ImportedSymbol &imported :
+             bound.imported_symbols_for_read()) {
+          if (imported.import_symbol == bound_binding.symbol &&
+              imported.public_name == target_declaration.name) {
+            matched = &imported;
+            break;
+          }
+        }
+        assert(matched != nullptr);
+        const draft::Symbol &proxy = bound.symbols.symbol(matched->proxy);
+        output << "typed-import-name " << package_index << ' '
+               << source_binding.symbol.value << ' '
+               << edge.imported_package.value << ' ' << ordinal << ' '
+               << target_declaration.name << ' ';
+        append_local_type_shape(bound.types, proxy.type, output);
+        output << ' ';
+        if (matched->has_constant) {
+          append_local_constant(bound.types, matched->constant, output);
+        } else {
+          output << "none";
+        }
+        output << '\n';
+      }
+    }
+  }
+}
+
 [[nodiscard]] draft::DiagnosticSink normalized_diagnostics(
     const draft::DiagnosticSink &source) {
   draft::DiagnosticSink result;
@@ -455,8 +684,13 @@ int main(int argc, char **argv) {
   const bool target_declarations_command =
       argc >= 2 &&
       std::string_view(argv[1]) == "workspace-target-declarations";
+  const bool interfaces_command =
+      argc >= 2 && std::string_view(argv[1]) == "workspace-interfaces";
+  const bool selected_source_command =
+      target_declarations_command || interfaces_command;
   if (argc < 11 || (argc - 11) % 4 != 0 ||
-      (!public_names_command && !target_declarations_command) ||
+      (!public_names_command && !target_declarations_command &&
+       !interfaces_command) ||
       std::string_view(argv[3]) != "--workspace" ||
       std::string_view(argv[5]) != "--core" ||
       std::string_view(argv[7]) != "--core-identity" ||
@@ -472,7 +706,11 @@ int main(int argc, char **argv) {
            "workspace-target-declarations <root-package> --workspace "
            "<workspace> --core <core-root> --core-identity <identity> "
            "--target <selector> [--dependency <prefix> <root> "
-           "<identity>]...\n";
+           "<identity>]...\n"
+           "  draft-bootstrap-workspace-public-names "
+           "workspace-interfaces <root-package> --workspace <workspace> "
+           "--core <core-root> --core-identity <identity> --target "
+           "<selector> [--dependency <prefix> <root> <identity>]...\n";
     return EXIT_FAILURE;
   }
 
@@ -525,8 +763,8 @@ int main(int argc, char **argv) {
   std::vector<draft::SemanticPackage> selected_packages;
   std::vector<std::vector<draft::ConditionalSelection>> selected_conditions;
   draft::DiagnosticSink selection_diagnostics;
-  bool selected_ok = !target_declarations_command;
-  if (target_declarations_command && compiled.has_value() && compiled->ok) {
+  bool selected_ok = !selected_source_command;
+  if (selected_source_command && compiled.has_value() && compiled->ok) {
     selected_ok = rebuild_target_declarations(
         compiled_sources, *compiled, selected_packages, selected_conditions,
         selection_diagnostics);
@@ -535,12 +773,16 @@ int main(int argc, char **argv) {
   dump_workspace_graph(loaded.graph, std::cout);
   if (loaded.ok) dump_declarations(loaded.graph, raw_packages, std::cout);
   if (compiled.has_value() && compiled->ok) {
-    if (target_declarations_command && selected_ok) {
+    if (selected_source_command && selected_ok) {
       dump_target_declarations(
           target_profile, compiled->graph, raw_packages, selected_packages,
           selected_conditions, std::cout);
       dump_public_names(
           compiled->graph, selected_packages, *compiled, std::cout);
+      if (interfaces_command) {
+        dump_interfaces(
+            compiled->graph, selected_packages, *compiled, std::cout);
+      }
     } else if (public_names_command) {
       dump_public_names(loaded.graph, raw_packages, *compiled, std::cout);
     }

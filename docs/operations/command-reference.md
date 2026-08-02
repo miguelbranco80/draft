@@ -303,6 +303,11 @@ build/draftc-next workspace-target-declarations path/to/root-package \
   --core path/to/core --core-identity pinned-core-identity \
   --target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows \
   [--dependency prefix path/to/dependency pinned-content-identity]...
+build/draftc-next workspace-interfaces path/to/root-package \
+  --workspace path/to/workspace \
+  --core path/to/core --core-identity pinned-core-identity \
+  --target aarch64-macos|aarch64-linux|x86_64-linux|x86_64-windows \
+  [--dependency prefix path/to/dependency pinned-content-identity]...
 ```
 
 `package-syntax` prints the target-selected files in canonical bytewise order,
@@ -334,10 +339,23 @@ constants over that same scalar vocabulary. Each demanded constant is an
 explicit product evaluated once against already published values; unrelated
 constants remain dormant and cycles fail without recursive evaluation.
 Arithmetic/aggregate constants, imported constants, types, and compile-time
-procedures still fail explicitly at this staging boundary. These are
-qualification commands rather than the public compiler. Public semantic
-compilation and later commands continue to use `build/draftc` until their own
-replacement gates are complete.
+procedures still fail explicitly at this target-selection boundary.
+`workspace-interfaces` preserves the complete target/public-name prefix, then
+prints each package's canonical reachable interface type graph and selected
+public declaration rows. It supports predeclared and named scalar aliases,
+boolean/unsigned/string constants, explicitly typed scalar globals, and fixed
+non-parametric Draft procedure signatures. Packages are processed
+dependency-first; each producer interface type/value is reconstructed in the
+consumer's local type domain, and imported rows print structural type shapes so
+process-local Type IDs do not enter the qualification contract. Forward local
+type aliases and qualified imported type/value aliases are included. Aggregate,
+pointer/view, distinct, parametric, foreign/export, procedure-contract, and
+general constant/type forms fail explicitly rather than receiving a fallback
+interface. Imported constants are available here only after the dependency
+interface exists; the earlier package-`when` command still cannot consume them.
+These are qualification commands rather than the public compiler. Public
+semantic compilation and later commands continue to use `build/draftc` until
+their own replacement gates are complete.
 
 `check` runs the provider-free front end and semantic pipeline. If the program
 contains saved `...` expansions, it loads and revalidates them. It never starts

@@ -9,7 +9,9 @@
 // package public declarations beneath those aliases and qualifies two-part
 // imported-name lookup; `workspace-target-declarations` materializes package
 // `when` through target facts and demand-driven local scalar constant products,
-// then rebinds that public view.
+// then rebinds that public view; `workspace-interfaces` continues through the
+// first canonical typed declaration/interface graph and consumer-local import
+// reconstruction.
 // Every command
 // renders the same stdout/stderr bytes and exit status as its C++ bootstrap
 // oracle. Keeping the commands phase-bounded makes bootstrap replacement
@@ -592,6 +594,129 @@ run_workspace_target_declarations :: proc(
         target_declarations_succeeded && public_names_succeeded else 1
 }
 
+// run_workspace_interfaces preserves the complete target-declaration prefix,
+// then types the selected public declaration set dependency-first and emits
+// canonical producer interfaces plus consumer-local imported type/value rows.
+// A staging failure retains all earlier output and renders its exact semantic
+// diagnostic; no partial interface dump is presented as complete.
+run_workspace_interfaces :: proc(
+    root_package, workspace_directory, core_directory: string,
+    core_identity, file_tag: string,
+    dependencies: []compiler_workspace.Dependency_Mapping,
+) -> int {
+    (facts, have_facts) := compiler_sema.select_builtin_target_facts(file_tag)
+    assert(have_facts, "validated target selector has no semantic facts")
+
+    graph: compiler_workspace.Workspace_Graph
+    graph_succeeded := compiler_workspace.load_workspace(
+        &graph,
+        root_package,
+        compiler_workspace.Workspace_Options{
+            workspace_directory = workspace_directory,
+            core_directory = core_directory,
+            core_content_identity = core_identity,
+            dependencies = dependencies,
+            package_options = compiler_workspace.Load_Options{
+                file_tag = file_tag,
+            },
+        },
+    )
+    defer compiler_workspace.destroy_workspace_graph(&graph)
+
+    semantic: compiler_sema.Semantic_Workspace
+    declarations_succeeded := compiler_sema.collect_workspace_declarations(
+        &graph,
+        &semantic,
+    )
+    defer compiler_sema.destroy_semantic_workspace(&semantic)
+
+    standard_output: compiler_text.Builder
+    diagnostic_output: compiler_text.Builder
+    compiler_text.init(&standard_output)
+    compiler_text.init(&diagnostic_output)
+    defer compiler_text.destroy(&diagnostic_output)
+    defer compiler_text.destroy(&standard_output)
+
+    compiler_workspace.dump_workspace_graph(&graph, &standard_output)
+    compiler_workspace.render_workspace_diagnostics(
+        &graph,
+        &diagnostic_output,
+    )
+    if graph_succeeded {
+        compiler_sema.dump_workspace_declarations(
+            &graph,
+            &semantic,
+            &standard_output,
+        )
+    }
+
+    target_declarations_succeeded := false
+    public_names_succeeded := false
+    interfaces_succeeded := false
+    if declarations_succeeded {
+        target_declarations_succeeded =
+            compiler_sema.materialize_workspace_target_declarations(
+                &graph,
+                &facts,
+                &semantic,
+            )
+        if target_declarations_succeeded {
+            public_names_succeeded = compiler_sema.bind_workspace_public_names(
+                &graph,
+                &semantic,
+            )
+        }
+        if public_names_succeeded {
+            interfaces_succeeded =
+                compiler_sema.build_workspace_typed_interfaces(
+                    &graph,
+                    &facts,
+                    &semantic,
+                )
+        }
+    }
+    if target_declarations_succeeded {
+        compiler_sema.dump_workspace_target_declarations(
+            &graph,
+            &facts,
+            &semantic,
+            &standard_output,
+        )
+    }
+    if public_names_succeeded {
+        compiler_sema.dump_workspace_public_names(
+            &graph,
+            &semantic,
+            &standard_output,
+        )
+    }
+    if interfaces_succeeded {
+        compiler_sema.dump_workspace_interfaces(&semantic, &standard_output)
+    }
+    if graph_succeeded {
+        compiler_sema.render_workspace_diagnostics(
+            &graph,
+            &semantic,
+            &diagnostic_output,
+        )
+    }
+    if os.write_all(
+        os.standard_output,
+        compiler_text.view(&standard_output),
+    ) != .none {
+        return 1
+    }
+    if os.write_all(
+        os.standard_error,
+        compiler_text.view(&diagnostic_output),
+    ) != .none {
+        return 1
+    }
+    return 0 if graph_succeeded && declarations_succeeded &&
+        target_declarations_succeeded && public_names_succeeded &&
+        interfaces_succeeded else 1
+}
+
 // main accepts only implemented phases so an unimplemented command cannot
 // silently fall back to the bootstrap or claim self-hosted coverage.
 main :: proc() -> int {
@@ -616,11 +741,14 @@ main :: proc() -> int {
         text_equal(arguments[1], "workspace-public-names")
     workspace_target_declarations_command := len(arguments) >= 2 &&
         text_equal(arguments[1], "workspace-target-declarations")
+    workspace_interfaces_command := len(arguments) >= 2 &&
+        text_equal(arguments[1], "workspace-interfaces")
     if len(arguments) >= 11 &&
         (len(arguments) - 11) % 4 == 0 &&
         (workspace_syntax_command || workspace_declarations_command ||
             workspace_public_names_command ||
-            workspace_target_declarations_command) &&
+            workspace_target_declarations_command ||
+            workspace_interfaces_command) &&
         text_equal(arguments[3], "--workspace") &&
         text_equal(arguments[5], "--core") &&
         text_equal(arguments[7], "--core-identity") &&
@@ -677,6 +805,16 @@ main :: proc() -> int {
                     array.view(&dependencies),
                 )
             }
+            if workspace_interfaces_command {
+                return run_workspace_interfaces(
+                    arguments[2],
+                    arguments[4],
+                    arguments[6],
+                    arguments[8],
+                    arguments[10],
+                    array.view(&dependencies),
+                )
+            }
             return run_workspace_target_declarations(
                 arguments[2],
                 arguments[4],
@@ -689,7 +827,7 @@ main :: proc() -> int {
     }
     write_error := os.write_text_all(
         os.standard_error,
-        "usage:\n  draftc-next lex <file.draft>\n  draftc-next syntax <file.draft>\n  draftc-next package-syntax <package> --target <selector>\n  draftc-next workspace-syntax <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n  draftc-next workspace-declarations <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n  draftc-next workspace-public-names <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n  draftc-next workspace-target-declarations <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n",
+        "usage:\n  draftc-next lex <file.draft>\n  draftc-next syntax <file.draft>\n  draftc-next package-syntax <package> --target <selector>\n  draftc-next workspace-syntax <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n  draftc-next workspace-declarations <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n  draftc-next workspace-public-names <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n  draftc-next workspace-target-declarations <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n  draftc-next workspace-interfaces <root-package> --workspace <workspace> --core <core-root> --core-identity <identity> --target <selector> [--dependency <prefix> <root> <identity>]...\n",
     )
     if write_error != .none {
         return 1
