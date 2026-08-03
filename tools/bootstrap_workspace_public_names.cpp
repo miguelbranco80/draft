@@ -11,9 +11,9 @@
 // materialize_conditional_declaration on a fresh source-level package and
 // compares the appended SymbolId suffix plus the selected public-name view.
 // The interface command retains that complete prefix, then emits the reachable
-// production scalar/closed-structural/distinct/ordinary-struct interface graph,
-// exact natural field packets, and normalized consumer-local imported types and
-// values.
+// production scalar/closed-structural/distinct/ordinary-struct/ordinary-enum
+// interface graph, exact nominal member packets, and normalized consumer-local
+// imported types and values.
 //
 // The early SourceManager owns every byte referenced by the graph and raw
 // semantic packages until their dump and diagnostics finish. The complete
@@ -506,10 +506,11 @@ void append_interface_constant(
 // production compilation interns many private types which are outside this
 // migration slice, so comparing process-local integers would measure unrelated
 // work rather than consumer-side interface reconstruction. Structural children
-// use canonical Draft syntax, scalar leaves retain kind and spelling, a struct
-// terminates at its qualified nominal name, and a distinct row includes that
-// name plus underlying shape. Terminating structs keeps recursive shapes finite;
-// their complete fields remain visible in the interface-type packet.
+// use canonical Draft syntax, scalar leaves retain kind and spelling, structs
+// and ordinary enums terminate at their qualified nominal name, and a distinct
+// row includes that name plus underlying shape. Nominal termination keeps
+// recursive struct shapes finite; complete fields and enum alternatives remain
+// visible in the interface-type packet.
 void append_local_type_shape(
     const draft::TypeStore &types, draft::TypeId id, std::ostream &output) {
   assert(id.is_valid());
@@ -562,6 +563,10 @@ void append_local_type_shape(
     output << "struct:" << type.name;
     return;
   }
+  if (type.kind == draft::TypeKind::Enum) {
+    output << "enum:" << type.name;
+    return;
+  }
   output << type_kind_text(type.kind) << ':'
          << (type.name.empty() ? "-" : type.name);
 }
@@ -582,8 +587,8 @@ void append_local_constant(
 
 // The typed-interface dump is intentionally narrower than PackageInterface's
 // final serialization contract. It compares the canonical scalar, structural,
-// distinct, and ordinary natural-layout struct graph moved so far and verifies
-// that every dependency
+// distinct, ordinary natural-layout struct, and ordinary enum graph moved so
+// far and verifies that every dependency
 // declaration was reconstructed as a consumer-local proxy type/value beneath
 // the exact alias. A nominal row's diagnostic name differs before and after
 // import, so the oracle normalizes that field to the original public name and
@@ -611,7 +616,9 @@ void dump_interfaces(
          ++type_index) {
       const draft::InterfaceType &type = interface.types[type_index];
       const bool nominal = type.kind == draft::TypeKind::Distinct ||
-                           type.kind == draft::TypeKind::Struct;
+                           type.kind == draft::TypeKind::Struct ||
+                           (type.kind == draft::TypeKind::Enum &&
+                            !type.nominal_root_identity.empty());
       output << "interface-type " << package_index << ' ' << type_index << ' '
              << type_kind_text(type.kind) << ' '
              << (nominal ? type.nominal_public_name
@@ -641,7 +648,13 @@ void dump_interfaces(
       output << ' ' << type.nominal_members.size();
       for (const draft::InterfaceMember &member : type.nominal_members) {
         output << ' ' << member.name << ' ' << symbol_kind_text(member.kind)
-               << ' ' << member.type.value << ' ' << member.offset;
+               << ' ' << member.type.value << ' ' << member.offset << ' '
+               << (member.has_enum_value ? '1' : '0') << ' ';
+        if (member.has_enum_value) {
+          output << member.enum_value.to_decimal();
+        } else {
+          output << '-';
+        }
       }
       output << '\n';
     }

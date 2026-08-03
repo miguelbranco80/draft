@@ -2,7 +2,8 @@
 #
 # Both executables emit the established graph, declaration, target-selection,
 # and public-name prefix before the canonical scalar/structural/nominal type
-# graph, including exact natural-layout struct fields and offsets.
+# graph, including exact natural-layout struct fields/offsets and enum
+# alternatives/backing values.
 # Imported rows are compared through structural/nominal consumer-local type
 # shapes so unrelated production-only private interning cannot affect the
 # result. Scratch is process-unique below the caller-provided binary directory.
@@ -126,6 +127,13 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Limit :: 42\n"
   "pub Enabled :: true\n"
   "pub Label :: \"ready\"\n"
+  "pub Mode :: enum { idle; ready = 4; later; }\n"
+  "pub Signed_Code :: enum i16 { zero; minimum = -32768; minus_one = -1; maximum = 32767; }\n"
+  "pub Wide_Code :: enum { zero; maximum = 340282366920938463463374607431768211455; }\n"
+  "pub Forward_Code :: enum u16 { zero; selected = Later_Code; }\n"
+  "Later_Code :: 257\n"
+  "Private_Status :: enum u8 { none; active = 9; }\n"
+  "pub Private_Status_View :: Private_Status\n"
   "pub Forward :: Later\n"
   "Later :: u16\n"
   "pub Forward_View :: Later_View\n"
@@ -145,6 +153,8 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Storage: Index_Array\n"
   "pub Current: Duration\n"
   "pub Current_Pair: Pair\n"
+  "pub Current_Mode: Mode\n"
+  "pub Mode_Array :: [Count]Mode\n"
   "pub transform :: proc(values: Index_Slice, cursor: Index_Multi) -> Index_Pointer { return nil; }\n"
   "pub keep_duration :: proc(value: Duration) -> Duration { return value; }\n"
   "pub pair :: proc(pointer: Index_Pointer, values: Index_Array) -> (Index_Pointer, Index_Array) { return (pointer, values); }\n"
@@ -157,6 +167,9 @@ file(WRITE "${interface_workspace}/middle/package.draft"
   "pub Private_Count :: values.Private_Count_View\n"
   "pub Pair :: values.Pair\n"
   "pub Private_Record :: values.Private_Record_View\n"
+  "pub Mode :: values.Mode\n"
+  "pub Private_Status :: values.Private_Status_View\n"
+  "pub Middle_Code :: enum u16 { none; count = values.Count; }\n"
   "pub Wrapped :: distinct values.Duration\n"
   "pub Wrapped_Array :: [2]Wrapped\n"
   "pub Wrapper :: struct { pair: values.Pair; duration: values.Duration; next: ^Wrapper; }\n"
@@ -179,6 +192,10 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Via_Middle_Duration :: middle.Duration\n"
   "pub Direct_Pair :: values.Pair\n"
   "pub Via_Middle_Pair :: middle.Pair\n"
+  "pub Direct_Mode :: values.Mode\n"
+  "pub Via_Middle_Mode :: middle.Mode\n"
+  "pub Reexported_Private_Status :: middle.Private_Status\n"
+  "pub Imported_Middle_Code :: middle.Middle_Code\n"
   "pub Reexported_Private_Record :: middle.Private_Record\n"
   "pub Middle_Wrapper :: middle.Wrapper\n"
   "pub Reexported_Private_Count :: middle.Private_Count\n"
@@ -191,7 +208,10 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Imported_Count_Array :: [values.Count]values.Index\n"
   "pub Direct_Tuple :: ([]values.Index, ^values.Index_Tuple)\n"
   "pub Pair_Grid :: [2]values.Pair_Array\n"
+  "pub Mode_Grid :: [2]values.Mode_Array\n"
+  "pub Local_Mode :: enum u8 { none; imported_count = values.Count; }\n"
   "pub Envelope :: struct { pair: values.Pair; wrapper: middle.Wrapper; next: ^Envelope; grid: [2]values.Pair; }\n"
+  "pub Enum_Record :: struct { direct: values.Mode; transitive: middle.Mode; local: Local_Mode; }\n"
   "pub Storage: values.Index_Array\n"
   "pub Cursor: values.Index_Multi\n"
   "pub copy :: proc(value: []values.Index, cursor: [^]values.Index) -> ^values.Index { return nil; }\n"
@@ -204,7 +224,7 @@ foreach(target
     x86_64-linux
     x86_64-windows)
   compare_interfaces(
-    "scalar-structural-struct-${target}"
+    "scalar-structural-nominal-${target}"
     "${interface_workspace}/app"
     "${interface_workspace}"
     "${interface_core}"
@@ -212,12 +232,36 @@ foreach(target
   )
 endforeach()
 
-# Unsupported canonical constructors must fail as an implementation boundary,
-# not be flattened into a scalar or silently omitted from the public interface.
+# C ABI enums and the general constant evaluator remain outside this ordinary
+# enum slice. They must fail explicitly rather than inheriting Draft layout or
+# accepting a partial expression vocabulary.
 expect_next_interface_failure(
-  unsupported-enum
-  "package app\npub State :: enum { ready; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+  unsupported-c-enum
+  "package app\npub State :: c enum { ready; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+)
+expect_next_interface_failure(
+  unsupported-enum-value-arithmetic
+  "package app\npub State :: enum { none; ready = 2 + 2; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+)
+
+# The staged enum completion still enforces the semantic zero-value,
+# uniqueness, and explicit-backing range invariants within its closed syntax.
+expect_next_interface_failure(
+  invalid-enum-missing-zero
+  "package app\npub State :: enum { ready = 1; later; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+)
+expect_next_interface_failure(
+  invalid-enum-duplicate-value
+  "package app\npub State :: enum { none; ready = 1; later = 1; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+)
+expect_next_interface_failure(
+  invalid-enum-backing-range
+  "package app\npub State :: enum u8 { none; too_large = 256; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
 )
 
 # The first aggregate slice is deliberately only ordinary natural layout.
@@ -226,22 +270,22 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-packed-struct
   "package app\npub Record :: struct { packed value: u32; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
 )
 expect_next_interface_failure(
   unsupported-bit-field-struct
   "package app\npub Record :: struct { bits(3) value: u8; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
 )
 expect_next_interface_failure(
   unsupported-c-struct
   "package app\npub Record :: c struct { value: u32; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
 )
 expect_next_interface_failure(
   unsupported-aligned-struct
   "package app\npub Record :: align(16) struct { value: u32; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
 )
 
 # SIMD remains outside the closed type vocabulary even though its element and
@@ -249,7 +293,7 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-simd
   "package app\npub Lanes :: simd[4]u32\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
 )
 
 # Array counts reuse the current scalar constant-product evaluator. Arithmetic
@@ -258,7 +302,7 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-array-count-arithmetic
   "package app\npub Bytes :: [2 + 2]u8\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
 )
 
 # A concrete uint is not an implicit usize merely because both current target
@@ -267,7 +311,7 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-array-count-type
   "package app\npub Bytes :: [target.pointer_bits]u8\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, or ordinary struct declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
 )
 
 # Local declaration cycles remain visible graph edges and receive a distinct
@@ -292,5 +336,5 @@ expect_next_interface_failure(
 )
 
 message(STATUS
-  "draftc-next typed interfaces matched production scalar/structural/distinct/struct graphs")
+  "draftc-next typed interfaces matched production scalar/structural/nominal graphs")
 file(REMOVE_RECURSE "${run_root}")
