@@ -346,7 +346,8 @@ public declaration rows. It supports predeclared and named scalar aliases,
 boolean/unsigned/string constants, `^T`, `[^]T`, `[]T`, positive fixed arrays,
 tuples, explicitly typed structural globals, ordinary fixed procedure types,
 declaration-owned distinct types, ordinary named natural-layout structs, and
-ordinary enums and variants, plus non-parametric Draft procedure signatures.
+ordinary enums, variants, and unions, plus non-parametric Draft procedure
+signatures.
 Fixed-array counts may use
 representable untyped integers or exact `usize` values already produced by the
 local/imported scalar dependency graph. Packages are processed dependency-first;
@@ -371,16 +372,17 @@ every source-order alternative payload edge at the common aligned payload
 offset; payload-free alternatives point at `void`. Inferred discriminators use
 the smallest fitting fixed-width unsigned type, and explicit direct or distinct
 integer discriminators are range-checked. Variant members use `0 -` in the final
-pair.
-Forward local type/count aliases and qualified imported type/value/count aliases
-are included. Unions, C enums,
-packed/bit fields, C or explicitly aligned structs,
-selected/synthesized/directive members, SIMD/parametric types, foreign/export
+pair. Ordinary union rows use the same nominal identity and member schema; all
+field offsets are zero, and their exact size/alignment is the rounded
+maximum-member overlay layout. Forward local type/count aliases and qualified
+imported type/value/count aliases are included. C enums, packed/bit fields, C or
+explicitly aligned aggregates, selected/synthesized/directive members,
+SIMD/parametric types, foreign/export
 declarations, procedure contracts, arithmetic count or enum-value expressions,
 and general constant/type forms fail explicitly rather than receiving a
-fallback interface. Imported
-constants are available here only after the dependency interface exists; the
-earlier package-`when` command still cannot consume them.
+fallback interface. Imported constants are available here only after the
+dependency interface exists; the earlier package-`when` command still cannot
+consume them.
 These are qualification commands rather than the public compiler. Public
 semantic compilation and later commands continue to use `build/draftc` until
 their own replacement gates are complete.

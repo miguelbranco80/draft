@@ -192,8 +192,9 @@ boundary and no alternate-emitter fallback for unsupported operations.
 
 Status: build-tree source, lexer, parser, folder-package, canonical import-graph,
 declaration-name, unconditional qualified-name, target-conditional declaration,
-and scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant
-typed-interface replacement; not a Draft language or public CLI limit.
+and scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant/
+ordinary-union typed-interface replacement; not a Draft language or public CLI
+limit.
 
 On a supported native host, the build graph uses C++ `draftc` to produce an O2
 Draft executable named `draftc-next`. Its accepted commands are
@@ -220,8 +221,8 @@ the production-order predeclared scalar table; demanded public declarations
 classify type aliases versus boolean/unsigned/string constants; named scalars
 and the structural `^T`, `[^]T`, `[]T`, `[N]T`, `(T, U)`, and ordinary fixed
 `proc` forms plus declaration-owned `distinct T` type aliases, explicit globals,
-ordinary named natural-layout `struct` declarations, ordinary `enum`
-and `variant` declarations, and procedure signatures; reachable
+ordinary named natural-layout `struct` declarations, ordinary `enum`,
+`variant`, and `union` declarations, and procedure signatures; reachable
 types and constants are rewritten into canonical package-interface IDs; and
 each imported declaration is reconstructed in the consumer Type-ID domain
 beneath its file-local alias. Fixed-array counts reuse the existing scalar
@@ -243,11 +244,13 @@ Ordinary variants retain the same identity, source-order alternative names and
 payload types, explicit or smallest-fitting unsigned discriminator, common
 payload offsets, and exact natural layout. Payload-free alternatives use
 `void`; pointer recursion is supported while by-value cycles remain graph
-cycles. Unions, C enums, packed/bit fields, C or explicitly aligned structs,
-selected/synthesized/directive members, SIMD types, parametric forms,
-foreign/export declarations, procedure contracts, arithmetic array counts or
-enum values, and general constant/type forms fail explicitly at this interface
-boundary.
+cycles. Ordinary unions retain the same identity, source-order field names and
+types, zero byte offsets, and maximum-member natural layout; grouped fields and
+pointer recursion are supported. C enums, packed/bit fields, C or explicitly
+aligned aggregates, selected/synthesized/directive members, SIMD types,
+parametric forms, foreign/export declarations, procedure contracts, arithmetic
+array counts or enum values, and general constant/type forms fail explicitly at
+this interface boundary.
 Imported constants remain unavailable to the earlier package-`when` selector.
 Deeper nominal member lookup, full type/body checking, elaboration, MIR, LLVM,
 artifacts, and linking have not moved to the staging driver. The C++ driver
@@ -281,14 +284,14 @@ that earlier command's oracle and Draft result; the later target-declaration
 command rebuilds them after selection. Neither view is yet a serialized or
 typed package interface. The typed-interface differential then compares
 canonical reachable
-scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant type
-rows, including array element counts, struct fields/layouts, enum
-alternatives/backing values, variant discriminator/payload layouts, declaration
-classifications, constant payloads, and consumer-local imported type/value
-shapes with production on all four targets.
-Its focused fixture
-covers forward local type and array-count dependencies, qualified imported
-type/value/count aliases, pointer/multi-pointer/slice/array/tuple/procedure type
+scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant/
+ordinary-union type rows, including array element counts, struct fields/layouts,
+enum alternatives/backing values, variant discriminator/payload layouts, union
+field/overlay layouts, declaration classifications, constant payloads, and
+consumer-local imported type/value shapes with production on all four targets.
+Its focused fixture covers forward local type and array-count dependencies,
+qualified imported type/value/count aliases,
+pointer/multi-pointer/slice/array/tuple/procedure type
 aliases, structural globals and procedure signatures, tuple results, and
 target-dependent page-size arrays, distinct declarations with identical and
 structural underlyings, private distinct exposure, identity-preserving
@@ -298,11 +301,16 @@ inferred/explicit/signed/u128 enums, enum exposure/re-export, imported enum
 constants, and enums nested in other supported constructors. The focused
 fixture also covers payload-free/typed/recursive variants, explicit/inferred
 and distinct-integer discriminators, private/transitive variant exposure, and
-variant nesting.
+variant nesting. Size-rounding/grouped/recursive and target-selected unions,
+private/transitive union exposure, and union nesting are covered as well. The
+oracle additionally verifies that C-layout, explicitly aligned, combined C and
+aligned, and selected-member unions are valid production inputs before the
+self-hosted command rejects them at its staging boundary; synthesized union
+members have their own fail-closed fixture.
 Separate fixtures require C enums, invalid or arithmetic-valued enums, invalid
-variants, specialized struct layouts, SIMD types, unsupported array-count
-expressions/types, and local alias or by-value layout cycles to fail at the
-exact self-hosting boundary. This evidence applies only to that
+variants/unions, specialized aggregate layouts, SIMD types, unsupported
+array-count expressions/types, and local alias or by-value layout cycles to
+fail at the exact self-hosting boundary. This evidence applies only to that
 closed subset, not to the full production PackageInterface vocabulary or
 serialization.
 

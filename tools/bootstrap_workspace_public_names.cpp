@@ -12,8 +12,8 @@
 // compares the appended SymbolId suffix plus the selected public-name view.
 // The interface command retains that complete prefix, then emits the reachable
 // production scalar/closed-structural/distinct/ordinary-struct/ordinary-enum/
-// ordinary-variant interface graph, exact nominal member packets, and
-// normalized consumer-local imported types and values.
+// ordinary-variant/ordinary-union interface graph, exact nominal member
+// packets, and normalized consumer-local imported types and values.
 //
 // The early SourceManager owns every byte referenced by the graph and raw
 // semantic packages until their dump and diagnostics finish. The complete
@@ -507,10 +507,10 @@ void append_interface_constant(
 // migration slice, so comparing process-local integers would measure unrelated
 // work rather than consumer-side interface reconstruction. Structural children
 // use canonical Draft syntax, scalar leaves retain kind and spelling, structs
-// and ordinary enums/variants terminate at their qualified nominal name, and a
-// distinct row includes that name plus underlying shape. Nominal termination
-// keeps recursive struct/variant shapes finite; complete fields and alternatives
-// remain visible in the interface-type packet.
+// and ordinary enums/variants/unions terminate at their qualified nominal name,
+// and a distinct row includes that name plus underlying shape. Nominal
+// termination keeps recursive struct/variant/union shapes finite; complete
+// fields and alternatives remain visible in the interface-type packet.
 void append_local_type_shape(
     const draft::TypeStore &types, draft::TypeId id, std::ostream &output) {
   assert(id.is_valid());
@@ -571,6 +571,10 @@ void append_local_type_shape(
     output << "variant:" << type.name;
     return;
   }
+  if (type.kind == draft::TypeKind::Union) {
+    output << "union:" << type.name;
+    return;
+  }
   output << type_kind_text(type.kind) << ':'
          << (type.name.empty() ? "-" : type.name);
 }
@@ -591,12 +595,12 @@ void append_local_constant(
 
 // The typed-interface dump is intentionally narrower than PackageInterface's
 // final serialization contract. It compares the canonical scalar, structural,
-// distinct, ordinary natural-layout struct, enum, and variant graph moved so
-// far and verifies that every dependency
-// declaration was reconstructed as a consumer-local proxy type/value beneath
-// the exact alias. A nominal row's diagnostic name differs before and after
-// import, so the oracle normalizes that field to the original public name and
-// prints the complete persistent identity beside it.
+// distinct, ordinary natural-layout struct, enum, variant, and union graph moved
+// so far. It verifies that every dependency declaration was reconstructed as a
+// consumer-local proxy type/value beneath the exact alias. A nominal row's
+// diagnostic name differs before and after import, so the oracle normalizes
+// that field to the original public name and prints the complete persistent
+// identity beside it.
 void dump_interfaces(
     const draft::WorkspaceGraph &source_graph,
     const std::vector<draft::SemanticPackage> &source_packages,
@@ -622,6 +626,7 @@ void dump_interfaces(
       const bool nominal = type.kind == draft::TypeKind::Distinct ||
                            type.kind == draft::TypeKind::Struct ||
                            type.kind == draft::TypeKind::Variant ||
+                           type.kind == draft::TypeKind::Union ||
                            (type.kind == draft::TypeKind::Enum &&
                             !type.nominal_root_identity.empty());
       output << "interface-type " << package_index << ' ' << type_index << ' '

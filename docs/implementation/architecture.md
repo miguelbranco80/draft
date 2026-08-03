@@ -107,39 +107,41 @@ the production-order predeclared scalar table, demands selected public
 declaration products, classifies scalar constants versus type aliases, types
 named scalars plus pointer, multi-pointer, slice, fixed-array, tuple, and
 ordinary fixed-procedure structures plus declaration-owned `distinct` types,
-ordinary named `struct` declarations with natural fields, ordinary `enum` and
-`variant` declarations, and lazily translates their reachable types and values
-into package-independent interface IDs. A struct shell receives its defining
-root content identity, root-relative package path, and declaration name before
-field resolution, so `^Node` recursion is finite while direct by-value cycles
-remain product edges. Struct completion publishes one source-order packet of field
-names/types, natural byte offsets, total size, and alignment. Enum completion
-uses the same nominal identity, retains each exact value as sign plus u128
-magnitude, selects or validates the integer backing, and publishes layout equal
-to that backing. Variant completion assigns source-order discriminators, uses
-`void` for payload-free alternatives, selects or validates the discriminator,
-and computes one aligned payload region for the largest alternative. Distinct,
-struct, enum, and variant rows preserve the three-part nominal key; importing
-and re-exporting copy it unchanged while rebuilding underlying, member,
-backing, or payload types locally and independently checking the nominal packet.
+ordinary named `struct` declarations with natural fields, ordinary `enum`,
+`variant`, and `union` declarations, and lazily translates their reachable
+types and values into package-independent interface IDs. A struct shell
+receives its defining root content identity, root-relative package path, and
+declaration name before field resolution, so `^Node` recursion is finite while
+direct by-value cycles remain product edges. Struct completion publishes one
+source-order packet of field names/types, natural byte offsets, total size, and
+alignment. Enum completion uses the same nominal identity, retains each exact
+value as sign plus u128 magnitude, selects or validates the integer backing,
+and publishes layout equal to that backing. Variant completion assigns
+source-order discriminators, uses `void` for payload-free alternatives, selects
+or validates the discriminator,
+and computes one aligned payload region for the largest alternative. Union
+completion assigns every field offset zero and rounds the largest field size to
+the largest alignment. Distinct, struct, enum, variant, and union rows preserve
+the three-part nominal key; importing and re-exporting copy it unchanged while
+rebuilding underlying, member, backing, or payload types locally and
+independently checking the nominal packet.
 It then reconstructs each dependency declaration in the consumer's Type-ID
 domain beneath the exact file-local import alias. The current closed subset
 accepts named scalar aliases (including forward local aliases and qualified
 imported aliases), boolean/unsigned/string constants over the existing evaluator,
-structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant type aliases
-and globals, and non-parametric Draft procedures with fixed supported parameters
-and results.
+structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant/
+ordinary-union type aliases and globals, and non-parametric Draft procedures
+with fixed supported parameters and results.
 Enum values currently admit implicit successors, full-width integer literals,
 unary sign/grouping, and already-published local or imported unsigned constants.
 Positive fixed-array counts may use representable untyped or exact `usize`
-values already available through the scalar product graph. Unions, C enums,
-packed/bit fields, C or explicit-alignment structs,
+values already available through the scalar product graph. C enums,
+packed/bit fields, C or explicit-alignment aggregates,
 selected/synthesized/directive members, SIMD/parametric
 types, foreign/export declarations, procedure contracts, arithmetic count or
 enum-value expressions, and general constant/type work remain a diagnosed
-interface staging boundary.
-Imported constants are
-available while building dependent interfaces but not during the earlier
+interface staging boundary. Imported constants are available while building
+dependent interfaces but not during the earlier
 package-`when` phase, whose dependency interfaces do not yet exist.
 The staging executable is deliberately absent from the install set until a
 coherent public compiler command surface exists.
@@ -191,9 +193,9 @@ the package-name barrier can close. Cyclic or demanded out-of-vocabulary
 constants fail explicitly without selecting a branch. The real staging graph
 exercises both sides of core/c_abi's target branch. The typed-interface
 differential then compares canonical
-scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant graphs,
-fixed-array counts, exact natural layouts, enum values, and consumer-local
-type/value reconstruction across all four targets.
+scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant/
+ordinary-union graphs, fixed-array counts, exact natural layouts, enum values,
+and consumer-local type/value reconstruction across all four targets.
 It includes forward local type/count aliases, imported type/value/count aliases,
 all five moved data structures, structural globals and fixed procedures, target
 page-size arrays, distinct declarations over scalar, structural, private, and
@@ -202,9 +204,13 @@ struct re-exports, structs nested in arrays/procedures/other structs,
 inferred/explicit/signed/u128 enums, private and transitive enum re-exports,
 enums nested in arrays/structs, payload-free and typed variants,
 explicit/inferred and distinct-integer variant discriminators, pointer recursion,
-private/transitive variant exposure, and variants nested in supported types.
-Explicit specialized-aggregate/C-enum/unsupported-expression/by-value-cycle
-cases remain negative fixtures.
+private/transitive variant exposure, variants nested in supported types,
+size-rounding/grouped/pointer-recursive/target-selected unions,
+private/transitive union exposure, and unions nested in supported types. The
+oracle also proves that staged-out C/aligned/selected-member union forms remain
+valid production inputs while draftc-next rejects them at its exact boundary.
+Other specialized-aggregate/C-enum/unsupported-expression/by-value-cycle cases
+remain negative fixtures.
 General constant evaluation, remaining nominal and parametric type constructors,
 procedure contracts, and body typing are the next semantic product slices.
 
