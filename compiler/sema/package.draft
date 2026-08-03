@@ -19,10 +19,10 @@
 // Its closed subset covers named scalar aliases/constants, pointers,
 // multi-pointers, slices, fixed arrays, tuples, explicit globals, and fixed
 // Draft procedure signatures, declaration-owned distinct types, and ordinary
-// natural-layout structs and enums. Other nominal aggregates, specialized
-// aggregate layout, contracts, body checking, and general constant evaluation
-// stay behind an explicit diagnostic rather than receiving provisional
-// semantics.
+// natural-layout structs, enums, and variants. Other nominal aggregates,
+// specialized aggregate layout, contracts, body checking, and general constant
+// evaluation stay behind an explicit diagnostic rather than receiving
+// provisional semantics.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
 // ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
@@ -55,8 +55,8 @@
 // docs/specification/02-types-memory-runtime.md section 5. These cover
 // file-local imports, package-wide declaration visibility, compile-time `when`
 // contributing selected declarations without a scope, distinct types retaining
-// underlying layout while remaining nominally unequal, and source-order natural
-// aggregate field placement plus ordinary enum value and backing rules.
+// underlying layout while remaining nominally unequal, source-order natural
+// aggregate placement, and ordinary enum/variant backing rules.
 package compiler_sema
 
 import core/array
@@ -176,8 +176,9 @@ pub Scope_Kind :: enum u8 {
 // Symbol_Kind is primarily the declaration collector's best source-only
 // classification. unresolved_declaration preserves the intentional ambiguity
 // of `Name :: X` until X has been resolved as a type value or ordinary
-// constant. field and enum_member are reserved for nominal interface packets;
-// the current collector does not insert either into package/file scopes.
+// constant. field, enum_member, and variant_alternative are reserved for
+// nominal interface packets; the current collector does not insert them into
+// package/file scopes.
 pub Symbol_Kind :: enum u8 {
     import_alias,
     unresolved_declaration,
@@ -187,6 +188,7 @@ pub Symbol_Kind :: enum u8 {
     procedure,
     field,
     enum_member,
+    variant_alternative,
 }
 
 // Visibility describes Draft package visibility only. Native linker export is
@@ -285,10 +287,10 @@ pub Imported_Name :: struct {
 // language type instead of this staging representation.
 // This slice constructs every predeclared scalar plus the pointer, multi-pointer,
 // slice, fixed-array, tuple, and procedure structural families plus named
-// distinct declarations, ordinary natural-layout structs, and ordinary enums.
-// Variants, unions, SIMD, specialized aggregate layout, and parametric
-// constructors remain a diagnosed staging boundary even though their final
-// enum cases are reserved.
+// distinct declarations and ordinary natural-layout structs, enums, and
+// variants. Unions, SIMD, specialized aggregate layout, and parametric
+// constructors remain a diagnosed staging boundary even though their final enum
+// cases are reserved.
 pub Semantic_Type_Kind :: enum u8 {
     invalid_type,
     void_type,
@@ -325,10 +327,10 @@ pub Semantic_Type_Kind :: enum u8 {
 // positive power of two even when layout is unavailable. Scalar rows use name
 // and bit_width; endian, pointer, multi-pointer, slice, array, and distinct rows
 // additionally use element. Array rows use the positive element_count as part
-// of identity. A distinct, struct, or ordinary enum row uses the three nominal
-// byte views as its exact semantic key; name remains empty because qualified
-// diagnostic display can be synthesized without allocating a redundant joined
-// spelling.
+// of identity. A distinct, struct, ordinary enum, or ordinary variant row uses
+// the three nominal byte views as its exact semantic key; name remains empty
+// because qualified diagnostic display can be synthesized without allocating
+// a redundant joined spelling.
 // Tuple rows use one contiguous source-order span in
 // Semantic_Package.type_members; procedure rows use the same representation
 // with fixed parameter types followed by the result type. name points only at
@@ -336,9 +338,11 @@ pub Semantic_Type_Kind :: enum u8 {
 // Workspace_Package identity/source name or a dependency interface row; the
 // workspace graph outlives every semantic package, so the row owns no
 // allocation. nominal_member_begin/count address Semantic_Package.nominal_members
-// for completed structs and enums; structural member_begin/count continue to
-// address the ordered Type_Id span used by tuples, procedures, and nominal
-// member types.
+// for completed structs, enums, and variants; structural member_begin/count
+// continue to address the ordered Type_Id span used by tuples, procedures, and
+// nominal member types. Variant element is its discriminator, while its member
+// types are the source-order payload types including void for payload-free
+// alternatives.
 pub Semantic_Type :: struct {
     kind: Semantic_Type_Kind,
     name: string,
@@ -369,12 +373,14 @@ Enum_Integer :: struct {
     magnitude: u128,
 }
 
-// Semantic_Nominal_Member is one source-order field or enum alternative in a
-// completed local or reconstructed nominal. name borrows source/interface
-// storage, and type belongs to the containing package's Type_Id domain. Struct
-// fields use their natural byte_offset and leave has_enum_value false. Enum
-// alternatives have offset zero, use the backing type, and retain one exact
-// value. The parallel member/type spans stay source ordered.
+// Semantic_Nominal_Member is one source-order field, enum member, or variant
+// alternative in a completed local or reconstructed nominal. name borrows
+// source/interface storage, and type belongs to the containing package's
+// Type_Id domain. Struct fields use their natural byte_offset and leave
+// has_enum_value false. Enum members have offset zero, use the backing type,
+// and retain one exact value. Variant alternatives use their payload type and
+// common payload byte offset, and leave has_enum_value false. The parallel
+// member/type spans stay source ordered.
 Semantic_Nominal_Member :: struct {
     name: []u8,
     kind: Symbol_Kind,
@@ -419,18 +425,18 @@ Compile_Time_Value :: struct {
 
 // Interface_Type is a package-independent graph row. element and the member
 // span refer only to the same package's interface type table; element_count is
-// the positive fixed-array length and otherwise zero. Distinct, struct, and
-// ordinary enum rows carry the defining package's content identity,
-// package-relative path, and
-// original declaration name. Those byte views are persistent semantic
+// the positive fixed-array length and otherwise zero. Distinct, struct,
+// ordinary enum, and ordinary variant rows carry the defining package's
+// content identity, package-relative path, and original declaration name.
+// Those byte views are persistent semantic
 // identity: an importing package copies them unchanged when it re-exports the
 // type. Layout fields and nominal_member_begin/count carry the complete nominal
 // layout/member packet without producer-local IDs. Rows are
 // appended lazily in public declaration discovery order, matching production's
 // InterfaceBuilder and installing a placeholder before following children so
-// later recursive nominal graphs have an honest seam. Enum member values move
-// with their names and translated backing types; no producer Type_Id enters
-// the packet.
+// later recursive nominal graphs have an honest seam. Enum member values and
+// variant payload offsets move with their names and translated types; no
+// producer Type_Id enters the packet.
 pub Interface_Type :: struct {
     kind: Semantic_Type_Kind,
     name: string,
@@ -451,8 +457,8 @@ pub Interface_Type :: struct {
 
 // Interface_Nominal_Member is Semantic_Nominal_Member after its Type_Id has
 // been translated into the producer's interface graph. Names, offsets, and
-// enum values are package-independent semantic facts; the row owns no
-// allocation.
+// enum values and variant payload offsets are package-independent semantic
+// facts; the row owns no allocation.
 Interface_Nominal_Member :: struct {
     name: []u8,
     kind: Symbol_Kind,
@@ -730,6 +736,7 @@ pub symbol_kind_text :: proc(kind: Symbol_Kind) -> string {
     case .procedure: return "procedure"
     case .field: return "field"
     case .enum_member: return "enum-member"
+    case .variant_alternative: return "variant-alternative"
     }
     return "unknown"
 }
@@ -1865,6 +1872,19 @@ Natural_Layout :: struct {
     alignment: u32,
 }
 
+// Variant_Layout is the completed discriminator-plus-shared-payload layout for
+// one ordinary variant. payload_offset is the common byte position reported
+// for every alternative, including payload-free alternatives. known remains
+// false while any payload layout is incomplete; overflow distinguishes invalid
+// source-controlled size arithmetic from an ordinary dependency wait.
+Variant_Layout :: struct {
+    known: bool,
+    overflow: bool,
+    size: u64,
+    alignment: u32,
+    payload_offset: u64,
+}
+
 // aligned_offset rounds one byte position to a positive member alignment.
 // Layout arithmetic is source-controlled, so overflow returns false rather
 // than wrapping and manufacturing a smaller aggregate.
@@ -1880,6 +1900,77 @@ aligned_offset :: proc(value: u64, alignment: u32) -> (u64, bool) {
         return (0, false)
     }
     return (value + increment, true)
+}
+
+// compute_variant_layout implements the exact Draft 1 natural-layout formula.
+// The discriminator is stored first. All alternatives share one payload region
+// sized and aligned for the largest payload, and the final size is rounded to
+// the maximum discriminator/payload alignment for safe array stride.
+compute_variant_layout :: proc(
+    semantic_package: ^Semantic_Package,
+    discriminator: Type_Id,
+    payload_types: []Type_Id,
+) -> Variant_Layout {
+    result := Variant_Layout{alignment = 1}
+    if !type_id_valid(discriminator) ||
+        cast[usize](discriminator.value) >= semantic_package.types.length {
+        return result
+    }
+    discriminator_row := &semantic_package.types.data[
+        cast[usize](discriminator.value)
+    ]
+    if !discriminator_row.layout_known {
+        return result
+    }
+
+    payload_size: u64 = 0
+    payload_alignment: u32 = 1
+    for payload_id in payload_types {
+        if !type_id_valid(payload_id) ||
+            cast[usize](payload_id.value) >= semantic_package.types.length {
+            return result
+        }
+        payload := &semantic_package.types.data[cast[usize](payload_id.value)]
+        if !payload.layout_known {
+            return result
+        }
+        if payload.byte_size > payload_size {
+            payload_size = payload.byte_size
+        }
+        if payload.byte_alignment > payload_alignment {
+            payload_alignment = payload.byte_alignment
+        }
+    }
+
+    (rounded_payload_size, payload_size_aligned) := aligned_offset(
+        payload_size,
+        payload_alignment,
+    )
+    (payload_offset, payload_offset_aligned) := aligned_offset(
+        discriminator_row.byte_size,
+        payload_alignment,
+    )
+    if !payload_size_aligned || !payload_offset_aligned ||
+        rounded_payload_size > ~cast[u64](0) - payload_offset {
+        result.overflow = true
+        return result
+    }
+    result.alignment = discriminator_row.byte_alignment
+    if payload_alignment > result.alignment {
+        result.alignment = payload_alignment
+    }
+    (final_size, final_size_aligned) := aligned_offset(
+        payload_offset + rounded_payload_size,
+        result.alignment,
+    )
+    if !final_size_aligned {
+        result.overflow = true
+        return result
+    }
+    result.known = true
+    result.size = final_size
+    result.payload_offset = payload_offset
+    return result
 }
 
 // compute_natural_layout applies Draft's source-order aggregate algorithm to
@@ -2252,12 +2343,46 @@ intern_enum_type_shell :: proc(
     })
 }
 
+// intern_variant_type_shell installs the declaration identity before payload
+// types are resolved. A pointer payload may therefore name the variant itself,
+// while an inline self-reference remains incomplete and becomes a visible
+// layout dependency. Direct and transitive import paths reuse the exact same
+// three-part nominal key.
+intern_variant_type_shell :: proc(
+    semantic_package: ^Semantic_Package,
+    root_identity, root_relative_path, public_name: []u8,
+) -> Type_Id {
+    assert(len(root_identity) != 0 && len(root_relative_path) != 0 &&
+        len(public_name) != 0,
+        "variant type has an incomplete nominal identity")
+    for index: usize = 0; index < semantic_package.types.length; index += 1 {
+        candidate := &semantic_package.types.data[index]
+        if candidate.kind == .variant_type &&
+            bytes_equal(candidate.nominal_root_identity, root_identity) &&
+            bytes_equal(
+                candidate.nominal_root_relative_path,
+                root_relative_path,
+            ) &&
+            bytes_equal(candidate.nominal_public_name, public_name) {
+            return Type_Id{value = cast[u32](index)}
+        }
+    }
+    return append_semantic_type(semantic_package, Semantic_Type{
+        kind = .variant_type,
+        nominal_root_identity = root_identity,
+        nominal_root_relative_path = root_relative_path,
+        nominal_public_name = public_name,
+        byte_alignment = 1,
+        element = invalid_type_id(),
+    })
+}
+
 // missing_layout_symbol traces a structural type whose layout is not yet known
 // to the local nominal declaration that owns its completion product. Pointer,
 // slice, and procedure values stop before their pointee/signature because their
 // own layout is already known. The currently admitted by-value constructors are
 // acyclic until they reach an incomplete nominal shell; direct and mutual
-// by-value struct cycles therefore produce ordinary product edges.
+// by-value struct/variant cycles therefore produce ordinary product edges.
 missing_layout_symbol :: proc(
     semantic_package: ^Semantic_Package,
     type_id: Type_Id,
@@ -2271,6 +2396,7 @@ missing_layout_symbol :: proc(
         return (invalid_symbol_id(), false)
     }
     if semantic_type.kind == .struct_type ||
+        semantic_type.kind == .variant_type ||
         (semantic_type.kind == .enumeration_type &&
             len(semantic_type.nominal_root_identity) != 0) {
         for index: usize = 0;
@@ -2497,19 +2623,56 @@ increment_enum_integer :: proc(value: Enum_Integer) -> (Enum_Integer, bool) {
     return (result, true)
 }
 
+// integer_representation_type follows a completed distinct-type chain to the
+// signed or unsigned scalar which supplies its integer range. Draft distinct
+// types retain the operations of their underlying integer, so enum backings and
+// variant discriminators accept them without erasing the nominal Type_Id stored
+// in the aggregate. The table-length bound rejects a malformed distinct cycle
+// instead of looping while validating an imported interface packet.
+integer_representation_type :: proc(
+    semantic_package: ^Semantic_Package,
+    type_id: Type_Id,
+) -> Type_Id {
+    current := type_id
+    for steps: usize = 0;
+        steps < semantic_package.types.length;
+        steps += 1 {
+        if !type_id_valid(current) ||
+            cast[usize](current.value) >= semantic_package.types.length {
+            return invalid_type_id()
+        }
+        row := &semantic_package.types.data[cast[usize](current.value)]
+        if row.kind == .signed_integer_type ||
+            row.kind == .unsigned_integer_type {
+            return current
+        }
+        if row.kind != .distinct_named_type {
+            return invalid_type_id()
+        }
+        current = row.element
+    }
+    return invalid_type_id()
+}
+
 // enum_integer_fits_type checks the exact signed or unsigned interval of one
-// concrete fixed-width backing. A signed minimum is admitted through magnitude
+// concrete fixed-width backing or discriminator, following distinct types to
+// their representation. A signed minimum is admitted through magnitude
 // 2^(bits-1), while the positive endpoint is one smaller.
 enum_integer_fits_type :: proc(
     semantic_package: ^Semantic_Package,
     value: Enum_Integer,
     type_id: Type_Id,
 ) -> bool {
-    if !type_id_valid(type_id) ||
-        cast[usize](type_id.value) >= semantic_package.types.length {
+    representation := integer_representation_type(
+        semantic_package,
+        type_id,
+    )
+    if !type_id_valid(representation) {
         return false
     }
-    backing := &semantic_package.types.data[cast[usize](type_id.value)]
+    backing := &semantic_package.types.data[
+        cast[usize](representation.value)
+    ]
     if backing.bit_width == 0 || backing.bit_width > 128 {
         return false
     }
@@ -2583,6 +2746,33 @@ infer_enum_backing :: proc(
             }
         }
         if fits {
+            return candidate
+        }
+    }
+    return invalid_type_id()
+}
+
+// infer_variant_discriminator selects the smallest fixed-width unsigned type
+// which represents the source-order discriminator range 0..count-1. A source
+// package cannot contain more than usize alternatives, so u64 is the largest
+// necessary candidate on every currently supported 64-bit target.
+infer_variant_discriminator :: proc(
+    semantic_package: ^Semantic_Package,
+    alternative_count: usize,
+) -> Type_Id {
+    assert(alternative_count != 0,
+        "variant discriminator inference received no alternatives")
+    greatest := Enum_Integer{
+        magnitude = cast[u128](alternative_count - 1),
+    }
+    widths := [4]u32{8, 16, 32, 64}
+    for width in widths {
+        candidate := fixed_integer_type(semantic_package, false, width)
+        if type_id_valid(candidate) && enum_integer_fits_type(
+            semantic_package,
+            greatest,
+            candidate,
+        ) {
             return candidate
         }
     }
@@ -2917,9 +3107,11 @@ complete_plain_enum_type :: proc(
         return false
     }
     backing_row := &semantic_package.types.data[cast[usize](backing.value)]
-    if !backing_row.layout_known ||
-        (backing_row.kind != .signed_integer_type &&
-            backing_row.kind != .unsigned_integer_type) {
+    integer_backing := integer_representation_type(
+        semantic_package,
+        backing,
+    )
+    if !backing_row.layout_known || !type_id_valid(integer_backing) {
         array.destroy(&members)
         return false
     }
@@ -2954,6 +3146,231 @@ complete_plain_enum_type :: proc(
     completed.member_count = members.length
     completed.nominal_member_begin = nominal_member_begin
     completed.nominal_member_count = members.length
+    array.destroy(&members)
+    return true
+}
+
+// complete_plain_variant_type resolves one ordinary variant as a single
+// publication transaction. Alternatives are source-ordered unique names with
+// either the canonical void payload or one supported payload type. The chosen
+// discriminator represents source-order indices, and compute_variant_layout
+// gives every alternative the same aligned payload offset. Specialized member
+// regions and parametric variants remain outside this staging slice.
+complete_plain_variant_type :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    variant_id: compiler_syntax.Node_Id,
+    variant_type: Type_Id,
+    facts: ^Target_Facts,
+    blocked_symbol: ^Symbol_Id,
+) -> bool {
+    variant_row := &semantic_package.types.data[
+        cast[usize](variant_type.value)
+    ]
+    if variant_row.layout_known {
+        return true
+    }
+    node := compiler_syntax.syntax_tree_node(tree, variant_id)
+    children := compiler_syntax.syntax_tree_children(tree, variant_id)
+    if node.kind != .variant_type || node.token_begin >= node.token_end ||
+        tree.tokens.data[cast[usize](node.token_begin)].kind !=
+            .keyword_variant {
+        return false
+    }
+
+    member_list_id: compiler_syntax.Node_Id
+    have_member_list := false
+    explicit_discriminator_id: compiler_syntax.Node_Id
+    have_explicit_discriminator := false
+    for child_id in children {
+        child := compiler_syntax.syntax_tree_node(tree, child_id)
+        if child.kind == .member_list && !have_member_list {
+            member_list_id = child_id
+            have_member_list = true
+        } else if node_is_type_syntax(child.kind) &&
+            !have_explicit_discriminator {
+            explicit_discriminator_id = child_id
+            have_explicit_discriminator = true
+        } else {
+            return false
+        }
+    }
+    if !have_member_list {
+        return false
+    }
+
+    discriminator := invalid_type_id()
+    if have_explicit_discriminator {
+        resolved := false
+        (discriminator, resolved) = resolve_type_syntax(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            explicit_discriminator_id,
+            facts,
+            blocked_symbol,
+        )
+        if !resolved {
+            return false
+        }
+    }
+
+    members: array.Dynamic[Semantic_Nominal_Member]
+    payload_types: array.Dynamic[Type_Id]
+    array.init(&members)
+    array.init(&payload_types)
+    valid := true
+    for alternative_id in compiler_syntax.syntax_tree_children(
+        tree,
+        member_list_id,
+    ) {
+        alternative := compiler_syntax.syntax_tree_node(tree, alternative_id)
+        alternative_children := compiler_syntax.syntax_tree_children(
+            tree,
+            alternative_id,
+        )
+        if alternative.kind != .variant_alternative ||
+            len(alternative_children) > 1 {
+            valid = false
+            break
+        }
+        alternative_name: []u8
+        have_name := false
+        for token_index := alternative.token_begin;
+            token_index < alternative.token_end;
+            token_index += 1 {
+            token := &tree.tokens.data[cast[usize](token_index)]
+            if token_is_contextual_name(token.kind) {
+                alternative_name = source_bytes(
+                    graph,
+                    semantic_package.workspace_package,
+                    file_index,
+                    token.range,
+                )
+                have_name = true
+                break
+            }
+        }
+        if !have_name || bytes_equal_text(alternative_name, "_") {
+            valid = false
+            break
+        }
+        for existing in array.view(&members) {
+            if bytes_equal(existing.name, alternative_name) {
+                valid = false
+                break
+            }
+        }
+        if !valid {
+            break
+        }
+
+        payload_type := Type_Id{value = 1}
+        if len(alternative_children) == 1 {
+            (payload_type, valid) = resolve_type_syntax(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                alternative_children[0],
+                facts,
+                blocked_symbol,
+            )
+            if !valid {
+                break
+            }
+        }
+        array.append(&payload_types, payload_type)
+        array.append(&members, Semantic_Nominal_Member{
+            name = alternative_name,
+            kind = .variant_alternative,
+            type = payload_type,
+        })
+    }
+    if !valid || members.length == 0 {
+        array.destroy(&payload_types)
+        array.destroy(&members)
+        return false
+    }
+
+    if !have_explicit_discriminator {
+        discriminator = infer_variant_discriminator(
+            semantic_package,
+            members.length,
+        )
+    }
+    if !type_id_valid(discriminator) {
+        array.destroy(&payload_types)
+        array.destroy(&members)
+        return false
+    }
+    discriminator_row := &semantic_package.types.data[
+        cast[usize](discriminator.value)
+    ]
+    integer_discriminator := integer_representation_type(
+        semantic_package,
+        discriminator,
+    )
+    if !discriminator_row.layout_known ||
+        !type_id_valid(integer_discriminator) ||
+        !enum_integer_fits_type(
+            semantic_package,
+            Enum_Integer{magnitude = cast[u128](members.length - 1)},
+            discriminator,
+        ) {
+        array.destroy(&payload_types)
+        array.destroy(&members)
+        return false
+    }
+
+    layout := compute_variant_layout(
+        semantic_package,
+        discriminator,
+        array.view(&payload_types),
+    )
+    if !layout.known || layout.overflow {
+        if !layout.overflow && !symbol_id_valid(blocked_symbol^) {
+            for payload_type in array.view(&payload_types) {
+                (dependency, found) := missing_layout_symbol(
+                    semantic_package,
+                    payload_type,
+                )
+                if found {
+                    blocked_symbol^ = dependency
+                    break
+                }
+            }
+        }
+        array.destroy(&payload_types)
+        array.destroy(&members)
+        return false
+    }
+
+    member_begin := semantic_package.type_members.length
+    nominal_member_begin := semantic_package.nominal_members.length
+    for index: usize = 0; index < members.length; index += 1 {
+        members.data[index].byte_offset = layout.payload_offset
+        array.append(
+            &semantic_package.type_members,
+            payload_types.data[index],
+        )
+        array.append(&semantic_package.nominal_members, members.data[index])
+    }
+    completed := &semantic_package.types.data[
+        cast[usize](variant_type.value)
+    ]
+    completed.layout_known = true
+    completed.byte_size = layout.size
+    completed.byte_alignment = layout.alignment
+    completed.element = discriminator
+    completed.member_begin = member_begin
+    completed.member_count = payload_types.length
+    completed.nominal_member_begin = nominal_member_begin
+    completed.nominal_member_count = members.length
+    array.destroy(&payload_types)
     array.destroy(&members)
     return true
 }
@@ -3757,9 +4174,9 @@ binary_operator :: proc(
 // Local aliases normally consume completed constant products and report the
 // first unpublished Symbol_Id through blocked_symbol. A nominal struct shell is
 // the one exception: once its own constant attempt has installed symbol.type,
-// recursive fields may name that identity before layout is complete. Qualified
-// names consume the consumer-local reconstruction built from a dependency
-// interface; producer Type_Ids never cross this boundary.
+// recursive struct fields or variant payloads may name that identity before
+// layout is complete. Qualified names consume the consumer-local reconstruction
+// built from a dependency interface; producer Type_Ids never cross this boundary.
 resolve_named_type_syntax :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     semantic_package: ^Semantic_Package,
@@ -3807,6 +4224,7 @@ resolve_named_type_syntax :: proc(
                 cast[usize](symbol.type.value)
             ]
             if provisional.kind == .struct_type ||
+                provisional.kind == .variant_type ||
                 (provisional.kind == .enumeration_type &&
                     len(provisional.nominal_root_identity) != 0) {
                 return (symbol.type, true)
@@ -4458,10 +4876,11 @@ append_unsupported_compile_time_diagnostic :: proc(
 
 // run_named_constant_product evaluates exactly one declaration payload
 // against already completed scalar constants and target facts. A named
-// `distinct T`, ordinary `struct { ... }`, and ordinary `enum { ... }` are
-// handled here, rather than by the structural type resolver, because their
-// identity belongs to the declaration symbol and package. A struct or enum
-// installs its nominal shell before completing its packet; unavailable
+// `distinct T`, ordinary `struct { ... }`, ordinary `enum { ... }`, and
+// ordinary `variant { ... }` are handled here, rather than by the structural
+// type resolver, because their identity belongs to the declaration symbol and
+// package. A struct, enum, or variant installs its nominal shell before
+// completing its packet; unavailable
 // dependencies attach one graph edge. Only a complete attempt publishes the
 // constant value. Grouped constants and the broader Draft constant vocabulary
 // remain outside this staging slice and fail only when a consumer demands them.
@@ -4582,6 +5001,39 @@ run_named_constant_product :: proc(
             value.kind = .type_value
             value.static_type = Type_Id{value = 53}
             value.type_value = enum_type
+        }
+    } else if payload.kind == .variant_type {
+        root_identity := memory.owned_string_bytes(
+            &workspace_package.identity.root_identity,
+        )
+        root_relative_path := memory.owned_string_bytes(
+            &workspace_package.identity.root_relative_path,
+        )
+        public_name := symbol_name_bytes(
+            graph,
+            semantic_package,
+            symbol,
+        )
+        variant_type := intern_variant_type_shell(
+            semantic_package,
+            root_identity,
+            root_relative_path,
+            public_name,
+        )
+        symbol.type = variant_type
+        if complete_plain_variant_type(
+            graph,
+            semantic_package,
+            symbol.syntax.file_index,
+            tree,
+            payload_id,
+            variant_type,
+            facts,
+            &blocked_symbol,
+        ) {
+            value.kind = .type_value
+            value.static_type = Type_Id{value = 53}
+            value.type_value = variant_type
         }
     } else if payload.kind == .distinct_type {
         payload_children := compiler_syntax.syntax_tree_children(
@@ -5086,10 +5538,10 @@ declaration_type_syntax :: proc(
 // type through blocked_symbol. Array counts reuse the shared scalar compile-time
 // evaluator, so literals, named local/imported untyped-or-usize constants, and
 // target usize facts follow one dependency mechanism. Declaration-owned
-// distinct and enum syntax is intentionally constructed by the constant
-// product which has the defining symbol; seeing either recursively here is
-// invalid just as in production. Variants, unions, specialized struct forms,
-// SIMD, C procedure types, and parametric forms fail at this seam.
+// distinct, enum, and variant syntax is intentionally constructed by the
+// constant product which has the defining symbol; seeing any of them recursively
+// here is invalid just as in production. Unions, specialized struct forms, SIMD,
+// C procedure types, and parametric forms fail at this seam.
 resolve_type_syntax :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     semantic_package: ^Semantic_Package,
@@ -5629,8 +6081,9 @@ ensure_interface_translation_table :: proc(
 // package-independent interface domain. It publishes the memoized placeholder
 // before following children, then gathers structural and named members in
 // temporary storage so both final spans remain contiguous even when recursion
-// appends other rows first. Struct layout and offsets are copied as semantic
-// target facts, never recomputed from producer-local IDs during publication.
+// appends other rows first. Nominal layout and offsets are copied as semantic
+// target facts, never recomputed from producer-local IDs during publication;
+// import reconstruction independently checks the packet.
 translate_interface_type :: proc(
     semantic_package: ^Semantic_Package,
     local_type: Type_Id,
@@ -6015,9 +6468,8 @@ complete_imported_enum_type :: proc(
         return false
     }
     backing_row := &consumer.types.data[cast[usize](backing.value)]
-    if !backing_row.layout_known ||
-        (backing_row.kind != .signed_integer_type &&
-            backing_row.kind != .unsigned_integer_type) ||
+    integer_backing := integer_representation_type(consumer, backing)
+    if !backing_row.layout_known || !type_id_valid(integer_backing) ||
         source_type.byte_size != backing_row.byte_size ||
         source_type.byte_alignment != backing_row.byte_alignment {
         return false
@@ -6128,19 +6580,201 @@ complete_imported_enum_type :: proc(
     return valid
 }
 
+// complete_imported_variant_type reconstructs an ordinary variant in the
+// consumer's Type_Id domain and independently recomputes its natural layout.
+// The producer contributes identity, discriminator edge, payload edges, names,
+// and offsets; the consumer verifies every span, source-order discriminator
+// capacity, unique alternative name, common payload offset, and final
+// size/alignment before publishing. A repeated transitive path must reproduce
+// the exact already-completed packet.
+complete_imported_variant_type :: proc(
+    semantic: ^Semantic_Workspace,
+    consumer: ^Semantic_Package,
+    target_package: compiler_workspace.Package_Id,
+    source_type: ^Interface_Type,
+    local_type: Type_Id,
+) -> bool {
+    target := &semantic.packages.data[cast[usize](target_package.value)]
+    if !source_type.layout_known || source_type.byte_alignment == 0 ||
+        !interface_type_id_valid(source_type.element) ||
+        source_type.member_count == 0 ||
+        source_type.member_count != source_type.nominal_member_count ||
+        source_type.member_begin > target.interface_type_members.length ||
+        source_type.member_count >
+            target.interface_type_members.length - source_type.member_begin ||
+        source_type.nominal_member_begin >
+            target.interface_nominal_members.length ||
+        source_type.nominal_member_count >
+            target.interface_nominal_members.length -
+                source_type.nominal_member_begin {
+        return false
+    }
+
+    (discriminator, imported_discriminator) := import_interface_type(
+        semantic,
+        consumer,
+        target_package,
+        source_type.element,
+    )
+    if !imported_discriminator {
+        return false
+    }
+
+    payload_types: array.Dynamic[Type_Id]
+    members: array.Dynamic[Semantic_Nominal_Member]
+    array.init(&payload_types)
+    array.init(&members)
+    valid := true
+    for index: usize = 0; index < source_type.member_count; index += 1 {
+        source_payload := target.interface_type_members.data[
+            source_type.member_begin + index
+        ]
+        source_member := &target.interface_nominal_members.data[
+            source_type.nominal_member_begin + index
+        ]
+        if source_member.type.value != source_payload.value ||
+            source_member.kind != .variant_alternative ||
+            len(source_member.name) == 0 || source_member.has_enum_value {
+            valid = false
+            break
+        }
+        for prior in array.view(&members) {
+            if bytes_equal(prior.name, source_member.name) {
+                valid = false
+                break
+            }
+        }
+        if !valid {
+            break
+        }
+        (payload, imported_payload) := import_interface_type(
+            semantic,
+            consumer,
+            target_package,
+            source_payload,
+        )
+        if !imported_payload {
+            valid = false
+            break
+        }
+        array.append(&payload_types, payload)
+        array.append(&members, Semantic_Nominal_Member{
+            name = source_member.name,
+            kind = .variant_alternative,
+            type = payload,
+            byte_offset = source_member.byte_offset,
+        })
+    }
+    if !valid {
+        array.destroy(&members)
+        array.destroy(&payload_types)
+        return false
+    }
+
+    discriminator_row := &consumer.types.data[
+        cast[usize](discriminator.value)
+    ]
+    integer_discriminator := integer_representation_type(
+        consumer,
+        discriminator,
+    )
+    if !discriminator_row.layout_known ||
+        !type_id_valid(integer_discriminator) ||
+        !enum_integer_fits_type(
+            consumer,
+            Enum_Integer{magnitude = cast[u128](members.length - 1)},
+            discriminator,
+        ) {
+        array.destroy(&members)
+        array.destroy(&payload_types)
+        return false
+    }
+    layout := compute_variant_layout(
+        consumer,
+        discriminator,
+        array.view(&payload_types),
+    )
+    if !layout.known || layout.overflow ||
+        source_type.byte_size != layout.size ||
+        source_type.byte_alignment != layout.alignment {
+        array.destroy(&members)
+        array.destroy(&payload_types)
+        return false
+    }
+    for member in array.view(&members) {
+        if member.byte_offset != layout.payload_offset {
+            valid = false
+            break
+        }
+    }
+    if !valid {
+        array.destroy(&members)
+        array.destroy(&payload_types)
+        return false
+    }
+
+    local := &consumer.types.data[cast[usize](local_type.value)]
+    if local.layout_known {
+        valid = local.byte_size == layout.size &&
+            local.byte_alignment == layout.alignment &&
+            local.element.value == discriminator.value &&
+            local.member_count == payload_types.length &&
+            local.nominal_member_count == members.length
+        if valid {
+            for index: usize = 0; index < members.length; index += 1 {
+                existing_type := consumer.type_members.data[
+                    local.member_begin + index
+                ]
+                existing := &consumer.nominal_members.data[
+                    local.nominal_member_begin + index
+                ]
+                incoming := &members.data[index]
+                if existing_type.value != payload_types.data[index].value ||
+                    existing.type.value != incoming.type.value ||
+                    existing.kind != .variant_alternative ||
+                    existing.byte_offset != layout.payload_offset ||
+                    existing.has_enum_value ||
+                    !bytes_equal(existing.name, incoming.name) {
+                    valid = false
+                    break
+                }
+            }
+        }
+    } else {
+        member_begin := consumer.type_members.length
+        nominal_member_begin := consumer.nominal_members.length
+        for index: usize = 0; index < members.length; index += 1 {
+            array.append(&consumer.type_members, payload_types.data[index])
+            array.append(&consumer.nominal_members, members.data[index])
+        }
+        local = &consumer.types.data[cast[usize](local_type.value)]
+        local.layout_known = true
+        local.byte_size = layout.size
+        local.byte_alignment = layout.alignment
+        local.element = discriminator
+        local.member_begin = member_begin
+        local.member_count = payload_types.length
+        local.nominal_member_begin = nominal_member_begin
+        local.nominal_member_count = members.length
+    }
+    array.destroy(&members)
+    array.destroy(&payload_types)
+    return valid
+}
+
 // import_interface_type reconstructs one dependency interface identity in the
 // consumer's local Type_Id domain. Predeclared scalar rows reuse the consumer's
 // canonical builtins by exact kind/name. Pointer-like and array rows recursively
 // rebuild their element, while tuple/procedure rows recursively rebuild their
 // ordered member span; every structural root then passes through the matching
 // consumer interner. Distinct rows recursively rebuild their underlying type.
-// Struct and ordinary enum rows memoize a nominal shell before rebuilding and
-// validating their named member packet. Every nominal family uses the
-// producer's three-part key, so direct and transitive import paths converge
-// without rebaptizing the type in the consumer. Every successful mapping is
-// memoized by dependency package plus interface ID; an early nominal memo is
-// retained only in a workspace that will fail if packet validation does not
-// complete.
+// Struct, ordinary enum, and ordinary variant rows memoize a nominal shell
+// before rebuilding and validating their named member packet. Every nominal
+// family uses the producer's three-part key, so direct and transitive import
+// paths converge without rebaptizing the type in the consumer. Every successful
+// mapping is memoized by dependency package plus interface ID; an early nominal
+// memo is retained only in a workspace that will fail if packet validation does
+// not complete.
 import_interface_type :: proc(
     semantic: ^Semantic_Workspace,
     consumer: ^Semantic_Package,
@@ -6213,6 +6847,34 @@ import_interface_type :: proc(
             local_type = local_type,
         })
         if !complete_imported_enum_type(
+            semantic,
+            consumer,
+            target_package,
+            &source_type,
+            local_type,
+        ) {
+            return (invalid_type_id(), false)
+        }
+        return (local_type, true)
+    } else if source_type.kind == .variant_type {
+        complete_identity := len(source_type.nominal_root_identity) != 0 &&
+            len(source_type.nominal_root_relative_path) != 0 &&
+            len(source_type.nominal_public_name) != 0
+        if !complete_identity {
+            return (invalid_type_id(), false)
+        }
+        local_type = intern_variant_type_shell(
+            consumer,
+            source_type.nominal_root_identity,
+            source_type.nominal_root_relative_path,
+            source_type.nominal_public_name,
+        )
+        array.append(&consumer.imported_types, Imported_Type{
+            target_package = target_package,
+            interface_type = interface_type,
+            local_type = local_type,
+        })
+        if !complete_imported_variant_type(
             semantic,
             consumer,
             target_package,
@@ -7173,12 +7835,13 @@ append_type_name_bytes :: proc(
 
 // append_local_type_shape renders a consumer-local type without exposing its
 // process-local Type_Id. Structural children are expanded using canonical Draft
-// syntax, struct and ordinary enum rows terminate at their package-qualified
-// nominal identity, distinct rows include that identity plus their underlying
-// shape, and named scalar leaves include kind and spelling. Nominal termination
-// leaves fields/alternatives to the interface-type rows and keeps recursive
-// struct graphs finite. This is what makes imported reconstruction comparable
-// even when production has interned unrelated private types earlier.
+// syntax, struct/ordinary-enum/ordinary-variant rows terminate at their
+// package-qualified nominal identity, distinct rows include that identity plus
+// their underlying shape, and named scalar leaves include kind and spelling.
+// Nominal termination leaves members to the interface-type rows and keeps
+// recursive struct/variant graphs finite. This is what makes imported
+// reconstruction comparable even when production has interned unrelated
+// private types earlier.
 append_local_type_shape :: proc(
     semantic_package: ^Semantic_Package,
     type_id: Type_Id,
@@ -7295,6 +7958,21 @@ append_local_type_shape :: proc(
     if semantic_type.kind == .enumeration_type &&
         len(semantic_type.nominal_root_identity) != 0 {
         compiler_text.append_text(output, "enum:")
+        compiler_text.append_bytes(
+            output,
+            semantic_type.nominal_root_identity,
+        )
+        compiler_text.append_byte(output, cast[u8](':'))
+        compiler_text.append_bytes(
+            output,
+            semantic_type.nominal_root_relative_path,
+        )
+        compiler_text.append_byte(output, cast[u8]('.'))
+        compiler_text.append_bytes(output, semantic_type.nominal_public_name)
+        return
+    }
+    if semantic_type.kind == .variant_type {
+        compiler_text.append_text(output, "variant:")
         compiler_text.append_bytes(
             output,
             semantic_type.nominal_root_identity,
@@ -7446,6 +8124,7 @@ pub dump_workspace_interfaces :: proc(
             compiler_text.append_byte(output, cast[u8](' '))
             if interface_type.kind == .distinct_named_type ||
                 interface_type.kind == .struct_type ||
+                interface_type.kind == .variant_type ||
                 (interface_type.kind == .enumeration_type &&
                     len(interface_type.nominal_root_identity) != 0) {
                 append_type_name_bytes(
@@ -7702,7 +8381,7 @@ render_semantic_message :: proc(
     case .unsupported_typed_interface:
         compiler_text.append_text(
             output,
-            "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration",
+            "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration",
         )
     case .cyclic_typed_interface:
         compiler_text.append_text(

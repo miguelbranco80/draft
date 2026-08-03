@@ -192,8 +192,8 @@ boundary and no alternate-emitter fallback for unsupported operations.
 
 Status: build-tree source, lexer, parser, folder-package, canonical import-graph,
 declaration-name, unconditional qualified-name, target-conditional declaration,
-and scalar/structural/distinct/ordinary-struct/ordinary-enum typed-interface
-replacement; not a Draft language or public CLI limit.
+and scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant
+typed-interface replacement; not a Draft language or public CLI limit.
 
 On a supported native host, the build graph uses C++ `draftc` to produce an O2
 Draft executable named `draftc-next`. Its accepted commands are
@@ -221,7 +221,7 @@ classify type aliases versus boolean/unsigned/string constants; named scalars
 and the structural `^T`, `[^]T`, `[]T`, `[N]T`, `(T, U)`, and ordinary fixed
 `proc` forms plus declaration-owned `distinct T` type aliases, explicit globals,
 ordinary named natural-layout `struct` declarations, ordinary `enum`
-declarations, and procedure signatures; reachable
+and `variant` declarations, and procedure signatures; reachable
 types and constants are rewritten into canonical package-interface IDs; and
 each imported declaration is reconstructed in the consumer Type-ID domain
 beneath its file-local alias. Fixed-array counts reuse the existing scalar
@@ -239,7 +239,11 @@ Ordinary enums retain the same identity, exact source-order alternative names
 and signed/u128 values, explicit or inferred integer backing, and backing
 layout. Their staged expression subset includes implicit successors, integer
 literals, unary sign/grouping, and ready local/imported unsigned constants.
-Variants, unions, C enums, packed/bit fields, C or explicitly aligned structs,
+Ordinary variants retain the same identity, source-order alternative names and
+payload types, explicit or smallest-fitting unsigned discriminator, common
+payload offsets, and exact natural layout. Payload-free alternatives use
+`void`; pointer recursion is supported while by-value cycles remain graph
+cycles. Unions, C enums, packed/bit fields, C or explicitly aligned structs,
 selected/synthesized/directive members, SIMD types, parametric forms,
 foreign/export declarations, procedure contracts, arithmetic array counts or
 enum values, and general constant/type forms fail explicitly at this interface
@@ -276,9 +280,10 @@ that earlier view. Conditional public names are deliberately filtered out of
 that earlier command's oracle and Draft result; the later target-declaration
 command rebuilds them after selection. Neither view is yet a serialized or
 typed package interface. The typed-interface differential then compares
-canonical reachable scalar/structural/distinct/ordinary-struct/ordinary-enum
-type rows, including array element counts, struct fields/layouts, enum
-alternatives/backing values, declaration
+canonical reachable
+scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant type
+rows, including array element counts, struct fields/layouts, enum
+alternatives/backing values, variant discriminator/payload layouts, declaration
 classifications, constant payloads, and consumer-local imported type/value
 shapes with production on all four targets.
 Its focused fixture
@@ -290,11 +295,14 @@ structural underlyings, private distinct exposure, identity-preserving
 transitive re-export, plain/grouped/pointer-recursive structs, private and
 transitive struct exposure, nested struct arrays/signatures,
 inferred/explicit/signed/u128 enums, enum exposure/re-export, imported enum
-constants, and enums nested in other supported constructors. Separate fixtures
-require C enums, invalid or arithmetic-valued enums, specialized struct layouts,
-SIMD types, unsupported array-count expressions/types, and local alias or
-by-value layout cycles to fail at the exact self-hosting boundary. This evidence
-applies only to that
+constants, and enums nested in other supported constructors. The focused
+fixture also covers payload-free/typed/recursive variants, explicit/inferred
+and distinct-integer discriminators, private/transitive variant exposure, and
+variant nesting.
+Separate fixtures require C enums, invalid or arithmetic-valued enums, invalid
+variants, specialized struct layouts, SIMD types, unsupported array-count
+expressions/types, and local alias or by-value layout cycles to fail at the
+exact self-hosting boundary. This evidence applies only to that
 closed subset, not to the full production PackageInterface vocabulary or
 serialization.
 

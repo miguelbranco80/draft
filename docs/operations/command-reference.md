@@ -346,7 +346,7 @@ public declaration rows. It supports predeclared and named scalar aliases,
 boolean/unsigned/string constants, `^T`, `[^]T`, `[]T`, positive fixed arrays,
 tuples, explicitly typed structural globals, ordinary fixed procedure types,
 declaration-owned distinct types, ordinary named natural-layout structs, and
-ordinary enums, plus non-parametric Draft procedure signatures.
+ordinary enums and variants, plus non-parametric Draft procedure signatures.
 Fixed-array counts may use
 representable untyped integers or exact `usize` values already produced by the
 local/imported scalar dependency graph. Packages are processed dependency-first;
@@ -365,9 +365,15 @@ alternative name and exact signed/u128 value. Implicit successors, full-width
 integer literals, unary sign/grouping, and ready local/imported unsigned
 constants are supported. Every nominal member row has the fixed qualification
 shape `name kind type byte-offset has-enum-value enum-value`; struct fields use
-`0 -` for the final pair, while enum alternatives use `1 <decimal>`. Forward
-local type/count aliases and qualified
-imported type/value/count aliases are included. Variants, unions, C enums,
+`0 -` for the final pair, while enum alternatives use `1 <decimal>`.
+Ordinary variant rows print their discriminator edge, exact size/alignment, and
+every source-order alternative payload edge at the common aligned payload
+offset; payload-free alternatives point at `void`. Inferred discriminators use
+the smallest fitting fixed-width unsigned type, and explicit direct or distinct
+integer discriminators are range-checked. Variant members use `0 -` in the final
+pair.
+Forward local type/count aliases and qualified imported type/value/count aliases
+are included. Unions, C enums,
 packed/bit fields, C or explicitly aligned structs,
 selected/synthesized/directive members, SIMD/parametric types, foreign/export
 declarations, procedure contracts, arithmetic count or enum-value expressions,

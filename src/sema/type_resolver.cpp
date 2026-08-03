@@ -5011,7 +5011,16 @@ private:
 
   [[nodiscard]] bool integer_fits_type(
       const BigInteger &value, TypeId type_id) const {
-    const Type type = semantic_.types.type(type_id);
+    // A distinct integer has the range of its underlying scalar while retaining
+    // the distinct TypeId as the declared enum backing or variant discriminator.
+    // Follow the already-resolved chain only for the representability check;
+    // TypeStore::is_integer applies the same classification rule. Cyclic
+    // distinct declarations fail before producing a usable TypeId, so every
+    // chain reaching this operation terminates at a non-distinct type.
+    Type type = semantic_.types.type(type_id);
+    while (type.kind == TypeKind::Distinct) {
+      type = semantic_.types.type(type.element);
+    }
     if (type.kind != TypeKind::SignedInteger &&
         type.kind != TypeKind::UnsignedInteger) {
       return false;

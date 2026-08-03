@@ -1273,6 +1273,46 @@ void test_variant_discriminator_capacity(TestState &state) {
                     std::string::npos);
 }
 
+// Distinct integer chains retain their nominal TypeId when selected as an enum
+// backing or variant discriminator, but representability is governed by the
+// final signed/unsigned scalar. This exercises both aggregate paths and proves
+// the resolver does not replace the declared backing with its representation.
+void test_distinct_integer_aggregate_backings(TestState &state) {
+  SemanticSource source(R"draft(
+package types
+
+Tag_Base :: distinct i16
+Tag :: distinct Tag_Base
+
+State :: enum Tag {
+    Zero,
+    Maximum = 32767,
+}
+
+Choice :: variant Tag {
+    none,
+    value: u64,
+}
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  const draft::Symbol *tag = find_symbol(source.semantic, "Tag");
+  const draft::Symbol *state_symbol = find_symbol(source.semantic, "State");
+  const draft::Symbol *choice_symbol = find_symbol(source.semantic, "Choice");
+  EXPECT(state, !source.diagnostics.has_errors());
+  EXPECT(state, tag != nullptr);
+  EXPECT(state, state_symbol != nullptr);
+  EXPECT(state, choice_symbol != nullptr);
+  if (tag != nullptr && state_symbol != nullptr && choice_symbol != nullptr) {
+    EXPECT(state,
+        source.semantic.types.type(state_symbol->type).element == tag->type);
+    EXPECT(state,
+        source.semantic.types.type(choice_symbol->type).element == tag->type);
+  }
+}
+
 void test_invalid_layout_modifiers(TestState &state) {
   SemanticSource source(R"draft(
 package types
@@ -1415,6 +1455,7 @@ int main() {
   test_invalid_enum_values(state);
   test_c_enum_default_backing(state);
   test_variant_discriminator_capacity(state);
+  test_distinct_integer_aggregate_backings(state);
   test_invalid_layout_modifiers(state);
   test_cyclic_layout_constant(state);
   test_type_declaration_depth_is_bounded(state);

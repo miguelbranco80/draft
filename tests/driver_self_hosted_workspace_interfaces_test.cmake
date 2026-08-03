@@ -2,8 +2,8 @@
 #
 # Both executables emit the established graph, declaration, target-selection,
 # and public-name prefix before the canonical scalar/structural/nominal type
-# graph, including exact natural-layout struct fields/offsets and enum
-# alternatives/backing values.
+# graph, including exact natural-layout struct fields/offsets, enum values, and
+# variant discriminator/payload packets.
 # Imported rows are compared through structural/nominal consumer-local type
 # shapes so unrelated production-only private interning cannot affect the
 # result. Scratch is process-unique below the caller-provided binary directory.
@@ -134,6 +134,14 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "Later_Code :: 257\n"
   "Private_Status :: enum u8 { none; active = 9; }\n"
   "pub Private_Status_View :: Private_Status\n"
+  "pub Choice :: variant { none; count: u32; pair: Pair; }\n"
+  "pub Explicit_Choice :: variant u16 { empty; word: u64; }\n"
+  "pub Variant_Tag_Base :: distinct i16\n"
+  "pub Variant_Tag :: distinct Variant_Tag_Base\n"
+  "pub Distinct_Choice :: variant Variant_Tag { none; word: u64; }\n"
+  "pub Recursive_Choice :: variant { end; next: ^Recursive_Choice; }\n"
+  "Private_Choice :: variant { none; record: Private_Record; }\n"
+  "pub Private_Choice_View :: Private_Choice\n"
   "pub Forward :: Later\n"
   "Later :: u16\n"
   "pub Forward_View :: Later_View\n"
@@ -155,6 +163,8 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Current_Pair: Pair\n"
   "pub Current_Mode: Mode\n"
   "pub Mode_Array :: [Count]Mode\n"
+  "pub Choice_Array :: [Count]Choice\n"
+  "pub Current_Choice: Choice\n"
   "pub transform :: proc(values: Index_Slice, cursor: Index_Multi) -> Index_Pointer { return nil; }\n"
   "pub keep_duration :: proc(value: Duration) -> Duration { return value; }\n"
   "pub pair :: proc(pointer: Index_Pointer, values: Index_Array) -> (Index_Pointer, Index_Array) { return (pointer, values); }\n"
@@ -170,6 +180,10 @@ file(WRITE "${interface_workspace}/middle/package.draft"
   "pub Mode :: values.Mode\n"
   "pub Private_Status :: values.Private_Status_View\n"
   "pub Middle_Code :: enum u16 { none; count = values.Count; }\n"
+  "pub Choice :: values.Choice\n"
+  "pub Distinct_Choice :: values.Distinct_Choice\n"
+  "pub Private_Choice :: values.Private_Choice_View\n"
+  "pub Middle_Choice :: variant u16 { empty; wrapper: Wrapper; direct: values.Choice; }\n"
   "pub Wrapped :: distinct values.Duration\n"
   "pub Wrapped_Array :: [2]Wrapped\n"
   "pub Wrapper :: struct { pair: values.Pair; duration: values.Duration; next: ^Wrapper; }\n"
@@ -196,6 +210,11 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Via_Middle_Mode :: middle.Mode\n"
   "pub Reexported_Private_Status :: middle.Private_Status\n"
   "pub Imported_Middle_Code :: middle.Middle_Code\n"
+  "pub Direct_Choice :: values.Choice\n"
+  "pub Via_Middle_Choice :: middle.Choice\n"
+  "pub Via_Middle_Distinct_Choice :: middle.Distinct_Choice\n"
+  "pub Reexported_Private_Choice :: middle.Private_Choice\n"
+  "pub Imported_Middle_Choice :: middle.Middle_Choice\n"
   "pub Reexported_Private_Record :: middle.Private_Record\n"
   "pub Middle_Wrapper :: middle.Wrapper\n"
   "pub Reexported_Private_Count :: middle.Private_Count\n"
@@ -210,8 +229,12 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Pair_Grid :: [2]values.Pair_Array\n"
   "pub Mode_Grid :: [2]values.Mode_Array\n"
   "pub Local_Mode :: enum u8 { none; imported_count = values.Count; }\n"
+  "pub Local_Choice :: variant { none; pair: values.Pair; wrapper: middle.Wrapper; }\n"
   "pub Envelope :: struct { pair: values.Pair; wrapper: middle.Wrapper; next: ^Envelope; grid: [2]values.Pair; }\n"
   "pub Enum_Record :: struct { direct: values.Mode; transitive: middle.Mode; local: Local_Mode; }\n"
+  "pub Variant_Record :: struct { direct: values.Choice; transitive: middle.Choice; local: Local_Choice; }\n"
+  "pub Choice_Grid :: [2]values.Choice_Array\n"
+  "pub Choice_Transformer :: proc(value: values.Choice) -> middle.Middle_Choice\n"
   "pub Storage: values.Index_Array\n"
   "pub Cursor: values.Index_Multi\n"
   "pub copy :: proc(value: []values.Index, cursor: [^]values.Index) -> ^values.Index { return nil; }\n"
@@ -238,12 +261,12 @@ endforeach()
 expect_next_interface_failure(
   unsupported-c-enum
   "package app\npub State :: c enum { ready; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 expect_next_interface_failure(
   unsupported-enum-value-arithmetic
   "package app\npub State :: enum { none; ready = 2 + 2; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 
 # The staged enum completion still enforces the semantic zero-value,
@@ -251,17 +274,51 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   invalid-enum-missing-zero
   "package app\npub State :: enum { ready = 1; later; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 expect_next_interface_failure(
   invalid-enum-duplicate-value
   "package app\npub State :: enum { none; ready = 1; later = 1; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 expect_next_interface_failure(
   invalid-enum-backing-range
   "package app\npub State :: enum u8 { none; too_large = 256; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
+)
+
+# Ordinary variant completion rejects invalid empty/member/discriminator forms
+# inside the supported natural-layout syntax rather than publishing a partial
+# tagged-sum packet.
+expect_next_interface_failure(
+  invalid-empty-variant
+  "package app\npub Choice :: variant {}\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
+)
+expect_next_interface_failure(
+  invalid-variant-discriminator
+  "package app\npub Choice :: variant bool { none; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
+)
+expect_next_interface_failure(
+  invalid-variant-duplicate-name
+  "package app\npub Choice :: variant { same; same: u32; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
+)
+expect_next_interface_failure(
+  invalid-variant-discard-name
+  "package app\npub Choice :: variant { _; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
+)
+set(overflow_variant_source "package app\npub Choice :: variant u8 {")
+foreach(index RANGE 0 256)
+  string(APPEND overflow_variant_source " alternative_${index};")
+endforeach()
+string(APPEND overflow_variant_source " }\nmain :: proc() {}\n")
+expect_next_interface_failure(
+  invalid-variant-discriminator-capacity
+  "${overflow_variant_source}"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 
 # The first aggregate slice is deliberately only ordinary natural layout.
@@ -270,22 +327,22 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-packed-struct
   "package app\npub Record :: struct { packed value: u32; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 expect_next_interface_failure(
   unsupported-bit-field-struct
   "package app\npub Record :: struct { bits(3) value: u8; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 expect_next_interface_failure(
   unsupported-c-struct
   "package app\npub Record :: c struct { value: u32; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 expect_next_interface_failure(
   unsupported-aligned-struct
   "package app\npub Record :: align(16) struct { value: u32; }\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 
 # SIMD remains outside the closed type vocabulary even though its element and
@@ -293,7 +350,7 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-simd
   "package app\npub Lanes :: simd[4]u32\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 
 # Array counts reuse the current scalar constant-product evaluator. Arithmetic
@@ -302,7 +359,7 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-array-count-arithmetic
   "package app\npub Bytes :: [2 + 2]u8\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 
 # A concrete uint is not an implicit usize merely because both current target
@@ -311,7 +368,7 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   unsupported-array-count-type
   "package app\npub Bytes :: [target.pointer_bits]u8\nmain :: proc() {}\n"
-  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, or ordinary enum declaration"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, or ordinary variant declaration"
 )
 
 # Local declaration cycles remain visible graph edges and receive a distinct
@@ -327,6 +384,11 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   cyclic-self-struct-layout
   "package app\npub Node :: struct { next: Node; }\nmain :: proc() {}\n"
+  "self-hosted typed interface contains a cyclic declaration dependency"
+)
+expect_next_interface_failure(
+  cyclic-self-variant-layout
+  "package app\npub Loop :: variant { next: Loop; }\nmain :: proc() {}\n"
   "self-hosted typed interface contains a cyclic declaration dependency"
 )
 expect_next_interface_failure(

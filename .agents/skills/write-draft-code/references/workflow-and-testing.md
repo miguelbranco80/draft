@@ -558,7 +558,8 @@ scalar constant products, then rebuilds that public view.
 predeclared/named scalar types, scalar constants, explicitly typed globals,
 pointer/multi-pointer/slice/fixed-array/tuple structures, fixed procedure types
 and signatures, declaration-owned distinct types, ordinary named natural-layout
-structs, ordinary enums, and consumer-local imported type/value reconstruction.
+structs, ordinary enums and variants, and consumer-local imported type/value
+reconstruction.
 Array counts reuse the scalar product graph for positive untyped or exact
 `usize` values. Distinct interface identity uses the defining content root,
 root-relative package path, and original declaration name, and survives
@@ -570,7 +571,10 @@ the other supported constructors are covered. Ordinary enum interfaces retain
 the same persistent identity, explicit or inferred integer backing/layout, and
 source-order names plus exact signed/u128 values. Their current value vocabulary
 is implicit successors, full-width literals, unary sign/grouping, and ready
-local/imported unsigned constants. Variants, unions, C enums, packed/bit fields,
+local/imported unsigned constants. Ordinary variants retain source-order
+payload-free/typed alternatives, explicit direct/distinct or inferred
+discriminators, common payload offsets, and exact natural layout; pointer
+recursion and transitive identity are covered. Unions, C enums, packed/bit fields,
 C or explicitly aligned structs, selected/synthesized/member-directive regions,
 SIMD/parametric types, foreign/export, procedure contracts, arithmetic counts or
 enum values, and general constant/type forms remain an explicit staging failure.
@@ -636,11 +640,10 @@ nested conditions, dormant unrelated constants, and fail-closed demanded
 arithmetic/cycles. Arithmetic and aggregate values, imported constants, types,
 and compile-time procedures remain outside this target-selection evaluator. The
 typed-interface differential then compares canonical reachable
-scalar/structural/distinct/ordinary-struct/ordinary-enum type rows, fixed-array
-counts, exact natural struct layouts and enum values, declaration
-classifications, scalar constant payloads, and imported consumer-local
-type/value shapes on all four targets. Its supported
-fixture includes forward
+scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant type
+rows, fixed-array counts, exact natural struct/variant layouts and enum values,
+declaration classifications, scalar constant payloads, and imported
+consumer-local type/value shapes on all four targets. Its supported fixture includes forward
 local type/count aliases,
 qualified imported aliases and counts, structural globals, fixed procedure
 types/signatures, tuple results, target page-size arrays, separate same-underlying
@@ -648,12 +651,15 @@ distinct declarations, private distinct exposure, distinct-over-distinct,
 identity-preserving transitive re-export, plain/grouped/pointer-recursive
 structs, private and transitive struct exposure, and struct arrays/procedure
 signatures, inferred/explicit/signed/u128 enums, private and transitive enum
-exposure, imported enum values, and enum nesting in supported constructors. C
-enums, invalid or arithmetic-valued enums, specialized struct layouts/members,
-SIMD types, unsupported count expressions/types, and local alias or by-value
-layout cycles must fail at the exact self-hosting boundary. Do not infer support
-for the production interface's remaining nominal/parametric constructors or
-contracts from this narrow gate.
+exposure, imported enum values, enum nesting in supported constructors,
+payload-free/typed/recursive variants, distinct-integer discriminators,
+private/transitive variant exposure, and variant nesting in supported
+constructors. C enums, invalid or
+arithmetic-valued enums, invalid variants,
+specialized struct layouts/members, SIMD types, unsupported count
+expressions/types, and local alias or by-value layout cycles must fail at the
+exact self-hosting boundary. Do not infer support for the production interface's
+remaining nominal/parametric constructors or contracts from this narrow gate.
 Keep the bootstrap path until a replacement phase has this oracle; passing
 focused Draft tests alone is not replacement evidence.
 
