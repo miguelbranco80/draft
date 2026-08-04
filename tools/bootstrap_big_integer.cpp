@@ -78,6 +78,7 @@ int main() {
   emit_integer("parse-binary", required_integer("0b1010_0101"));
   emit_integer("parse-octal", required_integer("0o755"));
   emit_integer("parse-underscores", required_integer("1_000_000"));
+  emit_integer("parse-bytes", required_integer("4294967296"));
   emit_boolean("parse-invalid-empty",
                draft::BigInteger::parse_literal("").has_value());
   emit_boolean("parse-invalid-prefix",
@@ -164,6 +165,8 @@ int main() {
   const draft::BigInteger u64_max = required_integer("18446744073709551615");
   const draft::BigInteger u64_too_large =
       required_integer("18446744073709551616");
+  const draft::BigInteger u128_max =
+      required_integer("340282366920938463463374607431768211455");
   const draft::BigInteger i64_max = required_integer("9223372036854775807");
   const draft::BigInteger i64_too_large =
       required_integer("9223372036854775808");
@@ -175,6 +178,12 @@ int main() {
   emit_boolean("to-u64-too-large", u64_too_large.to_u64().has_value());
   emit_boolean("to-u64-negative",
                draft::BigInteger::from_i64(-1).to_u64().has_value());
+  emit_boolean("to-u128-max",
+               !u128_max.is_negative() && u128_max.compare(power) < 0);
+  emit_integer("to-u128-max-value", u128_max);
+  emit_boolean("to-u128-too-large", power.compare(u128_max) <= 0);
+  emit_boolean("to-u128-negative",
+               !draft::BigInteger::from_i64(-1).is_negative());
   emit_boolean("to-i64-max", i64_max.to_i64().has_value());
   emit_boolean("to-i64-too-large", i64_too_large.to_i64().has_value());
   emit_boolean("to-i64-min", i64_min.to_i64().has_value());

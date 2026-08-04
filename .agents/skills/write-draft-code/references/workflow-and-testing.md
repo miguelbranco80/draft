@@ -563,10 +563,12 @@ type/value reconstruction.
 Named integer constants, enum values, and array counts share a typed evaluator
 for literals, ready local/imported unsigned constants, target numeric facts,
 grouping, unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped operations
-keep exact sign/magnitude values through u128; concrete unsigned types no wider
-than 64 bits wrap at their declared width. Named constants currently publish
-only nonnegative u64 results, while array counts require a positive
-representable untyped or exact `usize` result. Distinct interface identity uses
+remain mathematically exact regardless of intermediate width; concrete unsigned
+types no wider than 64 bits wrap at their declared width. Named constants
+currently publish only nonnegative u64 results, enum values must fit their
+signed/u128 interface packet, and array counts require a positive result
+representable by the target-sized count packet from an untyped value or exact
+`usize`. Distinct interface identity uses
 the defining content root,
 root-relative package path, and original declaration name, and survives
 transitive re-export while the underlying graph is rebuilt locally. Nominal
@@ -585,14 +587,14 @@ source-order grouped fields at byte offset zero, exact maximum-member natural
 layout, pointer recursion, and transitive identity. C enums, packed/bit fields,
 C or explicitly aligned aggregates, selected/synthesized/member-directive
 regions, SIMD/parametric types, foreign/export, procedure contracts, bitwise/
-shift/cast/comparison integer expressions, untyped intermediates beyond u128,
-negative or wider named scalar publication, and general constant/type forms
-remain an explicit staging failure.
-The lower `compiler/big_integer` package now owns arbitrary-precision signed
-values with explicit init/destroy lifetime and is qualified independently
-against production C++ `BigInteger`. It is not a `draftc-next` command, and the
-typed interface evaluator still uses the bounded u128 representation until a
-later wiring slice.
+shift/cast/comparison integer expressions, negative or wider named scalar
+publication, and general constant/type forms remain an explicit staging failure.
+The lower `compiler/big_integer` package owns arbitrary-precision signed values
+with explicit init/destroy lifetime and is qualified independently against
+production C++ `BigInteger`. It is not a `draftc-next` command. The typed
+interface evaluator consumes it through one root-owned temporary table and
+stable value IDs, then converts only the final result into the consumer's finite
+interface packet.
 It is a build-tree development artifact, not an installed public command:
 
 ```sh
@@ -628,7 +630,9 @@ exit status with the production C++ implementation over parsing, canonical
 sign and comparison, multi-limb arithmetic, signed division/remainder, shifts,
 infinite-two's-complement bitwise operations, formatting, and host conversion
 boundaries. Passing this gate qualifies the lower representation; it does not
-claim that the bounded typed-interface evaluator consumes it.
+by itself qualify a semantic consumer. The workspace-interface differential is
+the gate proving that wide intermediates narrow correctly through local,
+imported, and re-exported scalar, enum, and array result packets.
 
 The single-file differential tests compare C++ `draftc lex`/`draftc syntax`
 with Draft `draftc-next lex`/`draftc-next syntax` over repository Draft sources
@@ -669,7 +673,8 @@ and enum values, declaration classifications, scalar constant payloads, and
 imported consumer-local type/value shapes on all four targets. Its supported
 fixture includes forward local type/count aliases, qualified imported aliases
 and counts, local/forward/imported/target integer arithmetic, concrete unsigned
-wrapping, signed division/remainder, checked u128 multiplication, structural
+wrapping, signed division/remainder, arbitrary-precision intermediates narrowing
+through scalar/enum/array consumers, structural
 globals, fixed procedure types/signatures, tuple results, target page-size
 arrays, separate same-underlying distinct declarations, private distinct
 exposure, distinct-over-distinct, identity-preserving transitive re-export,
@@ -685,7 +690,7 @@ union fixtures before the self-hosted command rejects those valid production
 forms at its staging boundary; synthesized union members also fail closed. C
 enums, invalid enum arithmetic, invalid variants/unions, specialized aggregate
 layouts/members, SIMD types, unsupported count operators/types, division by
-zero, values past the u128 staging bound, negative/wider named scalar
+zero, final enum values beyond the u128 packet, negative/wider named scalar
 publication, and local alias or by-value layout cycles must fail at the exact
 self-hosting boundary. Do not infer support for the production interface's
 remaining nominal/parametric constructors or contracts from this narrow gate.

@@ -326,11 +326,10 @@ subtract_one_magnitude :: proc(value: ^Integer) {
     assert(false, "big integer decrement lost its nonzero limb")
 }
 
-// parse_literal replaces destination from one unsigned Draft integer token.
-// It accepts decimal and 0b/0o/0x spellings plus underscore separators. A
-// leading sign is intentionally absent because syntax represents it as unary
-// expression. False clears destination back to canonical zero.
-pub parse_literal :: proc(destination: ^Integer, spelling: string) -> bool {
+// parse_bytes_impl contains the shared source-token parser over a borrowed byte
+// view. Public string and mutable-slice entry points differ only in how they
+// obtain that view; neither retains source storage.
+parse_bytes_impl :: proc(destination: ^Integer, spelling: []u8) -> bool {
     assert(initialized(destination), "big integer is not initialized")
     clear(destination)
     base: u32 = 10
@@ -370,6 +369,24 @@ pub parse_literal :: proc(destination: ^Integer, spelling: string) -> bool {
         return false
     }
     return true
+}
+
+// parse_literal replaces destination from one immutable Draft integer token.
+// It accepts decimal and 0b/0o/0x spellings plus underscore separators. A
+// leading sign is intentionally absent because syntax represents it as unary
+// expression. False clears destination back to canonical zero.
+pub parse_literal :: proc(destination: ^Integer, spelling: string) -> bool {
+    return parse_bytes_impl(
+        destination,
+        raw_data(spelling)[:len(spelling)],
+    )
+}
+
+// parse_bytes is the source-buffer form used by compiler phases whose token
+// spelling is already a bounded borrowed byte view. Its result and failure
+// behavior are identical to parse_literal.
+pub parse_bytes :: proc(destination: ^Integer, spelling: []u8) -> bool {
+    return parse_bytes_impl(destination, spelling)
 }
 
 // absolute writes the nonnegative mathematical magnitude into destination.
@@ -960,6 +977,23 @@ pub to_u64 :: proc(value: ^Integer) -> (u64, bool) {
         return (0, false)
     }
     return magnitude_u64(value)
+}
+
+// to_u128 succeeds only for a nonnegative value representable by Draft's
+// widest concrete unsigned integer. Consumer layers use this at an explicit
+// machine-value boundary; arbitrary-precision arithmetic never calls it while
+// computing an untyped intermediate.
+pub to_u128 :: proc(value: ^Integer) -> (u128, bool) {
+    assert(initialized(value), "big integer is not initialized")
+    if value.negative || value.length > 4 {
+        return (0, false)
+    }
+    result: u128
+    for index: usize = 0; index < value.length; index += 1 {
+        result |= cast[u128](value.data[index]) <<
+            cast[u32](index * cast[usize](Limb_Bits))
+    }
+    return (result, true)
 }
 
 // to_i64 succeeds only for the exact signed range, including i64 minimum.

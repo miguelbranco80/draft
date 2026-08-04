@@ -22,8 +22,9 @@
 // natural-layout structs, enums, variants, and unions. Specialized aggregate
 // layout, contracts, body checking, and general constant evaluation stay behind
 // an explicit diagnostic rather than receiving provisional semantics. The
-// typed-interface path does include one bounded integer-expression slice shared
-// by named scalar constants, fixed-array counts, and enum values.
+// typed-interface path does include one arbitrary-precision integer-expression
+// slice shared by named scalar constants, fixed-array counts, and enum values;
+// each consumer still applies its finite result-packet boundary explicitly.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
 // ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
@@ -64,6 +65,7 @@ package compiler_sema
 import core/array
 import core/format
 import core/memory
+import compiler/big_integer as compiler_big_integer
 import compiler/diagnostic as compiler_diagnostic
 import compiler/source as compiler_source
 import compiler/syntax as compiler_syntax
@@ -75,6 +77,7 @@ Invalid_Symbol_Value :: ~cast[u32](0)
 Invalid_Compile_Time_Product_Value :: ~cast[u32](0)
 Invalid_Type_Value :: ~cast[u32](0)
 Invalid_Interface_Type_Value :: ~cast[u32](0)
+Invalid_Integer_Value :: ~cast[u32](0)
 
 // Scope_Id is an index into one Semantic_Package.scopes table. The all-ones
 // value is the package scope's parent sentinel; IDs never cross package rows.
@@ -375,16 +378,33 @@ Enum_Integer :: struct {
     magnitude: u128,
 }
 
+// Integer_Value_Id indexes one Integer_Evaluation.values table. It exists only
+// for one root expression attempt and must never be retained by a semantic or
+// interface row. The all-ones value is invalid. IDs remain stable while the
+// owning Dynamic relocates its rows; pointers do not.
+Integer_Value_Id :: struct {
+    value: u32,
+}
+
+// Integer_Evaluation owns every arbitrary-precision temporary created while
+// evaluating one root expression. Each element is a non-copyable limb owner,
+// but the Dynamic may relocate its element bytes as one ownership transfer.
+// Code therefore keeps only Integer_Value_Ids across append and reacquires
+// pointers afterward. destroy_integer_evaluation destroys every nested limb
+// allocation before releasing the outer table.
+Integer_Evaluation :: struct {
+    values: array.Dynamic[compiler_big_integer.Integer],
+}
+
 // Integer_Expression_Value is one exact integer result plus the static type
 // which controls contextual conversion and concrete arithmetic. The current
 // staged evaluator admits untyped integers and concrete unsigned integers no
-// wider than u64. Its mathematical component deliberately reuses Enum_Integer:
-// enum values and fixed-array counts must agree on signs, truncating division,
-// remainder, and overflow instead of maintaining two subtly different
-// arithmetic implementations. A successful value always has a valid
-// package-local static_type; it owns no storage.
+// wider than u64. integer addresses the current Integer_Evaluation rather than
+// embedding an owner, so recursive returns and local copies remain plain data.
+// A successful value always has valid evaluation-local integer and package-
+// local static_type IDs; it owns no storage.
 Integer_Expression_Value :: struct {
-    integer: Enum_Integer,
+    integer: Integer_Value_Id,
     static_type: Type_Id,
 }
 
@@ -425,9 +445,10 @@ Compile_Time_Value_Kind :: enum u8 {
 
 // Compile_Time_Value owns no allocation. static_type and type_value use the
 // owning Semantic_Package's Type_Id domain. unsigned_integer is also the
-// publishable result packet for the bounded typed-interface arithmetic slice;
-// exact negative or wider enum/array intermediates stay in
-// Integer_Expression_Value instead. Text is either a process-lifetime target/
+// publishable result packet for the typed-interface arithmetic slice. Exact
+// negative or wider intermediates stay in the evaluation-owned big-integer
+// table until a scalar, enum, or array consumer projects the root result. Text
+// is either a process-lifetime target/
 // builtin spelling or a source-backed view selected by text_from_source; the
 // workspace graph outlives every value and imported copy.
 Compile_Time_Value :: struct {
@@ -3025,132 +3046,49 @@ infer_variant_discriminator :: proc(
     return invalid_type_id()
 }
 
-// parse_enum_unsigned accepts one lexer-validated integer spelling and retains
-// the complete u128 domain. Overflow is still checked here because the lexer
-// establishes digit syntax, not semantic representability.
-parse_enum_unsigned :: proc(bytes: []u8) -> (u128, bool) {
-    if len(bytes) == 0 {
-        return (0, false)
-    }
-    base: u128 = 10
-    index: usize = 0
-    if len(bytes) >= 2 && bytes[0] == cast[u8]('0') {
-        if bytes[1] == cast[u8]('b') {
-            base = 2
-            index = 2
-        } else if bytes[1] == cast[u8]('o') {
-            base = 8
-            index = 2
-        } else if bytes[1] == cast[u8]('x') {
-            base = 16
-            index = 2
-        }
-    }
-    value: u128 = 0
-    saw_digit := false
-    maximum := ~cast[u128](0)
-    for index < len(bytes) {
-        byte := bytes[index]
-        index += 1
-        if byte == cast[u8]('_') {
-            continue
-        }
-        (small_digit, valid) := digit_value(byte)
-        digit := cast[u128](small_digit)
-        if !valid || digit >= base || value > (maximum - digit) / base {
-            return (0, false)
-        }
-        value = value * base + digit
-        saw_digit = true
-    }
-    return (value, saw_digit)
+// init_integer_evaluation establishes the owner table for one root-expression
+// attempt. The caller keeps evaluation at a stable address through destruction.
+init_integer_evaluation :: proc(evaluation: ^Integer_Evaluation) {
+    array.init(&evaluation.values)
 }
 
-// negate_enum_integer returns the mathematical additive inverse while keeping
-// the representation's invariant that zero is never negative.
-negate_enum_integer :: proc(value: Enum_Integer) -> Enum_Integer {
-    result := value
-    if result.magnitude != 0 {
-        result.negative = !result.negative
+// destroy_integer_evaluation releases nested limb allocations before the
+// outer contiguous table. The generic container has no element destructor, so
+// reversing those two steps would leak every value's magnitude storage.
+destroy_integer_evaluation :: proc(evaluation: ^Integer_Evaluation) {
+    for index: usize = 0; index < evaluation.values.length; index += 1 {
+        compiler_big_integer.destroy(&evaluation.values.data[index])
     }
-    return result
+    array.destroy(&evaluation.values)
 }
 
-// add_enum_integers computes one mathematical sum in the bounded sign-plus-
-// u128 staging domain. Equal signs add magnitudes with an explicit overflow
-// check; opposite signs subtract the smaller magnitude. A false result means
-// the exact untyped result needs more than u128 magnitude and therefore belongs
-// to the later arbitrary-precision evaluator, not that Draft arithmetic wraps.
-add_enum_integers :: proc(
-    left, right: Enum_Integer,
-) -> (Enum_Integer, bool) {
-    if left.negative == right.negative {
-        if left.magnitude > ~cast[u128](0) - right.magnitude {
-            return (Enum_Integer{}, false)
-        }
-        magnitude := left.magnitude + right.magnitude
-        return (Enum_Integer{
-            negative = left.negative && magnitude != 0,
-            magnitude = magnitude,
-        }, true)
-    }
-    if left.magnitude >= right.magnitude {
-        magnitude := left.magnitude - right.magnitude
-        return (Enum_Integer{
-            negative = left.negative && magnitude != 0,
-            magnitude = magnitude,
-        }, true)
-    }
-    magnitude := right.magnitude - left.magnitude
-    return (Enum_Integer{
-        negative = right.negative && magnitude != 0,
-        magnitude = magnitude,
-    }, true)
+// append_integer_value publishes one initialized zero owner and returns its
+// stable evaluation-local ID. append may relocate all rows, so callers must not
+// retain a pointer obtained before this operation.
+append_integer_value :: proc(
+    evaluation: ^Integer_Evaluation,
+) -> Integer_Value_Id {
+    assert(evaluation.values.length < cast[usize](Invalid_Integer_Value),
+        "integer evaluation table exceeds u32 identity space")
+    id := Integer_Value_Id{value = cast[u32](evaluation.values.length)}
+    empty: compiler_big_integer.Integer
+    array.append(&evaluation.values, empty)
+    compiler_big_integer.init(
+        &evaluation.values.data[cast[usize](id.value)],
+    )
+    return id
 }
 
-// multiply_enum_integers computes an exact mathematical product when its
-// magnitude fits u128. Native u128 multiplication would silently wrap, so the
-// division guard is part of the semantic operation rather than an assertion.
-multiply_enum_integers :: proc(
-    left, right: Enum_Integer,
-) -> (Enum_Integer, bool) {
-    if left.magnitude == 0 || right.magnitude == 0 {
-        return (Enum_Integer{}, true)
-    }
-    if left.magnitude > ~cast[u128](0) / right.magnitude {
-        return (Enum_Integer{}, false)
-    }
-    return (Enum_Integer{
-        negative = left.negative != right.negative,
-        magnitude = left.magnitude * right.magnitude,
-    }, true)
-}
-
-// divide_enum_integers implements Draft's truncation-toward-zero quotient and
-// dividend-signed remainder for exact untyped integers. Division by zero is a
-// required-constant failure. There is no signed-minimum trap in this
-// mathematical domain; that trap belongs to a concrete signed representation,
-// which this staged evaluator does not yet admit.
-divide_enum_integers :: proc(
-    left, right: Enum_Integer,
-    operation: compiler_syntax.Token_Kind,
-) -> (Enum_Integer, bool) {
-    if right.magnitude == 0 ||
-        (operation != .slash && operation != .percent) {
-        return (Enum_Integer{}, false)
-    }
-    if operation == .slash {
-        magnitude := left.magnitude / right.magnitude
-        return (Enum_Integer{
-            negative = left.negative != right.negative && magnitude != 0,
-            magnitude = magnitude,
-        }, true)
-    }
-    magnitude := left.magnitude % right.magnitude
-    return (Enum_Integer{
-        negative = left.negative && magnitude != 0,
-        magnitude = magnitude,
-    }, true)
+// integer_value obtains a short-lived pointer to one evaluation owner. The
+// pointer expires at the next append_integer_value or final destruction.
+integer_value :: proc(
+    evaluation: ^Integer_Evaluation,
+    id: Integer_Value_Id,
+) -> ^compiler_big_integer.Integer {
+    assert(id.value != Invalid_Integer_Value &&
+        cast[usize](id.value) < evaluation.values.length,
+        "integer value ID is invalid")
+    return &evaluation.values.data[cast[usize](id.value)]
 }
 
 // unsigned_integer_width recognizes the only concrete integer family which a
@@ -3176,40 +3114,56 @@ unsigned_integer_width :: proc(
     return (row.bit_width, true)
 }
 
-// enum_integer_fits_unsigned_width checks contextual conversion of an untyped
-// operand into one concrete unsigned operation. The width is already known to
-// be in 1...64, so the maximum calculation never performs an invalid shift.
-enum_integer_fits_unsigned_width :: proc(
-    value: Enum_Integer,
+// integer_value_fits_unsigned_width checks contextual conversion of an untyped
+// operand into one concrete unsigned operation. to_u64 rejects negative and
+// wider values before the exact width endpoint is compared.
+integer_value_fits_unsigned_width :: proc(
+    evaluation: ^Integer_Evaluation,
+    value: Integer_Value_Id,
     bit_width: u32,
 ) -> bool {
-    if value.negative || bit_width == 0 || bit_width > 64 {
+    if bit_width == 0 || bit_width > 64 {
+        return false
+    }
+    (magnitude, fits) := compiler_big_integer.to_u64(
+        integer_value(evaluation, value),
+    )
+    if !fits {
         return false
     }
     if bit_width == 64 {
-        return value.magnitude <= cast[u128](~cast[u64](0))
+        return true
     }
-    maximum := (cast[u128](1) << bit_width) - 1
-    return value.magnitude <= maximum
+    maximum := (cast[u64](1) << bit_width) - 1
+    return magnitude <= maximum
 }
 
-// wrap_unsigned_integer applies the concrete Draft modulo rule after an exact
-// operation. Negative mathematical values are first reduced to their canonical
-// nonnegative residue. This is what makes `target.page_size -
-// (target.page_size + 1)` produce the target's usize maximum instead of either
-// a negative staging value or an accidental host result.
-wrap_unsigned_integer :: proc(
-    value: Enum_Integer,
+// wrap_unsigned_integer_value applies modulo 2^bit_width by intersecting the
+// infinite-two's-complement value with an exact low-bit mask. This handles
+// positive overflow and negative results with one representation-independent
+// operation and returns a new nonnegative owner.
+wrap_unsigned_integer_value :: proc(
+    evaluation: ^Integer_Evaluation,
+    value: Integer_Value_Id,
     bit_width: u32,
-) -> Enum_Integer {
+) -> Integer_Value_Id {
     assert(bit_width != 0 && bit_width <= 64,
         "unsigned constant wrapping received an invalid width")
-    modulus := cast[u128](1) << bit_width
-    residue := value.magnitude % modulus
-    if value.negative && residue != 0 {
-        residue = modulus - residue
+    mask: u64
+    if bit_width == 64 {
+        mask = ~cast[u64](0)
+    } else {
+        mask = (cast[u64](1) << bit_width) - 1
     }
-    return Enum_Integer{magnitude = residue}
+    mask_id := append_integer_value(evaluation)
+    result_id := append_integer_value(evaluation)
+    compiler_big_integer.set_u64(integer_value(evaluation, mask_id), mask)
+    compiler_big_integer.bitwise_and(
+        integer_value(evaluation, result_id),
+        integer_value(evaluation, value),
+        integer_value(evaluation, mask_id),
+    )
+    return result_id
 }
 
 // integer_binary_type applies Draft's common-integer rule for the subset above.
@@ -3218,6 +3172,7 @@ wrap_unsigned_integer :: proc(
 // width zero denotes an untyped result; false denotes a type mismatch or a
 // contextual conversion which would be invalid in production.
 integer_binary_type :: proc(
+    evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
     left, right: Integer_Expression_Value,
 ) -> (Type_Id, u32, bool) {
@@ -3242,27 +3197,38 @@ integer_binary_type :: proc(
         return (left.static_type, left_width, true)
     }
     if left_width == 0 {
-        if !enum_integer_fits_unsigned_width(left.integer, right_width) {
+        if !integer_value_fits_unsigned_width(
+            evaluation,
+            left.integer,
+            right_width,
+        ) {
             return (invalid_type_id(), 0, false)
         }
         return (right.static_type, right_width, true)
     }
-    if !enum_integer_fits_unsigned_width(right.integer, left_width) {
+    if !integer_value_fits_unsigned_width(
+        evaluation,
+        right.integer,
+        left_width,
+    ) {
         return (invalid_type_id(), 0, false)
     }
     return (left.static_type, left_width, true)
 }
 
-// apply_integer_binary evaluates the arithmetic operators first moved into the
-// shared typed-interface constant slice. Untyped results stay mathematical and
-// fail on u128 magnitude overflow. Concrete unsigned results are reduced modulo
-// their exact type width after the operation, matching runtime arithmetic.
+// apply_integer_binary evaluates the arithmetic operators in the shared typed-
+// interface slice. Untyped results remain arbitrary precision. Concrete
+// unsigned results are reduced modulo their exact width after the mathematical
+// operation, matching runtime arithmetic. New rows are appended before any
+// operand pointer is taken because table growth may relocate every owner.
 apply_integer_binary :: proc(
+    evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
     left, right: Integer_Expression_Value,
     operation: compiler_syntax.Token_Kind,
 ) -> (Integer_Expression_Value, bool) {
     (static_type, concrete_width, valid_type) := integer_binary_type(
+        evaluation,
         semantic_package,
         left,
         right,
@@ -3271,23 +3237,40 @@ apply_integer_binary :: proc(
         return (Integer_Expression_Value{}, false)
     }
 
-    result: Enum_Integer
-    valid := false
+    result := append_integer_value(evaluation)
+    valid := true
     switch operation {
     case .plus:
-        (result, valid) = add_enum_integers(left.integer, right.integer)
+        compiler_big_integer.add(
+            integer_value(evaluation, result),
+            integer_value(evaluation, left.integer),
+            integer_value(evaluation, right.integer),
+        )
     case .minus:
-        (result, valid) = add_enum_integers(
-            left.integer,
-            negate_enum_integer(right.integer),
+        compiler_big_integer.subtract(
+            integer_value(evaluation, result),
+            integer_value(evaluation, left.integer),
+            integer_value(evaluation, right.integer),
         )
     case .star:
-        (result, valid) = multiply_enum_integers(left.integer, right.integer)
+        compiler_big_integer.multiply(
+            integer_value(evaluation, result),
+            integer_value(evaluation, left.integer),
+            integer_value(evaluation, right.integer),
+        )
     case .slash, .percent:
-        (result, valid) = divide_enum_integers(
-            left.integer,
-            right.integer,
-            operation,
+        other := append_integer_value(evaluation)
+        quotient := result
+        remainder := other
+        if operation == .percent {
+            quotient = other
+            remainder = result
+        }
+        valid = compiler_big_integer.divide(
+            integer_value(evaluation, quotient),
+            integer_value(evaluation, remainder),
+            integer_value(evaluation, left.integer),
+            integer_value(evaluation, right.integer),
         )
     case:
         return (Integer_Expression_Value{}, false)
@@ -3296,7 +3279,11 @@ apply_integer_binary :: proc(
         return (Integer_Expression_Value{}, false)
     }
     if concrete_width != 0 {
-        result = wrap_unsigned_integer(result, concrete_width)
+        result = wrap_unsigned_integer_value(
+            evaluation,
+            result,
+            concrete_width,
+        )
     }
     return (Integer_Expression_Value{
         integer = result,
@@ -3309,6 +3296,7 @@ apply_integer_binary :: proc(
 // consumer against a malformed imported packet instead of assuming its u64
 // payload is representable by the accompanying type.
 integer_expression_from_scalar :: proc(
+    evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
     value: Compile_Time_Value,
 ) -> (Integer_Expression_Value, bool) {
@@ -3319,11 +3307,19 @@ integer_expression_from_scalar :: proc(
         semantic_package,
         value.static_type,
     )
-    integer := Enum_Integer{
-        magnitude = cast[u128](value.unsigned_integer),
+    if !supported {
+        return (Integer_Expression_Value{}, false)
     }
-    if !supported || (bit_width != 0 &&
-        !enum_integer_fits_unsigned_width(integer, bit_width)) {
+    integer := append_integer_value(evaluation)
+    compiler_big_integer.set_u64(
+        integer_value(evaluation, integer),
+        value.unsigned_integer,
+    )
+    if bit_width != 0 && !integer_value_fits_unsigned_width(
+        evaluation,
+        integer,
+        bit_width,
+    ) {
         return (Integer_Expression_Value{}, false)
     }
     return (Integer_Expression_Value{
@@ -3337,6 +3333,7 @@ integer_expression_from_scalar :: proc(
 // u64 remain explicit staging failures; enum and array consumers read the exact
 // result directly and are not constrained by this publication seam.
 integer_expression_to_scalar :: proc(
+    evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
     value: Integer_Expression_Value,
 ) -> (Compile_Time_Value, bool) {
@@ -3344,9 +3341,12 @@ integer_expression_to_scalar :: proc(
         semantic_package,
         value.static_type,
     )
-    if !supported || value.integer.negative ||
-        value.integer.magnitude > cast[u128](~cast[u64](0)) ||
-        (bit_width != 0 && !enum_integer_fits_unsigned_width(
+    (magnitude, fits) := compiler_big_integer.to_u64(
+        integer_value(evaluation, value.integer),
+    )
+    if !supported || !fits ||
+        (bit_width != 0 && !integer_value_fits_unsigned_width(
+            evaluation,
             value.integer,
             bit_width,
         )) {
@@ -3356,7 +3356,7 @@ integer_expression_to_scalar :: proc(
     result.kind = .unsigned_integer
     result.static_type = value.static_type
     result.type_value = invalid_type_id()
-    result.unsigned_integer = cast[u64](value.integer.magnitude)
+    result.unsigned_integer = magnitude
     return (result, true)
 }
 
@@ -3370,6 +3370,7 @@ integer_expression_to_scalar :: proc(
 // remain at the next constant-evaluator seam.
 evaluate_integer_arithmetic_expression :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
+    evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
     file_index: usize,
     tree: ^compiler_syntax.Syntax_Tree,
@@ -3388,14 +3389,18 @@ evaluate_integer_arithmetic_expression :: proc(
         if token.kind != .integer_literal {
             return (Integer_Expression_Value{}, false)
         }
-        (magnitude, valid) := parse_enum_unsigned(source_bytes(
-            graph,
-            semantic_package.workspace_package,
-            file_index,
-            token.range,
-        ))
+        integer := append_integer_value(evaluation)
+        valid := compiler_big_integer.parse_bytes(
+            integer_value(evaluation, integer),
+            source_bytes(
+                graph,
+                semantic_package.workspace_package,
+                file_index,
+                token.range,
+            ),
+        )
         return (Integer_Expression_Value{
-            integer = Enum_Integer{magnitude = magnitude},
+            integer = integer,
             static_type = Type_Id{value = 2},
         }, valid)
     case .name_expression:
@@ -3420,7 +3425,11 @@ evaluate_integer_arithmetic_expression :: proc(
             symbol_id,
         )
         if complete {
-            return integer_expression_from_scalar(semantic_package, value)
+            return integer_expression_from_scalar(
+                evaluation,
+                semantic_package,
+                value,
+            )
         }
         if !symbol_id_valid(blocked_symbol^) {
             blocked_symbol^ = symbol_id
@@ -3436,6 +3445,7 @@ evaluate_integer_arithmetic_expression :: proc(
         )
         if is_target_member {
             return integer_expression_from_scalar(
+                evaluation,
                 semantic_package,
                 target_field_value(semantic_package, member, facts),
             )
@@ -3450,13 +3460,18 @@ evaluate_integer_arithmetic_expression :: proc(
         if !found {
             return (Integer_Expression_Value{}, false)
         }
-        return integer_expression_from_scalar(semantic_package, value)
+        return integer_expression_from_scalar(
+            evaluation,
+            semantic_package,
+            value,
+        )
     case .group_expression:
         if len(children) != 1 {
             return (Integer_Expression_Value{}, false)
         }
         return evaluate_integer_arithmetic_expression(
             graph,
+            evaluation,
             semantic_package,
             file_index,
             tree,
@@ -3474,6 +3489,7 @@ evaluate_integer_arithmetic_expression :: proc(
         }
         (result, valid) := evaluate_integer_arithmetic_expression(
             graph,
+            evaluation,
             semantic_package,
             file_index,
             tree,
@@ -3485,7 +3501,6 @@ evaluate_integer_arithmetic_expression :: proc(
             return (Integer_Expression_Value{}, false)
         }
         if operation == .minus {
-            result.integer = negate_enum_integer(result.integer)
             (bit_width, supported) := unsigned_integer_width(
                 semantic_package,
                 result.static_type,
@@ -3493,8 +3508,15 @@ evaluate_integer_arithmetic_expression :: proc(
             if !supported {
                 return (Integer_Expression_Value{}, false)
             }
+            negated := append_integer_value(evaluation)
+            compiler_big_integer.negate(
+                integer_value(evaluation, negated),
+                integer_value(evaluation, result.integer),
+            )
+            result.integer = negated
             if bit_width != 0 {
-                result.integer = wrap_unsigned_integer(
+                result.integer = wrap_unsigned_integer_value(
+                    evaluation,
                     result.integer,
                     bit_width,
                 )
@@ -3517,6 +3539,7 @@ evaluate_integer_arithmetic_expression :: proc(
         }
         (left, valid_left) := evaluate_integer_arithmetic_expression(
             graph,
+            evaluation,
             semantic_package,
             file_index,
             tree,
@@ -3529,6 +3552,7 @@ evaluate_integer_arithmetic_expression :: proc(
         }
         (right, valid_right) := evaluate_integer_arithmetic_expression(
             graph,
+            evaluation,
             semantic_package,
             file_index,
             tree,
@@ -3540,6 +3564,7 @@ evaluate_integer_arithmetic_expression :: proc(
             return (Integer_Expression_Value{}, false)
         }
         return apply_integer_binary(
+            evaluation,
             semantic_package,
             left,
             right,
@@ -3550,9 +3575,43 @@ evaluate_integer_arithmetic_expression :: proc(
     }
 }
 
-// evaluate_enum_integer_expression is the enum-facing projection of the shared
-// arithmetic evaluator. It preserves the exact sign/magnitude result instead of
-// passing through the interface's narrower nonnegative scalar representation.
+// integer_expression_to_enum_integer projects an arbitrary-precision result
+// into the widest finite sign/magnitude packet any Draft 1 enum backing can
+// represent. A wider final value remains a semantic failure even though wider
+// intermediates are valid. Negative conversion uses one evaluation-owned
+// absolute temporary because to_u128 deliberately accepts only nonnegative
+// machine values.
+integer_expression_to_enum_integer :: proc(
+    evaluation: ^Integer_Evaluation,
+    value: Integer_Expression_Value,
+) -> (Enum_Integer, bool) {
+    source := value.integer
+    negative := compiler_big_integer.is_negative(
+        integer_value(evaluation, source),
+    )
+    if negative {
+        magnitude := append_integer_value(evaluation)
+        compiler_big_integer.absolute(
+            integer_value(evaluation, magnitude),
+            integer_value(evaluation, source),
+        )
+        source = magnitude
+    }
+    (magnitude, fits) := compiler_big_integer.to_u128(
+        integer_value(evaluation, source),
+    )
+    if !fits {
+        return (Enum_Integer{}, false)
+    }
+    return (Enum_Integer{
+        negative = negative && magnitude != 0,
+        magnitude = magnitude,
+    }, true)
+}
+
+// evaluate_enum_integer_expression owns one complete arbitrary-precision
+// attempt, then retains only the bounded final packet used by enum interfaces.
+// Every temporary is released on success, blocking, or diagnosed failure.
 evaluate_enum_integer_expression :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     semantic_package: ^Semantic_Package,
@@ -3562,8 +3621,12 @@ evaluate_enum_integer_expression :: proc(
     facts: ^Target_Facts,
     blocked_symbol: ^Symbol_Id,
 ) -> (Enum_Integer, bool) {
+    evaluation: Integer_Evaluation
+    init_integer_evaluation(&evaluation)
+    defer destroy_integer_evaluation(&evaluation)
     (value, valid) := evaluate_integer_arithmetic_expression(
         graph,
+        &evaluation,
         semantic_package,
         file_index,
         tree,
@@ -3571,7 +3634,81 @@ evaluate_enum_integer_expression :: proc(
         facts,
         blocked_symbol,
     )
-    return (value.integer, valid)
+    if !valid {
+        return (Enum_Integer{}, false)
+    }
+    return integer_expression_to_enum_integer(&evaluation, value)
+}
+
+// evaluate_integer_scalar_expression is the named-constant projection. It
+// permits arbitrary-width intermediates but publishes only the existing
+// nonnegative u64 interface packet after the root value is complete.
+evaluate_integer_scalar_expression :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    id: compiler_syntax.Node_Id,
+    facts: ^Target_Facts,
+    blocked_symbol: ^Symbol_Id,
+) -> (Compile_Time_Value, bool) {
+    evaluation: Integer_Evaluation
+    init_integer_evaluation(&evaluation)
+    defer destroy_integer_evaluation(&evaluation)
+    (value, valid) := evaluate_integer_arithmetic_expression(
+        graph,
+        &evaluation,
+        semantic_package,
+        file_index,
+        tree,
+        id,
+        facts,
+        blocked_symbol,
+    )
+    if !valid {
+        return (invalid_compile_time_value(), false)
+    }
+    return integer_expression_to_scalar(
+        &evaluation,
+        semantic_package,
+        value,
+    )
+}
+
+// evaluate_array_count_expression is the fixed-array projection. Draft's
+// consumer rule accepts a positive representable untyped value or exact usize;
+// the mathematical evaluator remains arbitrary precision before this final
+// target-sized conversion.
+evaluate_array_count_expression :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    id: compiler_syntax.Node_Id,
+    facts: ^Target_Facts,
+    blocked_symbol: ^Symbol_Id,
+) -> (u64, bool) {
+    evaluation: Integer_Evaluation
+    init_integer_evaluation(&evaluation)
+    defer destroy_integer_evaluation(&evaluation)
+    (value, valid) := evaluate_integer_arithmetic_expression(
+        graph,
+        &evaluation,
+        semantic_package,
+        file_index,
+        tree,
+        id,
+        facts,
+        blocked_symbol,
+    )
+    if !valid ||
+        (value.static_type.value != 2 && value.static_type.value != 22) {
+        return (0, false)
+    }
+    (count, fits) := compiler_big_integer.to_u64(
+        integer_value(&evaluation, value.integer),
+    )
+    return (count, fits && count != 0)
 }
 
 // complete_plain_enum_type resolves one ordinary non-C enum atomically. The
@@ -3683,14 +3820,6 @@ complete_plain_enum_type :: proc(
         }
 
         enum_value: Enum_Integer
-        if members.length != 0 {
-            (enum_value, valid) = increment_enum_integer(
-                members.data[members.length - 1].enum_value,
-            )
-            if !valid {
-                break
-            }
-        }
         if len(member_children) == 1 {
             (enum_value, valid) = evaluate_enum_integer_expression(
                 graph,
@@ -3700,6 +3829,17 @@ complete_plain_enum_type :: proc(
                 member_children[0],
                 facts,
                 blocked_symbol,
+            )
+            if !valid {
+                break
+            }
+        } else if members.length != 0 {
+            // Only an implicit member needs the previous value's successor.
+            // In particular, an explicit value after u128.max remains valid:
+            // computing and rejecting an unused implicit successor would make
+            // source order change the meaning of independent explicit values.
+            (enum_value, valid) = increment_enum_integer(
+                members.data[members.length - 1].enum_value,
             )
             if !valid {
                 break
@@ -5521,10 +5661,11 @@ append_unsupported_compile_time_diagnostic :: proc(
 // declaration symbol and package. A struct, enum, variant, or union installs
 // its nominal shell before completing its packet; unavailable dependencies
 // attach one graph edge. Only a complete attempt publishes the constant value.
-// Typed-interface scalar products additionally admit the shared bounded integer
-// `+ - * / %` evaluator. Grouped declarations and the broader Draft constant
-// vocabulary remain outside this staging slice and fail only when a consumer
-// demands them.
+// Typed-interface scalar products additionally admit the shared arbitrary-
+// precision integer `+ - * / %` evaluator, then require the final value to fit
+// the published scalar packet. Grouped declarations and the broader Draft
+// constant vocabulary remain outside this staging slice and fail only when a
+// consumer demands them.
 run_named_constant_product :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     facts: ^Target_Facts,
@@ -5765,7 +5906,8 @@ run_named_constant_product :: proc(
             }
         }
     } else if use == .typed_interface {
-        (integer, valid_integer) := evaluate_integer_arithmetic_expression(
+        valid_integer := false
+        (value, valid_integer) = evaluate_integer_scalar_expression(
             graph,
             semantic_package,
             symbol.syntax.file_index,
@@ -5774,12 +5916,6 @@ run_named_constant_product :: proc(
             facts,
             &blocked_symbol,
         )
-        if valid_integer {
-            (value, valid_integer) = integer_expression_to_scalar(
-                semantic_package,
-                integer,
-            )
-        }
         if !valid_integer {
             value = evaluate_target_condition_expression(
                 graph,
@@ -6308,7 +6444,7 @@ resolve_type_syntax :: proc(
         if len(children) != 2 {
             return (invalid_type_id(), false)
         }
-        (count, valid_count) := evaluate_integer_arithmetic_expression(
+        (count, valid_count) := evaluate_array_count_expression(
             graph,
             semantic_package,
             file_index,
@@ -6317,11 +6453,7 @@ resolve_type_syntax :: proc(
             facts,
             blocked_symbol,
         )
-        count_converts_to_usize := valid_count &&
-            (count.static_type.value == 2 || count.static_type.value == 22) &&
-            !count.integer.negative && count.integer.magnitude != 0 &&
-            count.integer.magnitude <= cast[u128](~cast[u64](0))
-        if !count_converts_to_usize {
+        if !valid_count {
             return (invalid_type_id(), false)
         }
         (element, resolved) := resolve_type_syntax(
@@ -6340,7 +6472,7 @@ resolve_type_syntax :: proc(
             intern_array_type(
                 semantic_package,
                 element,
-                cast[u64](count.integer.magnitude),
+                count,
             ),
             true,
         )

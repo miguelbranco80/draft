@@ -165,6 +165,8 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "Later_Arithmetic :: 7\n"
   "pub Page_Half :: target.page_size / 2\n"
   "pub Wrapped_Page :: target.page_size - (target.page_size + 1)\n"
+  "pub Arbitrary_Recovered :: (340282366920938463463374607431768211455 + 1) - 340282366920938463463374607431768211455\n"
+  "pub Arbitrary_Divided :: ((340282366920938463463374607431768211455 + 1) * 3) / (340282366920938463463374607431768211455 + 1)\n"
   "pub Index :: u32\n"
   "pub Duration :: distinct i64\n"
   "pub Epoch :: distinct i64\n"
@@ -187,6 +189,7 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "Later_Code :: 257\n"
   "pub Arithmetic_Code :: enum i16 { zero; negative = -(2 + 3) * 2; quotient = 25 / 3; remainder = 17 % 5; negative_quotient = -17 / 5; negative_remainder = -17 % 5; combined = 7 * 6 - (5 + 4); }\n"
   "pub Product_Code :: enum { zero; square = 18446744073709551615 * 18446744073709551615; }\n"
+  "pub Arbitrary_Code :: enum u128 { zero; recovered = (340282366920938463463374607431768211455 + 1) - 1; quotient = ((340282366920938463463374607431768211455 + 1) * 37) / (340282366920938463463374607431768211455 + 1); remainder = (((340282366920938463463374607431768211455 + 1) * 37) + 19) % (340282366920938463463374607431768211455 + 1); negative_recovered = -(340282366920938463463374607431768211455 + 1) + (340282366920938463463374607431768211455 + 2); }\n"
   "Private_Status :: enum u8 { none; active = 9; }\n"
   "pub Private_Status_View :: Private_Status\n"
   "pub Choice :: variant { none; count: u32; pair: Pair; }\n"
@@ -218,6 +221,7 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Arithmetic_Array :: [Arithmetic_Count]Index\n"
   "pub Remainder_Array :: [Remainder_Count]u8\n"
   "pub Page_Half_Array :: [target.page_size / 2]u8\n"
+  "pub Arbitrary_Array :: [((340282366920938463463374607431768211455 + 1) * 3) / (340282366920938463463374607431768211455 + 1)]u8\n"
   "pub Duration_Array :: [Count]Duration\n"
   "pub Pair_Array :: [Count]Pair\n"
   "pub Pair_Pointer :: ^Pair\n"
@@ -251,6 +255,8 @@ file(WRITE "${interface_workspace}/middle/package.draft"
   "pub Scaled_Count :: values.Arithmetic_Count * 2\n"
   "pub Arithmetic_Code :: values.Arithmetic_Code\n"
   "pub Product_Code :: values.Product_Code\n"
+  "pub Arbitrary_Code :: values.Arbitrary_Code\n"
+  "pub Arbitrary_Count :: values.Arbitrary_Recovered + values.Arbitrary_Divided\n"
   "pub Imported_Arithmetic_Array :: [values.Remainder_Count + 1]u8\n"
   "pub Private_Status :: values.Private_Status_View\n"
   "pub Middle_Code :: enum u16 { none; count = values.Count; }\n"
@@ -276,6 +282,7 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Mixed_Count :: values.Arithmetic_Count + middle.Scaled_Count\n"
   "pub Imported_Arithmetic_Code :: middle.Arithmetic_Code\n"
   "pub Imported_Product_Code :: middle.Product_Code\n"
+  "pub Imported_Arbitrary_Code :: middle.Arbitrary_Code\n"
   "pub Local_Enabled :: values.Enabled\n"
   "pub Local_Label :: values.Label\n"
   "pub Local_Pointer :: values.Index_Pointer\n"
@@ -313,6 +320,7 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Imported_Count_Array :: [values.Count]values.Index\n"
   "pub Mixed_Count_Array :: [Mixed_Count]u8\n"
   "pub Imported_Expression_Array :: [(values.Remainder_Count + 1) * 2]u16\n"
+  "pub Imported_Arbitrary_Array :: [middle.Arbitrary_Count]u8\n"
   "pub Direct_Tuple :: ([]values.Index, ^values.Index_Tuple)\n"
   "pub Pair_Grid :: [2]values.Pair_Array\n"
   "pub Mode_Grid :: [2]values.Mode_Array\n"
@@ -375,6 +383,11 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   invalid-enum-backing-range
   "package app\npub State :: enum u8 { none; too_large = 256; }\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
+expect_next_interface_failure(
+  invalid-enum-final-value-beyond-u128
+  "package app\npub State :: enum { none; too_large = 340282366920938463463374607431768211455 + 1; }\nmain :: proc() {}\n"
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
 
@@ -514,11 +527,12 @@ expect_staged_interface_failure(
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
 
-# The self-hosted evaluator keeps exact sign/magnitude arithmetic through u128.
-# Production's arbitrary-precision evaluator accepts this next value; the
-# staging implementation must reject it instead of wrapping the untyped result.
+# Arbitrary-precision evaluation now accepts this expression, but its final
+# value still cannot cross the existing nonnegative-u64 scalar interface packet.
+# The supported fixture above proves that the same wide intermediate may narrow
+# to a publishable scalar, array count, or enum value without wrapping.
 expect_staged_interface_failure(
-  unsupported-arbitrary-precision-integer
+  unsupported-arbitrary-precision-final-scalar
   "package app\npub Too_Wide :: 340282366920938463463374607431768211455 + 1\nmain :: proc() {}\n"
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )

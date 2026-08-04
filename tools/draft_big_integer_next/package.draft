@@ -57,6 +57,21 @@ append_signed :: proc(
     compiler_text.append_byte(output, cast[u8]('\n'))
 }
 
+// append_unsigned_128 renders the widest concrete unsigned value used by the
+// conversion boundary rows. Thirty-nine bytes are exact for u128 maximum.
+append_unsigned_128 :: proc(
+    output: ^compiler_text.Builder,
+    label: string,
+    value: u128,
+) {
+    storage: [39]u8
+    (digits, formatted) := format.unsigned_decimal_128(storage[:], value)
+    assert(formatted, "fixed u128 decimal buffer is too small")
+    append_label(output, label)
+    compiler_text.append_bytes(output, digits)
+    compiler_text.append_byte(output, cast[u8]('\n'))
+}
+
 // append_integer renders one arbitrary-precision value into caller-owned
 // scratch, then copies the borrowed digits before the buffer leaves scope.
 append_integer :: proc(
@@ -147,6 +162,13 @@ main :: proc() -> int {
     append_integer(&output, "parse-octal", &result)
     parse_required(&result, "1_000_000")
     append_integer(&output, "parse-underscores", &result)
+    byte_spelling := "4294967296"
+    parsed_bytes := big.parse_bytes(
+        &result,
+        raw_data(byte_spelling)[:len(byte_spelling)],
+    )
+    assert(parsed_bytes, "required byte-view integer did not parse")
+    append_integer(&output, "parse-bytes", &result)
     append_boolean(
         &output,
         "parse-invalid-empty",
@@ -287,8 +309,9 @@ main :: proc() -> int {
     big.bitwise_not(&result, &other)
     append_integer(&output, "bitwise-not-negative", &result)
 
-    // Conversion rows straddle every u64 and i64 boundary. `temporary` keeps
-    // i64 minimum alive while `result` and `other` construct the smaller value.
+    // Conversion rows straddle every u64, u128, and i64 boundary. `temporary`
+    // keeps i64 minimum alive while `result` and `other` construct the smaller
+    // value.
     parse_required(&result, "18446744073709551615")
     (_, converted) := big.to_u64(&result)
     append_boolean(&output, "to-u64-max", converted)
@@ -298,6 +321,17 @@ main :: proc() -> int {
     big.set_i64(&result, -1)
     (_, converted) = big.to_u64(&result)
     append_boolean(&output, "to-u64-negative", converted)
+
+    parse_required(&result, "340282366920938463463374607431768211455")
+    wide_conversion: u128
+    (wide_conversion, converted) = big.to_u128(&result)
+    append_boolean(&output, "to-u128-max", converted)
+    append_unsigned_128(&output, "to-u128-max-value", wide_conversion)
+    (_, converted) = big.to_u128(&power)
+    append_boolean(&output, "to-u128-too-large", converted)
+    big.set_i64(&result, -1)
+    (_, converted) = big.to_u128(&result)
+    append_boolean(&output, "to-u128-negative", converted)
 
     parse_required(&result, "9223372036854775807")
     (_, converted) = big.to_i64(&result)

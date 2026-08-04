@@ -225,13 +225,14 @@ ordinary named natural-layout `struct` declarations, ordinary `enum`,
 `variant`, and `union` declarations, and procedure signatures; reachable
 types and constants are rewritten into canonical package-interface IDs; and
 each imported declaration is reconstructed in the consumer Type-ID domain
-beneath its file-local alias. One shared typed integer evaluator accepts
-literals, local/imported unsigned constants, target numeric facts, grouping,
-unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped operations keep an
-exact sign plus u128 magnitude, while concrete unsigned types no wider than 64
-bits wrap at their declared width. Named interface constants currently publish
-only nonnegative u64 results. Fixed-array counts consume the same evaluator and
-require a positive representable untyped result or exact `usize`.
+beneath its file-local alias. One shared arbitrary-precision integer evaluator
+accepts literals, local/imported unsigned constants, target numeric facts,
+grouping, unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped operations
+remain mathematically exact regardless of intermediate width, while concrete
+unsigned types no wider than 64 bits wrap at their declared width. Named
+interface constants currently publish only nonnegative u64 results. Fixed-array
+counts consume the same evaluator and require a positive result representable
+by the target-sized count packet from an untyped value or exact `usize`.
 Forward local type/count aliases and qualified imported type/value aliases are
 supported. Distinct interface rows retain the defining root content identity,
 root-relative package path, and original declaration name across direct and
@@ -253,18 +254,18 @@ types, zero byte offsets, and maximum-member natural layout; grouped fields and
 pointer recursion are supported. C enums, packed/bit fields, C or explicitly
 aligned aggregates, selected/synthesized/directive members, SIMD types,
 parametric forms, foreign/export declarations, procedure contracts, bitwise/
-shift/cast/comparison integer expressions, untyped intermediates beyond u128,
-negative or wider named scalar publication, and general constant/type forms
-fail explicitly at this interface boundary.
-The lower `compiler/big_integer` package is no longer part of this missing
-surface: it implements and differentially qualifies arbitrary-precision
+shift/cast/comparison integer expressions, negative or wider named scalar
+publication, and general constant/type forms fail explicitly at this interface
+boundary.
+The `compiler/big_integer` package implements and differentially qualifies the
+arbitrary-precision values now consumed by this evaluator:
 parsing, sign/magnitude arithmetic, division, shifts, infinite-two's-complement
 bitwise operations, fixed-width conversion, and decimal formatting against the
-production C++ `BigInteger`. The u128 failures above remain because the typed
-interface evaluator still stores values in `Enum_Integer` and its published
-constant packet still stores u64. The next integration must replace those
-owning/value seams and their diagnostics; the existence of the lower package
-does not make wider expressions accepted by `draftc-next` yet.
+production C++ `BigInteger`. One root evaluation owns a temporary value table,
+uses stable IDs across table growth, and projects only its final result into the
+finite scalar, enum, or array interface packet before destruction. The remaining
+u64/u128 limits above are publication boundaries, not intermediate arithmetic
+limits.
 Imported constants remain unavailable to the earlier package-`when` selector.
 Deeper nominal member lookup, full type/body checking, elaboration, MIR, LLVM,
 artifacts, and linking have not moved to the staging driver. The C++ driver
@@ -325,8 +326,8 @@ self-hosted command rejects them at its staging boundary; synthesized union
 members have their own fail-closed fixture.
 Separate fixtures require C enums, invalid enum arithmetic, invalid
 variants/unions, specialized aggregate layouts, SIMD types, unsupported
-array-count operators/types, arithmetic division by zero, an exact result past
-the u128 staging bound, negative/wider named scalar publication, and local alias
+array-count operators/types, arithmetic division by zero, a final enum value
+beyond the u128 packet, negative/wider named scalar publication, and local alias
 or by-value layout cycles to fail at the exact self-hosting boundary. This
 evidence applies only to that
 closed subset, not to the full production PackageInterface vocabulary or

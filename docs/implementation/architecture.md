@@ -128,23 +128,24 @@ independently checking the nominal packet.
 It then reconstructs each dependency declaration in the consumer's Type-ID
 domain beneath the exact file-local import alias. The current closed subset
 accepts named scalar aliases (including forward local aliases and qualified
-imported aliases), boolean/unsigned/string constants, bounded integer
+imported aliases), boolean/unsigned/string constants, arbitrary-precision integer
 arithmetic constants, structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant/
 ordinary-union type aliases and globals, and non-parametric Draft procedures
 with fixed supported parameters and results.
-Typed integer expressions share one sign/magnitude evaluator across named
-constants, enum values, and fixed-array counts. It admits integer literals,
-ready local/imported unsigned constants, target numeric facts, grouping, unary
-sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped operations remain exact
-through u128 magnitude; concrete unsigned types no wider than 64 bits wrap at
-their declared width. Enum values consume the exact signed result, while fixed
-arrays require a positive representable untyped value or exact `usize`. Named
-interface constants can currently publish only nonnegative results through the
-u64 scalar packet. C enums,
+Typed integer expressions share one arbitrary-precision sign/magnitude evaluator
+across named constants, enum values, and fixed-array counts. It admits integer
+literals, ready local/imported unsigned constants, target numeric facts,
+grouping, unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped operations
+remain mathematically exact regardless of intermediate width; concrete unsigned
+types no wider than 64 bits wrap at their declared width. Enum values project
+the exact final result into their signed/u128 interface packet, while fixed
+arrays require a positive result representable by their target-sized count
+packet from an untyped value or exact `usize`. Named interface constants can
+currently publish only nonnegative results through the u64 scalar packet. C enums,
 packed/bit fields, C or explicit-alignment aggregates,
 selected/synthesized/directive members, SIMD/parametric
 types, foreign/export declarations, procedure contracts, bitwise/shift/cast/
-comparison integer expressions, arbitrary-precision intermediates beyond u128,
+comparison integer expressions, negative or wider named scalar publication,
 and general constant/type work remain a diagnosed interface staging boundary.
 Imported constants are available while building
 dependent interfaces but not during the earlier
@@ -152,21 +153,24 @@ package-`when` phase, whose dependency interfaces do not yet exist.
 The staging executable is deliberately absent from the install set until a
 coherent public compiler command surface exists.
 
-`compiler/big_integer` now supplies the lower arbitrary-precision substrate for
-removing that u128 staging bound. One explicitly initialized owner stores a
+`compiler/big_integer` supplies the arbitrary-precision substrate consumed by
+that typed evaluator. One explicitly initialized owner stores a
 canonical sign and little-endian base-2^32 magnitude, captures its allocator,
 and releases it explicitly. Parsing, comparison, arithmetic, truncating signed
 division and remainder, arbitrary shifts, infinite-two's-complement bitwise
 operations, fixed-width conversion, and decimal formatting are complete at
-this representation boundary. The registered
+this representation boundary. Each root semantic expression owns a temporary
+table of those values and retains only stable table IDs across growth; scalar,
+enum, and array consumers convert the final value before the table is destroyed.
+The registered
 `draft_self_hosted_big_integer_differential` test builds a fixed O2 Draft
 exerciser in isolated binary-tree storage and compares its output and status
 with production C++ `BigInteger` over radices, invalid literals, signs,
 multi-limb arithmetic, all division sign combinations, cross-limb shifts,
-mixed-sign bitwise operations, and u64/i64 boundaries. This is substrate
-qualification rather than a semantic-phase replacement: `compiler/sema` still
-owns its bounded `Enum_Integer`/`Integer_Expression_Value` rows and does not yet
-publish arbitrary-width constants through package interfaces.
+mixed-sign bitwise operations, and u64/u128/i64 boundaries. The typed-interface
+differential additionally proves wide intermediates narrowing into named scalar,
+enum, fixed-array, imported, and re-exported result packets. Arbitrary-width
+named constants are still not themselves serializable interface values.
 
 Replacement proceeds at phase boundaries rather than by mixing C++ and Draft
 inside a phase. C++ `draftc lex` and `draftc syntax` remain independent single-

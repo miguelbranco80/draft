@@ -343,7 +343,8 @@ procedures still fail explicitly at this target-selection boundary.
 `workspace-interfaces` preserves the complete target/public-name prefix, then
 prints each package's canonical reachable interface type graph and selected
 public declaration rows. It supports predeclared and named scalar aliases,
-boolean/unsigned/string constants, bounded integer arithmetic constants, `^T`,
+boolean/unsigned/string constants, arbitrary-precision integer arithmetic
+constants whose final values fit their interface packets, `^T`,
 `[^]T`, `[]T`, positive fixed arrays,
 tuples, explicitly typed structural globals, ordinary fixed procedure types,
 declaration-owned distinct types, ordinary named natural-layout structs, and
@@ -352,11 +353,12 @@ signatures.
 Named integer constants, enum values, and fixed-array counts share an evaluator
 for integer literals, ready local/imported unsigned constants, target numeric
 facts, grouping, unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped
-operations keep exact sign/magnitude results through u128; concrete unsigned
-types no wider than 64 bits wrap at their declared width. Named constants can
-currently publish only nonnegative u64 results. Fixed-array counts require a
-positive representable untyped result or exact `usize`. Packages are processed
-dependency-first;
+operations remain mathematically exact regardless of intermediate width;
+concrete unsigned types no wider than 64 bits wrap at their declared width.
+Named constants can currently publish only nonnegative u64 results. Enum values
+must fit the signed/u128 value packet, and fixed-array counts require a positive
+result representable by the target-sized count packet from an untyped value or
+exact `usize`. Packages are processed dependency-first;
 each producer interface type/value is reconstructed in the consumer's local
 type domain, and imported rows print structural/nominal type shapes so
 process-local Type IDs do not enter the qualification contract. Each distinct
@@ -385,8 +387,8 @@ imported type/value/count aliases are included. C enums, packed/bit fields, C or
 explicitly aligned aggregates, selected/synthesized/directive members,
 SIMD/parametric types, foreign/export
 declarations, procedure contracts, bitwise/shift/cast/comparison integer
-expressions, untyped intermediates beyond u128, negative or wider named scalar
-publication, and general constant/type forms fail explicitly rather than
+expressions, negative or wider named scalar publication, and general
+constant/type forms fail explicitly rather than
 receiving a fallback interface. Imported constants are available here only
 after the dependency interface exists; the earlier package-`when` command still
 cannot consume them.
