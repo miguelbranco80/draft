@@ -356,7 +356,10 @@ numeric
 facts, grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`,
 `|`, `~` (xor), `<<`/`>>`, and explicit integer casts to builtin concrete signed
 and unsigned types through 128 bits. Direct integer comparisons use that exact
-domain and publish bool. Untyped operations remain mathematically exact regardless of
+domain and publish bool. Comparison leaves compose through grouping, `!`, `&&`,
+`||`, and boolean equality. Logical operators short-circuit value evaluation but
+still validate the dead operand's type and concrete comparison compatibility.
+Untyped operations remain mathematically exact regardless of
 intermediate width and use infinite-two's-complement bitwise semantics;
 concrete signed and unsigned operations and casts through 128 bits reduce at
 their declared width and retain the destination interpretation. Signed minimum
@@ -394,10 +397,10 @@ maximum-member overlay layout. Forward local type/count aliases and qualified
 imported type/value/count aliases are included. C enums, packed/bit fields, C or
 explicitly aligned aggregates, selected/synthesized/directive members,
 SIMD/parametric types, foreign/export declarations, procedure contracts,
-distinct or non-integer cast destinations, exact integer comparisons nested in
-unsupported constant forms, negative or wider untyped named integer publication,
-and general constant/type forms fail explicitly rather than receiving a fallback
-interface. Imported constants
+distinct or non-integer cast destinations, comparison results inside conditional
+expressions or other unsupported general constant forms, negative or wider
+untyped named integer publication, and general constant/type forms fail
+explicitly rather than receiving a fallback interface. Imported constants
 are available here only after the dependency interface exists; the earlier
 package-`when` command still cannot consume them.
 These are qualification commands rather than the public compiler. Public

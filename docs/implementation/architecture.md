@@ -138,7 +138,10 @@ literals, ready local/imported finite integer constants, target numeric facts,
 grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`, `|`, and
 `~` (xor), `<<`/`>>`, and explicit integer casts to builtin concrete signed and
 unsigned types through 128 bits. Direct integer comparisons use the same exact
-domain and publish bool. Untyped operations remain mathematically exact regardless of
+domain and publish bool. Those comparison leaves compose through grouping, `!`,
+`&&`, `||`, and boolean equality. Logical evaluation short-circuits traps in the
+dead operand while still validating its type and concrete comparison
+compatibility. Untyped operations remain mathematically exact regardless of
 intermediate width; bitwise operations use an infinite two's-complement domain
 and negative right shifts are arithmetic. Concrete builtin signed and unsigned
 operations and casts through 128 bits reduce at their declared width and then
@@ -154,10 +157,10 @@ constants retain the compatibility boundary of nonnegative u64 publication.
 C enums, packed/bit fields, C or explicit-
 alignment aggregates, selected/synthesized/directive members,
 SIMD/parametric types, foreign/export declarations, procedure contracts,
-distinct or non-integer cast destinations, exact integer comparisons nested in
-unsupported constant forms, negative or wider untyped named integer
-publication, and general constant/type work remain a diagnosed interface staging
-boundary.
+distinct or non-integer cast destinations, comparison results inside conditional
+expressions or other unsupported general constant forms, negative or wider
+untyped named integer publication, and general constant/type work remain a
+diagnosed interface staging boundary.
 Imported constants are available while building
 dependent interfaces but not during the earlier
 package-`when` phase, whose dependency interfaces do not yet exist.
@@ -237,9 +240,9 @@ and consumer-local type/value reconstruction across all four targets.
 It includes forward local type/count aliases, imported type/value/count aliases,
 local/forward/imported/target integer arithmetic, concrete signed/unsigned
 wrapping and quotient/remainder, signed/i128/u128 casts and comparisons,
-signed/u128 import and transitive re-export, checked u128 products, all five
-moved data structures, structural globals and fixed procedures, target page-size
-arrays,
+short-circuit boolean composition with dead-operand type checking, signed/u128
+import and transitive re-export, checked u128 products, all five moved data
+structures, structural globals and fixed procedures, target page-size arrays,
 distinct declarations over scalar, structural, private, and
 imported distinct types, plain/grouped/recursive structs, private and transitive
 struct re-exports, structs nested in arrays/procedures/other structs,

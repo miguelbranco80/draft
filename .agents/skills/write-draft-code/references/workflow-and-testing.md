@@ -565,7 +565,10 @@ for literals, ready local/imported finite integer constants, target numeric fact
 grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`, `|`, and
 `~` (xor), `<<`/`>>`, and explicit casts to builtin concrete signed and unsigned
 types through 128 bits. Direct integer `==`, `!=`, `<`, `<=`, `>`, and `>=`
-expressions compare in that exact domain and publish booleans. Untyped operations remain
+expressions compare in that exact domain and publish booleans. Comparison leaves
+compose through grouping, `!`, `&&`, `||`, and boolean equality. Logical
+evaluation short-circuits traps in the dead operand while still validating its
+type and concrete comparison compatibility. Untyped operations remain
 mathematically exact regardless of intermediate width and use infinite-two's-
 complement bitwise semantics; concrete signed and unsigned operations and casts
 through 128 bits reduce at their declared width and retain the destination
@@ -594,8 +597,8 @@ source-order grouped fields at byte offset zero, exact maximum-member natural
 layout, pointer recursion, and transitive identity. C enums, packed/bit fields,
 C or explicitly aligned aggregates, selected/synthesized/member-directive
 regions, SIMD/parametric types, foreign/export, procedure contracts, distinct or
-non-integer cast destinations, comparison results nested in the broader
-unsupported constant-expression vocabulary, negative or wider untyped named
+non-integer cast destinations, comparison results inside conditional expressions
+or other unsupported general constant forms, negative or wider untyped named
 integer publication, and general constant/type forms remain an explicit staging
 failure.
 The lower `compiler/big_integer` package owns arbitrary-precision signed values
@@ -688,9 +691,9 @@ unsigned wrapping, signed division/remainder and division overflow, arbitrary-
 precision intermediates narrowing through scalar/enum/array consumers,
 signed/i128/u128 wrapping casts, exact integer comparisons, imported cast targets,
 signed/u128 imports and transitive re-exports, and re-exported comparison
-booleans,
-structural
-globals, fixed procedure types/signatures, tuple results, target page-size
+booleans, nested `!`/`&&`/`||`/boolean-equality composition, short-circuited
+division/shift traps, dead-operand type checking, structural globals, fixed
+procedure types/signatures, tuple results, target page-size
 arrays, separate same-underlying distinct declarations, private distinct
 exposure, distinct-over-distinct, identity-preserving transitive re-export,
 plain/grouped/pointer-recursive structs, private and transitive struct exposure,
@@ -704,11 +707,12 @@ oracle first accepts C-layout, aligned, combined C/aligned, and selected-member
 union fixtures before the self-hosted command rejects those valid production
 forms at its staging boundary; synthesized union members also fail closed. C
 enums, invalid enum arithmetic, invalid variants/unions, specialized aggregate
-layouts/members, SIMD types, unsupported count operators/types, division by
-zero, final enum values beyond the u128 packet, negative/wider untyped scalar
-publication, and local alias or by-value layout cycles must fail at the exact
-self-hosting boundary. Do not infer support for the production interface's
-remaining nominal/parametric constructors or contracts from this narrow gate.
+layouts/members, SIMD types, unsupported count operators/types, live division by
+zero, invalid dead logical operands, final enum values beyond the u128 packet,
+negative/wider untyped scalar publication, and local alias or by-value layout
+cycles must fail at the exact self-hosting boundary. Do not infer support for the
+production interface's remaining nominal/parametric constructors or contracts
+from this narrow gate.
 Keep the bootstrap path until a replacement phase has this oracle; passing
 focused Draft tests alone is not replacement evidence.
 

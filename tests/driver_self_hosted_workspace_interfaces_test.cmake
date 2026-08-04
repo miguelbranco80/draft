@@ -2,8 +2,8 @@
 #
 # Both executables emit the established graph, declaration, target-selection,
 # and public-name prefix before the canonical scalar/structural/nominal type
-# graph, including signed/u128 integer casts, wrapping, comparisons,
-# natural-layout struct
+# graph, including signed/u128 integer casts, wrapping, exact comparisons inside
+# short-circuit boolean trees, natural-layout struct
 # fields/offsets, enum values, variant discriminator/payload packets, and
 # zero-offset union overlays.
 # Imported rows are compared through structural/nominal consumer-local type
@@ -214,6 +214,18 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Less_Signed_Minimum :: cast[i128](1 << 127) < -1\n"
   "pub Greater_Unsigned_Maximum :: cast[u128](-1) > (1 << 127)\n"
   "pub Equal_Signed_Alias :: cast[Signed_Index](-1) == -1\n"
+  "pub Combined_Comparisons :: ((1 << 200) > (1 << 199)) && (cast[i8](-1) < 0)\n"
+  "pub Negated_Comparison :: !((1 << 200) == (1 << 199))\n"
+  "pub Or_Comparison :: false || (Unsigned_Maximum > (1 << 127))\n"
+  "pub Boolean_Comparison_Equality :: ((1 << 200) > 1) == true\n"
+  "pub Short_Circuit_And :: false && ((1 / 0) == 0)\n"
+  "pub Short_Circuit_Or :: true || ((1 / 0) == 0)\n"
+  "pub Short_Circuit_Shift :: false && ((cast[u8](1) << 8) == 0)\n"
+  "pub Forward_Combined :: Later_Boolean && (Later_Logical_Value > 7)\n"
+  "Later_Boolean :: true\n"
+  "Later_Logical_Value :: 8\n"
+  "pub Dead_Forward_Combined :: false && Later_Dead_Comparison\n"
+  "Later_Dead_Comparison :: (1 << 200) > 1\n"
   "pub Target_Comparison :: target.page_size >= 4096\n"
   "pub Forward_Comparison :: Later_Comparison_Value > 7\n"
   "Later_Comparison_Value :: 8\n"
@@ -322,6 +334,8 @@ file(WRITE "${interface_workspace}/middle/package.draft"
   "pub Imported_Unsigned_Wide :: values.Unsigned_Maximum\n"
   "pub Imported_Signed_Arithmetic :: values.Signed_Byte + 2\n"
   "pub Imported_Wide_Comparison :: values.Unsigned_Maximum > (1 << 127)\n"
+  "pub Imported_Combined :: values.Combined_Comparisons\n"
+  "pub Mixed_Combined :: values.Combined_Comparisons && (values.Signed_Minimum < -1)\n"
   "pub Imported_Comparison :: values.Cast_Wide == 9\n"
   "pub Reexported_Comparison :: values.Greater_Wide\n"
   "pub Imported_Arithmetic_Array :: [values.Remainder_Count + 1]u8\n"
@@ -357,6 +371,8 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Transitive_Unsigned_Wide :: middle.Imported_Unsigned_Wide\n"
   "pub Imported_Signed_Arithmetic :: middle.Imported_Signed_Arithmetic\n"
   "pub Imported_Wide_Comparison :: middle.Imported_Wide_Comparison\n"
+  "pub Transitive_Combined :: middle.Imported_Combined\n"
+  "pub Imported_Mixed_Combined :: middle.Mixed_Combined\n"
   "pub Imported_Comparison :: middle.Imported_Comparison\n"
   "pub Transitive_Comparison :: middle.Reexported_Comparison\n"
   "pub Local_Enabled :: values.Enabled\n"
@@ -616,6 +632,21 @@ expect_next_interface_failure(
   "package app\npub Traps :: cast[i8](-128) / -1\nmain :: proc() {}\n"
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
+expect_next_interface_failure(
+  invalid-live-logical-division
+  "package app\npub Traps :: true && ((1 / 0) == 0)\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
+expect_next_interface_failure(
+  invalid-dead-logical-operand-type
+  "package app\npub Wrong :: false && 1\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
+expect_next_interface_failure(
+  invalid-dead-comparison-type-mismatch
+  "package app\npub Wrong :: true || (cast[u8](1) == cast[u16](1))\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
 
 # Integer casts now cover builtin signed and unsigned destinations through 128
 # bits. Distinct-integer and non-integer destinations remain deliberate self-
@@ -628,6 +659,11 @@ expect_staged_interface_failure(
 expect_staged_interface_failure(
   unsupported-boolean-cast
   "package app\npub Truth :: cast[bool](1)\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
+expect_staged_interface_failure(
+  unsupported-comparison-conditional-expression
+  "package app\npub Selected :: ((1 << 200) > 1) if true else false\nmain :: proc() {}\n"
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
 

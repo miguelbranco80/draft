@@ -231,6 +231,9 @@ grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`, `|`, and
 `~` (xor), `<<`/`>>`, and explicit integer casts to builtin concrete signed and
 unsigned types through 128 bits. Direct integer `==`, `!=`, `<`, `<=`, `>`, and
 `>=` expressions compare in the same exact domain and publish boolean constants.
+Comparison leaves compose through grouping, `!`, `&&`, `||`, and boolean
+equality. A dead logical operand is type-checked but its division/shift traps are
+not evaluated, matching Draft short-circuit semantics.
 Untyped operations remain mathematically exact regardless of intermediate
 width, with infinite-two's-complement bitwise semantics and arithmetic right
 shift for negative values, while concrete signed and unsigned types through 128
@@ -264,8 +267,8 @@ types, zero byte offsets, and maximum-member natural layout; grouped fields and
 pointer recursion are supported. C enums, packed/bit fields, C or explicitly
 aligned aggregates, selected/synthesized/directive members, SIMD types,
 parametric forms, foreign/export declarations, procedure contracts, distinct or
-non-integer cast destinations, comparison results nested in the broader
-unsupported constant-expression vocabulary, negative or wider untyped named
+non-integer cast destinations, comparison results inside conditional expressions
+or other unsupported general constant forms, negative or wider untyped named
 integer publication, and general constant/type forms fail explicitly at this
 interface boundary.
 The `compiler/big_integer` package implements and differentially qualifies the
@@ -319,7 +322,8 @@ Its focused fixture covers forward local type and array-count dependencies,
 qualified imported type/value/count aliases, local/forward/imported/target
 integer arithmetic, concrete signed/unsigned wrapping and quotient/remainder,
 signed/i128/u128 casts and comparisons, checked u128 multiplication, and
-signed/u128 import and transitive re-export,
+short-circuit boolean composition with dead-operand type checking, signed/u128
+import and transitive re-export,
 pointer/multi-pointer/slice/array/tuple/procedure type
 aliases, structural globals and procedure signatures, tuple results, and
 target-dependent page-size arrays, distinct declarations with identical and
@@ -338,10 +342,11 @@ self-hosted command rejects them at its staging boundary; synthesized union
 members have their own fail-closed fixture.
 Separate fixtures require C enums, invalid enum arithmetic, invalid
 variants/unions, specialized aggregate layouts, SIMD types, unsupported
-array-count operators/types, arithmetic division by zero, signed division
-overflow, a final enum value beyond the u128 packet, negative/wider untyped
-scalar publication, and local alias or by-value layout cycles to fail at the
-exact self-hosting boundary. This
+array-count operators/types, live arithmetic division by zero, signed division
+overflow, non-bool or concrete-mismatched dead logical operands, a final enum
+value beyond the u128 packet, negative/wider untyped scalar publication, and
+local alias or by-value layout cycles to fail at the exact self-hosting boundary.
+This
 evidence applies only to that
 closed subset, not to the full production PackageInterface vocabulary or
 serialization.

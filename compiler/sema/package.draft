@@ -25,8 +25,9 @@
 // typed-interface path does include one arbitrary-precision integer-expression
 // slice shared by named scalar constants, fixed-array counts, and enum values;
 // concrete signed/unsigned results through 128 bits cross interfaces in one
-// finite sign/magnitude packet, while each consumer still applies its own final
-// representability rule explicitly.
+// finite sign/magnitude packet, and exact comparison leaves compose through the
+// closed boolean `!`/`&&`/`||` vocabulary. Each consumer still applies its own
+// final representability rule explicitly.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
 // ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
@@ -423,6 +424,17 @@ Integer_Type_Properties :: struct {
     bit_width: u32,
     signed: bool,
     supported: bool,
+}
+
+// Constant_Evaluation_Mode separates ordinary value production from validation
+// of a short-circuited logical operand. type_only still walks the complete
+// supported expression and enforces its type/conversion rules, but operations
+// which would trap at runtime retain only their result type because Draft does
+// not evaluate a dead `&&` or `||` operand. This is an evaluator control state,
+// never a semantic value and never serialized into an interface.
+Constant_Evaluation_Mode :: enum u8 {
+    value,
+    type_only,
 }
 
 // Semantic_Nominal_Member is one source-order field, enum member, or variant
@@ -3369,12 +3381,15 @@ integer_value_within_resource_limit :: proc(
 // -1 is rejected before wrapping because the specification makes that one
 // quotient a trap; signed remainder for the same operands remains zero. New
 // rows are appended before any operand pointer is taken because table growth
-// may relocate every owner.
+// may relocate every owner. type_only mode retains the operation's static type
+// but substitutes zero only when division or a shift count would trap; that
+// placeholder is never observed as a value because its logical branch is dead.
 apply_integer_binary :: proc(
     evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
     left, right: Integer_Expression_Value,
     operation: compiler_syntax.Token_Kind,
+    mode: Constant_Evaluation_Mode,
 ) -> (Integer_Expression_Value, bool) {
     shifting := operation == .shift_left || operation == .shift_right
     static_type := invalid_type_id()
@@ -3399,6 +3414,7 @@ apply_integer_binary :: proc(
     }
 
     shift_count: usize
+    evaluate_shift := true
     if shifting {
         valid_count := false
         (shift_count, valid_count) = integer_shift_count(
@@ -3407,7 +3423,10 @@ apply_integer_binary :: proc(
             properties.bit_width,
         )
         if !valid_count {
-            return (Integer_Expression_Value{}, false)
+            if mode == .value {
+                return (Integer_Expression_Value{}, false)
+            }
+            evaluate_shift = false
         }
     }
 
@@ -3451,17 +3470,21 @@ apply_integer_binary :: proc(
             integer_value(evaluation, right.integer),
         )
     case .shift_left:
-        compiler_big_integer.shift_left(
-            integer_value(evaluation, result),
-            integer_value(evaluation, left.integer),
-            shift_count,
-        )
+        if evaluate_shift {
+            compiler_big_integer.shift_left(
+                integer_value(evaluation, result),
+                integer_value(evaluation, left.integer),
+                shift_count,
+            )
+        }
     case .shift_right:
-        compiler_big_integer.shift_right(
-            integer_value(evaluation, result),
-            integer_value(evaluation, left.integer),
-            shift_count,
-        )
+        if evaluate_shift {
+            compiler_big_integer.shift_right(
+                integer_value(evaluation, result),
+                integer_value(evaluation, left.integer),
+                shift_count,
+            )
+        }
     case .slash, .percent:
         other := append_integer_value(evaluation)
         quotient := result
@@ -3479,13 +3502,17 @@ apply_integer_binary :: proc(
     case:
         return (Integer_Expression_Value{}, false)
     }
+    if !valid && mode == .value {
+        return (Integer_Expression_Value{}, false)
+    }
     if !valid {
+        compiler_big_integer.set_u64(integer_value(evaluation, result), 0)
+    }
+    if mode == .value &&
+        !integer_value_within_resource_limit(evaluation, result) {
         return (Integer_Expression_Value{}, false)
     }
-    if !integer_value_within_resource_limit(evaluation, result) {
-        return (Integer_Expression_Value{}, false)
-    }
-    if operation == .slash && properties.signed &&
+    if mode == .value && operation == .slash && properties.signed &&
         !integer_value_fits_type(evaluation, result, properties) {
         return (Integer_Expression_Value{}, false)
     }
@@ -3632,7 +3659,9 @@ integer_expression_to_scalar :: proc(
 // binary + - * / % & | ~ << >>, and explicit casts to builtin concrete signed
 // or unsigned types through 128 bits. Comparisons are projected separately
 // because their result is boolean; distinct cast destinations and compile-time
-// procedures remain at the next constant-evaluator seam.
+// procedures remain at the next constant-evaluator seam. mode is type_only only
+// beneath a short-circuited boolean operand; it preserves type checks while
+// suppressing traps whose operation is not evaluated by the language.
 evaluate_integer_expression :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     evaluation: ^Integer_Evaluation,
@@ -3642,6 +3671,7 @@ evaluate_integer_expression :: proc(
     id: compiler_syntax.Node_Id,
     facts: ^Target_Facts,
     blocked_symbol: ^Symbol_Id,
+    mode: Constant_Evaluation_Mode,
 ) -> (Integer_Expression_Value, bool) {
     node := compiler_syntax.syntax_tree_node(tree, id)
     children := compiler_syntax.syntax_tree_children(tree, id)
@@ -3743,6 +3773,7 @@ evaluate_integer_expression :: proc(
             children[0],
             facts,
             blocked_symbol,
+            mode,
         )
     case .unary_expression:
         if len(children) != 1 || node.token_begin >= node.token_end {
@@ -3762,6 +3793,7 @@ evaluate_integer_expression :: proc(
             children[0],
             facts,
             blocked_symbol,
+            mode,
         )
         if !valid {
             return (Integer_Expression_Value{}, false)
@@ -3787,7 +3819,7 @@ evaluate_integer_expression :: proc(
                 )
             }
             result.integer = transformed
-            if !integer_value_within_resource_limit(
+            if mode == .value && !integer_value_within_resource_limit(
                 evaluation,
                 result.integer,
             ) {
@@ -3864,6 +3896,7 @@ evaluate_integer_expression :: proc(
             children[1],
             facts,
             blocked_symbol,
+            mode,
         )
         if !valid {
             return (Integer_Expression_Value{}, false)
@@ -3899,6 +3932,7 @@ evaluate_integer_expression :: proc(
             children[0],
             facts,
             blocked_symbol,
+            mode,
         )
         if !valid_left {
             return (Integer_Expression_Value{}, false)
@@ -3912,6 +3946,7 @@ evaluate_integer_expression :: proc(
             children[1],
             facts,
             blocked_symbol,
+            mode,
         )
         if !valid_right {
             return (Integer_Expression_Value{}, false)
@@ -3922,6 +3957,7 @@ evaluate_integer_expression :: proc(
             left,
             right,
             operation,
+            mode,
         )
     case:
         return (Integer_Expression_Value{}, false)
@@ -3950,6 +3986,7 @@ evaluate_integer_comparison_expression :: proc(
     id: compiler_syntax.Node_Id,
     facts: ^Target_Facts,
     blocked_symbol: ^Symbol_Id,
+    mode: Constant_Evaluation_Mode,
 ) -> (Compile_Time_Value, bool) {
     node := compiler_syntax.syntax_tree_node(tree, id)
     children := compiler_syntax.syntax_tree_children(tree, id)
@@ -3966,6 +4003,7 @@ evaluate_integer_comparison_expression :: proc(
             children[0],
             facts,
             blocked_symbol,
+            mode,
         )
     }
     if node.kind != .binary_expression || len(children) != 2 {
@@ -3994,6 +4032,7 @@ evaluate_integer_comparison_expression :: proc(
         children[0],
         facts,
         blocked_symbol,
+        mode,
     )
     if !valid_left {
         return (invalid_compile_time_value(), false)
@@ -4007,6 +4046,7 @@ evaluate_integer_comparison_expression :: proc(
         children[1],
         facts,
         blocked_symbol,
+        mode,
     )
     if !valid_right {
         return (invalid_compile_time_value(), false)
@@ -4100,6 +4140,7 @@ evaluate_enum_integer_expression :: proc(
         id,
         facts,
         blocked_symbol,
+        .value,
     )
     if !valid {
         return (Finite_Integer{}, false)
@@ -4107,14 +4148,219 @@ evaluate_enum_integer_expression :: proc(
     return integer_expression_to_finite_integer(&evaluation, value)
 }
 
-// evaluate_integer_scalar_expression is the named-constant projection. It
-// publishes an exact integer comparison directly as bool; other integer roots
-// may use arbitrary-width intermediates but must fit the existing nonnegative
-// u64 interface packet after completion. The second result means this exact
-// evaluator recognized the root. A recognized-but-invalid comparison retains
-// an invalid value so the caller does not retry it through the older bounded
-// scalar evaluator and accidentally discard concrete type identity.
-evaluate_integer_scalar_expression :: proc(
+// evaluate_typed_boolean_expression composes exact integer comparisons with the
+// bool leaves already admitted by the scalar interface evaluator. `!`, `&&`,
+// `||`, and boolean equality recurse here rather than through the earlier target
+// selector, so an arithmetic comparison may appear at any boolean leaf. Logical
+// operators always validate both operands, but a short-circuited operand uses
+// type_only mode: its integer type/conversion rules are checked without firing a
+// division or shift trap which Draft evaluation never reaches.
+//
+// The second result means this closed boolean evaluator recognized the complete
+// root. A recognized invalid tree returns invalid with true so a concrete
+// integer mismatch or non-bool logical operand cannot be retried through the
+// older finite target evaluator. Local dependencies are never run recursively;
+// their first missing Symbol_Id is returned through blocked_symbol exactly as in
+// the integer evaluator.
+evaluate_typed_boolean_expression :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    evaluation: ^Integer_Evaluation,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    id: compiler_syntax.Node_Id,
+    facts: ^Target_Facts,
+    blocked_symbol: ^Symbol_Id,
+    mode: Constant_Evaluation_Mode,
+) -> (Compile_Time_Value, bool) {
+    node := compiler_syntax.syntax_tree_node(tree, id)
+    children := compiler_syntax.syntax_tree_children(tree, id)
+    if node.kind == .group_expression {
+        if len(children) != 1 {
+            return (invalid_compile_time_value(), false)
+        }
+        return evaluate_typed_boolean_expression(
+            graph,
+            evaluation,
+            semantic_package,
+            file_index,
+            tree,
+            children[0],
+            facts,
+            blocked_symbol,
+            mode,
+        )
+    }
+    if node.kind == .unary_expression {
+        if len(children) != 1 || node.token_begin >= node.token_end ||
+            tree.tokens.data[cast[usize](node.token_begin)].kind != .bang {
+            return (invalid_compile_time_value(), false)
+        }
+        (operand, recognized) := evaluate_typed_boolean_expression(
+            graph,
+            evaluation,
+            semantic_package,
+            file_index,
+            tree,
+            children[0],
+            facts,
+            blocked_symbol,
+            mode,
+        )
+        if !recognized || operand.kind != .boolean {
+            return (invalid_compile_time_value(), true)
+        }
+        if mode == .value {
+            operand.boolean = !operand.boolean
+        }
+        return (operand, true)
+    }
+    if node.kind == .binary_expression && len(children) == 2 {
+        left_node := compiler_syntax.syntax_tree_node(tree, children[0])
+        right_node := compiler_syntax.syntax_tree_node(tree, children[1])
+        (operation, have_operation) := binary_operator(
+            tree,
+            left_node,
+            right_node,
+        )
+        if have_operation &&
+            (operation == .logical_and || operation == .logical_or) {
+            (left, recognized_left) := evaluate_typed_boolean_expression(
+                graph,
+                evaluation,
+                semantic_package,
+                file_index,
+                tree,
+                children[0],
+                facts,
+                blocked_symbol,
+                mode,
+            )
+            if !recognized_left || left.kind != .boolean {
+                return (invalid_compile_time_value(), true)
+            }
+            right_mode: Constant_Evaluation_Mode = .type_only
+            if mode == .value &&
+                ((operation == .logical_and && left.boolean) ||
+                    (operation == .logical_or && !left.boolean)) {
+                right_mode = .value
+            }
+            (right, recognized_right) := evaluate_typed_boolean_expression(
+                graph,
+                evaluation,
+                semantic_package,
+                file_index,
+                tree,
+                children[1],
+                facts,
+                blocked_symbol,
+                right_mode,
+            )
+            if !recognized_right || right.kind != .boolean {
+                return (invalid_compile_time_value(), true)
+            }
+            result: Compile_Time_Value
+            result.kind = .boolean
+            result.static_type = Type_Id{value = 4}
+            result.type_value = invalid_type_id()
+            if mode == .value {
+                if operation == .logical_and {
+                    result.boolean = left.boolean && right.boolean
+                } else {
+                    result.boolean = left.boolean || right.boolean
+                }
+            }
+            return (result, true)
+        }
+
+        (comparison, recognized_comparison) :=
+            evaluate_integer_comparison_expression(
+                graph,
+                evaluation,
+                semantic_package,
+                file_index,
+                tree,
+                id,
+                facts,
+                blocked_symbol,
+                mode,
+            )
+        if recognized_comparison {
+            return (comparison, true)
+        }
+
+        if have_operation &&
+            (operation == .equal_equal || operation == .bang_equal) {
+            (left, recognized_left) := evaluate_typed_boolean_expression(
+                graph,
+                evaluation,
+                semantic_package,
+                file_index,
+                tree,
+                children[0],
+                facts,
+                blocked_symbol,
+                mode,
+            )
+            (right, recognized_right) := evaluate_typed_boolean_expression(
+                graph,
+                evaluation,
+                semantic_package,
+                file_index,
+                tree,
+                children[1],
+                facts,
+                blocked_symbol,
+                mode,
+            )
+            if recognized_left && recognized_right &&
+                left.kind == .boolean && right.kind == .boolean {
+                result: Compile_Time_Value
+                result.kind = .boolean
+                result.static_type = Type_Id{value = 4}
+                result.type_value = invalid_type_id()
+                if mode == .value {
+                    result.boolean = left.boolean == right.boolean
+                    if operation == .bang_equal {
+                        result.boolean = !result.boolean
+                    }
+                }
+                return (result, true)
+            }
+        }
+    }
+
+    // Only these surface forms can produce one of the existing scalar booleans.
+    // Avoid asking the broad target evaluator to intern type constructors merely
+    // to discover that their result is not bool.
+    if node.kind != .literal_expression && node.kind != .name_expression &&
+        node.kind != .member_expression && node.kind != .call_expression &&
+        node.kind != .binary_expression {
+        return (invalid_compile_time_value(), false)
+    }
+    value := evaluate_target_condition_expression(
+        graph,
+        semantic_package,
+        file_index,
+        tree,
+        id,
+        facts,
+        blocked_symbol,
+        .boolean,
+    )
+    if value.kind != .boolean {
+        return (invalid_compile_time_value(), false)
+    }
+    return (value, true)
+}
+
+// evaluate_typed_scalar_expression is the named-constant projection. Boolean
+// roots use the recursive evaluator above; other integer roots may use
+// arbitrary-width intermediates but must fit their scalar publication packet.
+// The second result means this exact evaluator recognized the root, including a
+// recognized-but-invalid boolean/comparison tree which must not be retried after
+// concrete type identity has been discarded.
+evaluate_typed_scalar_expression :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     semantic_package: ^Semantic_Package,
     file_index: usize,
@@ -4126,8 +4372,8 @@ evaluate_integer_scalar_expression :: proc(
     evaluation: Integer_Evaluation
     init_integer_evaluation(&evaluation)
     defer destroy_integer_evaluation(&evaluation)
-    (comparison, recognized_comparison) :=
-        evaluate_integer_comparison_expression(
+    (boolean_value, recognized_boolean) :=
+        evaluate_typed_boolean_expression(
             graph,
             &evaluation,
             semantic_package,
@@ -4136,9 +4382,10 @@ evaluate_integer_scalar_expression :: proc(
             id,
             facts,
             blocked_symbol,
+            .value,
         )
-    if recognized_comparison {
-        return (comparison, true)
+    if recognized_boolean {
+        return (boolean_value, true)
     }
     (value, valid) := evaluate_integer_expression(
         graph,
@@ -4149,6 +4396,7 @@ evaluate_integer_scalar_expression :: proc(
         id,
         facts,
         blocked_symbol,
+        .value,
     )
     if !valid {
         return (invalid_compile_time_value(), false)
@@ -4185,6 +4433,7 @@ evaluate_array_count_expression :: proc(
         id,
         facts,
         blocked_symbol,
+        .value,
     )
     if !valid ||
         (value.static_type.value != 2 && value.static_type.value != 22) {
@@ -5415,7 +5664,8 @@ target_feature :: proc(
 // deliberately recognizes only operators in the current scalar-constant
 // subsets. Arithmetic/bitwise/shift rows are consumed by the typed-interface
 // integer evaluator. Comparisons are shared by its exact integer projection and
-// the older target-condition path; logical rows remain target-condition-only.
+// the older target-condition path; logical rows are consumed by both the typed-
+// interface boolean evaluator and that earlier target path.
 binary_operator :: proc(
     tree: ^compiler_syntax.Syntax_Tree,
     left, right: ^compiler_syntax.Syntax_Node,
@@ -6150,11 +6400,11 @@ append_unsupported_compile_time_diagnostic :: proc(
 // its nominal shell before completing its packet; unavailable dependencies
 // attach one graph edge. Only a complete attempt publishes the constant value.
 // Typed-interface scalar products additionally admit the shared exact integer
-// evaluator, including builtin signed/u128 casts and direct comparisons.
-// Integer results must fit the published scalar packet; comparisons publish
-// bool. Grouped
-// declarations and the broader Draft constant vocabulary remain outside this
-// staging slice and fail only when a consumer demands them.
+// evaluator, including builtin signed/u128 casts and exact comparisons composed
+// through `!`, `&&`, `||`, and boolean equality. Integer results must fit the
+// published scalar packet; comparison trees publish bool. Grouped declarations
+// and the broader Draft constant vocabulary remain outside this staging slice
+// and fail only when a consumer demands them.
 run_named_constant_product :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     facts: ^Target_Facts,
@@ -6395,8 +6645,8 @@ run_named_constant_product :: proc(
             }
         }
     } else if use == .typed_interface {
-        handled_integer := false
-        (value, handled_integer) = evaluate_integer_scalar_expression(
+        handled_scalar := false
+        (value, handled_scalar) = evaluate_typed_scalar_expression(
             graph,
             semantic_package,
             symbol.syntax.file_index,
@@ -6405,7 +6655,7 @@ run_named_constant_product :: proc(
             facts,
             &blocked_symbol,
         )
-        if !handled_integer {
+        if !handled_scalar {
             value = evaluate_target_condition_expression(
                 graph,
                 semantic_package,
