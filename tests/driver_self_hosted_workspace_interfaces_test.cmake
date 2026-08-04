@@ -167,6 +167,14 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Wrapped_Page :: target.page_size - (target.page_size + 1)\n"
   "pub Arbitrary_Recovered :: (340282366920938463463374607431768211455 + 1) - 340282366920938463463374607431768211455\n"
   "pub Arbitrary_Divided :: ((340282366920938463463374607431768211455 + 1) * 3) / (340282366920938463463374607431768211455 + 1)\n"
+  "pub Bitwise_Count :: (((10 | 5) & 14) ~ 2)\n"
+  "pub Shifted_Count :: (1 << 6) >> 4\n"
+  "pub Complement_Recovered :: ~(-5)\n"
+  "pub Wide_Shift_Recovered :: (((340282366920938463463374607431768211455 + 1) << 65) >> 65) - 340282366920938463463374607431768211455\n"
+  "pub Target_Shifted :: target.page_size >> 12\n"
+  "pub Target_Complement :: ~target.page_size\n"
+  "pub Target_Shift_Wrapped :: target.page_size << 60\n"
+  "pub Concrete_Count_Shift :: (1 << target.pointer_bits) >> target.pointer_bits\n"
   "pub Index :: u32\n"
   "pub Duration :: distinct i64\n"
   "pub Epoch :: distinct i64\n"
@@ -190,6 +198,7 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Arithmetic_Code :: enum i16 { zero; negative = -(2 + 3) * 2; quotient = 25 / 3; remainder = 17 % 5; negative_quotient = -17 / 5; negative_remainder = -17 % 5; combined = 7 * 6 - (5 + 4); }\n"
   "pub Product_Code :: enum { zero; square = 18446744073709551615 * 18446744073709551615; }\n"
   "pub Arbitrary_Code :: enum u128 { zero; recovered = (340282366920938463463374607431768211455 + 1) - 1; quotient = ((340282366920938463463374607431768211455 + 1) * 37) / (340282366920938463463374607431768211455 + 1); remainder = (((340282366920938463463374607431768211455 + 1) * 37) + 19) % (340282366920938463463374607431768211455 + 1); negative_recovered = -(340282366920938463463374607431768211455 + 1) + (340282366920938463463374607431768211455 + 2); }\n"
+  "pub Bitwise_Code :: enum i16 { zero; complement = ~0; xor_value = -8 ~ 3; and_value = -1 & 255; or_value = 8 | 3; arithmetic_shift = -9 >> 2; left_shift = 3 << 4; wide_recovered = ((1 << 200) | 37) & 63; }\n"
   "Private_Status :: enum u8 { none; active = 9; }\n"
   "pub Private_Status_View :: Private_Status\n"
   "pub Choice :: variant { none; count: u32; pair: Pair; }\n"
@@ -222,6 +231,9 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Remainder_Array :: [Remainder_Count]u8\n"
   "pub Page_Half_Array :: [target.page_size / 2]u8\n"
   "pub Arbitrary_Array :: [((340282366920938463463374607431768211455 + 1) * 3) / (340282366920938463463374607431768211455 + 1)]u8\n"
+  "pub Bitwise_Array :: [2 | 1]u8\n"
+  "pub Shift_Array :: [(1 << 6) >> 4]u8\n"
+  "pub Concrete_Count_Array :: [(1 << target.pointer_bits) >> target.pointer_bits]u8\n"
   "pub Duration_Array :: [Count]Duration\n"
   "pub Pair_Array :: [Count]Pair\n"
   "pub Pair_Pointer :: ^Pair\n"
@@ -256,7 +268,10 @@ file(WRITE "${interface_workspace}/middle/package.draft"
   "pub Arithmetic_Code :: values.Arithmetic_Code\n"
   "pub Product_Code :: values.Product_Code\n"
   "pub Arbitrary_Code :: values.Arbitrary_Code\n"
+  "pub Bitwise_Code :: values.Bitwise_Code\n"
   "pub Arbitrary_Count :: values.Arbitrary_Recovered + values.Arbitrary_Divided\n"
+  "pub Bitwise_Count :: (values.Bitwise_Count << 1) >> 1\n"
+  "pub Target_Bits :: values.Target_Shifted | 1\n"
   "pub Imported_Arithmetic_Array :: [values.Remainder_Count + 1]u8\n"
   "pub Private_Status :: values.Private_Status_View\n"
   "pub Middle_Code :: enum u16 { none; count = values.Count; }\n"
@@ -283,6 +298,8 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Imported_Arithmetic_Code :: middle.Arithmetic_Code\n"
   "pub Imported_Product_Code :: middle.Product_Code\n"
   "pub Imported_Arbitrary_Code :: middle.Arbitrary_Code\n"
+  "pub Imported_Bitwise_Code :: middle.Bitwise_Code\n"
+  "pub Imported_Bitwise_Count :: middle.Bitwise_Count\n"
   "pub Local_Enabled :: values.Enabled\n"
   "pub Local_Label :: values.Label\n"
   "pub Local_Pointer :: values.Index_Pointer\n"
@@ -321,6 +338,7 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Mixed_Count_Array :: [Mixed_Count]u8\n"
   "pub Imported_Expression_Array :: [(values.Remainder_Count + 1) * 2]u16\n"
   "pub Imported_Arbitrary_Array :: [middle.Arbitrary_Count]u8\n"
+  "pub Imported_Bitwise_Array :: [(middle.Bitwise_Count >> 1) | 2]u8\n"
   "pub Direct_Tuple :: ([]values.Index, ^values.Index_Tuple)\n"
   "pub Pair_Grid :: [2]values.Pair_Array\n"
   "pub Mode_Grid :: [2]values.Mode_Array\n"
@@ -501,16 +519,32 @@ expect_next_interface_failure(
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
 
-# Array counts reuse the shared exact integer evaluator. Invalid arithmetic and
-# operators outside its current closed vocabulary remain fail-closed.
+# Array counts reuse the shared exact integer evaluator. Trapping shifts and
+# concrete type mismatches remain invalid even though bitwise and shift
+# operators are now inside its closed vocabulary.
 expect_next_interface_failure(
   invalid-array-count-division-by-zero
   "package app\npub Bytes :: [4 / 0]u8\nmain :: proc() {}\n"
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
-expect_staged_interface_failure(
-  unsupported-array-count-bitwise
-  "package app\npub Bytes :: [2 | 2]u8\nmain :: proc() {}\n"
+expect_next_interface_failure(
+  invalid-array-count-negative-shift
+  "package app\npub Bytes :: [4 << -1]u8\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
+expect_next_interface_failure(
+  invalid-typed-shift-count
+  "package app\npub Too_Far :: target.page_size << 64\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
+expect_next_interface_failure(
+  invalid-shift-resource-limit
+  "package app\npub Bytes :: [1 << 1000001]u8\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
+expect_next_interface_failure(
+  invalid-bitwise-concrete-type-mismatch
+  "package app\npub Mixed :: target.page_size & target.pointer_bits\nmain :: proc() {}\n"
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
 

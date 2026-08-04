@@ -135,17 +135,22 @@ with fixed supported parameters and results.
 Typed integer expressions share one arbitrary-precision sign/magnitude evaluator
 across named constants, enum values, and fixed-array counts. It admits integer
 literals, ready local/imported unsigned constants, target numeric facts,
-grouping, unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped operations
-remain mathematically exact regardless of intermediate width; concrete unsigned
-types no wider than 64 bits wrap at their declared width. Enum values project
-the exact final result into their signed/u128 interface packet, while fixed
-arrays require a positive result representable by their target-sized count
-packet from an untyped value or exact `usize`. Named interface constants can
-currently publish only nonnegative results through the u64 scalar packet. C enums,
+grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`, `|`, and
+`~` (xor), and `<<`/`>>`. Untyped operations remain mathematically exact
+regardless of intermediate width; bitwise operations use an infinite two's-
+complement domain and negative right shifts are arithmetic. Concrete unsigned
+types no wider than 64 bits wrap at their declared width. Shifts reject
+negative counts, counts at or beyond a concrete left operand's width, and work
+beyond the production evaluator's one-million-bit resource bound. Enum values
+project the exact final result into their signed/u128 interface packet, while
+fixed arrays require a positive result representable by their target-sized
+count packet from an untyped value or exact `usize`. Named interface constants
+can currently publish only nonnegative results through the u64 scalar packet.
+C enums,
 packed/bit fields, C or explicit-alignment aggregates,
 selected/synthesized/directive members, SIMD/parametric
-types, foreign/export declarations, procedure contracts, bitwise/shift/cast/
-comparison integer expressions, negative or wider named scalar publication,
+types, foreign/export declarations, procedure contracts, cast/comparison
+integer expressions, negative or wider named scalar publication,
 and general constant/type work remain a diagnosed interface staging boundary.
 Imported constants are available while building
 dependent interfaces but not during the earlier

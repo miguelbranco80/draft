@@ -1175,6 +1175,38 @@ when Not_Bool {
   EXPECT(state, rendered.find("division by zero") != std::string::npos);
 }
 
+// A shift count is an independently typed integer; it does not contextualize
+// the left operand or determine the result type. `target.pointer_bits` is a
+// concrete `uint`, but both shifts below therefore remain arbitrary-precision
+// untyped operations. If the count leaked into the left operand, the inner
+// shift by 64 would instead be diagnosed as a trapping `uint` shift.
+void test_shift_count_type_does_not_contextualize_left(TestState &state) {
+  AnalyzedSource source(R"draft(
+package conditions
+
+Shifted :: (1 << target.pointer_bits) >> target.pointer_bits
+Shifted_Array :: [(1 << target.pointer_bits) >> target.pointer_bits]u8
+)draft");
+
+  if (source.diagnostics.has_errors()) {
+    std::cerr << draft::render_diagnostics(source.sources, source.diagnostics);
+  }
+  EXPECT(state, source.analysis.ok);
+  EXPECT(state, !source.diagnostics.has_errors());
+
+  const std::optional<draft::SymbolId> shifted =
+      find_symbol(source.analysis.package, "Shifted");
+  EXPECT(state, shifted.has_value());
+  const draft::ConstantValue *value = shifted.has_value()
+      ? source.analysis.constants.find(*shifted)
+      : nullptr;
+  EXPECT(state, value != nullptr);
+  if (value != nullptr) {
+    EXPECT(state, value->kind == draft::ConstantKind::Integer);
+    EXPECT(state, value->integer == draft::BigInteger::from_u64(1));
+  }
+}
+
 void test_invalid_procedural_constants(TestState &state) {
   AnalyzedSource source(R"draft(
 package conditions
@@ -1276,7 +1308,7 @@ divide_by_saved_zero :: proc(value: int) -> int {
 }
 
 shift_by_saved_large_value :: proc(value: int) -> int {
-    return 1 << (value + 1000)
+    return cast[int](1) << (value + 1000)
 }
 
 no_value :: proc() {
@@ -3028,6 +3060,7 @@ int main() {
   test_single_conditional_product_dependencies(state);
   test_constants_and_conditional_rounds(state);
   test_invalid_required_constants(state);
+  test_shift_count_type_does_not_contextualize_left(state);
   test_invalid_procedural_constants(state);
   test_compile_time_defer(state);
   test_compile_time_callee_expressions(state);

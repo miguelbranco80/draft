@@ -352,9 +352,12 @@ ordinary enums, variants, and unions, plus non-parametric Draft procedure
 signatures.
 Named integer constants, enum values, and fixed-array counts share an evaluator
 for integer literals, ready local/imported unsigned constants, target numeric
-facts, grouping, unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped
-operations remain mathematically exact regardless of intermediate width;
-concrete unsigned types no wider than 64 bits wrap at their declared width.
+facts, grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`,
+`|`, and `~` (xor), and `<<`/`>>`. Untyped operations remain mathematically
+exact regardless of intermediate width and use infinite-two's-complement
+bitwise semantics; concrete unsigned types no wider than 64 bits wrap at their
+declared width. Shift counts must be nonnegative, stay below a concrete left
+width, and fit the one-million-bit constant resource bound.
 Named constants can currently publish only nonnegative u64 results. Enum values
 must fit the signed/u128 value packet, and fixed-array counts require a positive
 result representable by the target-sized count packet from an untyped value or
@@ -386,7 +389,7 @@ maximum-member overlay layout. Forward local type/count aliases and qualified
 imported type/value/count aliases are included. C enums, packed/bit fields, C or
 explicitly aligned aggregates, selected/synthesized/directive members,
 SIMD/parametric types, foreign/export
-declarations, procedure contracts, bitwise/shift/cast/comparison integer
+declarations, procedure contracts, cast/comparison integer
 expressions, negative or wider named scalar publication, and general
 constant/type forms fail explicitly rather than
 receiving a fallback interface. Imported constants are available here only

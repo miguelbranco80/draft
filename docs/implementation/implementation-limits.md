@@ -227,9 +227,13 @@ types and constants are rewritten into canonical package-interface IDs; and
 each imported declaration is reconstructed in the consumer Type-ID domain
 beneath its file-local alias. One shared arbitrary-precision integer evaluator
 accepts literals, local/imported unsigned constants, target numeric facts,
-grouping, unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped operations
-remain mathematically exact regardless of intermediate width, while concrete
-unsigned types no wider than 64 bits wrap at their declared width. Named
+grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`, `|`, and
+`~` (xor), and `<<`/`>>`. Untyped operations remain mathematically exact
+regardless of intermediate width, with infinite-two's-complement bitwise
+semantics and arithmetic right shift for negative values, while concrete
+unsigned types no wider than 64 bits wrap at their declared width. Negative
+shift counts, counts at or beyond a concrete left width, and work beyond the
+one-million-bit constant resource bound fail closed. Named
 interface constants currently publish only nonnegative u64 results. Fixed-array
 counts consume the same evaluator and require a positive result representable
 by the target-sized count packet from an untyped value or exact `usize`.
@@ -253,8 +257,8 @@ cycles. Ordinary unions retain the same identity, source-order field names and
 types, zero byte offsets, and maximum-member natural layout; grouped fields and
 pointer recursion are supported. C enums, packed/bit fields, C or explicitly
 aligned aggregates, selected/synthesized/directive members, SIMD types,
-parametric forms, foreign/export declarations, procedure contracts, bitwise/
-shift/cast/comparison integer expressions, negative or wider named scalar
+parametric forms, foreign/export declarations, procedure contracts,
+cast/comparison integer expressions, negative or wider named scalar
 publication, and general constant/type forms fail explicitly at this interface
 boundary.
 The `compiler/big_integer` package implements and differentially qualifies the

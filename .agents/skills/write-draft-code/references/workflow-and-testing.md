@@ -562,9 +562,12 @@ structs, ordinary enums, variants, and unions, and consumer-local imported
 type/value reconstruction.
 Named integer constants, enum values, and array counts share a typed evaluator
 for literals, ready local/imported unsigned constants, target numeric facts,
-grouping, unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped operations
-remain mathematically exact regardless of intermediate width; concrete unsigned
-types no wider than 64 bits wrap at their declared width. Named constants
+grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`, `|`, and
+`~` (xor), and `<<`/`>>`. Untyped operations remain mathematically exact
+regardless of intermediate width and use infinite-two's-complement bitwise
+semantics; concrete unsigned types no wider than 64 bits wrap at their declared
+width. Shift counts must be nonnegative, stay below a concrete left width, and
+fit the one-million-bit constant resource bound. Named constants
 currently publish only nonnegative u64 results, enum values must fit their
 signed/u128 interface packet, and array counts require a positive result
 representable by the target-sized count packet from an untyped value or exact
@@ -586,8 +589,8 @@ recursion and transitive identity are covered. Ordinary unions retain
 source-order grouped fields at byte offset zero, exact maximum-member natural
 layout, pointer recursion, and transitive identity. C enums, packed/bit fields,
 C or explicitly aligned aggregates, selected/synthesized/member-directive
-regions, SIMD/parametric types, foreign/export, procedure contracts, bitwise/
-shift/cast/comparison integer expressions, negative or wider named scalar
+regions, SIMD/parametric types, foreign/export, procedure contracts,
+cast/comparison integer expressions, negative or wider named scalar
 publication, and general constant/type forms remain an explicit staging failure.
 The lower `compiler/big_integer` package owns arbitrary-precision signed values
 with explicit init/destroy lifetime and is qualified independently against
@@ -631,8 +634,10 @@ sign and comparison, multi-limb arithmetic, signed division/remainder, shifts,
 infinite-two's-complement bitwise operations, formatting, and host conversion
 boundaries. Passing this gate qualifies the lower representation; it does not
 by itself qualify a semantic consumer. The workspace-interface differential is
-the gate proving that wide intermediates narrow correctly through local,
-imported, and re-exported scalar, enum, and array result packets.
+the gate proving that arithmetic, bitwise, complement, and shift expressions,
+including wide intermediates and trapping/resource-bound failures, narrow
+correctly through local, imported, and re-exported scalar, enum, and array
+result packets.
 
 The single-file differential tests compare C++ `draftc lex`/`draftc syntax`
 with Draft `draftc-next lex`/`draftc-next syntax` over repository Draft sources

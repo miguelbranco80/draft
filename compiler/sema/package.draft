@@ -78,6 +78,7 @@ Invalid_Compile_Time_Product_Value :: ~cast[u32](0)
 Invalid_Type_Value :: ~cast[u32](0)
 Invalid_Interface_Type_Value :: ~cast[u32](0)
 Invalid_Integer_Value :: ~cast[u32](0)
+Maximum_Integer_Bits :: 1_000_000
 
 // Scope_Id is an index into one Semantic_Package.scopes table. The all-ones
 // value is the package scope's parent sentinel; IDs never cross package rows.
@@ -3166,11 +3167,11 @@ wrap_unsigned_integer_value :: proc(
     return result_id
 }
 
-// integer_binary_type applies Draft's common-integer rule for the subset above.
-// Two concrete operands must have exact type identity. One untyped operand may
-// take the other operand's concrete unsigned type only when representable.
-// width zero denotes an untyped result; false denotes a type mismatch or a
-// contextual conversion which would be invalid in production.
+// integer_binary_type applies Draft's common-integer rule for non-shift binary
+// operations in this slice. Two concrete operands must have exact type
+// identity. One untyped operand may take the other operand's concrete unsigned
+// type only when representable. width zero denotes an untyped result; false
+// denotes a type mismatch or invalid contextual conversion.
 integer_binary_type :: proc(
     evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
@@ -3216,10 +3217,68 @@ integer_binary_type :: proc(
     return (left.static_type, left_width, true)
 }
 
-// apply_integer_binary evaluates the arithmetic operators in the shared typed-
-// interface slice. Untyped results remain arbitrary precision. Concrete
-// unsigned results are reduced modulo their exact width after the mathematical
-// operation, matching runtime arithmetic. New rows are appended before any
+// integer_shift_type validates the independent operand rule for shifts from
+// docs/specification/01-core-language.md, "Expressions and evaluation". Both
+// operands must be integers, but the count does not adopt or constrain the left
+// type; the result always retains the left type. This is deliberately separate
+// from integer_binary_type so a concrete count cannot accidentally
+// contextualize an untyped value being shifted.
+integer_shift_type :: proc(
+    semantic_package: ^Semantic_Package,
+    left, right: Integer_Expression_Value,
+) -> (Type_Id, u32, bool) {
+    (left_width, left_supported) := unsigned_integer_width(
+        semantic_package,
+        left.static_type,
+    )
+    (_, right_supported) := unsigned_integer_width(
+        semantic_package,
+        right.static_type,
+    )
+    if !left_supported || !right_supported {
+        return (invalid_type_id(), 0, false)
+    }
+    return (left.static_type, left_width, true)
+}
+
+// integer_shift_count crosses from an exact nonnegative integer into the
+// representation API's usize count. Untyped constant work shares production's
+// one-million-bit limit. A concrete left operand additionally rejects a count
+// at or beyond its width because that operation would trap at runtime.
+integer_shift_count :: proc(
+    evaluation: ^Integer_Evaluation,
+    count: Integer_Value_Id,
+    concrete_width: u32,
+) -> (usize, bool) {
+    (finite, fits) := compiler_big_integer.to_u64(
+        integer_value(evaluation, count),
+    )
+    if !fits || finite > cast[u64](Maximum_Integer_Bits) ||
+        finite > cast[u64](~cast[usize](0)) ||
+        (concrete_width != 0 && finite >= cast[u64](concrete_width)) {
+        return (0, false)
+    }
+    return (cast[usize](finite), true)
+}
+
+// integer_value_within_resource_limit keeps exact constant work finite without
+// changing its mathematical domain. The limit is applied after an operation,
+// matching the production evaluator: a large intermediate may narrow through
+// the operation itself, but a published oversized intermediate is rejected.
+integer_value_within_resource_limit :: proc(
+    evaluation: ^Integer_Evaluation,
+    value: Integer_Value_Id,
+) -> bool {
+    return compiler_big_integer.bit_count(
+        integer_value(evaluation, value),
+    ) <= cast[usize](Maximum_Integer_Bits)
+}
+
+// apply_integer_binary evaluates arithmetic, bitwise, and shift operators in
+// the shared typed-interface slice. Untyped results remain arbitrary precision;
+// bitwise operations and right shift use the big integer's infinite-two's-
+// complement domain. Concrete unsigned results are reduced modulo their exact
+// width after the mathematical operation. New rows are appended before any
 // operand pointer is taken because table growth may relocate every owner.
 apply_integer_binary :: proc(
     evaluation: ^Integer_Evaluation,
@@ -3227,14 +3286,39 @@ apply_integer_binary :: proc(
     left, right: Integer_Expression_Value,
     operation: compiler_syntax.Token_Kind,
 ) -> (Integer_Expression_Value, bool) {
-    (static_type, concrete_width, valid_type) := integer_binary_type(
-        evaluation,
-        semantic_package,
-        left,
-        right,
-    )
+    shifting := operation == .shift_left || operation == .shift_right
+    static_type := invalid_type_id()
+    concrete_width: u32
+    valid_type := false
+    if shifting {
+        (static_type, concrete_width, valid_type) = integer_shift_type(
+            semantic_package,
+            left,
+            right,
+        )
+    } else {
+        (static_type, concrete_width, valid_type) = integer_binary_type(
+            evaluation,
+            semantic_package,
+            left,
+            right,
+        )
+    }
     if !valid_type {
         return (Integer_Expression_Value{}, false)
+    }
+
+    shift_count: usize
+    if shifting {
+        valid_count := false
+        (shift_count, valid_count) = integer_shift_count(
+            evaluation,
+            right.integer,
+            concrete_width,
+        )
+        if !valid_count {
+            return (Integer_Expression_Value{}, false)
+        }
     }
 
     result := append_integer_value(evaluation)
@@ -3258,6 +3342,36 @@ apply_integer_binary :: proc(
             integer_value(evaluation, left.integer),
             integer_value(evaluation, right.integer),
         )
+    case .ampersand:
+        compiler_big_integer.bitwise_and(
+            integer_value(evaluation, result),
+            integer_value(evaluation, left.integer),
+            integer_value(evaluation, right.integer),
+        )
+    case .pipe:
+        compiler_big_integer.bitwise_or(
+            integer_value(evaluation, result),
+            integer_value(evaluation, left.integer),
+            integer_value(evaluation, right.integer),
+        )
+    case .tilde:
+        compiler_big_integer.bitwise_xor(
+            integer_value(evaluation, result),
+            integer_value(evaluation, left.integer),
+            integer_value(evaluation, right.integer),
+        )
+    case .shift_left:
+        compiler_big_integer.shift_left(
+            integer_value(evaluation, result),
+            integer_value(evaluation, left.integer),
+            shift_count,
+        )
+    case .shift_right:
+        compiler_big_integer.shift_right(
+            integer_value(evaluation, result),
+            integer_value(evaluation, left.integer),
+            shift_count,
+        )
     case .slash, .percent:
         other := append_integer_value(evaluation)
         quotient := result
@@ -3276,6 +3390,9 @@ apply_integer_binary :: proc(
         return (Integer_Expression_Value{}, false)
     }
     if !valid {
+        return (Integer_Expression_Value{}, false)
+    }
+    if !integer_value_within_resource_limit(evaluation, result) {
         return (Integer_Expression_Value{}, false)
     }
     if concrete_width != 0 {
@@ -3365,9 +3482,9 @@ integer_expression_to_scalar :: proc(
 // names consume only completed scalar products and report the first missing
 // Symbol_Id through blocked_symbol. Imported constants and target numeric facts
 // are already consumer-local inputs. The admitted syntax is integer literals,
-// names, qualified imported/target members, grouping, unary sign, and binary
-// + - * / %. Bitwise, shifts, casts, comparisons, and compile-time procedures
-// remain at the next constant-evaluator seam.
+// names, qualified imported/target members, grouping, unary sign/complement,
+// and binary + - * / % & | ~ << >>. Casts, comparisons, and compile-time
+// procedures remain at the next constant-evaluator seam.
 evaluate_integer_arithmetic_expression :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     evaluation: ^Integer_Evaluation,
@@ -3484,7 +3601,8 @@ evaluate_integer_arithmetic_expression :: proc(
             return (Integer_Expression_Value{}, false)
         }
         operation := tree.tokens.data[cast[usize](node.token_begin)].kind
-        if operation != .plus && operation != .minus {
+        if operation != .plus && operation != .minus &&
+            operation != .tilde {
             return (Integer_Expression_Value{}, false)
         }
         (result, valid) := evaluate_integer_arithmetic_expression(
@@ -3500,7 +3618,7 @@ evaluate_integer_arithmetic_expression :: proc(
         if !valid {
             return (Integer_Expression_Value{}, false)
         }
-        if operation == .minus {
+        if operation == .minus || operation == .tilde {
             (bit_width, supported) := unsigned_integer_width(
                 semantic_package,
                 result.static_type,
@@ -3508,12 +3626,25 @@ evaluate_integer_arithmetic_expression :: proc(
             if !supported {
                 return (Integer_Expression_Value{}, false)
             }
-            negated := append_integer_value(evaluation)
-            compiler_big_integer.negate(
-                integer_value(evaluation, negated),
-                integer_value(evaluation, result.integer),
-            )
-            result.integer = negated
+            transformed := append_integer_value(evaluation)
+            if operation == .minus {
+                compiler_big_integer.negate(
+                    integer_value(evaluation, transformed),
+                    integer_value(evaluation, result.integer),
+                )
+            } else {
+                compiler_big_integer.bitwise_not(
+                    integer_value(evaluation, transformed),
+                    integer_value(evaluation, result.integer),
+                )
+            }
+            result.integer = transformed
+            if !integer_value_within_resource_limit(
+                evaluation,
+                result.integer,
+            ) {
+                return (Integer_Expression_Value{}, false)
+            }
             if bit_width != 0 {
                 result.integer = wrap_unsigned_integer_value(
                     evaluation,
@@ -4928,8 +5059,9 @@ target_feature :: proc(
 // binary_operator finds the one infix token between the parser's two child
 // ranges. The parser has already established expression shape; this operation
 // deliberately recognizes only operators in the current scalar-constant
-// subset. Arithmetic rows are consumed by the typed-interface integer
-// evaluator; comparisons and logical rows remain in the target-condition path.
+// subsets. Arithmetic/bitwise/shift rows are consumed by the typed-interface
+// integer evaluator; comparisons and logical rows remain in the target-
+// condition path.
 binary_operator :: proc(
     tree: ^compiler_syntax.Syntax_Tree,
     left, right: ^compiler_syntax.Syntax_Node,
@@ -4937,9 +5069,10 @@ binary_operator :: proc(
     for index := left.token_end; index < right.token_begin; index += 1 {
         kind := tree.tokens.data[cast[usize](index)].kind
         switch kind {
-        case .plus, .minus, .star, .slash, .percent, .equal_equal,
-            .bang_equal, .less, .less_equal, .greater, .greater_equal,
-            .logical_and, .logical_or:
+        case .plus, .minus, .star, .slash, .percent, .ampersand, .pipe,
+            .tilde, .shift_left, .shift_right, .equal_equal, .bang_equal,
+            .less, .less_equal, .greater, .greater_equal, .logical_and,
+            .logical_or:
             return (kind, true)
         case:
         }
@@ -5662,10 +5795,10 @@ append_unsupported_compile_time_diagnostic :: proc(
 // its nominal shell before completing its packet; unavailable dependencies
 // attach one graph edge. Only a complete attempt publishes the constant value.
 // Typed-interface scalar products additionally admit the shared arbitrary-
-// precision integer `+ - * / %` evaluator, then require the final value to fit
-// the published scalar packet. Grouped declarations and the broader Draft
-// constant vocabulary remain outside this staging slice and fail only when a
-// consumer demands them.
+// precision integer `+ - * / % & | ~ << >>` evaluator, then require the final
+// value to fit the published scalar packet. Grouped declarations and the
+// broader Draft constant vocabulary remain outside this staging slice and fail
+// only when a consumer demands them.
 run_named_constant_product :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     facts: ^Target_Facts,
@@ -6373,8 +6506,9 @@ declaration_type_syntax :: proc(
 // this typed-interface slice. It resolves children recursively, interns exact
 // package-local identities, and reports the first unpublished local constant or
 // type through blocked_symbol. Array counts reuse the shared scalar compile-time
-// evaluator, so literals, `+ - * / %`, named local/imported untyped-or-usize
-// constants, and target usize facts follow one dependency mechanism.
+// evaluator, so literals, `+ - * / % & | ~ << >>`, named local/imported
+// untyped-or-usize constants, and target usize facts follow one dependency
+// mechanism.
 // Declaration-owned
 // distinct, struct, enum, variant, and union syntax is intentionally constructed
 // by the constant product which has the defining symbol; seeing any of them

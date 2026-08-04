@@ -1572,6 +1572,19 @@ private:
           operation == TokenKind::LogicalOr) {
         return {};
       }
+      if (operation == TokenKind::ShiftLeft ||
+          operation == TokenKind::ShiftRight) {
+        // Per core-language "Expressions and evaluation", a shift preserves
+        // its left operand's type. The right operand is an independently typed
+        // integer count, so its concrete type must not be reported as the type
+        // of the complete expression. In particular,
+        // `1 << target.pointer_bits` remains an untyped integer expression;
+        // treating `target.pointer_bits` as a sibling numeric hint would turn
+        // the left operand into `uint` and make the otherwise valid count 64
+        // trap at compile time.
+        return numeric_type_hint(
+            tree, expression.children.front(), scope);
+      }
       const TypeId left = numeric_type_hint(
           tree, expression.children.front(), scope);
       const TypeId right = numeric_type_hint(
@@ -2353,15 +2366,23 @@ private:
       TypeId expected) {
     if (node.children.size() != 2) return pending();
     const TokenKind operation = binary_operator(tree, node);
+    const bool shift = operation == TokenKind::ShiftLeft ||
+        operation == TokenKind::ShiftRight;
     const TypeId left_hint = numeric_type_hint(
         tree, node.children.front(), scope);
     const TypeId right_hint = numeric_type_hint(
         tree, node.children.back(), scope);
     TypeId numeric_context = concrete_numeric(expected) ? expected : TypeId{};
-    if (!numeric_context.is_valid() &&
-        (!left_hint.is_valid() || !right_hint.is_valid() ||
-         left_hint == right_hint)) {
-      numeric_context = left_hint.is_valid() ? left_hint : right_hint;
+    if (!numeric_context.is_valid()) {
+      if (shift) {
+        // The count is an independently typed integer and cannot supply the
+        // result type or contextualize the value being shifted. Only the left
+        // operand (or an enclosing expected type above) can do that.
+        numeric_context = left_hint;
+      } else if (!left_hint.is_valid() || !right_hint.is_valid() ||
+                 left_hint == right_hint) {
+        numeric_context = left_hint.is_valid() ? left_hint : right_hint;
+      }
     }
 
     // A contextual alternative has no type until its matching operand supplies
@@ -2422,10 +2443,7 @@ private:
         node.children[1],
         scope,
         required,
-        operation == TokenKind::ShiftLeft ||
-                operation == TokenKind::ShiftRight
-            ? TypeId{}
-            : right_context);
+        shift ? TypeId{} : right_context);
     if (right.status != EvalStatus::Ready) return right;
     // Nil has no standalone type. Exactly one typed pointer/procedure operand
     // can supply its context; two bare nil literals cannot invent one.
@@ -2452,11 +2470,13 @@ private:
         operation == TokenKind::BangEqual || operation == TokenKind::Less ||
         operation == TokenKind::LessEqual || operation == TokenKind::Greater ||
         operation == TokenKind::GreaterEqual;
-    const TypeId result_type = numeric_context.is_valid()
-        ? numeric_context
-        : (concrete_numeric(left.type)
-               ? left.type
-               : (concrete_numeric(right.type) ? right.type : TypeId{}));
+    const TypeId result_type = shift
+        ? (integer_operand(left.type) ? left.type : TypeId{})
+        : (numeric_context.is_valid()
+               ? numeric_context
+               : (concrete_numeric(left.type)
+                      ? left.type
+                      : (concrete_numeric(right.type) ? right.type : TypeId{})));
 
     if (result_type.is_valid() &&
         runtime_type(result_type).kind == TypeKind::Float &&
@@ -2473,9 +2493,7 @@ private:
           required);
     }
 
-    if (result_type.is_valid() &&
-        (operation == TokenKind::ShiftLeft ||
-         operation == TokenKind::ShiftRight) &&
+    if (concrete_numeric(result_type) && shift &&
         right.value.kind == ConstantKind::Integer) {
       const std::optional<std::uint64_t> count = right.value.integer.to_u64();
       if (!count.has_value() || *count >= integer_width(result_type)) {
@@ -2503,6 +2521,13 @@ private:
     if (result.status != EvalStatus::Ready) return result;
     if (comparison) {
       result.type = semantic_.types.builtins().bool_type;
+      return result;
+    }
+    if (shift && untyped_integer(result_type)) {
+      // Untyped shifts stay in the arbitrary-precision integer domain. Keep
+      // that static type visible to direct consumers such as an inline array
+      // length; convert_to_type handles only finite runtime integer types.
+      result.type = result_type;
       return result;
     }
     if (result_type.is_valid()) {
