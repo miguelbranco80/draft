@@ -128,33 +128,36 @@ independently checking the nominal packet.
 It then reconstructs each dependency declaration in the consumer's Type-ID
 domain beneath the exact file-local import alias. The current closed subset
 accepts named scalar aliases (including forward local aliases and qualified
-imported aliases), boolean/unsigned/string constants, arbitrary-precision integer
+imported aliases), boolean/integer/string constants, arbitrary-precision integer
 arithmetic constants, structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant/
 ordinary-union type aliases and globals, and non-parametric Draft procedures
 with fixed supported parameters and results.
 Typed integer expressions share one arbitrary-precision sign/magnitude evaluator
 across named constants, enum values, and fixed-array counts. It admits integer
-literals, ready local/imported unsigned constants, target numeric facts,
+literals, ready local/imported finite integer constants, target numeric facts,
 grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`, `|`, and
-`~` (xor), `<<`/`>>`, and explicit integer casts to concrete unsigned types no
-wider than 64 bits. Direct integer comparisons use the same exact domain and
-publish bool. Untyped operations remain mathematically exact regardless of
+`~` (xor), `<<`/`>>`, and explicit integer casts to builtin concrete signed and
+unsigned types through 128 bits. Direct integer comparisons use the same exact
+domain and publish bool. Untyped operations remain mathematically exact regardless of
 intermediate width; bitwise operations use an infinite two's-complement domain
-and negative right shifts are arithmetic. Concrete unsigned operations and
-casts no wider than 64 bits reduce at their declared width. Shifts reject
+and negative right shifts are arithmetic. Concrete builtin signed and unsigned
+operations and casts through 128 bits reduce at their declared width and then
+use that type's signed interpretation. Signed minimum divided by `-1` traps;
+the corresponding remainder is zero. Shifts reject
 negative counts, counts at or beyond a concrete left operand's width, and work
 beyond the production evaluator's one-million-bit resource bound. Enum values
-project the exact final result into their signed/u128 interface packet, while
+and concrete named constants project the exact final result into their shared
+signed/u128 interface packet, while
 fixed arrays require a positive result representable by their target-sized
-count packet from an untyped value or exact `usize`. Named interface constants
-can currently publish integer results only when nonnegative and representable
-through the u64 scalar packet. C enums, packed/bit fields, C or explicit-
+count packet from an untyped value or exact `usize`. Untyped named interface
+constants retain the compatibility boundary of nonnegative u64 publication.
+C enums, packed/bit fields, C or explicit-
 alignment aggregates, selected/synthesized/directive members,
 SIMD/parametric types, foreign/export declarations, procedure contracts,
-signed, wider, or non-integer cast destinations, exact integer comparisons
-nested in unsupported constant forms, negative or wider named integer
-publication, and general constant/type work remain a diagnosed interface
-staging boundary.
+distinct or non-integer cast destinations, exact integer comparisons nested in
+unsupported constant forms, negative or wider untyped named integer
+publication, and general constant/type work remain a diagnosed interface staging
+boundary.
 Imported constants are available while building
 dependent interfaces but not during the earlier
 package-`when` phase, whose dependency interfaces do not yet exist.
@@ -176,9 +179,10 @@ exerciser in isolated binary-tree storage and compares its output and status
 with production C++ `BigInteger` over radices, invalid literals, signs,
 multi-limb arithmetic, all division sign combinations, cross-limb shifts,
 mixed-sign bitwise operations, and u64/u128/i64 boundaries. The typed-interface
-differential additionally proves wide intermediates narrowing into named scalar,
-enum, fixed-array, imported, and re-exported result packets. Arbitrary-width
-named constants are still not themselves serializable interface values.
+differential additionally proves signed and u128 concrete values, wide
+intermediates narrowing into named scalar, enum, fixed-array, imported, and
+re-exported result packets. Arbitrary-width untyped named constants are still
+not themselves serializable interface values.
 
 Replacement proceeds at phase boundaries rather than by mixing C++ and Draft
 inside a phase. C++ `draftc lex` and `draftc syntax` remain independent single-
@@ -231,9 +235,11 @@ scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant/
 ordinary-union graphs, fixed-array counts, exact natural layouts, enum values,
 and consumer-local type/value reconstruction across all four targets.
 It includes forward local type/count aliases, imported type/value/count aliases,
-local/forward/imported/target integer arithmetic, concrete unsigned wrapping,
-signed division and remainder, checked u128 products, all five moved data
-structures, structural globals and fixed procedures, target page-size arrays,
+local/forward/imported/target integer arithmetic, concrete signed/unsigned
+wrapping and quotient/remainder, signed/i128/u128 casts and comparisons,
+signed/u128 import and transitive re-export, checked u128 products, all five
+moved data structures, structural globals and fixed procedures, target page-size
+arrays,
 distinct declarations over scalar, structural, private, and
 imported distinct types, plain/grouped/recursive structs, private and transitive
 struct re-exports, structs nested in arrays/procedures/other structs,

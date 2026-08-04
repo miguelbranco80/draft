@@ -226,18 +226,20 @@ ordinary named natural-layout `struct` declarations, ordinary `enum`,
 types and constants are rewritten into canonical package-interface IDs; and
 each imported declaration is reconstructed in the consumer Type-ID domain
 beneath its file-local alias. One shared arbitrary-precision integer evaluator
-accepts literals, local/imported unsigned constants, target numeric facts,
+accepts literals, local/imported finite integer constants, target numeric facts,
 grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`, `|`, and
-`~` (xor), `<<`/`>>`, and explicit integer casts to concrete unsigned types no
-wider than 64 bits. Direct integer `==`, `!=`, `<`, `<=`, `>`, and `>=`
-expressions compare in the same exact domain and publish boolean constants.
+`~` (xor), `<<`/`>>`, and explicit integer casts to builtin concrete signed and
+unsigned types through 128 bits. Direct integer `==`, `!=`, `<`, `<=`, `>`, and
+`>=` expressions compare in the same exact domain and publish boolean constants.
 Untyped operations remain mathematically exact regardless of intermediate
 width, with infinite-two's-complement bitwise semantics and arithmetic right
-shift for negative values, while concrete unsigned types no wider than 64 bits
-wrap at their declared width. Explicit integer casts reduce modulo the target
-width. Negative shift counts, counts at or beyond a concrete left width, and
-work beyond the one-million-bit constant resource bound fail closed. Named
-integer interface constants currently publish only nonnegative u64 results.
+shift for negative values, while concrete signed and unsigned types through 128
+bits wrap at their declared width and retain the destination interpretation.
+Signed minimum divided by `-1` traps while its remainder is zero. Explicit
+integer casts reduce modulo the target width. Negative shift counts, counts at
+or beyond a concrete left width, and work beyond the one-million-bit constant
+resource bound fail closed. Concrete integer interface constants use the exact
+signed/u128 packet; untyped constants retain nonnegative-u64 publication.
 Fixed-array counts consume the same evaluator and require a positive result
 representable by the target-sized count packet from an untyped value or exact
 `usize`.
@@ -261,11 +263,11 @@ cycles. Ordinary unions retain the same identity, source-order field names and
 types, zero byte offsets, and maximum-member natural layout; grouped fields and
 pointer recursion are supported. C enums, packed/bit fields, C or explicitly
 aligned aggregates, selected/synthesized/directive members, SIMD types,
-parametric forms, foreign/export declarations, procedure contracts,
-signed, wider, or non-integer cast destinations, comparison results nested in
-the broader unsupported constant-expression vocabulary, negative or wider
-named integer publication, and general constant/type forms fail explicitly at
-this interface boundary.
+parametric forms, foreign/export declarations, procedure contracts, distinct or
+non-integer cast destinations, comparison results nested in the broader
+unsupported constant-expression vocabulary, negative or wider untyped named
+integer publication, and general constant/type forms fail explicitly at this
+interface boundary.
 The `compiler/big_integer` package implements and differentially qualifies the
 arbitrary-precision values now consumed by this evaluator:
 parsing, sign/magnitude arithmetic, division, shifts, infinite-two's-complement
@@ -273,8 +275,8 @@ bitwise operations, signed comparison, fixed-width conversion, and decimal
 formatting against the production C++ `BigInteger`. One root evaluation owns a
 temporary value table, uses stable IDs across table growth, and projects only
 its final result into the finite scalar, enum, or array interface packet before
-destruction. The remaining u64/u128 limits above are publication boundaries,
-not intermediate arithmetic limits.
+destruction. The remaining untyped-u64 and finite-u128 limits above are
+publication boundaries, not intermediate arithmetic limits.
 Imported constants remain unavailable to the earlier package-`when` selector.
 Deeper nominal member lookup, full type/body checking, elaboration, MIR, LLVM,
 artifacts, and linking have not moved to the staging driver. The C++ driver
@@ -315,8 +317,9 @@ field/overlay layouts, declaration classifications, constant payloads, and
 consumer-local imported type/value shapes with production on all four targets.
 Its focused fixture covers forward local type and array-count dependencies,
 qualified imported type/value/count aliases, local/forward/imported/target
-integer arithmetic, concrete unsigned wrapping, signed quotient/remainder, and
-checked u128 multiplication,
+integer arithmetic, concrete signed/unsigned wrapping and quotient/remainder,
+signed/i128/u128 casts and comparisons, checked u128 multiplication, and
+signed/u128 import and transitive re-export,
 pointer/multi-pointer/slice/array/tuple/procedure type
 aliases, structural globals and procedure signatures, tuple results, and
 target-dependent page-size arrays, distinct declarations with identical and
@@ -335,9 +338,10 @@ self-hosted command rejects them at its staging boundary; synthesized union
 members have their own fail-closed fixture.
 Separate fixtures require C enums, invalid enum arithmetic, invalid
 variants/unions, specialized aggregate layouts, SIMD types, unsupported
-array-count operators/types, arithmetic division by zero, a final enum value
-beyond the u128 packet, negative/wider named scalar publication, and local alias
-or by-value layout cycles to fail at the exact self-hosting boundary. This
+array-count operators/types, arithmetic division by zero, signed division
+overflow, a final enum value beyond the u128 packet, negative/wider untyped
+scalar publication, and local alias or by-value layout cycles to fail at the
+exact self-hosting boundary. This
 evidence applies only to that
 closed subset, not to the full production PackageInterface vocabulary or
 serialization.

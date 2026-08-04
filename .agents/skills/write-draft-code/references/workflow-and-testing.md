@@ -561,18 +561,19 @@ and signatures, declaration-owned distinct types, ordinary named natural-layout
 structs, ordinary enums, variants, and unions, and consumer-local imported
 type/value reconstruction.
 Named integer constants, enum values, and array counts share a typed evaluator
-for literals, ready local/imported unsigned constants, target numeric facts,
+for literals, ready local/imported finite integer constants, target numeric facts,
 grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`, `|`, and
-`~` (xor), `<<`/`>>`, and explicit casts to concrete unsigned types no wider
-than 64 bits. Direct integer `==`, `!=`, `<`, `<=`, `>`, and `>=` expressions
-compare in that exact domain and publish booleans. Untyped operations remain
+`~` (xor), `<<`/`>>`, and explicit casts to builtin concrete signed and unsigned
+types through 128 bits. Direct integer `==`, `!=`, `<`, `<=`, `>`, and `>=`
+expressions compare in that exact domain and publish booleans. Untyped operations remain
 mathematically exact regardless of intermediate width and use infinite-two's-
-complement bitwise semantics; concrete unsigned types and explicit integer
-casts no wider than 64 bits reduce at their declared width. Shift counts must
-be nonnegative, stay below a concrete left width, and fit the one-million-bit
-constant resource bound. Named integer constants currently publish only
-nonnegative u64 results, enum values must fit their
-signed/u128 interface packet, and array counts require a positive result
+complement bitwise semantics; concrete signed and unsigned operations and casts
+through 128 bits reduce at their declared width and retain the destination
+interpretation. Signed minimum divided by `-1` traps while its remainder is zero.
+Shift counts must be nonnegative, stay below a concrete left width, and fit the
+one-million-bit constant resource bound. Concrete integer constants and enum
+values use their signed/u128 interface packet; untyped named constants retain
+nonnegative-u64 publication. Array counts require a positive result
 representable by the target-sized count packet from an untyped value or exact
 `usize`. Distinct interface identity uses
 the defining content root,
@@ -592,11 +593,11 @@ recursion and transitive identity are covered. Ordinary unions retain
 source-order grouped fields at byte offset zero, exact maximum-member natural
 layout, pointer recursion, and transitive identity. C enums, packed/bit fields,
 C or explicitly aligned aggregates, selected/synthesized/member-directive
-regions, SIMD/parametric types, foreign/export, procedure contracts,
-signed, wider, or non-integer cast destinations, comparison results nested in
-the broader unsupported constant-expression vocabulary, negative or wider
-named integer publication, and general constant/type forms remain an explicit
-staging failure.
+regions, SIMD/parametric types, foreign/export, procedure contracts, distinct or
+non-integer cast destinations, comparison results nested in the broader
+unsupported constant-expression vocabulary, negative or wider untyped named
+integer publication, and general constant/type forms remain an explicit staging
+failure.
 The lower `compiler/big_integer` package owns arbitrary-precision signed values
 with explicit init/destroy lifetime and is qualified independently against
 production C++ `BigInteger`. It is not a `draftc-next` command. The typed
@@ -682,10 +683,12 @@ ordinary-union type rows, fixed-array counts, exact natural aggregate layouts
 and enum values, declaration classifications, scalar constant payloads, and
 imported consumer-local type/value shapes on all four targets. Its supported
 fixture includes forward local type/count aliases, qualified imported aliases
-and counts, local/forward/imported/target integer arithmetic, concrete unsigned
-wrapping, signed division/remainder, arbitrary-precision intermediates narrowing
-through scalar/enum/array consumers, unsigned wrapping casts, exact integer
-comparisons, imported cast targets, and re-exported comparison booleans,
+and counts, local/forward/imported/target integer arithmetic, concrete signed and
+unsigned wrapping, signed division/remainder and division overflow, arbitrary-
+precision intermediates narrowing through scalar/enum/array consumers,
+signed/i128/u128 wrapping casts, exact integer comparisons, imported cast targets,
+signed/u128 imports and transitive re-exports, and re-exported comparison
+booleans,
 structural
 globals, fixed procedure types/signatures, tuple results, target page-size
 arrays, separate same-underlying distinct declarations, private distinct
@@ -702,7 +705,7 @@ union fixtures before the self-hosted command rejects those valid production
 forms at its staging boundary; synthesized union members also fail closed. C
 enums, invalid enum arithmetic, invalid variants/unions, specialized aggregate
 layouts/members, SIMD types, unsupported count operators/types, division by
-zero, final enum values beyond the u128 packet, negative/wider named scalar
+zero, final enum values beyond the u128 packet, negative/wider untyped scalar
 publication, and local alias or by-value layout cycles must fail at the exact
 self-hosting boundary. Do not infer support for the production interface's
 remaining nominal/parametric constructors or contracts from this narrow gate.

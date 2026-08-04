@@ -2,7 +2,8 @@
 #
 # Both executables emit the established graph, declaration, target-selection,
 # and public-name prefix before the canonical scalar/structural/nominal type
-# graph, including exact integer casts/comparisons, natural-layout struct
+# graph, including signed/u128 integer casts, wrapping, comparisons,
+# natural-layout struct
 # fields/offsets, enum values, variant discriminator/payload packets, and
 # zero-offset union overlays.
 # Imported rows are compared through structural/nominal consumer-local type
@@ -183,6 +184,25 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Cast_Page :: cast[usize](target.page_size)\n"
   "pub Cast_Wide :: cast[u64]((1 << 100) + 9)\n"
   "pub Cast_Arithmetic :: cast[u8](255) + 2\n"
+  "pub Signed_Byte :: cast[i8](255)\n"
+  "pub Signed_Long :: cast[i64](18446744073709551615)\n"
+  "pub Signed_Natural :: cast[int](18446744073709551615)\n"
+  "pub Signed_Size :: cast[isize](18446744073709551615)\n"
+  "pub Signed_Minimum :: cast[i128](1 << 127)\n"
+  "pub Unsigned_Maximum :: cast[u128](-1)\n"
+  "pub Signed_Wrapped_Add :: cast[i8](127) + 1\n"
+  "pub Signed_Wrapped_Subtract :: cast[i8](-128) - 1\n"
+  "pub Signed_Quotient :: cast[i16](-17) / 5\n"
+  "pub Signed_Remainder :: cast[i16](-17) % 5\n"
+  "pub Signed_Overflow_Remainder :: cast[i8](-128) % -1\n"
+  "pub Signed_Complement :: ~cast[i8](0)\n"
+  "pub Signed_Bitwise :: cast[i16](-8) ~ 3\n"
+  "pub Signed_Right_Shift :: cast[i16](-9) >> 2\n"
+  "pub Signed_Left_Wrap :: cast[i16](16384) << 1\n"
+  "pub Signed_Wide_Wrap :: cast[i128]((1 << 127) - 1) + 1\n"
+  "pub Unsigned_Wide_Wrap :: cast[u128](-1) + 2\n"
+  "pub Signed_Index :: i32\n"
+  "pub Signed_Alias_Cast :: cast[Signed_Index](4294967295)\n"
   "pub Forward_Cast :: cast[Later_Cast_Index](65537)\n"
   "Later_Cast_Index :: u16\n"
   "pub Equal_Wide :: ((1 << 200) | 7) == ((1 << 200) + 7)\n"
@@ -191,6 +211,9 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Less_Equal_Wide :: (1 << 200) <= (1 << 200)\n"
   "pub Greater_Wide :: (1 << 200) > ((1 << 199) + 1)\n"
   "pub Greater_Equal_Cast :: cast[u8](-1) >= 255\n"
+  "pub Less_Signed_Minimum :: cast[i128](1 << 127) < -1\n"
+  "pub Greater_Unsigned_Maximum :: cast[u128](-1) > (1 << 127)\n"
+  "pub Equal_Signed_Alias :: cast[Signed_Index](-1) == -1\n"
   "pub Target_Comparison :: target.page_size >= 4096\n"
   "pub Forward_Comparison :: Later_Comparison_Value > 7\n"
   "Later_Comparison_Value :: 8\n"
@@ -295,6 +318,10 @@ file(WRITE "${interface_workspace}/middle/package.draft"
   "pub Bitwise_Count :: (values.Bitwise_Count << 1) >> 1\n"
   "pub Target_Bits :: values.Target_Shifted | 1\n"
   "pub Imported_Cast :: cast[values.Index](4294967297)\n"
+  "pub Imported_Signed :: values.Signed_Minimum\n"
+  "pub Imported_Unsigned_Wide :: values.Unsigned_Maximum\n"
+  "pub Imported_Signed_Arithmetic :: values.Signed_Byte + 2\n"
+  "pub Imported_Wide_Comparison :: values.Unsigned_Maximum > (1 << 127)\n"
   "pub Imported_Comparison :: values.Cast_Wide == 9\n"
   "pub Reexported_Comparison :: values.Greater_Wide\n"
   "pub Imported_Arithmetic_Array :: [values.Remainder_Count + 1]u8\n"
@@ -326,6 +353,10 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Imported_Bitwise_Code :: middle.Bitwise_Code\n"
   "pub Imported_Bitwise_Count :: middle.Bitwise_Count\n"
   "pub Imported_Cast :: middle.Imported_Cast\n"
+  "pub Transitive_Signed :: middle.Imported_Signed\n"
+  "pub Transitive_Unsigned_Wide :: middle.Imported_Unsigned_Wide\n"
+  "pub Imported_Signed_Arithmetic :: middle.Imported_Signed_Arithmetic\n"
+  "pub Imported_Wide_Comparison :: middle.Imported_Wide_Comparison\n"
   "pub Imported_Comparison :: middle.Imported_Comparison\n"
   "pub Transitive_Comparison :: middle.Reexported_Comparison\n"
   "pub Local_Enabled :: values.Enabled\n"
@@ -548,8 +579,8 @@ expect_next_interface_failure(
 )
 
 # Array counts reuse the shared exact integer evaluator. Trapping shifts and
-# concrete type mismatches remain invalid even though bitwise, shift, and
-# supported unsigned cast operators are now inside its closed vocabulary.
+# concrete type mismatches remain invalid even though bitwise, shift, and all
+# builtin concrete integer cast operators are now inside its closed vocabulary.
 expect_next_interface_failure(
   invalid-array-count-division-by-zero
   "package app\npub Bytes :: [4 / 0]u8\nmain :: proc() {}\n"
@@ -580,14 +611,18 @@ expect_next_interface_failure(
   "package app\npub Mixed :: cast[u8](1) == cast[u16](1)\nmain :: proc() {}\n"
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
+expect_next_interface_failure(
+  invalid-signed-division-overflow
+  "package app\npub Traps :: cast[i8](-128) / -1\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
 
-# The explicit-conversion slice currently publishes only unsigned integer
-# destinations through 64 bits. Production accepts these additional cast
-# families, so they remain deliberate self-hosting boundaries rather than
-# being confused with invalid Draft source.
+# Integer casts now cover builtin signed and unsigned destinations through 128
+# bits. Distinct-integer and non-integer destinations remain deliberate self-
+# hosting boundaries rather than being confused with invalid Draft source.
 expect_staged_interface_failure(
-  unsupported-signed-integer-cast
-  "package app\npub Signed :: cast[i64](1)\nmain :: proc() {}\n"
+  unsupported-distinct-integer-cast
+  "package app\npub Index :: distinct i64\npub Value :: cast[Index](1)\nmain :: proc() {}\n"
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
 expect_staged_interface_failure(
@@ -596,8 +631,8 @@ expect_staged_interface_failure(
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
 
-# The interface scalar packet currently publishes only nonnegative u64 values,
-# although enums and arrays can consume wider or negative exact intermediates.
+# Untyped scalar publication still uses the compatibility nonnegative-u64
+# boundary. Concrete signed/u128 values use the finite sign/magnitude packet.
 expect_staged_interface_failure(
   unsupported-negative-named-integer
   "package app\npub Negative :: -1\nmain :: proc() {}\n"
@@ -609,8 +644,8 @@ expect_staged_interface_failure(
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
 
-# Arbitrary-precision evaluation now accepts this expression, but its final
-# value still cannot cross the existing nonnegative-u64 scalar interface packet.
+# Arbitrary-precision evaluation now accepts this expression, but its untyped
+# final value still cannot cross the nonnegative-u64 compatibility packet.
 # The supported fixture above proves that the same wide intermediate may narrow
 # to a publishable scalar, array count, or enum value without wrapping.
 expect_staged_interface_failure(

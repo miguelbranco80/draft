@@ -24,7 +24,9 @@
 // an explicit diagnostic rather than receiving provisional semantics. The
 // typed-interface path does include one arbitrary-precision integer-expression
 // slice shared by named scalar constants, fixed-array counts, and enum values;
-// each consumer still applies its finite result-packet boundary explicitly.
+// concrete signed/unsigned results through 128 bits cross interfaces in one
+// finite sign/magnitude packet, while each consumer still applies its own final
+// representability rule explicitly.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
 // ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
@@ -367,14 +369,16 @@ pub Semantic_Type :: struct {
     nominal_member_count: usize,
 }
 
-// Enum_Integer is the exact finite integer domain needed by every valid Draft 1
-// enum backing type. negative is false for zero; magnitude can retain all of
-// u128 and the absolute value of i128's minimum. Equality is numeric rather
-// than representational because negative zero is normalized away. This staging
-// value is deliberately separate from Compile_Time_Value: extending the latter
-// would claim that arbitrary-width named arithmetic constants are already part
-// of the earlier package-condition evaluator.
-Enum_Integer :: struct {
+// Finite_Integer is the exact sign/magnitude packet used where the self-hosted
+// frontend must retain a concrete Draft integer after arbitrary-precision
+// evaluation ends. It covers every Draft 1 fixed integer value: magnitude can
+// retain all of u128 and the absolute value of i128's minimum, while negative
+// is false for zero. Enum members, named concrete constants, and package
+// interfaces share this representation so no narrower machine integer silently
+// truncates a semantic value. Untyped integers remain arbitrary precision while
+// evaluating and cross the scalar interface only through the deliberately
+// smaller compatibility rule documented by integer_expression_to_scalar.
+Finite_Integer :: struct {
     negative: bool,
     magnitude: u128,
 }
@@ -398,15 +402,27 @@ Integer_Evaluation :: struct {
 }
 
 // Integer_Expression_Value is one exact integer result plus the static type
-// which controls contextual conversion and concrete arithmetic. The current
-// staged evaluator admits untyped integers and concrete unsigned integers no
-// wider than u64. integer addresses the current Integer_Evaluation rather than
-// embedding an owner, so recursive returns and local copies remain plain data.
+// which controls contextual conversion and concrete arithmetic. The staged
+// evaluator admits untyped integers and every builtin concrete signed or
+// unsigned integer through 128 bits. integer addresses the current
+// Integer_Evaluation rather than embedding an owner, so recursive returns and
+// local copies remain plain data.
 // A successful value always has valid evaluation-local integer and package-
 // local static_type IDs; it owns no storage.
 Integer_Expression_Value :: struct {
     integer: Integer_Value_Id,
     static_type: Type_Id,
+}
+
+// Integer_Type_Properties is the normalized arithmetic information carried by
+// one supported integer Type_Id. bit_width is zero only for the exact untyped
+// integer domain; concrete builtins use 1..128 and record whether their fixed-
+// width interpretation is signed. supported separates an untyped row from an
+// invalid or deliberately staged type without overloading bit_width again.
+Integer_Type_Properties :: struct {
+    bit_width: u32,
+    signed: bool,
+    supported: bool,
 }
 
 // Semantic_Nominal_Member is one source-order field, enum member, or variant
@@ -423,7 +439,7 @@ Semantic_Nominal_Member :: struct {
     type: Type_Id,
     byte_offset: u64,
     has_enum_value: bool,
-    enum_value: Enum_Integer,
+    enum_value: Finite_Integer,
 }
 
 // Compile_Time_Value_Kind is the closed value domain currently publishable by
@@ -434,7 +450,7 @@ Semantic_Nominal_Member :: struct {
 Compile_Time_Value_Kind :: enum u8 {
     invalid,
     boolean,
-    unsigned_integer,
+    integer,
     string_value,
     architecture,
     operating_system,
@@ -445,10 +461,10 @@ Compile_Time_Value_Kind :: enum u8 {
 }
 
 // Compile_Time_Value owns no allocation. static_type and type_value use the
-// owning Semantic_Package's Type_Id domain. unsigned_integer is also the
-// publishable result packet for the typed-interface arithmetic slice. Exact
-// negative or wider intermediates stay in the evaluation-owned big-integer
-// table until a scalar, enum, or array consumer projects the root result. Text
+// owning Semantic_Package's Type_Id domain. integer is the finite publication
+// packet for the typed-interface arithmetic slice. Exact intermediates stay in
+// the evaluation-owned big-integer table until a scalar, enum, or array
+// consumer projects the root result. Text
 // is either a process-lifetime target/
 // builtin spelling or a source-backed view selected by text_from_source; the
 // workspace graph outlives every value and imported copy.
@@ -456,7 +472,7 @@ Compile_Time_Value :: struct {
     kind: Compile_Time_Value_Kind,
     static_type: Type_Id,
     boolean: bool,
-    unsigned_integer: u64,
+    integer: Finite_Integer,
     profile_text: string,
     source_text: []u8,
     text_from_source: bool,
@@ -505,7 +521,7 @@ Interface_Nominal_Member :: struct {
     type: Interface_Type_Id,
     byte_offset: u64,
     has_enum_value: bool,
-    enum_value: Enum_Integer,
+    enum_value: Finite_Integer,
 }
 
 // Interface_Constant_Value is Compile_Time_Value after every Type_Id has been
@@ -516,7 +532,7 @@ Interface_Constant_Value :: struct {
     kind: Compile_Time_Value_Kind,
     static_type: Interface_Type_Id,
     boolean: bool,
-    unsigned_integer: u64,
+    integer: Finite_Integer,
     profile_text: string,
     source_text: []u8,
     text_from_source: bool,
@@ -2865,27 +2881,40 @@ complete_plain_union_type :: proc(
     return true
 }
 
-// enum_integers_equal compares mathematical values. Every constructor below
+// finite_integers_equal compares mathematical values. Every constructor below
 // normalizes zero to nonnegative, so the explicit sign comparison is exact.
-enum_integers_equal :: proc(left, right: Enum_Integer) -> bool {
+finite_integers_equal :: proc(left, right: Finite_Integer) -> bool {
     return left.negative == right.negative &&
         left.magnitude == right.magnitude
+}
+
+// compare_finite_integers returns mathematical signed order over the interface
+// packet. Negative magnitudes reverse ordinary unsigned ordering.
+compare_finite_integers :: proc(left, right: Finite_Integer) -> i8 {
+    if left.negative != right.negative {
+        return -1 if left.negative else 1
+    }
+    if left.magnitude == right.magnitude {
+        return 0
+    }
+    magnitude_order: i8 = -1 if left.magnitude < right.magnitude else 1
+    return -magnitude_order if left.negative else magnitude_order
 }
 
 // increment_enum_integer implements the source-order implicit-value rule. A
 // negative value moves one step toward zero; a nonnegative u128 maximum has no
 // successor representable by any Draft 1 enum backing and therefore fails.
-increment_enum_integer :: proc(value: Enum_Integer) -> (Enum_Integer, bool) {
+increment_enum_integer :: proc(value: Finite_Integer) -> (Finite_Integer, bool) {
     result := value
     if value.negative {
         if value.magnitude == 1 {
-            return (Enum_Integer{}, true)
+            return (Finite_Integer{}, true)
         }
         result.magnitude -= 1
         return (result, true)
     }
     if value.magnitude == ~cast[u128](0) {
-        return (Enum_Integer{}, false)
+        return (Finite_Integer{}, false)
     }
     result.magnitude += 1
     return (result, true)
@@ -2928,7 +2957,7 @@ integer_representation_type :: proc(
 // 2^(bits-1), while the positive endpoint is one smaller.
 enum_integer_fits_type :: proc(
     semantic_package: ^Semantic_Package,
-    value: Enum_Integer,
+    value: Finite_Integer,
     type_id: Type_Id,
 ) -> bool {
     representation := integer_representation_type(
@@ -3030,7 +3059,7 @@ infer_variant_discriminator :: proc(
 ) -> Type_Id {
     assert(alternative_count != 0,
         "variant discriminator inference received no alternatives")
-    greatest := Enum_Integer{
+    greatest := Finite_Integer{
         magnitude = cast[u128](alternative_count - 1),
     }
     widths := [4]u32{8, 16, 32, 64}
@@ -3092,129 +3121,187 @@ integer_value :: proc(
     return &evaluation.values.data[cast[usize](id.value)]
 }
 
-// unsigned_integer_width recognizes the only concrete integer family which a
-// Compile_Time_Value can currently publish. Untyped integer returns width zero;
-// a concrete unsigned scalar returns its width when no wider than the u64
-// payload; every other type is outside this arithmetic slice.
-unsigned_integer_width :: proc(
+// integer_type_properties recognizes the exact integer families implemented by
+// this evaluator. Untyped integer retains width zero; builtin fixed and natural
+// signed/unsigned types share their canonical 1..128-bit representation. A
+// distinct integer remains staged because its explicit-cast result must retain
+// nominal identity beyond the builtin arithmetic packet.
+integer_type_properties :: proc(
     semantic_package: ^Semantic_Package,
     type_id: Type_Id,
-) -> (u32, bool) {
+) -> Integer_Type_Properties {
     if !type_id_valid(type_id) ||
         cast[usize](type_id.value) >= semantic_package.types.length {
-        return (0, false)
+        return Integer_Type_Properties{}
     }
     row := &semantic_package.types.data[cast[usize](type_id.value)]
     if row.kind == .untyped_integer_type {
-        return (0, true)
+        return Integer_Type_Properties{supported = true}
     }
-    if row.kind != .unsigned_integer_type || row.bit_width == 0 ||
-        row.bit_width > 64 {
-        return (0, false)
+    if (row.kind != .signed_integer_type &&
+        row.kind != .unsigned_integer_type) || row.bit_width == 0 ||
+        row.bit_width > 128 {
+        return Integer_Type_Properties{}
     }
-    return (row.bit_width, true)
+    return Integer_Type_Properties{
+        bit_width = row.bit_width,
+        signed = row.kind == .signed_integer_type,
+        supported = true,
+    }
 }
 
-// integer_value_fits_unsigned_width checks contextual conversion of an untyped
-// operand into one concrete unsigned operation. to_u64 rejects negative and
-// wider values before the exact width endpoint is compared.
-integer_value_fits_unsigned_width :: proc(
+// integer_value_fits_type checks contextual conversion against one concrete
+// fixed-width interval. The widest boundary is evaluated in u128 after an
+// explicit absolute-value projection; wider arbitrary-precision values fail
+// without truncation. Signed minimum admits magnitude 2^(bits-1), whereas the
+// positive endpoint stops one below it.
+integer_value_fits_type :: proc(
     evaluation: ^Integer_Evaluation,
     value: Integer_Value_Id,
-    bit_width: u32,
+    properties: Integer_Type_Properties,
 ) -> bool {
-    if bit_width == 0 || bit_width > 64 {
+    if !properties.supported || properties.bit_width == 0 ||
+        properties.bit_width > 128 {
         return false
     }
-    (magnitude, fits) := compiler_big_integer.to_u64(
-        integer_value(evaluation, value),
+    source := value
+    negative := compiler_big_integer.is_negative(
+        integer_value(evaluation, source),
+    )
+    if negative {
+        magnitude_id := append_integer_value(evaluation)
+        compiler_big_integer.absolute(
+            integer_value(evaluation, magnitude_id),
+            integer_value(evaluation, source),
+        )
+        source = magnitude_id
+    }
+    (magnitude, fits) := compiler_big_integer.to_u128(
+        integer_value(evaluation, source),
     )
     if !fits {
         return false
     }
-    if bit_width == 64 {
-        return true
+    if !properties.signed {
+        if negative {
+            return false
+        }
+        if properties.bit_width == 128 {
+            return true
+        }
+        maximum := (cast[u128](1) << properties.bit_width) - 1
+        return magnitude <= maximum
     }
-    maximum := (cast[u64](1) << bit_width) - 1
-    return magnitude <= maximum
+    boundary := cast[u128](1) << (properties.bit_width - 1)
+    return magnitude <= boundary if negative else magnitude < boundary
 }
 
-// wrap_unsigned_integer_value applies modulo 2^bit_width by intersecting the
-// infinite-two's-complement value with an exact low-bit mask. This handles
-// positive overflow and negative results with one representation-independent
-// operation and returns a new nonnegative owner.
-wrap_unsigned_integer_value :: proc(
+// wrap_integer_value applies Draft's concrete modulo rule through 128 bits.
+// Intersecting with 2^width-1 first obtains the canonical unsigned bit pattern.
+// Signed destinations then subtract 2^width exactly when their sign bit is set;
+// this produces the mathematical signed value used by later operations and by
+// the interface packet without relying on host signed overflow.
+wrap_integer_value :: proc(
     evaluation: ^Integer_Evaluation,
     value: Integer_Value_Id,
-    bit_width: u32,
+    properties: Integer_Type_Properties,
 ) -> Integer_Value_Id {
-    assert(bit_width != 0 && bit_width <= 64,
-        "unsigned constant wrapping received an invalid width")
-    mask: u64
-    if bit_width == 64 {
-        mask = ~cast[u64](0)
-    } else {
-        mask = (cast[u64](1) << bit_width) - 1
-    }
+    assert(properties.supported && properties.bit_width != 0 &&
+        properties.bit_width <= 128,
+        "concrete integer wrapping received an invalid type")
+    one_id := append_integer_value(evaluation)
+    modulus_id := append_integer_value(evaluation)
     mask_id := append_integer_value(evaluation)
     result_id := append_integer_value(evaluation)
-    compiler_big_integer.set_u64(integer_value(evaluation, mask_id), mask)
+    compiler_big_integer.set_u64(integer_value(evaluation, one_id), 1)
+    compiler_big_integer.shift_left(
+        integer_value(evaluation, modulus_id),
+        integer_value(evaluation, one_id),
+        cast[usize](properties.bit_width),
+    )
+    compiler_big_integer.subtract(
+        integer_value(evaluation, mask_id),
+        integer_value(evaluation, modulus_id),
+        integer_value(evaluation, one_id),
+    )
     compiler_big_integer.bitwise_and(
         integer_value(evaluation, result_id),
         integer_value(evaluation, value),
         integer_value(evaluation, mask_id),
     )
+    if properties.signed {
+        boundary_id := append_integer_value(evaluation)
+        compiler_big_integer.shift_left(
+            integer_value(evaluation, boundary_id),
+            integer_value(evaluation, one_id),
+            cast[usize](properties.bit_width - 1),
+        )
+        if compiler_big_integer.compare(
+            integer_value(evaluation, result_id),
+            integer_value(evaluation, boundary_id),
+        ) >= 0 {
+            signed_id := append_integer_value(evaluation)
+            compiler_big_integer.subtract(
+                integer_value(evaluation, signed_id),
+                integer_value(evaluation, result_id),
+                integer_value(evaluation, modulus_id),
+            )
+            return signed_id
+        }
+    }
     return result_id
 }
 
 // integer_binary_type applies Draft's common-integer rule for non-shift binary
 // operations in this slice. Two concrete operands must have exact type
-// identity. One untyped operand may take the other operand's concrete unsigned
-// type only when representable. width zero denotes an untyped result; false
-// denotes a type mismatch or invalid contextual conversion.
+// identity. One untyped operand may take the other operand's concrete signed or
+// unsigned type only when representable. A zero-width supported property packet
+// denotes an untyped result; false denotes a mismatch or invalid conversion.
 integer_binary_type :: proc(
     evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
     left, right: Integer_Expression_Value,
-) -> (Type_Id, u32, bool) {
-    (left_width, left_supported) := unsigned_integer_width(
+) -> (Type_Id, Integer_Type_Properties, bool) {
+    left_properties := integer_type_properties(
         semantic_package,
         left.static_type,
     )
-    (right_width, right_supported) := unsigned_integer_width(
+    right_properties := integer_type_properties(
         semantic_package,
         right.static_type,
     )
-    if !left_supported || !right_supported {
-        return (invalid_type_id(), 0, false)
+    if !left_properties.supported || !right_properties.supported {
+        return (invalid_type_id(), Integer_Type_Properties{}, false)
     }
-    if left_width == 0 && right_width == 0 {
-        return (left.static_type, 0, true)
+    if left_properties.bit_width == 0 &&
+        right_properties.bit_width == 0 {
+        return (left.static_type, left_properties, true)
     }
-    if left_width != 0 && right_width != 0 {
+    if left_properties.bit_width != 0 &&
+        right_properties.bit_width != 0 {
         if left.static_type.value != right.static_type.value {
-            return (invalid_type_id(), 0, false)
+            return (invalid_type_id(), Integer_Type_Properties{}, false)
         }
-        return (left.static_type, left_width, true)
+        return (left.static_type, left_properties, true)
     }
-    if left_width == 0 {
-        if !integer_value_fits_unsigned_width(
+    if left_properties.bit_width == 0 {
+        if !integer_value_fits_type(
             evaluation,
             left.integer,
-            right_width,
+            right_properties,
         ) {
-            return (invalid_type_id(), 0, false)
+            return (invalid_type_id(), Integer_Type_Properties{}, false)
         }
-        return (right.static_type, right_width, true)
+        return (right.static_type, right_properties, true)
     }
-    if !integer_value_fits_unsigned_width(
+    if !integer_value_fits_type(
         evaluation,
         right.integer,
-        left_width,
+        left_properties,
     ) {
-        return (invalid_type_id(), 0, false)
+        return (invalid_type_id(), Integer_Type_Properties{}, false)
     }
-    return (left.static_type, left_width, true)
+    return (left.static_type, left_properties, true)
 }
 
 // integer_shift_type validates the independent operand rule for shifts from
@@ -3226,19 +3313,19 @@ integer_binary_type :: proc(
 integer_shift_type :: proc(
     semantic_package: ^Semantic_Package,
     left, right: Integer_Expression_Value,
-) -> (Type_Id, u32, bool) {
-    (left_width, left_supported) := unsigned_integer_width(
+) -> (Type_Id, Integer_Type_Properties, bool) {
+    left_properties := integer_type_properties(
         semantic_package,
         left.static_type,
     )
-    (_, right_supported) := unsigned_integer_width(
+    right_properties := integer_type_properties(
         semantic_package,
         right.static_type,
     )
-    if !left_supported || !right_supported {
-        return (invalid_type_id(), 0, false)
+    if !left_properties.supported || !right_properties.supported {
+        return (invalid_type_id(), Integer_Type_Properties{}, false)
     }
-    return (left.static_type, left_width, true)
+    return (left.static_type, left_properties, true)
 }
 
 // integer_shift_count crosses from an exact nonnegative integer into the
@@ -3277,9 +3364,12 @@ integer_value_within_resource_limit :: proc(
 // apply_integer_binary evaluates arithmetic, bitwise, and shift operators in
 // the shared typed-interface slice. Untyped results remain arbitrary precision;
 // bitwise operations and right shift use the big integer's infinite-two's-
-// complement domain. Concrete unsigned results are reduced modulo their exact
-// width after the mathematical operation. New rows are appended before any
-// operand pointer is taken because table growth may relocate every owner.
+// complement domain. Concrete results are reduced modulo their exact width and
+// then interpreted with the destination signedness. Signed minimum divided by
+// -1 is rejected before wrapping because the specification makes that one
+// quotient a trap; signed remainder for the same operands remains zero. New
+// rows are appended before any operand pointer is taken because table growth
+// may relocate every owner.
 apply_integer_binary :: proc(
     evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
@@ -3288,16 +3378,16 @@ apply_integer_binary :: proc(
 ) -> (Integer_Expression_Value, bool) {
     shifting := operation == .shift_left || operation == .shift_right
     static_type := invalid_type_id()
-    concrete_width: u32
+    properties: Integer_Type_Properties
     valid_type := false
     if shifting {
-        (static_type, concrete_width, valid_type) = integer_shift_type(
+        (static_type, properties, valid_type) = integer_shift_type(
             semantic_package,
             left,
             right,
         )
     } else {
-        (static_type, concrete_width, valid_type) = integer_binary_type(
+        (static_type, properties, valid_type) = integer_binary_type(
             evaluation,
             semantic_package,
             left,
@@ -3314,7 +3404,7 @@ apply_integer_binary :: proc(
         (shift_count, valid_count) = integer_shift_count(
             evaluation,
             right.integer,
-            concrete_width,
+            properties.bit_width,
         )
         if !valid_count {
             return (Integer_Expression_Value{}, false)
@@ -3395,11 +3485,15 @@ apply_integer_binary :: proc(
     if !integer_value_within_resource_limit(evaluation, result) {
         return (Integer_Expression_Value{}, false)
     }
-    if concrete_width != 0 {
-        result = wrap_unsigned_integer_value(
+    if operation == .slash && properties.signed &&
+        !integer_value_fits_type(evaluation, result, properties) {
+        return (Integer_Expression_Value{}, false)
+    }
+    if properties.bit_width != 0 {
+        result = wrap_integer_value(
             evaluation,
             result,
-            concrete_width,
+            properties,
         )
     }
     return (Integer_Expression_Value{
@@ -3408,36 +3502,79 @@ apply_integer_binary :: proc(
     }, true)
 }
 
-// integer_expression_from_scalar imports one already-published nonnegative
-// scalar into the exact arithmetic domain. Type and range checks defend the
-// consumer against a malformed imported packet instead of assuming its u64
-// payload is representable by the accompanying type.
+// integer_value_from_finite reconstructs the arbitrary-precision owner for one
+// interface packet without requiring a u128-specific representation API. The
+// low and high u64 halves are combined mathematically, then the normalized sign
+// is applied. Every append may relocate the table, so only IDs survive stages.
+integer_value_from_finite :: proc(
+    evaluation: ^Integer_Evaluation,
+    value: Finite_Integer,
+) -> Integer_Value_Id {
+    low_id := append_integer_value(evaluation)
+    compiler_big_integer.set_u64(
+        integer_value(evaluation, low_id),
+        cast[u64](value.magnitude),
+    )
+    result := low_id
+    high := cast[u64](value.magnitude >> 64)
+    if high != 0 {
+        high_id := append_integer_value(evaluation)
+        shifted_id := append_integer_value(evaluation)
+        combined_id := append_integer_value(evaluation)
+        compiler_big_integer.set_u64(integer_value(evaluation, high_id), high)
+        compiler_big_integer.shift_left(
+            integer_value(evaluation, shifted_id),
+            integer_value(evaluation, high_id),
+            64,
+        )
+        compiler_big_integer.add(
+            integer_value(evaluation, combined_id),
+            integer_value(evaluation, low_id),
+            integer_value(evaluation, shifted_id),
+        )
+        result = combined_id
+    }
+    if value.negative {
+        negative_id := append_integer_value(evaluation)
+        compiler_big_integer.negate(
+            integer_value(evaluation, negative_id),
+            integer_value(evaluation, result),
+        )
+        result = negative_id
+    }
+    return result
+}
+
+// integer_expression_from_scalar imports one already-published finite scalar
+// into the exact arithmetic domain. Type and range checks defend the consumer
+// against a malformed imported packet, including negative zero and a value not
+// representable by its accompanying concrete type.
 integer_expression_from_scalar :: proc(
     evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
     value: Compile_Time_Value,
 ) -> (Integer_Expression_Value, bool) {
-    if value.kind != .unsigned_integer {
+    if value.kind != .integer ||
+        (value.integer.negative && value.integer.magnitude == 0) {
         return (Integer_Expression_Value{}, false)
     }
-    (bit_width, supported) := unsigned_integer_width(
+    properties := integer_type_properties(
         semantic_package,
         value.static_type,
     )
-    if !supported {
+    if !properties.supported {
         return (Integer_Expression_Value{}, false)
     }
-    integer := append_integer_value(evaluation)
-    compiler_big_integer.set_u64(
-        integer_value(evaluation, integer),
-        value.unsigned_integer,
-    )
-    if bit_width != 0 && !integer_value_fits_unsigned_width(
-        evaluation,
-        integer,
-        bit_width,
-    ) {
-        return (Integer_Expression_Value{}, false)
+    integer := integer_value_from_finite(evaluation, value.integer)
+    if properties.bit_width == 0 {
+        if value.integer.negative ||
+            value.integer.magnitude > cast[u128](~cast[u64](0)) {
+            return (Integer_Expression_Value{}, false)
+        }
+    } else {
+        if !integer_value_fits_type(evaluation, integer, properties) {
+            return (Integer_Expression_Value{}, false)
+        }
     }
     return (Integer_Expression_Value{
         integer = integer,
@@ -3445,35 +3582,44 @@ integer_expression_from_scalar :: proc(
     }, true)
 }
 
-// integer_expression_to_scalar converts the exact result back to the currently
-// publishable interface scalar. Negative results and untyped magnitudes beyond
-// u64 remain explicit staging failures; enum and array consumers read the exact
-// result directly and are not constrained by this publication seam.
+// integer_expression_to_scalar converts the exact result into the finite
+// interface packet. Every concrete builtin integer through 128 bits is
+// publishable. Untyped values deliberately retain the prior nonnegative-u64
+// boundary until the interface owns an arbitrary-precision serialization; enum
+// and array consumers read the exact result directly and are not constrained by
+// that compatibility seam.
 integer_expression_to_scalar :: proc(
     evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
     value: Integer_Expression_Value,
 ) -> (Compile_Time_Value, bool) {
-    (bit_width, supported) := unsigned_integer_width(
+    properties := integer_type_properties(
         semantic_package,
         value.static_type,
     )
-    (magnitude, fits) := compiler_big_integer.to_u64(
-        integer_value(evaluation, value.integer),
-    )
-    if !supported || !fits ||
-        (bit_width != 0 && !integer_value_fits_unsigned_width(
-            evaluation,
-            value.integer,
-            bit_width,
-        )) {
+    if !properties.supported {
+        return (invalid_compile_time_value(), false)
+    }
+    (finite, fits) := integer_expression_to_finite_integer(evaluation, value)
+    if !fits {
+        return (invalid_compile_time_value(), false)
+    }
+    if properties.bit_width == 0 {
+        if finite.negative || finite.magnitude > cast[u128](~cast[u64](0)) {
+            return (invalid_compile_time_value(), false)
+        }
+    } else if !integer_value_fits_type(
+        evaluation,
+        value.integer,
+        properties,
+    ) {
         return (invalid_compile_time_value(), false)
     }
     result: Compile_Time_Value
-    result.kind = .unsigned_integer
+    result.kind = .integer
     result.static_type = value.static_type
     result.type_value = invalid_type_id()
-    result.unsigned_integer = magnitude
+    result.integer = finite
     return (result, true)
 }
 
@@ -3483,10 +3629,10 @@ integer_expression_to_scalar :: proc(
 // Symbol_Id through blocked_symbol. Imported constants and target numeric facts
 // are already consumer-local inputs. The admitted syntax is integer literals,
 // names, qualified imported/target members, grouping, unary sign/complement,
-// binary + - * / % & | ~ << >>, and explicit casts to the concrete unsigned
-// types whose values fit the current scalar packet. Comparisons are projected
-// separately because their result is boolean; compile-time procedures remain
-// at the next constant-evaluator seam.
+// binary + - * / % & | ~ << >>, and explicit casts to builtin concrete signed
+// or unsigned types through 128 bits. Comparisons are projected separately
+// because their result is boolean; distinct cast destinations and compile-time
+// procedures remain at the next constant-evaluator seam.
 evaluate_integer_expression :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     evaluation: ^Integer_Evaluation,
@@ -3621,11 +3767,11 @@ evaluate_integer_expression :: proc(
             return (Integer_Expression_Value{}, false)
         }
         if operation == .minus || operation == .tilde {
-            (bit_width, supported) := unsigned_integer_width(
+            properties := integer_type_properties(
                 semantic_package,
                 result.static_type,
             )
-            if !supported {
+            if !properties.supported {
                 return (Integer_Expression_Value{}, false)
             }
             transformed := append_integer_value(evaluation)
@@ -3647,11 +3793,11 @@ evaluate_integer_expression :: proc(
             ) {
                 return (Integer_Expression_Value{}, false)
             }
-            if bit_width != 0 {
-                result.integer = wrap_unsigned_integer_value(
+            if properties.bit_width != 0 {
+                result.integer = wrap_integer_value(
                     evaluation,
                     result.integer,
-                    bit_width,
+                    properties,
                 )
             }
         }
@@ -3661,9 +3807,10 @@ evaluate_integer_expression :: proc(
         // expression. Resolve T through the ordinary compile-time type-value
         // path so builtin, local-alias, and imported-alias targets obey the
         // same dependency rules as every other typed interface use. This
-        // closed slice admits only concrete unsigned destinations through 64
-        // bits; the mathematical source is reduced modulo the destination
-        // width as required by the specification's explicit conversion rule.
+        // closed slice admits builtin concrete signed and unsigned destinations
+        // through 128 bits; the mathematical source is reduced modulo the
+        // destination width and interpreted with its signedness as required by
+        // the specification's explicit conversion rule.
         if len(children) != 2 {
             return (Integer_Expression_Value{}, false)
         }
@@ -3701,11 +3848,11 @@ evaluate_integer_expression :: proc(
         if target.kind != .type_value {
             return (Integer_Expression_Value{}, false)
         }
-        (bit_width, supported) := unsigned_integer_width(
+        properties := integer_type_properties(
             semantic_package,
             target.type_value,
         )
-        if !supported || bit_width == 0 {
+        if !properties.supported || properties.bit_width == 0 {
             return (Integer_Expression_Value{}, false)
         }
         (argument, valid) := evaluate_integer_expression(
@@ -3722,10 +3869,10 @@ evaluate_integer_expression :: proc(
             return (Integer_Expression_Value{}, false)
         }
         return (Integer_Expression_Value{
-            integer = wrap_unsigned_integer_value(
+            integer = wrap_integer_value(
                 evaluation,
                 argument.integer,
-                bit_width,
+                properties,
             ),
             static_type = target.type_value,
         }, true)
@@ -3895,16 +4042,16 @@ evaluate_integer_comparison_expression :: proc(
     return (result, true)
 }
 
-// integer_expression_to_enum_integer projects an arbitrary-precision result
-// into the widest finite sign/magnitude packet any Draft 1 enum backing can
+// integer_expression_to_finite_integer projects an arbitrary-precision result
+// into the widest finite sign/magnitude packet any Draft 1 concrete integer can
 // represent. A wider final value remains a semantic failure even though wider
 // intermediates are valid. Negative conversion uses one evaluation-owned
 // absolute temporary because to_u128 deliberately accepts only nonnegative
 // machine values.
-integer_expression_to_enum_integer :: proc(
+integer_expression_to_finite_integer :: proc(
     evaluation: ^Integer_Evaluation,
     value: Integer_Expression_Value,
-) -> (Enum_Integer, bool) {
+) -> (Finite_Integer, bool) {
     source := value.integer
     negative := compiler_big_integer.is_negative(
         integer_value(evaluation, source),
@@ -3921,9 +4068,9 @@ integer_expression_to_enum_integer :: proc(
         integer_value(evaluation, source),
     )
     if !fits {
-        return (Enum_Integer{}, false)
+        return (Finite_Integer{}, false)
     }
-    return (Enum_Integer{
+    return (Finite_Integer{
         negative = negative && magnitude != 0,
         magnitude = magnitude,
     }, true)
@@ -3940,7 +4087,7 @@ evaluate_enum_integer_expression :: proc(
     id: compiler_syntax.Node_Id,
     facts: ^Target_Facts,
     blocked_symbol: ^Symbol_Id,
-) -> (Enum_Integer, bool) {
+) -> (Finite_Integer, bool) {
     evaluation: Integer_Evaluation
     init_integer_evaluation(&evaluation)
     defer destroy_integer_evaluation(&evaluation)
@@ -3955,9 +4102,9 @@ evaluate_enum_integer_expression :: proc(
         blocked_symbol,
     )
     if !valid {
-        return (Enum_Integer{}, false)
+        return (Finite_Integer{}, false)
     }
-    return integer_expression_to_enum_integer(&evaluation, value)
+    return integer_expression_to_finite_integer(&evaluation, value)
 }
 
 // evaluate_integer_scalar_expression is the named-constant projection. It
@@ -4157,7 +4304,7 @@ complete_plain_enum_type :: proc(
             break
         }
 
-        enum_value: Enum_Integer
+        enum_value: Finite_Integer
         if len(member_children) == 1 {
             (enum_value, valid) = evaluate_enum_integer_expression(
                 graph,
@@ -4184,7 +4331,7 @@ complete_plain_enum_type :: proc(
             }
         }
         for existing in array.view(&members) {
-            if enum_integers_equal(existing.enum_value, enum_value) {
+            if finite_integers_equal(existing.enum_value, enum_value) {
                 valid = false
                 break
             }
@@ -4432,7 +4579,7 @@ complete_plain_variant_type :: proc(
         !type_id_valid(integer_discriminator) ||
         !enum_integer_fits_type(
             semantic_package,
-            Enum_Integer{magnitude = cast[u128](members.length - 1)},
+            Finite_Integer{magnitude = cast[u128](members.length - 1)},
             discriminator,
         ) {
         array.destroy(&payload_types)
@@ -4879,8 +5026,8 @@ target_condition_values_equal :: proc(
     switch left.kind {
     case .boolean:
         return left.boolean == right.boolean
-    case .unsigned_integer:
-        return left.unsigned_integer == right.unsigned_integer
+    case .integer:
+        return finite_integers_equal(left.integer, right.integer)
     case .string_value, .architecture, .operating_system, .abi, .byte_order,
         .object_format:
         return target_condition_text_equal(left, right)
@@ -5131,13 +5278,13 @@ target_field_value :: proc(
         value.static_type = Type_Id{value = 52}
         value.profile_text = facts.file_tag
     } else if bytes_equal_text(name, "pointer_bits") {
-        value.kind = .unsigned_integer
+        value.kind = .integer
         value.static_type = Type_Id{value = 20}
-        value.unsigned_integer = facts.pointer_bits
+        value.integer.magnitude = cast[u128](facts.pointer_bits)
     } else if bytes_equal_text(name, "page_size") {
-        value.kind = .unsigned_integer
+        value.kind = .integer
         value.static_type = Type_Id{value = 22}
-        value.unsigned_integer = facts.page_size
+        value.integer.magnitude = cast[u128](facts.page_size)
     }
     // Target selection observes exactly the builtin table, while later typed
     // array counts may ask for page_size after earlier declarations have
@@ -5503,10 +5650,10 @@ evaluate_target_condition_expression :: proc(
             )
             if valid {
                 value: Compile_Time_Value
-                value.kind = .unsigned_integer
+                value.kind = .integer
                 value.static_type = Type_Id{value = 2}
                 value.type_value = invalid_type_id()
-                value.unsigned_integer = integer
+                value.integer.magnitude = cast[u128](integer)
                 return value
             }
         }
@@ -5814,18 +5961,19 @@ evaluate_target_condition_expression :: proc(
             }
             return result
         }
-        if left.kind != .unsigned_integer {
+        if left.kind != .integer {
             return invalid_compile_time_value()
         }
+        order := compare_finite_integers(left.integer, right.integer)
         switch operator {
         case .less:
-            result.boolean = left.unsigned_integer < right.unsigned_integer
+            result.boolean = order < 0
         case .less_equal:
-            result.boolean = left.unsigned_integer <= right.unsigned_integer
+            result.boolean = order <= 0
         case .greater:
-            result.boolean = left.unsigned_integer > right.unsigned_integer
+            result.boolean = order > 0
         case .greater_equal:
-            result.boolean = left.unsigned_integer >= right.unsigned_integer
+            result.boolean = order >= 0
         case:
             return invalid_compile_time_value()
         }
@@ -6002,8 +6150,9 @@ append_unsupported_compile_time_diagnostic :: proc(
 // its nominal shell before completing its packet; unavailable dependencies
 // attach one graph edge. Only a complete attempt publishes the constant value.
 // Typed-interface scalar products additionally admit the shared exact integer
-// evaluator, including unsigned casts and direct comparisons. Integer results
-// must fit the published scalar packet; comparisons publish bool. Grouped
+// evaluator, including builtin signed/u128 casts and direct comparisons.
+// Integer results must fit the published scalar packet; comparisons publish
+// bool. Grouped
 // declarations and the broader Draft constant vocabulary remain outside this
 // staging slice and fail only when a consumer demands them.
 run_named_constant_product :: proc(
@@ -7376,7 +7525,7 @@ translate_interface_constant :: proc(
     result: Interface_Constant_Value
     result.kind = value.kind
     result.boolean = value.boolean
-    result.unsigned_integer = value.unsigned_integer
+    result.integer = value.integer
     result.profile_text = value.profile_text
     result.source_text = value.source_text
     result.text_from_source = value.text_from_source
@@ -7817,7 +7966,7 @@ complete_imported_enum_type :: proc(
         }
         for prior in array.view(&members) {
             if bytes_equal(prior.name, source_member.name) ||
-                enum_integers_equal(
+                finite_integers_equal(
                     prior.enum_value,
                     source_member.enum_value,
                 ) {
@@ -7864,7 +8013,7 @@ complete_imported_enum_type :: proc(
                     existing.byte_offset != 0 ||
                     !existing.has_enum_value ||
                     !bytes_equal(existing.name, incoming.name) ||
-                    !enum_integers_equal(
+                    !finite_integers_equal(
                         existing.enum_value,
                         incoming.enum_value,
                     ) {
@@ -7996,7 +8145,7 @@ complete_imported_variant_type :: proc(
         !type_id_valid(integer_discriminator) ||
         !enum_integer_fits_type(
             consumer,
-            Enum_Integer{magnitude = cast[u128](members.length - 1)},
+            Finite_Integer{magnitude = cast[u128](members.length - 1)},
             discriminator,
         ) {
         array.destroy(&members)
@@ -8364,7 +8513,7 @@ import_interface_constant :: proc(
     result: Compile_Time_Value
     result.kind = value.kind
     result.boolean = value.boolean
-    result.unsigned_integer = value.unsigned_integer
+    result.integer = value.integer
     result.profile_text = value.profile_text
     result.source_text = value.source_text
     result.text_from_source = value.text_from_source
@@ -8849,15 +8998,15 @@ pub dump_workspace_declarations :: proc(
     }
 }
 
-// append_enum_integer writes the canonical base-ten spelling shared with the
+// append_finite_integer writes the canonical base-ten spelling shared with the
 // production BigInteger oracle. Thirty-nine digits cover all u128 magnitudes;
 // the sign is appended separately so the scratch view never needs shifting.
-append_enum_integer :: proc(
+append_finite_integer :: proc(
     output: ^compiler_text.Builder,
-    value: Enum_Integer,
+    value: Finite_Integer,
 ) {
     assert(!value.negative || value.magnitude != 0,
-        "enum integer retained negative zero")
+        "finite integer retained negative zero")
     if value.negative {
         compiler_text.append_byte(output, cast[u8]('-'))
     }
@@ -8866,7 +9015,7 @@ append_enum_integer :: proc(
         storage[:],
         value.magnitude,
     )
-    assert(formatted, "u128 enum formatting buffer is too small")
+    assert(formatted, "u128 integer formatting buffer is too small")
     compiler_text.append_bytes(output, digits)
 }
 
@@ -9359,12 +9508,9 @@ append_interface_constant :: proc(
     case .boolean:
         compiler_text.append_text(output, "bool ")
         append_bool(output, value.boolean)
-    case .unsigned_integer:
+    case .integer:
         compiler_text.append_text(output, "integer ")
-        compiler_text.append_unsigned(
-            output,
-            cast[usize](value.unsigned_integer),
-        )
+        append_finite_integer(output, value.integer)
     case .string_value:
         compiler_text.append_text(output, "string ")
         text_length := len(value.source_text) if value.text_from_source else
@@ -9403,12 +9549,9 @@ append_local_constant :: proc(
     case .boolean:
         compiler_text.append_text(output, "bool ")
         append_bool(output, value.boolean)
-    case .unsigned_integer:
+    case .integer:
         compiler_text.append_text(output, "integer ")
-        compiler_text.append_unsigned(
-            output,
-            cast[usize](value.unsigned_integer),
-        )
+        append_finite_integer(output, value.integer)
     case .string_value:
         compiler_text.append_text(output, "string ")
         text_length := len(value.source_text) if value.text_from_source else
@@ -9583,7 +9726,7 @@ pub dump_workspace_interfaces :: proc(
                 append_bool(output, member.has_enum_value)
                 compiler_text.append_byte(output, cast[u8](' '))
                 if member.has_enum_value {
-                    append_enum_integer(output, member.enum_value)
+                    append_finite_integer(output, member.enum_value)
                 } else {
                     compiler_text.append_byte(output, cast[u8]('-'))
                 }

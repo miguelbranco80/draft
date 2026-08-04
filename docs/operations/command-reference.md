@@ -343,7 +343,7 @@ procedures still fail explicitly at this target-selection boundary.
 `workspace-interfaces` preserves the complete target/public-name prefix, then
 prints each package's canonical reachable interface type graph and selected
 public declaration rows. It supports predeclared and named scalar aliases,
-boolean/unsigned/string constants, arbitrary-precision integer arithmetic
+boolean/integer/string constants, arbitrary-precision integer arithmetic
 constants whose final values fit their interface packets, `^T`,
 `[^]T`, `[]T`, positive fixed arrays,
 tuples, explicitly typed structural globals, ordinary fixed procedure types,
@@ -351,17 +351,20 @@ declaration-owned distinct types, ordinary named natural-layout structs, and
 ordinary enums, variants, and unions, plus non-parametric Draft procedure
 signatures.
 Named integer constants, enum values, and fixed-array counts share an evaluator
-for integer literals, ready local/imported unsigned constants, target numeric
+for integer literals, ready local/imported finite integer constants, target
+numeric
 facts, grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`,
-`|`, `~` (xor), `<<`/`>>`, and explicit integer casts to concrete unsigned
-types no wider than 64 bits. Direct integer comparisons use that exact domain
-and publish bool. Untyped operations remain mathematically exact regardless of
+`|`, `~` (xor), `<<`/`>>`, and explicit integer casts to builtin concrete signed
+and unsigned types through 128 bits. Direct integer comparisons use that exact
+domain and publish bool. Untyped operations remain mathematically exact regardless of
 intermediate width and use infinite-two's-complement bitwise semantics;
-concrete unsigned operations and casts no wider than 64 bits reduce at their
-declared width. Shift counts must be nonnegative, stay below a concrete left
-width, and fit the one-million-bit constant resource bound.
-Named integer constants can currently publish only nonnegative u64 results.
-Enum values must fit the signed/u128 value packet, and fixed-array counts
+concrete signed and unsigned operations and casts through 128 bits reduce at
+their declared width and retain the destination interpretation. Signed minimum
+divided by `-1` traps while the corresponding remainder is zero. Shift counts
+must be nonnegative, stay below a concrete left width, and fit the one-million-
+bit constant resource bound. Concrete named integer constants and enum values
+use the signed/u128 value packet; untyped named constants retain nonnegative-u64
+publication. Fixed-array counts
 require a positive result representable by the target-sized count packet from
 an untyped value or exact `usize`. Packages are processed dependency-first;
 each producer interface type/value is reconstructed in the consumer's local
@@ -390,11 +393,11 @@ field offsets are zero, and their exact size/alignment is the rounded
 maximum-member overlay layout. Forward local type/count aliases and qualified
 imported type/value/count aliases are included. C enums, packed/bit fields, C or
 explicitly aligned aggregates, selected/synthesized/directive members,
-SIMD/parametric types, foreign/export
-declarations, procedure contracts, signed, wider, or non-integer cast
-destinations, exact integer comparisons nested in unsupported constant forms,
-negative or wider named integer publication, and general constant/type forms
-fail explicitly rather than receiving a fallback interface. Imported constants
+SIMD/parametric types, foreign/export declarations, procedure contracts,
+distinct or non-integer cast destinations, exact integer comparisons nested in
+unsupported constant forms, negative or wider untyped named integer publication,
+and general constant/type forms fail explicitly rather than receiving a fallback
+interface. Imported constants
 are available here only after the dependency interface exists; the earlier
 package-`when` command still cannot consume them.
 These are qualification commands rather than the public compiler. Public
