@@ -128,19 +128,25 @@ independently checking the nominal packet.
 It then reconstructs each dependency declaration in the consumer's Type-ID
 domain beneath the exact file-local import alias. The current closed subset
 accepts named scalar aliases (including forward local aliases and qualified
-imported aliases), boolean/unsigned/string constants over the existing evaluator,
-structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant/
+imported aliases), boolean/unsigned/string constants, bounded integer
+arithmetic constants, structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant/
 ordinary-union type aliases and globals, and non-parametric Draft procedures
 with fixed supported parameters and results.
-Enum values currently admit implicit successors, full-width integer literals,
-unary sign/grouping, and already-published local or imported unsigned constants.
-Positive fixed-array counts may use representable untyped or exact `usize`
-values already available through the scalar product graph. C enums,
+Typed integer expressions share one sign/magnitude evaluator across named
+constants, enum values, and fixed-array counts. It admits integer literals,
+ready local/imported unsigned constants, target numeric facts, grouping, unary
+sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped operations remain exact
+through u128 magnitude; concrete unsigned types no wider than 64 bits wrap at
+their declared width. Enum values consume the exact signed result, while fixed
+arrays require a positive representable untyped value or exact `usize`. Named
+interface constants can currently publish only nonnegative results through the
+u64 scalar packet. C enums,
 packed/bit fields, C or explicit-alignment aggregates,
 selected/synthesized/directive members, SIMD/parametric
-types, foreign/export declarations, procedure contracts, arithmetic count or
-enum-value expressions, and general constant/type work remain a diagnosed
-interface staging boundary. Imported constants are available while building
+types, foreign/export declarations, procedure contracts, bitwise/shift/cast/
+comparison integer expressions, arbitrary-precision intermediates beyond u128,
+and general constant/type work remain a diagnosed interface staging boundary.
+Imported constants are available while building
 dependent interfaces but not during the earlier
 package-`when` phase, whose dependency interfaces do not yet exist.
 The staging executable is deliberately absent from the install set until a
@@ -197,8 +203,10 @@ scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant/
 ordinary-union graphs, fixed-array counts, exact natural layouts, enum values,
 and consumer-local type/value reconstruction across all four targets.
 It includes forward local type/count aliases, imported type/value/count aliases,
-all five moved data structures, structural globals and fixed procedures, target
-page-size arrays, distinct declarations over scalar, structural, private, and
+local/forward/imported/target integer arithmetic, concrete unsigned wrapping,
+signed division and remainder, checked u128 products, all five moved data
+structures, structural globals and fixed procedures, target page-size arrays,
+distinct declarations over scalar, structural, private, and
 imported distinct types, plain/grouped/recursive structs, private and transitive
 struct re-exports, structs nested in arrays/procedures/other structs,
 inferred/explicit/signed/u128 enums, private and transitive enum re-exports,

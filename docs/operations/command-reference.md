@@ -343,14 +343,20 @@ procedures still fail explicitly at this target-selection boundary.
 `workspace-interfaces` preserves the complete target/public-name prefix, then
 prints each package's canonical reachable interface type graph and selected
 public declaration rows. It supports predeclared and named scalar aliases,
-boolean/unsigned/string constants, `^T`, `[^]T`, `[]T`, positive fixed arrays,
+boolean/unsigned/string constants, bounded integer arithmetic constants, `^T`,
+`[^]T`, `[]T`, positive fixed arrays,
 tuples, explicitly typed structural globals, ordinary fixed procedure types,
 declaration-owned distinct types, ordinary named natural-layout structs, and
 ordinary enums, variants, and unions, plus non-parametric Draft procedure
 signatures.
-Fixed-array counts may use
-representable untyped integers or exact `usize` values already produced by the
-local/imported scalar dependency graph. Packages are processed dependency-first;
+Named integer constants, enum values, and fixed-array counts share an evaluator
+for integer literals, ready local/imported unsigned constants, target numeric
+facts, grouping, unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped
+operations keep exact sign/magnitude results through u128; concrete unsigned
+types no wider than 64 bits wrap at their declared width. Named constants can
+currently publish only nonnegative u64 results. Fixed-array counts require a
+positive representable untyped result or exact `usize`. Packages are processed
+dependency-first;
 each producer interface type/value is reconstructed in the consumer's local
 type domain, and imported rows print structural/nominal type shapes so
 process-local Type IDs do not enter the qualification contract. Each distinct
@@ -362,9 +368,9 @@ translated type edge, and byte offset. Pointer-recursive structs, direct and
 transitive imports, grouped fields, and struct use inside other supported type
 constructors are included. Ordinary enum rows print the same persistent
 identity, explicit or inferred backing edge/layout, and every source-order
-alternative name and exact signed/u128 value. Implicit successors, full-width
-integer literals, unary sign/grouping, and ready local/imported unsigned
-constants are supported. Every nominal member row has the fixed qualification
+alternative name and exact signed/u128 value. Implicit successors and the
+shared integer-expression subset above are supported. Every nominal member row
+has the fixed qualification
 shape `name kind type byte-offset has-enum-value enum-value`; struct fields use
 `0 -` for the final pair, while enum alternatives use `1 <decimal>`.
 Ordinary variant rows print their discriminator edge, exact size/alignment, and
@@ -378,11 +384,12 @@ maximum-member overlay layout. Forward local type/count aliases and qualified
 imported type/value/count aliases are included. C enums, packed/bit fields, C or
 explicitly aligned aggregates, selected/synthesized/directive members,
 SIMD/parametric types, foreign/export
-declarations, procedure contracts, arithmetic count or enum-value expressions,
-and general constant/type forms fail explicitly rather than receiving a
-fallback interface. Imported constants are available here only after the
-dependency interface exists; the earlier package-`when` command still cannot
-consume them.
+declarations, procedure contracts, bitwise/shift/cast/comparison integer
+expressions, untyped intermediates beyond u128, negative or wider named scalar
+publication, and general constant/type forms fail explicitly rather than
+receiving a fallback interface. Imported constants are available here only
+after the dependency interface exists; the earlier package-`when` command still
+cannot consume them.
 These are qualification commands rather than the public compiler. Public
 semantic compilation and later commands continue to use `build/draftc` until
 their own replacement gates are complete.

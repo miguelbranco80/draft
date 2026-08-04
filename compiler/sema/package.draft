@@ -21,7 +21,9 @@
 // Draft procedure signatures, declaration-owned distinct types, and ordinary
 // natural-layout structs, enums, variants, and unions. Specialized aggregate
 // layout, contracts, body checking, and general constant evaluation stay behind
-// an explicit diagnostic rather than receiving provisional semantics.
+// an explicit diagnostic rather than receiving provisional semantics. The
+// typed-interface path does include one bounded integer-expression slice shared
+// by named scalar constants, fixed-array counts, and enum values.
 //
 // Semantic_Workspace owns only its contiguous tables. Symbol spellings, source
 // ranges, syntax IDs, and graph-edge indices borrow the immutable Workspace_Graph,
@@ -373,6 +375,19 @@ Enum_Integer :: struct {
     magnitude: u128,
 }
 
+// Integer_Expression_Value is one exact integer result plus the static type
+// which controls contextual conversion and concrete arithmetic. The current
+// staged evaluator admits untyped integers and concrete unsigned integers no
+// wider than u64. Its mathematical component deliberately reuses Enum_Integer:
+// enum values and fixed-array counts must agree on signs, truncating division,
+// remainder, and overflow instead of maintaining two subtly different
+// arithmetic implementations. A successful value always has a valid
+// package-local static_type; it owns no storage.
+Integer_Expression_Value :: struct {
+    integer: Enum_Integer,
+    static_type: Type_Id,
+}
+
 // Semantic_Nominal_Member is one source-order field, enum member, or variant
 // alternative in a completed local or reconstructed nominal. name borrows
 // source/interface storage, and type belongs to the containing package's
@@ -409,9 +424,12 @@ Compile_Time_Value_Kind :: enum u8 {
 }
 
 // Compile_Time_Value owns no allocation. static_type and type_value use the
-// owning Semantic_Package's Type_Id domain. Text is either a process-lifetime
-// target/builtin spelling or a source-backed view selected by text_from_source;
-// the workspace graph outlives every value and imported copy.
+// owning Semantic_Package's Type_Id domain. unsigned_integer is also the
+// publishable result packet for the bounded typed-interface arithmetic slice;
+// exact negative or wider enum/array intermediates stay in
+// Integer_Expression_Value instead. Text is either a process-lifetime target/
+// builtin spelling or a source-backed view selected by text_from_source; the
+// workspace graph outlives every value and imported copy.
 Compile_Time_Value :: struct {
     kind: Compile_Time_Value_Kind,
     static_type: Type_Id,
@@ -3048,30 +3066,327 @@ parse_enum_unsigned :: proc(bytes: []u8) -> (u128, bool) {
     return (value, saw_digit)
 }
 
-// evaluate_enum_integer_expression is the intentionally closed enum-value
-// evaluator for this migration slice. It accepts full-width integer literals,
-// unary sign/grouping, and already-published local or imported unsigned scalar
-// constants. A missing local value reports its Symbol_Id so the ordinary
-// declaration scheduler creates an explicit edge. Arithmetic, casts, and
-// compile-time procedures remain for the later general constant evaluator.
-evaluate_enum_integer_expression :: proc(
+// negate_enum_integer returns the mathematical additive inverse while keeping
+// the representation's invariant that zero is never negative.
+negate_enum_integer :: proc(value: Enum_Integer) -> Enum_Integer {
+    result := value
+    if result.magnitude != 0 {
+        result.negative = !result.negative
+    }
+    return result
+}
+
+// add_enum_integers computes one mathematical sum in the bounded sign-plus-
+// u128 staging domain. Equal signs add magnitudes with an explicit overflow
+// check; opposite signs subtract the smaller magnitude. A false result means
+// the exact untyped result needs more than u128 magnitude and therefore belongs
+// to the later arbitrary-precision evaluator, not that Draft arithmetic wraps.
+add_enum_integers :: proc(
+    left, right: Enum_Integer,
+) -> (Enum_Integer, bool) {
+    if left.negative == right.negative {
+        if left.magnitude > ~cast[u128](0) - right.magnitude {
+            return (Enum_Integer{}, false)
+        }
+        magnitude := left.magnitude + right.magnitude
+        return (Enum_Integer{
+            negative = left.negative && magnitude != 0,
+            magnitude = magnitude,
+        }, true)
+    }
+    if left.magnitude >= right.magnitude {
+        magnitude := left.magnitude - right.magnitude
+        return (Enum_Integer{
+            negative = left.negative && magnitude != 0,
+            magnitude = magnitude,
+        }, true)
+    }
+    magnitude := right.magnitude - left.magnitude
+    return (Enum_Integer{
+        negative = right.negative && magnitude != 0,
+        magnitude = magnitude,
+    }, true)
+}
+
+// multiply_enum_integers computes an exact mathematical product when its
+// magnitude fits u128. Native u128 multiplication would silently wrap, so the
+// division guard is part of the semantic operation rather than an assertion.
+multiply_enum_integers :: proc(
+    left, right: Enum_Integer,
+) -> (Enum_Integer, bool) {
+    if left.magnitude == 0 || right.magnitude == 0 {
+        return (Enum_Integer{}, true)
+    }
+    if left.magnitude > ~cast[u128](0) / right.magnitude {
+        return (Enum_Integer{}, false)
+    }
+    return (Enum_Integer{
+        negative = left.negative != right.negative,
+        magnitude = left.magnitude * right.magnitude,
+    }, true)
+}
+
+// divide_enum_integers implements Draft's truncation-toward-zero quotient and
+// dividend-signed remainder for exact untyped integers. Division by zero is a
+// required-constant failure. There is no signed-minimum trap in this
+// mathematical domain; that trap belongs to a concrete signed representation,
+// which this staged evaluator does not yet admit.
+divide_enum_integers :: proc(
+    left, right: Enum_Integer,
+    operation: compiler_syntax.Token_Kind,
+) -> (Enum_Integer, bool) {
+    if right.magnitude == 0 ||
+        (operation != .slash && operation != .percent) {
+        return (Enum_Integer{}, false)
+    }
+    if operation == .slash {
+        magnitude := left.magnitude / right.magnitude
+        return (Enum_Integer{
+            negative = left.negative != right.negative && magnitude != 0,
+            magnitude = magnitude,
+        }, true)
+    }
+    magnitude := left.magnitude % right.magnitude
+    return (Enum_Integer{
+        negative = left.negative && magnitude != 0,
+        magnitude = magnitude,
+    }, true)
+}
+
+// unsigned_integer_width recognizes the only concrete integer family which a
+// Compile_Time_Value can currently publish. Untyped integer returns width zero;
+// a concrete unsigned scalar returns its width when no wider than the u64
+// payload; every other type is outside this arithmetic slice.
+unsigned_integer_width :: proc(
+    semantic_package: ^Semantic_Package,
+    type_id: Type_Id,
+) -> (u32, bool) {
+    if !type_id_valid(type_id) ||
+        cast[usize](type_id.value) >= semantic_package.types.length {
+        return (0, false)
+    }
+    row := &semantic_package.types.data[cast[usize](type_id.value)]
+    if row.kind == .untyped_integer_type {
+        return (0, true)
+    }
+    if row.kind != .unsigned_integer_type || row.bit_width == 0 ||
+        row.bit_width > 64 {
+        return (0, false)
+    }
+    return (row.bit_width, true)
+}
+
+// enum_integer_fits_unsigned_width checks contextual conversion of an untyped
+// operand into one concrete unsigned operation. The width is already known to
+// be in 1...64, so the maximum calculation never performs an invalid shift.
+enum_integer_fits_unsigned_width :: proc(
+    value: Enum_Integer,
+    bit_width: u32,
+) -> bool {
+    if value.negative || bit_width == 0 || bit_width > 64 {
+        return false
+    }
+    if bit_width == 64 {
+        return value.magnitude <= cast[u128](~cast[u64](0))
+    }
+    maximum := (cast[u128](1) << bit_width) - 1
+    return value.magnitude <= maximum
+}
+
+// wrap_unsigned_integer applies the concrete Draft modulo rule after an exact
+// operation. Negative mathematical values are first reduced to their canonical
+// nonnegative residue. This is what makes `target.page_size -
+// (target.page_size + 1)` produce the target's usize maximum instead of either
+// a negative staging value or an accidental host result.
+wrap_unsigned_integer :: proc(
+    value: Enum_Integer,
+    bit_width: u32,
+) -> Enum_Integer {
+    assert(bit_width != 0 && bit_width <= 64,
+        "unsigned constant wrapping received an invalid width")
+    modulus := cast[u128](1) << bit_width
+    residue := value.magnitude % modulus
+    if value.negative && residue != 0 {
+        residue = modulus - residue
+    }
+    return Enum_Integer{magnitude = residue}
+}
+
+// integer_binary_type applies Draft's common-integer rule for the subset above.
+// Two concrete operands must have exact type identity. One untyped operand may
+// take the other operand's concrete unsigned type only when representable.
+// width zero denotes an untyped result; false denotes a type mismatch or a
+// contextual conversion which would be invalid in production.
+integer_binary_type :: proc(
+    semantic_package: ^Semantic_Package,
+    left, right: Integer_Expression_Value,
+) -> (Type_Id, u32, bool) {
+    (left_width, left_supported) := unsigned_integer_width(
+        semantic_package,
+        left.static_type,
+    )
+    (right_width, right_supported) := unsigned_integer_width(
+        semantic_package,
+        right.static_type,
+    )
+    if !left_supported || !right_supported {
+        return (invalid_type_id(), 0, false)
+    }
+    if left_width == 0 && right_width == 0 {
+        return (left.static_type, 0, true)
+    }
+    if left_width != 0 && right_width != 0 {
+        if left.static_type.value != right.static_type.value {
+            return (invalid_type_id(), 0, false)
+        }
+        return (left.static_type, left_width, true)
+    }
+    if left_width == 0 {
+        if !enum_integer_fits_unsigned_width(left.integer, right_width) {
+            return (invalid_type_id(), 0, false)
+        }
+        return (right.static_type, right_width, true)
+    }
+    if !enum_integer_fits_unsigned_width(right.integer, left_width) {
+        return (invalid_type_id(), 0, false)
+    }
+    return (left.static_type, left_width, true)
+}
+
+// apply_integer_binary evaluates the arithmetic operators first moved into the
+// shared typed-interface constant slice. Untyped results stay mathematical and
+// fail on u128 magnitude overflow. Concrete unsigned results are reduced modulo
+// their exact type width after the operation, matching runtime arithmetic.
+apply_integer_binary :: proc(
+    semantic_package: ^Semantic_Package,
+    left, right: Integer_Expression_Value,
+    operation: compiler_syntax.Token_Kind,
+) -> (Integer_Expression_Value, bool) {
+    (static_type, concrete_width, valid_type) := integer_binary_type(
+        semantic_package,
+        left,
+        right,
+    )
+    if !valid_type {
+        return (Integer_Expression_Value{}, false)
+    }
+
+    result: Enum_Integer
+    valid := false
+    switch operation {
+    case .plus:
+        (result, valid) = add_enum_integers(left.integer, right.integer)
+    case .minus:
+        (result, valid) = add_enum_integers(
+            left.integer,
+            negate_enum_integer(right.integer),
+        )
+    case .star:
+        (result, valid) = multiply_enum_integers(left.integer, right.integer)
+    case .slash, .percent:
+        (result, valid) = divide_enum_integers(
+            left.integer,
+            right.integer,
+            operation,
+        )
+    case:
+        return (Integer_Expression_Value{}, false)
+    }
+    if !valid {
+        return (Integer_Expression_Value{}, false)
+    }
+    if concrete_width != 0 {
+        result = wrap_unsigned_integer(result, concrete_width)
+    }
+    return (Integer_Expression_Value{
+        integer = result,
+        static_type = static_type,
+    }, true)
+}
+
+// integer_expression_from_scalar imports one already-published nonnegative
+// scalar into the exact arithmetic domain. Type and range checks defend the
+// consumer against a malformed imported packet instead of assuming its u64
+// payload is representable by the accompanying type.
+integer_expression_from_scalar :: proc(
+    semantic_package: ^Semantic_Package,
+    value: Compile_Time_Value,
+) -> (Integer_Expression_Value, bool) {
+    if value.kind != .unsigned_integer {
+        return (Integer_Expression_Value{}, false)
+    }
+    (bit_width, supported) := unsigned_integer_width(
+        semantic_package,
+        value.static_type,
+    )
+    integer := Enum_Integer{
+        magnitude = cast[u128](value.unsigned_integer),
+    }
+    if !supported || (bit_width != 0 &&
+        !enum_integer_fits_unsigned_width(integer, bit_width)) {
+        return (Integer_Expression_Value{}, false)
+    }
+    return (Integer_Expression_Value{
+        integer = integer,
+        static_type = value.static_type,
+    }, true)
+}
+
+// integer_expression_to_scalar converts the exact result back to the currently
+// publishable interface scalar. Negative results and untyped magnitudes beyond
+// u64 remain explicit staging failures; enum and array consumers read the exact
+// result directly and are not constrained by this publication seam.
+integer_expression_to_scalar :: proc(
+    semantic_package: ^Semantic_Package,
+    value: Integer_Expression_Value,
+) -> (Compile_Time_Value, bool) {
+    (bit_width, supported) := unsigned_integer_width(
+        semantic_package,
+        value.static_type,
+    )
+    if !supported || value.integer.negative ||
+        value.integer.magnitude > cast[u128](~cast[u64](0)) ||
+        (bit_width != 0 && !enum_integer_fits_unsigned_width(
+            value.integer,
+            bit_width,
+        )) {
+        return (invalid_compile_time_value(), false)
+    }
+    result: Compile_Time_Value
+    result.kind = .unsigned_integer
+    result.static_type = value.static_type
+    result.type_value = invalid_type_id()
+    result.unsigned_integer = cast[u64](value.integer.magnitude)
+    return (result, true)
+}
+
+// evaluate_integer_arithmetic_expression evaluates one side-effect-free integer
+// syntax tree without recursively running another declaration product. Local
+// names consume only completed scalar products and report the first missing
+// Symbol_Id through blocked_symbol. Imported constants and target numeric facts
+// are already consumer-local inputs. The admitted syntax is integer literals,
+// names, qualified imported/target members, grouping, unary sign, and binary
+// + - * / %. Bitwise, shifts, casts, comparisons, and compile-time procedures
+// remain at the next constant-evaluator seam.
+evaluate_integer_arithmetic_expression :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     semantic_package: ^Semantic_Package,
     file_index: usize,
     tree: ^compiler_syntax.Syntax_Tree,
     id: compiler_syntax.Node_Id,
+    facts: ^Target_Facts,
     blocked_symbol: ^Symbol_Id,
-) -> (Enum_Integer, bool) {
+) -> (Integer_Expression_Value, bool) {
     node := compiler_syntax.syntax_tree_node(tree, id)
     children := compiler_syntax.syntax_tree_children(tree, id)
     switch node.kind {
     case .literal_expression:
         if node.token_begin + 1 != node.token_end {
-            return (Enum_Integer{}, false)
+            return (Integer_Expression_Value{}, false)
         }
         token := &tree.tokens.data[cast[usize](node.token_begin)]
         if token.kind != .integer_literal {
-            return (Enum_Integer{}, false)
+            return (Integer_Expression_Value{}, false)
         }
         (magnitude, valid) := parse_enum_unsigned(source_bytes(
             graph,
@@ -3079,7 +3394,10 @@ evaluate_enum_integer_expression :: proc(
             file_index,
             token.range,
         ))
-        return (Enum_Integer{magnitude = magnitude}, valid)
+        return (Integer_Expression_Value{
+            integer = Enum_Integer{magnitude = magnitude},
+            static_type = Type_Id{value = 2},
+        }, valid)
     case .name_expression:
         name := node_source_bytes(
             graph,
@@ -3095,25 +3413,33 @@ evaluate_enum_integer_expression :: proc(
             name,
         )
         if !found {
-            return (Enum_Integer{}, false)
+            return (Integer_Expression_Value{}, false)
         }
         (value, complete) := completed_constant_value(
             semantic_package,
             symbol_id,
         )
         if complete {
-            if value.kind != .unsigned_integer {
-                return (Enum_Integer{}, false)
-            }
-            return (Enum_Integer{
-                magnitude = cast[u128](value.unsigned_integer),
-            }, true)
+            return integer_expression_from_scalar(semantic_package, value)
         }
         if !symbol_id_valid(blocked_symbol^) {
             blocked_symbol^ = symbol_id
         }
-        return (Enum_Integer{}, false)
+        return (Integer_Expression_Value{}, false)
     case .member_expression:
+        (member, is_target_member) := target_member_name(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            id,
+        )
+        if is_target_member {
+            return integer_expression_from_scalar(
+                semantic_package,
+                target_field_value(semantic_package, member, facts),
+            )
+        }
         (value, found) := imported_typed_constant(
             graph,
             semantic_package,
@@ -3121,50 +3447,131 @@ evaluate_enum_integer_expression :: proc(
             tree,
             id,
         )
-        if !found || value.kind != .unsigned_integer {
-            return (Enum_Integer{}, false)
+        if !found {
+            return (Integer_Expression_Value{}, false)
         }
-        return (Enum_Integer{
-            magnitude = cast[u128](value.unsigned_integer),
-        }, true)
+        return integer_expression_from_scalar(semantic_package, value)
     case .group_expression:
         if len(children) != 1 {
-            return (Enum_Integer{}, false)
+            return (Integer_Expression_Value{}, false)
         }
-        return evaluate_enum_integer_expression(
+        return evaluate_integer_arithmetic_expression(
             graph,
             semantic_package,
             file_index,
             tree,
             children[0],
+            facts,
             blocked_symbol,
         )
     case .unary_expression:
         if len(children) != 1 || node.token_begin >= node.token_end {
-            return (Enum_Integer{}, false)
+            return (Integer_Expression_Value{}, false)
         }
-        operator := tree.tokens.data[cast[usize](node.token_begin)].kind
-        if operator != .plus && operator != .minus {
-            return (Enum_Integer{}, false)
+        operation := tree.tokens.data[cast[usize](node.token_begin)].kind
+        if operation != .plus && operation != .minus {
+            return (Integer_Expression_Value{}, false)
         }
-        (value, valid) := evaluate_enum_integer_expression(
+        (result, valid) := evaluate_integer_arithmetic_expression(
             graph,
             semantic_package,
             file_index,
             tree,
             children[0],
+            facts,
             blocked_symbol,
         )
         if !valid {
-            return (Enum_Integer{}, false)
+            return (Integer_Expression_Value{}, false)
         }
-        if operator == .minus && value.magnitude != 0 {
-            value.negative = !value.negative
+        if operation == .minus {
+            result.integer = negate_enum_integer(result.integer)
+            (bit_width, supported) := unsigned_integer_width(
+                semantic_package,
+                result.static_type,
+            )
+            if !supported {
+                return (Integer_Expression_Value{}, false)
+            }
+            if bit_width != 0 {
+                result.integer = wrap_unsigned_integer(
+                    result.integer,
+                    bit_width,
+                )
+            }
         }
-        return (value, true)
+        return (result, true)
+    case .binary_expression:
+        if len(children) != 2 {
+            return (Integer_Expression_Value{}, false)
+        }
+        left_node := compiler_syntax.syntax_tree_node(tree, children[0])
+        right_node := compiler_syntax.syntax_tree_node(tree, children[1])
+        (operation, have_operation) := binary_operator(
+            tree,
+            left_node,
+            right_node,
+        )
+        if !have_operation {
+            return (Integer_Expression_Value{}, false)
+        }
+        (left, valid_left) := evaluate_integer_arithmetic_expression(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            children[0],
+            facts,
+            blocked_symbol,
+        )
+        if !valid_left {
+            return (Integer_Expression_Value{}, false)
+        }
+        (right, valid_right) := evaluate_integer_arithmetic_expression(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            children[1],
+            facts,
+            blocked_symbol,
+        )
+        if !valid_right {
+            return (Integer_Expression_Value{}, false)
+        }
+        return apply_integer_binary(
+            semantic_package,
+            left,
+            right,
+            operation,
+        )
     case:
-        return (Enum_Integer{}, false)
+        return (Integer_Expression_Value{}, false)
     }
+}
+
+// evaluate_enum_integer_expression is the enum-facing projection of the shared
+// arithmetic evaluator. It preserves the exact sign/magnitude result instead of
+// passing through the interface's narrower nonnegative scalar representation.
+evaluate_enum_integer_expression :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    id: compiler_syntax.Node_Id,
+    facts: ^Target_Facts,
+    blocked_symbol: ^Symbol_Id,
+) -> (Enum_Integer, bool) {
+    (value, valid) := evaluate_integer_arithmetic_expression(
+        graph,
+        semantic_package,
+        file_index,
+        tree,
+        id,
+        facts,
+        blocked_symbol,
+    )
+    return (value.integer, valid)
 }
 
 // complete_plain_enum_type resolves one ordinary non-C enum atomically. The
@@ -3291,6 +3698,7 @@ complete_plain_enum_type :: proc(
                 file_index,
                 tree,
                 member_children[0],
+                facts,
                 blocked_symbol,
             )
             if !valid {
@@ -4380,7 +4788,8 @@ target_feature :: proc(
 // binary_operator finds the one infix token between the parser's two child
 // ranges. The parser has already established expression shape; this operation
 // deliberately recognizes only operators in the current scalar-constant
-// subset.
+// subset. Arithmetic rows are consumed by the typed-interface integer
+// evaluator; comparisons and logical rows remain in the target-condition path.
 binary_operator :: proc(
     tree: ^compiler_syntax.Syntax_Tree,
     left, right: ^compiler_syntax.Syntax_Node,
@@ -4388,8 +4797,9 @@ binary_operator :: proc(
     for index := left.token_end; index < right.token_begin; index += 1 {
         kind := tree.tokens.data[cast[usize](index)].kind
         switch kind {
-        case .equal_equal, .bang_equal, .less, .less_equal, .greater,
-            .greater_equal, .logical_and, .logical_or:
+        case .plus, .minus, .star, .slash, .percent, .equal_equal,
+            .bang_equal, .less, .less_equal, .greater, .greater_equal,
+            .logical_and, .logical_or:
             return (kind, true)
         case:
         }
@@ -5111,8 +5521,10 @@ append_unsupported_compile_time_diagnostic :: proc(
 // declaration symbol and package. A struct, enum, variant, or union installs
 // its nominal shell before completing its packet; unavailable dependencies
 // attach one graph edge. Only a complete attempt publishes the constant value.
-// Grouped constants and the broader Draft constant vocabulary
-// remain outside this staging slice and fail only when a consumer demands them.
+// Typed-interface scalar products additionally admit the shared bounded integer
+// `+ - * / %` evaluator. Grouped declarations and the broader Draft constant
+// vocabulary remain outside this staging slice and fail only when a consumer
+// demands them.
 run_named_constant_product :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     facts: ^Target_Facts,
@@ -5351,6 +5763,33 @@ run_named_constant_product :: proc(
                     }
                 }
             }
+        }
+    } else if use == .typed_interface {
+        (integer, valid_integer) := evaluate_integer_arithmetic_expression(
+            graph,
+            semantic_package,
+            symbol.syntax.file_index,
+            tree,
+            payload_id,
+            facts,
+            &blocked_symbol,
+        )
+        if valid_integer {
+            (value, valid_integer) = integer_expression_to_scalar(
+                semantic_package,
+                integer,
+            )
+        }
+        if !valid_integer {
+            value = evaluate_target_condition_expression(
+                graph,
+                semantic_package,
+                symbol.syntax.file_index,
+                tree,
+                payload_id,
+                facts,
+                &blocked_symbol,
+            )
         }
     } else {
         value = evaluate_target_condition_expression(
@@ -5798,8 +6237,9 @@ declaration_type_syntax :: proc(
 // this typed-interface slice. It resolves children recursively, interns exact
 // package-local identities, and reports the first unpublished local constant or
 // type through blocked_symbol. Array counts reuse the shared scalar compile-time
-// evaluator, so literals, named local/imported untyped-or-usize constants, and
-// target usize facts follow one dependency mechanism. Declaration-owned
+// evaluator, so literals, `+ - * / %`, named local/imported untyped-or-usize
+// constants, and target usize facts follow one dependency mechanism.
+// Declaration-owned
 // distinct, struct, enum, variant, and union syntax is intentionally constructed
 // by the constant product which has the defining symbol; seeing any of them
 // recursively here is invalid just as in production. Specialized aggregate
@@ -5868,7 +6308,7 @@ resolve_type_syntax :: proc(
         if len(children) != 2 {
             return (invalid_type_id(), false)
         }
-        count := evaluate_target_condition_expression(
+        (count, valid_count) := evaluate_integer_arithmetic_expression(
             graph,
             semantic_package,
             file_index,
@@ -5876,11 +6316,12 @@ resolve_type_syntax :: proc(
             children[0],
             facts,
             blocked_symbol,
-            .unsigned_integer,
         )
-        count_converts_to_usize := count.kind == .unsigned_integer &&
-            (count.static_type.value == 2 || count.static_type.value == 22)
-        if !count_converts_to_usize || count.unsigned_integer == 0 {
+        count_converts_to_usize := valid_count &&
+            (count.static_type.value == 2 || count.static_type.value == 22) &&
+            !count.integer.negative && count.integer.magnitude != 0 &&
+            count.integer.magnitude <= cast[u128](~cast[u64](0))
+        if !count_converts_to_usize {
             return (invalid_type_id(), false)
         }
         (element, resolved) := resolve_type_syntax(
@@ -5899,7 +6340,7 @@ resolve_type_syntax :: proc(
             intern_array_type(
                 semantic_package,
                 element,
-                count.unsigned_integer,
+                cast[u64](count.integer.magnitude),
             ),
             true,
         )

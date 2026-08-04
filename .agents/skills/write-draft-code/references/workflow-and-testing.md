@@ -560,8 +560,14 @@ pointer/multi-pointer/slice/fixed-array/tuple structures, fixed procedure types
 and signatures, declaration-owned distinct types, ordinary named natural-layout
 structs, ordinary enums, variants, and unions, and consumer-local imported
 type/value reconstruction.
-Array counts reuse the scalar product graph for positive untyped or exact
-`usize` values. Distinct interface identity uses the defining content root,
+Named integer constants, enum values, and array counts share a typed evaluator
+for literals, ready local/imported unsigned constants, target numeric facts,
+grouping, unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped operations
+keep exact sign/magnitude values through u128; concrete unsigned types no wider
+than 64 bits wrap at their declared width. Named constants currently publish
+only nonnegative u64 results, while array counts require a positive
+representable untyped or exact `usize` result. Distinct interface identity uses
+the defining content root,
 root-relative package path, and original declaration name, and survives
 transitive re-export while the underlying graph is rebuilt locally. Nominal
 structs use the same persistent identity and retain source-order field names,
@@ -569,18 +575,19 @@ translated types, natural byte offsets, total size, and alignment. Pointer
 recursion, grouped fields, private/transitive exposure, and struct nesting in
 the other supported constructors are covered. Ordinary enum interfaces retain
 the same persistent identity, explicit or inferred integer backing/layout, and
-source-order names plus exact signed/u128 values. Their current value vocabulary
-is implicit successors, full-width literals, unary sign/grouping, and ready
-local/imported unsigned constants. Ordinary variants retain source-order
+source-order names plus exact signed/u128 values. Explicit values use the shared
+integer evaluator above, and implicit successors use checked exact arithmetic.
+Ordinary variants retain source-order
 payload-free/typed alternatives, explicit direct/distinct or inferred
 discriminators, common payload offsets, and exact natural layout; pointer
 recursion and transitive identity are covered. Ordinary unions retain
 source-order grouped fields at byte offset zero, exact maximum-member natural
 layout, pointer recursion, and transitive identity. C enums, packed/bit fields,
 C or explicitly aligned aggregates, selected/synthesized/member-directive
-regions, SIMD/parametric types, foreign/export, procedure contracts, arithmetic
-counts or enum values, and general constant/type forms remain an explicit
-staging failure.
+regions, SIMD/parametric types, foreign/export, procedure contracts, bitwise/
+shift/cast/comparison integer expressions, untyped intermediates beyond u128,
+negative or wider named scalar publication, and general constant/type forms
+remain an explicit staging failure.
 It is a build-tree development artifact, not an installed public command:
 
 ```sh
@@ -647,27 +654,28 @@ scalar/structural/distinct/ordinary-struct/ordinary-enum/ordinary-variant/
 ordinary-union type rows, fixed-array counts, exact natural aggregate layouts
 and enum values, declaration classifications, scalar constant payloads, and
 imported consumer-local type/value shapes on all four targets. Its supported
-fixture includes forward local type/count aliases,
-qualified imported aliases and counts, structural globals, fixed procedure
-types/signatures, tuple results, target page-size arrays, separate same-underlying
-distinct declarations, private distinct exposure, distinct-over-distinct,
-identity-preserving transitive re-export, plain/grouped/pointer-recursive
-structs, private and transitive struct exposure, and struct arrays/procedure
-signatures, inferred/explicit/signed/u128 enums, private and transitive enum
-exposure, imported enum values, enum nesting in supported constructors,
-payload-free/typed/recursive variants, distinct-integer discriminators,
-private/transitive variant exposure, variant nesting in supported constructors,
-size-rounding/grouped/recursive and target-selected unions, private/transitive
-union exposure, and union nesting. The oracle first accepts C-layout, aligned,
-combined C/aligned, and selected-member union fixtures before the self-hosted
-command rejects those valid production forms at its staging boundary;
-synthesized union members also fail closed. C enums, invalid or
-arithmetic-valued enums, invalid variants/unions, specialized aggregate
-layouts/members, SIMD types,
-unsupported count expressions/types, and local alias or by-value layout cycles
-must fail at the exact self-hosting boundary. Do not infer support for the
-production interface's remaining nominal/parametric constructors or contracts
-from this narrow gate.
+fixture includes forward local type/count aliases, qualified imported aliases
+and counts, local/forward/imported/target integer arithmetic, concrete unsigned
+wrapping, signed division/remainder, checked u128 multiplication, structural
+globals, fixed procedure types/signatures, tuple results, target page-size
+arrays, separate same-underlying distinct declarations, private distinct
+exposure, distinct-over-distinct, identity-preserving transitive re-export,
+plain/grouped/pointer-recursive structs, private and transitive struct exposure,
+struct arrays/procedure signatures, inferred/explicit/signed/u128 enums,
+private and transitive enum exposure, imported enum values, enum nesting in
+supported constructors, payload-free/typed/recursive variants,
+distinct-integer discriminators, private/transitive variant exposure, variant
+nesting in supported constructors, size-rounding/grouped/recursive and target-
+selected unions, private/transitive union exposure, and union nesting. The
+oracle first accepts C-layout, aligned, combined C/aligned, and selected-member
+union fixtures before the self-hosted command rejects those valid production
+forms at its staging boundary; synthesized union members also fail closed. C
+enums, invalid enum arithmetic, invalid variants/unions, specialized aggregate
+layouts/members, SIMD types, unsupported count operators/types, division by
+zero, values past the u128 staging bound, negative/wider named scalar
+publication, and local alias or by-value layout cycles must fail at the exact
+self-hosting boundary. Do not infer support for the production interface's
+remaining nominal/parametric constructors or contracts from this narrow gate.
 Keep the bootstrap path until a replacement phase has this oracle; passing
 focused Draft tests alone is not replacement evidence.
 

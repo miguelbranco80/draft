@@ -225,9 +225,13 @@ ordinary named natural-layout `struct` declarations, ordinary `enum`,
 `variant`, and `union` declarations, and procedure signatures; reachable
 types and constants are rewritten into canonical package-interface IDs; and
 each imported declaration is reconstructed in the consumer Type-ID domain
-beneath its file-local alias. Fixed-array counts reuse the existing scalar
-product graph and currently accept positive representable untyped integers or
-exact `usize` values from local names, imported constants, and target facts.
+beneath its file-local alias. One shared typed integer evaluator accepts
+literals, local/imported unsigned constants, target numeric facts, grouping,
+unary sign, and binary `+`, `-`, `*`, `/`, and `%`. Untyped operations keep an
+exact sign plus u128 magnitude, while concrete unsigned types no wider than 64
+bits wrap at their declared width. Named interface constants currently publish
+only nonnegative u64 results. Fixed-array counts consume the same evaluator and
+require a positive representable untyped result or exact `usize`.
 Forward local type/count aliases and qualified imported type/value aliases are
 supported. Distinct interface rows retain the defining root content identity,
 root-relative package path, and original declaration name across direct and
@@ -238,8 +242,8 @@ recursive import and verifies the packet by recomputing natural layout. Pointer
 recursion is supported, while direct by-value cycles fail as graph cycles.
 Ordinary enums retain the same identity, exact source-order alternative names
 and signed/u128 values, explicit or inferred integer backing, and backing
-layout. Their staged expression subset includes implicit successors, integer
-literals, unary sign/grouping, and ready local/imported unsigned constants.
+layout. Their explicit values consume the shared exact integer evaluator;
+implicit successors retain checked sign/magnitude arithmetic.
 Ordinary variants retain the same identity, source-order alternative names and
 payload types, explicit or smallest-fitting unsigned discriminator, common
 payload offsets, and exact natural layout. Payload-free alternatives use
@@ -248,9 +252,10 @@ cycles. Ordinary unions retain the same identity, source-order field names and
 types, zero byte offsets, and maximum-member natural layout; grouped fields and
 pointer recursion are supported. C enums, packed/bit fields, C or explicitly
 aligned aggregates, selected/synthesized/directive members, SIMD types,
-parametric forms, foreign/export declarations, procedure contracts, arithmetic
-array counts or enum values, and general constant/type forms fail explicitly at
-this interface boundary.
+parametric forms, foreign/export declarations, procedure contracts, bitwise/
+shift/cast/comparison integer expressions, untyped intermediates beyond u128,
+negative or wider named scalar publication, and general constant/type forms
+fail explicitly at this interface boundary.
 Imported constants remain unavailable to the earlier package-`when` selector.
 Deeper nominal member lookup, full type/body checking, elaboration, MIR, LLVM,
 artifacts, and linking have not moved to the staging driver. The C++ driver
@@ -290,7 +295,9 @@ enum alternatives/backing values, variant discriminator/payload layouts, union
 field/overlay layouts, declaration classifications, constant payloads, and
 consumer-local imported type/value shapes with production on all four targets.
 Its focused fixture covers forward local type and array-count dependencies,
-qualified imported type/value/count aliases,
+qualified imported type/value/count aliases, local/forward/imported/target
+integer arithmetic, concrete unsigned wrapping, signed quotient/remainder, and
+checked u128 multiplication,
 pointer/multi-pointer/slice/array/tuple/procedure type
 aliases, structural globals and procedure signatures, tuple results, and
 target-dependent page-size arrays, distinct declarations with identical and
@@ -307,10 +314,12 @@ oracle additionally verifies that C-layout, explicitly aligned, combined C and
 aligned, and selected-member unions are valid production inputs before the
 self-hosted command rejects them at its staging boundary; synthesized union
 members have their own fail-closed fixture.
-Separate fixtures require C enums, invalid or arithmetic-valued enums, invalid
+Separate fixtures require C enums, invalid enum arithmetic, invalid
 variants/unions, specialized aggregate layouts, SIMD types, unsupported
-array-count expressions/types, and local alias or by-value layout cycles to
-fail at the exact self-hosting boundary. This evidence applies only to that
+array-count operators/types, arithmetic division by zero, an exact result past
+the u128 staging bound, negative/wider named scalar publication, and local alias
+or by-value layout cycles to fail at the exact self-hosting boundary. This
+evidence applies only to that
 closed subset, not to the full production PackageInterface vocabulary or
 serialization.
 
