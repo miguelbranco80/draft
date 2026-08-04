@@ -152,6 +152,22 @@ package-`when` phase, whose dependency interfaces do not yet exist.
 The staging executable is deliberately absent from the install set until a
 coherent public compiler command surface exists.
 
+`compiler/big_integer` now supplies the lower arbitrary-precision substrate for
+removing that u128 staging bound. One explicitly initialized owner stores a
+canonical sign and little-endian base-2^32 magnitude, captures its allocator,
+and releases it explicitly. Parsing, comparison, arithmetic, truncating signed
+division and remainder, arbitrary shifts, infinite-two's-complement bitwise
+operations, fixed-width conversion, and decimal formatting are complete at
+this representation boundary. The registered
+`draft_self_hosted_big_integer_differential` test builds a fixed O2 Draft
+exerciser in isolated binary-tree storage and compares its output and status
+with production C++ `BigInteger` over radices, invalid literals, signs,
+multi-limb arithmetic, all division sign combinations, cross-limb shifts,
+mixed-sign bitwise operations, and u64/i64 boundaries. This is substrate
+qualification rather than a semantic-phase replacement: `compiler/sema` still
+owns its bounded `Enum_Integer`/`Integer_Expression_Value` rows and does not yet
+publish arbitrary-width constants through package interfaces.
+
 Replacement proceeds at phase boundaries rather than by mixing C++ and Draft
 inside a phase. C++ `draftc lex` and `draftc syntax` remain independent single-
 file oracles while non-installed helpers expose the production C++ package and

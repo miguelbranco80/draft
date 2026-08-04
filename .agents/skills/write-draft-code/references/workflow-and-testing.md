@@ -588,13 +588,18 @@ regions, SIMD/parametric types, foreign/export, procedure contracts, bitwise/
 shift/cast/comparison integer expressions, untyped intermediates beyond u128,
 negative or wider named scalar publication, and general constant/type forms
 remain an explicit staging failure.
+The lower `compiler/big_integer` package now owns arbitrary-precision signed
+values with explicit init/destroy lifetime and is qualified independently
+against production C++ `BigInteger`. It is not a `draftc-next` command, and the
+typed interface evaluator still uses the bounded u128 representation until a
+later wiring slice.
 It is a build-tree development artifact, not an installed public command:
 
 ```sh
 cmake --build build --target \
   draftc_next draft_package_syntax_oracle draft_workspace_syntax_oracle \
   draft_workspace_declarations_oracle \
-  draft_workspace_public_names_oracle --parallel
+  draft_workspace_public_names_oracle draft_big_integer_oracle --parallel
 build/draftc-next lex compiler/syntax/lexer.draft
 build/draftc-next syntax compiler/syntax/parser.draft
 build/draftc-next package-syntax compiler/syntax --target aarch64-macos
@@ -614,8 +619,16 @@ build/draftc-next workspace-interfaces path/to/supported/root-package \
   --workspace path/to/workspace --core path/to/core \
   --core-identity local-core-qualification --target aarch64-macos
 ctest --test-dir build --output-on-failure \
-  -R '^draft_self_hosted_(frontend_units|lexer_differential|parser_differential|package_syntax_differential|workspace_syntax_differential|workspace_declarations_differential|workspace_public_names_differential|workspace_target_declarations_differential|workspace_interfaces_differential)$'
+  -R '^draft_self_hosted_(frontend_units|big_integer_differential|lexer_differential|parser_differential|package_syntax_differential|workspace_syntax_differential|workspace_declarations_differential|workspace_public_names_differential|workspace_target_declarations_differential|workspace_interfaces_differential)$'
 ```
+
+The big-integer differential builds its fixed Draft exerciser with O2 in
+process-unique CMake-binary storage. It compares raw stdout/stderr files and
+exit status with the production C++ implementation over parsing, canonical
+sign and comparison, multi-limb arithmetic, signed division/remainder, shifts,
+infinite-two's-complement bitwise operations, formatting, and host conversion
+boundaries. Passing this gate qualifies the lower representation; it does not
+claim that the bounded typed-interface evaluator consumes it.
 
 The single-file differential tests compare C++ `draftc lex`/`draftc syntax`
 with Draft `draftc-next lex`/`draftc-next syntax` over repository Draft sources

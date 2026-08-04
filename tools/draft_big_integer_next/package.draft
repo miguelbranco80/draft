@@ -1,0 +1,327 @@
+// Deterministic exerciser for the Draft-written arbitrary-precision integer.
+//
+// This non-installed tool applies the same fixed operation matrix as
+// tools/bootstrap_big_integer.cpp and prints only mathematical results. The
+// integration test compares their stdout, stderr, and exit status exactly.
+// Keeping the matrix here instead of accepting expressions or operations from
+// process arguments makes the executable a narrow phase-migration oracle, not
+// a second language service with a public command contract.
+//
+// main owns every Integer and output allocation until the final write. Integer
+// owners are initialized once, never copied by value, and destroyed exactly
+// once. Arithmetic destinations never alias their inputs. The fixed decimal
+// buffer is larger than the widest matrix result (the square of a 256-bit
+// value), so a formatting failure is an oracle invariant rather than user
+// input failure.
+package draft_big_integer_next
+
+import core/format
+import core/os
+import compiler/big_integer as big
+import compiler/text as compiler_text
+
+// append_label begins one canonical `label value` row. Labels are fixed ASCII
+// constants, and the output builder preserves their bytes without locale.
+append_label :: proc(output: ^compiler_text.Builder, label: string) {
+    compiler_text.append_text(output, label)
+    compiler_text.append_byte(output, cast[u8](' '))
+}
+
+// append_boolean renders booleans as the C++ stream's numeric 0 or 1 followed
+// by LF. This avoids relying on a language-specific boolean spelling.
+append_boolean :: proc(
+    output: ^compiler_text.Builder,
+    label: string,
+    value: bool,
+) {
+    append_label(output, label)
+    compiler_text.append_byte(
+        output,
+        cast[u8]('1') if value else cast[u8]('0'),
+    )
+    compiler_text.append_byte(output, cast[u8]('\n'))
+}
+
+// append_signed renders ordinary metadata such as signs and bit counts with
+// the same shortest decimal contract as std::ostream integer insertion.
+append_signed :: proc(
+    output: ^compiler_text.Builder,
+    label: string,
+    value: i64,
+) {
+    storage: [20]u8
+    (digits, formatted) := format.signed_decimal(storage[:], value)
+    assert(formatted, "fixed signed-decimal buffer is too small")
+    append_label(output, label)
+    compiler_text.append_bytes(output, digits)
+    compiler_text.append_byte(output, cast[u8]('\n'))
+}
+
+// append_integer renders one arbitrary-precision value into caller-owned
+// scratch, then copies the borrowed digits before the buffer leaves scope.
+append_integer :: proc(
+    output: ^compiler_text.Builder,
+    label: string,
+    value: ^big.Integer,
+) {
+    storage: [1024]u8
+    (digits, formatted) := big.format_decimal(storage[:], value)
+    assert(formatted, "fixed big-integer decimal buffer is too small")
+    append_label(output, label)
+    compiler_text.append_bytes(output, digits)
+    compiler_text.append_byte(output, cast[u8]('\n'))
+}
+
+// parse_required isolates matrix construction from the parse-failure rows. A
+// failure is an implementation invariant because each spelling is fixed and
+// also required by the production C++ oracle.
+parse_required :: proc(value: ^big.Integer, spelling: string) {
+    parsed := big.parse_literal(value, spelling)
+    assert(parsed, "required big-integer oracle literal did not parse")
+}
+
+// main owns a small pool of stable Integer destinations. Reuse is explicit:
+// public operations replace the prior mathematical value but retain the
+// destination's allocator and capacity.
+main :: proc() -> int {
+    output: compiler_text.Builder
+    zero: big.Integer
+    power: big.Integer
+    wide: big.Integer
+    left: big.Integer
+    right: big.Integer
+    result: big.Integer
+    other: big.Integer
+    temporary: big.Integer
+    quotient: big.Integer
+    remainder: big.Integer
+    negative_left: big.Integer
+    negative_right: big.Integer
+
+    compiler_text.init(&output)
+    big.init(&zero)
+    big.init(&power)
+    big.init(&wide)
+    big.init(&left)
+    big.init(&right)
+    big.init(&result)
+    big.init(&other)
+    big.init(&temporary)
+    big.init(&quotient)
+    big.init(&remainder)
+    big.init(&negative_left)
+    big.init(&negative_right)
+    defer big.destroy(&negative_right)
+    defer big.destroy(&negative_left)
+    defer big.destroy(&remainder)
+    defer big.destroy(&quotient)
+    defer big.destroy(&temporary)
+    defer big.destroy(&other)
+    defer big.destroy(&result)
+    defer big.destroy(&right)
+    defer big.destroy(&left)
+    defer big.destroy(&wide)
+    defer big.destroy(&power)
+    defer big.destroy(&zero)
+    defer compiler_text.destroy(&output)
+
+    parse_required(&zero, "0")
+    parse_required(&power, "340282366920938463463374607431768211456")
+    parse_required(
+        &wide,
+        "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    )
+    parse_required(&left, "123456789012345678901234567890")
+    parse_required(&right, "98765432109876543210")
+    big.negate(&negative_left, &left)
+    big.negate(&negative_right, &right)
+
+    // Literal parsing covers each radix, ignored separators, and the closed
+    // invalid cases in the production implementation.
+    append_integer(&output, "parse-zero", &zero)
+    parse_required(&result, "0xffffffffffffffffffffffffffffffff")
+    append_integer(&output, "parse-hex", &result)
+    parse_required(&result, "0b1010_0101")
+    append_integer(&output, "parse-binary", &result)
+    parse_required(&result, "0o755")
+    append_integer(&output, "parse-octal", &result)
+    parse_required(&result, "1_000_000")
+    append_integer(&output, "parse-underscores", &result)
+    append_boolean(
+        &output,
+        "parse-invalid-empty",
+        big.parse_literal(&result, ""),
+    )
+    append_boolean(
+        &output,
+        "parse-invalid-prefix",
+        big.parse_literal(&result, "0x"),
+    )
+    append_boolean(
+        &output,
+        "parse-invalid-digit",
+        big.parse_literal(&result, "0b102"),
+    )
+
+    append_signed(&output, "zero-sign", cast[i64](big.sign(&zero)))
+    append_signed(&output, "power-sign", cast[i64](big.sign(&power)))
+    append_signed(
+        &output,
+        "negative-sign",
+        cast[i64](big.sign(&negative_left)),
+    )
+    append_signed(
+        &output,
+        "power-bits",
+        cast[i64](big.bit_count(&power)),
+    )
+    append_signed(
+        &output,
+        "wide-bits",
+        cast[i64](big.bit_count(&wide)),
+    )
+    append_signed(
+        &output,
+        "compare-left-right",
+        cast[i64](big.compare(&left, &right)),
+    )
+    append_signed(
+        &output,
+        "compare-negative-right",
+        cast[i64](big.compare(&negative_left, &right)),
+    )
+    append_signed(
+        &output,
+        "compare-equal",
+        cast[i64](big.compare(&left, &left)),
+    )
+    parse_required(&result, "123456789012345678901234567890")
+    append_boolean(&output, "equal-left-copy", big.equal(&left, &result))
+    big.absolute(&result, &negative_left)
+    append_integer(&output, "absolute-negative", &result)
+
+    // Signed arithmetic includes opposite-sign cancellation and a 512-bit
+    // product, so correctness cannot accidentally depend on native u128.
+    big.add(&result, &left, &right)
+    append_integer(&output, "add", &result)
+    big.subtract(&result, &left, &right)
+    append_integer(&output, "subtract", &result)
+    big.subtract(&result, &right, &left)
+    append_integer(&output, "reverse-subtract", &result)
+    big.add(&result, &left, &negative_left)
+    append_integer(&output, "cancel", &result)
+    big.multiply(&result, &left, &right)
+    append_integer(&output, "multiply", &result)
+    big.multiply(&result, &wide, &wide)
+    append_integer(&output, "wide-square", &result)
+
+    // Division exercises all sign combinations. Quotient truncation and the
+    // dividend-signed remainder are independently visible in the output.
+    append_boolean(
+        &output,
+        "divide-positive-ok",
+        big.divide(&quotient, &remainder, &left, &right),
+    )
+    append_integer(&output, "divide-positive-quotient", &quotient)
+    append_integer(&output, "divide-positive-remainder", &remainder)
+    append_boolean(
+        &output,
+        "divide-negative-dividend-ok",
+        big.divide(&quotient, &remainder, &negative_left, &right),
+    )
+    append_integer(&output, "divide-negative-dividend-quotient", &quotient)
+    append_integer(&output, "divide-negative-dividend-remainder", &remainder)
+    append_boolean(
+        &output,
+        "divide-negative-divisor-ok",
+        big.divide(&quotient, &remainder, &left, &negative_right),
+    )
+    append_integer(&output, "divide-negative-divisor-quotient", &quotient)
+    append_integer(&output, "divide-negative-divisor-remainder", &remainder)
+    append_boolean(
+        &output,
+        "divide-two-negatives-ok",
+        big.divide(&quotient, &remainder, &negative_left, &negative_right),
+    )
+    append_integer(&output, "divide-two-negatives-quotient", &quotient)
+    append_integer(&output, "divide-two-negatives-remainder", &remainder)
+    append_boolean(
+        &output,
+        "divide-zero-ok",
+        big.divide(&quotient, &remainder, &left, &zero),
+    )
+
+    // Shifts cross multiple limb boundaries and include negative arithmetic
+    // right shift, whose discarded bits require rounding toward minus infinity.
+    big.set_u64(&other, 1)
+    big.shift_left(&result, &other, 129)
+    append_integer(&output, "shift-left-129", &result)
+    big.set_i64(&other, -3)
+    big.shift_left(&result, &other, 65)
+    append_integer(&output, "shift-left-negative", &result)
+    big.shift_right(&result, &wide, 129)
+    append_integer(&output, "shift-right-positive", &result)
+    big.shift_right(&result, &other, 1)
+    append_integer(&output, "shift-right-negative", &result)
+    big.shift_right(&result, &other, 200)
+    append_integer(&output, "shift-right-negative-wide", &result)
+
+    // Binary and unary bitwise rows force infinite sign extension rather than
+    // a fixed host-width interpretation.
+    big.set_u64(&other, 1)
+    big.subtract(&result, &power, &other)
+    big.bitwise_and(&temporary, &result, &wide)
+    append_integer(&output, "bitwise-and-positive", &temporary)
+    big.set_i64(&other, -1)
+    big.bitwise_and(&temporary, &other, &result)
+    append_integer(&output, "bitwise-and-negative", &temporary)
+    big.set_i64(&result, -8)
+    big.set_i64(&other, 3)
+    big.bitwise_or(&temporary, &result, &other)
+    append_integer(&output, "bitwise-or-negative", &temporary)
+    big.bitwise_xor(&temporary, &result, &other)
+    append_integer(&output, "bitwise-xor-negative", &temporary)
+    big.bitwise_not(&result, &power)
+    append_integer(&output, "bitwise-not-positive", &result)
+    big.set_i64(&other, -8)
+    big.bitwise_not(&result, &other)
+    append_integer(&output, "bitwise-not-negative", &result)
+
+    // Conversion rows straddle every u64 and i64 boundary. `temporary` keeps
+    // i64 minimum alive while `result` and `other` construct the smaller value.
+    parse_required(&result, "18446744073709551615")
+    (_, converted) := big.to_u64(&result)
+    append_boolean(&output, "to-u64-max", converted)
+    parse_required(&result, "18446744073709551616")
+    (_, converted) = big.to_u64(&result)
+    append_boolean(&output, "to-u64-too-large", converted)
+    big.set_i64(&result, -1)
+    (_, converted) = big.to_u64(&result)
+    append_boolean(&output, "to-u64-negative", converted)
+
+    parse_required(&result, "9223372036854775807")
+    (_, converted) = big.to_i64(&result)
+    append_boolean(&output, "to-i64-max", converted)
+    parse_required(&result, "9223372036854775808")
+    (_, converted) = big.to_i64(&result)
+    append_boolean(&output, "to-i64-too-large", converted)
+    big.negate(&temporary, &result)
+    minimum: i64
+    (minimum, converted) = big.to_i64(&temporary)
+    append_boolean(&output, "to-i64-min", converted)
+    parse_required(&result, "9223372036854775809")
+    big.negate(&other, &result)
+    (_, converted) = big.to_i64(&other)
+    append_boolean(&output, "to-i64-too-small", converted)
+    assert(minimum == -9223372036854775807 - 1 && converted == false,
+        "signed boundary conversion matrix is inconsistent")
+    append_signed(&output, "to-i64-min-value", minimum)
+
+    if os.write_all(
+        os.standard_output,
+        compiler_text.view(&output),
+    ) != .none {
+        return 1
+    }
+    return 0
+}

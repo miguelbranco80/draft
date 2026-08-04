@@ -1,0 +1,1057 @@
+// Arbitrary-precision signed integers for self-hosted compile-time semantics.
+//
+// This package is a lower compiler substrate. It receives source integer bytes
+// or already-constructed integers and produces canonical mathematical results;
+// it knows nothing about syntax nodes, semantic types, package interfaces, or
+// diagnostics. Integer owns a contiguous little-endian base-2^32 magnitude.
+// Zero has no limbs and is never negative. Every operation preserves that
+// representation, and all allocation follows the allocator captured by the
+// destination owner during init.
+//
+// Integer has explicit ownership because Draft has no hidden move, destructor,
+// or reference counting. Initialize one stable owner exactly once, pass it by
+// pointer, and destroy it exactly once. Do not copy a live Integer by value.
+// Public arithmetic writes into a distinct initialized destination; division
+// additionally requires two distinct outputs. This makes every allocation and
+// ownership transfer visible to the future constant evaluator.
+//
+// The limb table is implemented directly instead of embedding
+// core/array.Dynamic[u32]. The current bootstrap can assign different generic
+// record identities when an instantiation crosses source files in one package;
+// this non-generic representation keeps the compiler boundary honest and can
+// be replaced mechanically after that bootstrap limitation is removed.
+//
+// Division truncates toward zero and gives the remainder the dividend's sign.
+// Bitwise operations and right shift use an infinite two's-complement model.
+// The algorithms are intentionally direct and quadratic where appropriate;
+// compile-time evaluator resource limits remain a separate semantic policy.
+//
+// Relevant specification: docs/specification/01-core-language.md,
+// “Expressions and evaluation” and “Constants and compile-time evaluation”.
+package compiler_big_integer
+
+import core/memory
+import core/runtime
+
+Limb_Bits :: 32
+Limb_Base :: cast[u64](1) << Limb_Bits
+
+// Integer is one canonical signed mathematical integer. data[0:length] stores
+// initialized magnitude limbs in little-endian order; the last live limb is
+// nonzero. capacity measures allocated u32 slots. allocator owns the provider
+// used by every resize and destroy operation. negative is false for zero.
+//
+// The allocation may move whenever an operation grows the destination, so no
+// limb pointer or slice remains valid across mutation. Structural equality of
+// this owner is incidental and must not be used as numeric equality.
+pub Integer :: struct {
+    negative: bool,
+    data: [^]u32,
+    length: usize,
+    capacity: usize,
+    allocator: runtime.Allocator,
+}
+
+// initialized reports whether value has captured allocation policy. It is an
+// invariant check for package operations, not a mathematical property.
+initialized :: proc(value: ^Integer) -> bool {
+    return value.allocator.procedure != nil
+}
+
+// init establishes the active Context allocator for one empty owner. The
+// destination must be its zero value and remains the canonical integer zero.
+pub init :: proc(value: ^Integer) {
+    init_with_allocator(value, context.allocator)
+}
+
+// init_with_allocator is the explicit-policy form used when a compiler phase
+// groups integer storage under an arena or another stable allocator provider.
+pub init_with_allocator :: proc(
+    value: ^Integer,
+    allocator: runtime.Allocator,
+) {
+    assert(value.data == nil && value.length == 0 && value.capacity == 0 &&
+        value.allocator.procedure == nil,
+        "big integer is not empty before initialization")
+    assert(allocator.procedure != nil, "big integer allocator is nil")
+    value.allocator = allocator
+}
+
+// clear returns an initialized owner to canonical zero without releasing its
+// capacity. Removed limbs are zeroed so no stale magnitude remains live in a
+// reused compiler value.
+pub clear :: proc(value: ^Integer) {
+    assert(initialized(value), "big integer is not initialized")
+    for index: usize = 0; index < value.length; index += 1 {
+        value.data[index] = 0
+    }
+    value.length = 0
+    value.negative = false
+}
+
+// destroy releases the complete limb allocation and clears allocation policy.
+// Every borrow into the old limb table expires on entry.
+pub destroy :: proc(value: ^Integer) {
+    if value.data != nil {
+        assert(initialized(value),
+            "allocated big integer has no allocator")
+        memory.free_bytes_with_allocator(
+            cast[rawptr](value.data),
+            value.capacity * size_of(u32),
+            align_of(u32),
+            value.allocator,
+        )
+    }
+    value.negative = false
+    value.data = nil
+    value.length = 0
+    value.capacity = 0
+    empty: runtime.Allocator
+    value.allocator = empty
+}
+
+// reserve grows value geometrically to at least minimum limbs. Existing limb
+// order is preserved by the allocator resize contract; all earlier limb views
+// are invalidated if storage moves. Source-driven unreasonable sizes are later
+// rejected by evaluator policy, while arithmetic overflow is an invariant here.
+reserve :: proc(value: ^Integer, minimum: usize) {
+    assert(initialized(value), "big integer is not initialized")
+    if minimum <= value.capacity {
+        return
+    }
+    assert(minimum <= ~cast[usize](0) / size_of(u32),
+        "big integer limb allocation overflows")
+
+    capacity := value.capacity
+    if capacity < 4 {
+        capacity = 4
+    }
+    for capacity < minimum {
+        if capacity > ~cast[usize](0) / 2 {
+            capacity = minimum
+            break
+        }
+        capacity *= 2
+    }
+    storage := memory.resize_with_allocator(
+        cast[rawptr](value.data),
+        value.capacity * size_of(u32),
+        capacity * size_of(u32),
+        align_of(u32),
+        value.allocator,
+    )
+    value.data = cast[[^]u32](storage)
+    value.capacity = capacity
+}
+
+// append_limb extends a magnitude by one initialized most-significant limb.
+// Callers normalize if the appended value may be zero.
+append_limb :: proc(value: ^Integer, limb: u32) {
+    reserve(value, value.length + 1)
+    value.data[value.length] = limb
+    value.length += 1
+}
+
+// set_zero_limbs replaces the live magnitude with count initialized zero
+// limbs. It is used only while constructing a result which will be normalized
+// before publication.
+set_zero_limbs :: proc(value: ^Integer, count: usize) {
+    clear(value)
+    reserve(value, count)
+    for index: usize = 0; index < count; index += 1 {
+        value.data[index] = 0
+    }
+    value.length = count
+}
+
+// normalize removes high zero limbs and restores the unique zero sign. Slots
+// leaving the live range are cleared before length changes.
+normalize :: proc(value: ^Integer) {
+    assert(initialized(value), "big integer is not initialized")
+    for value.length != 0 && value.data[value.length - 1] == 0 {
+        value.length -= 1
+        value.data[value.length] = 0
+    }
+    if value.length == 0 {
+        value.negative = false
+    }
+}
+
+// is_zero recognizes the unique empty-magnitude zero representation.
+pub is_zero :: proc(value: ^Integer) -> bool {
+    assert(initialized(value), "big integer is not initialized")
+    return value.length == 0
+}
+
+// is_negative reports the mathematical sign. Canonical zero is never negative.
+pub is_negative :: proc(value: ^Integer) -> bool {
+    assert(initialized(value), "big integer is not initialized")
+    return value.negative
+}
+
+// sign returns exactly -1, 0, or 1 according to mathematical ordering.
+pub sign :: proc(value: ^Integer) -> i8 {
+    if is_zero(value) {
+        return 0
+    }
+    return -1 if value.negative else 1
+}
+
+// bit_count returns the number of significant magnitude bits. It does not use
+// a host count-leading-zero intrinsic, keeping this package ordinary Draft.
+pub bit_count :: proc(value: ^Integer) -> usize {
+    if is_zero(value) {
+        return 0
+    }
+    result := (value.length - 1) * cast[usize](Limb_Bits)
+    high := value.data[value.length - 1]
+    for high != 0 {
+        result += 1
+        high >>= 1
+    }
+    return result
+}
+
+// copy replaces destination with an independent magnitude copy. The two
+// owners must be distinct; destination retains its own allocator.
+pub copy :: proc(destination: ^Integer, source: ^Integer) {
+    assert(destination != source,
+        "big integer copy aliases its source")
+    assert(initialized(destination) && initialized(source),
+        "big integer copy uses an uninitialized owner")
+    clear(destination)
+    reserve(destination, source.length)
+    for index: usize = 0; index < source.length; index += 1 {
+        destination.data[index] = source.data[index]
+    }
+    destination.length = source.length
+    destination.negative = source.negative
+}
+
+// set_u64 replaces destination with the exact nonnegative source value.
+pub set_u64 :: proc(destination: ^Integer, value: u64) {
+    assert(initialized(destination), "big integer is not initialized")
+    clear(destination)
+    if value == 0 {
+        return
+    }
+    append_limb(destination, cast[u32](value))
+    high := cast[u32](value >> Limb_Bits)
+    if high != 0 {
+        append_limb(destination, high)
+    }
+}
+
+// set_i64 replaces destination with the exact signed source value. Computing
+// the negative magnitude through -(value + 1) keeps i64 minimum representable.
+pub set_i64 :: proc(destination: ^Integer, value: i64) {
+    if value >= 0 {
+        set_u64(destination, cast[u64](value))
+        return
+    }
+    magnitude := cast[u64](-(value + 1)) + 1
+    set_u64(destination, magnitude)
+    destination.negative = true
+}
+
+// digit_value decodes the source-literal digit alphabet without locale.
+digit_value :: proc(byte: u8) -> (u32, bool) {
+    if byte >= cast[u8]('0') && byte <= cast[u8]('9') {
+        return (cast[u32](byte - cast[u8]('0')), true)
+    }
+    if byte >= cast[u8]('a') && byte <= cast[u8]('f') {
+        return (cast[u32](byte - cast[u8]('a')) + 10, true)
+    }
+    if byte >= cast[u8]('A') && byte <= cast[u8]('F') {
+        return (cast[u32](byte - cast[u8]('A')) + 10, true)
+    }
+    return (0, false)
+}
+
+// multiply_small multiplies one nonnegative magnitude in place. It is private
+// parsing/formatting machinery rather than concrete Draft integer arithmetic.
+multiply_small :: proc(value: ^Integer, factor: u32) {
+    assert(!value.negative,
+        "small multiplication received a negative magnitude")
+    if factor == 0 || is_zero(value) {
+        if factor == 0 {
+            clear(value)
+        }
+        return
+    }
+    carry: u64
+    for index: usize = 0; index < value.length; index += 1 {
+        product := cast[u64](value.data[index]) * cast[u64](factor) + carry
+        value.data[index] = cast[u32](product)
+        carry = product >> Limb_Bits
+    }
+    if carry != 0 {
+        append_limb(value, cast[u32](carry))
+    }
+}
+
+// add_small_magnitude adds one u32 to the stored magnitude without changing
+// its sign. The carry calculation fits exactly in u64.
+add_small_magnitude :: proc(value: ^Integer, addition: u32) {
+    if addition == 0 {
+        return
+    }
+    carry := cast[u64](addition)
+    for index: usize = 0; index < value.length; index += 1 {
+        sum := cast[u64](value.data[index]) + carry
+        value.data[index] = cast[u32](sum)
+        carry = sum >> Limb_Bits
+        if carry == 0 {
+            return
+        }
+    }
+    if carry != 0 {
+        append_limb(value, cast[u32](carry))
+    }
+}
+
+// subtract_one_magnitude decrements a known-nonzero magnitude. Borrow walks
+// through low zero limbs and normalization removes a high limb when needed.
+subtract_one_magnitude :: proc(value: ^Integer) {
+    assert(value.length != 0,
+        "cannot decrement zero big integer magnitude")
+    for index: usize = 0; index < value.length; index += 1 {
+        if value.data[index] != 0 {
+            value.data[index] -= 1
+            normalize(value)
+            return
+        }
+        value.data[index] = ~cast[u32](0)
+    }
+    assert(false, "big integer decrement lost its nonzero limb")
+}
+
+// parse_literal replaces destination from one unsigned Draft integer token.
+// It accepts decimal and 0b/0o/0x spellings plus underscore separators. A
+// leading sign is intentionally absent because syntax represents it as unary
+// expression. False clears destination back to canonical zero.
+pub parse_literal :: proc(destination: ^Integer, spelling: string) -> bool {
+    assert(initialized(destination), "big integer is not initialized")
+    clear(destination)
+    base: u32 = 10
+    index: usize
+    if len(spelling) >= 2 && spelling[0] == cast[u8]('0') {
+        prefix := spelling[1]
+        if prefix == cast[u8]('b') || prefix == cast[u8]('B') {
+            base = 2
+        } else if prefix == cast[u8]('o') || prefix == cast[u8]('O') {
+            base = 8
+        } else if prefix == cast[u8]('x') || prefix == cast[u8]('X') {
+            base = 16
+        }
+        if base != 10 {
+            index = 2
+        }
+    }
+
+    saw_digit := false
+    for index < len(spelling) {
+        byte := spelling[index]
+        index += 1
+        if byte == cast[u8]('_') {
+            continue
+        }
+        (digit, valid) := digit_value(byte)
+        if !valid || digit >= base {
+            clear(destination)
+            return false
+        }
+        multiply_small(destination, base)
+        add_small_magnitude(destination, digit)
+        saw_digit = true
+    }
+    if !saw_digit {
+        clear(destination)
+        return false
+    }
+    return true
+}
+
+// absolute writes the nonnegative mathematical magnitude into destination.
+pub absolute :: proc(destination: ^Integer, source: ^Integer) {
+    copy(destination, source)
+    destination.negative = false
+}
+
+// negate writes the additive inverse and preserves canonical positive zero.
+pub negate :: proc(destination: ^Integer, source: ^Integer) {
+    copy(destination, source)
+    if destination.length != 0 {
+        destination.negative = !destination.negative
+    }
+}
+
+// compare_magnitude returns -1, 0, or 1 while ignoring mathematical signs.
+compare_magnitude :: proc(left, right: ^Integer) -> i8 {
+    if left.length != right.length {
+        return -1 if left.length < right.length else 1
+    }
+    remaining := left.length
+    for remaining != 0 {
+        remaining -= 1
+        if left.data[remaining] != right.data[remaining] {
+            return -1 if left.data[remaining] < right.data[remaining] else 1
+        }
+    }
+    return 0
+}
+
+// compare returns -1, 0, or 1 according to mathematical signed ordering.
+pub compare :: proc(left, right: ^Integer) -> i8 {
+    assert(initialized(left) && initialized(right),
+        "big integer comparison uses an uninitialized owner")
+    left_sign := sign(left)
+    right_sign := sign(right)
+    if left_sign != right_sign {
+        return -1 if left_sign < right_sign else 1
+    }
+    if left_sign == 0 {
+        return 0
+    }
+    magnitude := compare_magnitude(left, right)
+    return -magnitude if left.negative else magnitude
+}
+
+// equal performs numeric equality over canonical sign/magnitude values.
+pub equal :: proc(left, right: ^Integer) -> bool {
+    return compare(left, right) == 0
+}
+
+// add_magnitudes writes |left| + |right|. A u64 holds two u32 limbs plus carry
+// exactly, so host wrapping cannot enter the mathematical result.
+add_magnitudes :: proc(
+    destination: ^Integer,
+    left, right: ^Integer,
+) {
+    count := left.length
+    if right.length > count {
+        count = right.length
+    }
+    set_zero_limbs(destination, count)
+    carry: u64
+    for index: usize = 0; index < count; index += 1 {
+        left_limb: u64
+        right_limb: u64
+        if index < left.length {
+            left_limb = cast[u64](left.data[index])
+        }
+        if index < right.length {
+            right_limb = cast[u64](right.data[index])
+        }
+        sum := left_limb + right_limb + carry
+        destination.data[index] = cast[u32](sum)
+        carry = sum >> Limb_Bits
+    }
+    if carry != 0 {
+        append_limb(destination, cast[u32](carry))
+    }
+    normalize(destination)
+}
+
+// subtract_magnitudes writes |left| - |right| after the caller establishes
+// left >= right. Borrow is expressed in base 2^32, avoiding signed overflow.
+subtract_magnitudes :: proc(
+    destination: ^Integer,
+    left, right: ^Integer,
+) {
+    assert(compare_magnitude(left, right) >= 0,
+        "big integer magnitude subtraction is reversed")
+    set_zero_limbs(destination, left.length)
+    borrow: u64
+    for index: usize = 0; index < left.length; index += 1 {
+        left_limb := cast[u64](left.data[index])
+        right_limb: u64
+        if index < right.length {
+            right_limb = cast[u64](right.data[index])
+        }
+        subtrahend := right_limb + borrow
+        if left_limb < subtrahend {
+            destination.data[index] = cast[u32](
+                Limb_Base + left_limb - subtrahend,
+            )
+            borrow = 1
+        } else {
+            destination.data[index] = cast[u32](left_limb - subtrahend)
+            borrow = 0
+        }
+    }
+    assert(borrow == 0, "big integer subtraction retained a borrow")
+    normalize(destination)
+}
+
+// add writes the exact mathematical sum. Destination must not alias either
+// input because it is cleared before all source limbs have been consumed.
+pub add :: proc(destination: ^Integer, left, right: ^Integer) {
+    assert(destination != left && destination != right,
+        "big integer addition output aliases an input")
+    assert(initialized(destination) && initialized(left) && initialized(right),
+        "big integer addition uses an uninitialized owner")
+    if is_zero(left) {
+        copy(destination, right)
+        return
+    }
+    if is_zero(right) {
+        copy(destination, left)
+        return
+    }
+    if left.negative == right.negative {
+        add_magnitudes(destination, left, right)
+        destination.negative = left.negative
+        return
+    }
+    order := compare_magnitude(left, right)
+    if order == 0 {
+        clear(destination)
+    } else if order > 0 {
+        subtract_magnitudes(destination, left, right)
+        destination.negative = left.negative
+    } else {
+        subtract_magnitudes(destination, right, left)
+        destination.negative = right.negative
+    }
+}
+
+// subtract writes the exact mathematical difference without constructing an
+// owning temporary negation of right.
+pub subtract :: proc(destination: ^Integer, left, right: ^Integer) {
+    assert(destination != left && destination != right,
+        "big integer subtraction output aliases an input")
+    assert(initialized(destination) && initialized(left) && initialized(right),
+        "big integer subtraction uses an uninitialized owner")
+    if is_zero(right) {
+        copy(destination, left)
+        return
+    }
+    if is_zero(left) {
+        copy(destination, right)
+        destination.negative = !destination.negative
+        return
+    }
+    if left.negative != right.negative {
+        add_magnitudes(destination, left, right)
+        destination.negative = left.negative
+        return
+    }
+    order := compare_magnitude(left, right)
+    if order == 0 {
+        clear(destination)
+    } else if order > 0 {
+        subtract_magnitudes(destination, left, right)
+        destination.negative = left.negative
+    } else {
+        subtract_magnitudes(destination, right, left)
+        destination.negative = !right.negative
+    }
+}
+
+// multiply writes the exact schoolbook product. Each limb product plus the
+// accumulated output limb and carry is at most u64 maximum.
+pub multiply :: proc(destination: ^Integer, left, right: ^Integer) {
+    assert(destination != left && destination != right,
+        "big integer multiplication output aliases an input")
+    assert(initialized(destination) && initialized(left) && initialized(right),
+        "big integer multiplication uses an uninitialized owner")
+    if is_zero(left) || is_zero(right) {
+        clear(destination)
+        return
+    }
+    assert(left.length <= ~cast[usize](0) - right.length,
+        "big integer product limb count overflows")
+    set_zero_limbs(destination, left.length + right.length)
+    for left_index: usize = 0;
+        left_index < left.length;
+        left_index += 1 {
+        carry: u64
+        for right_index: usize = 0;
+            right_index < right.length;
+            right_index += 1 {
+            output := left_index + right_index
+            product := cast[u64](left.data[left_index]) *
+                cast[u64](right.data[right_index]) +
+                cast[u64](destination.data[output]) + carry
+            destination.data[output] = cast[u32](product)
+            carry = product >> Limb_Bits
+        }
+        output := left_index + right.length
+        for carry != 0 {
+            assert(output < destination.length,
+                "big integer product carry exceeds result storage")
+            sum := cast[u64](destination.data[output]) + carry
+            destination.data[output] = cast[u32](sum)
+            carry = sum >> Limb_Bits
+            output += 1
+        }
+    }
+    destination.negative = left.negative != right.negative
+    normalize(destination)
+}
+
+// magnitude_bit reads one bit from the finite positive magnitude; positions
+// beyond the last limb are zero.
+magnitude_bit :: proc(value: ^Integer, index: usize) -> bool {
+    limb := index / cast[usize](Limb_Bits)
+    bit := cast[u32](index % cast[usize](Limb_Bits))
+    return limb < value.length &&
+        ((value.data[limb] >> bit) & 1) != 0
+}
+
+// set_magnitude_bit sets one positive result bit, extending initialized storage
+// and zeroing every new intermediate limb.
+set_magnitude_bit :: proc(value: ^Integer, index: usize) {
+    limb := index / cast[usize](Limb_Bits)
+    bit := cast[u32](index % cast[usize](Limb_Bits))
+    if value.length <= limb {
+        old_length := value.length
+        reserve(value, limb + 1)
+        for cursor := old_length; cursor <= limb; cursor += 1 {
+            value.data[cursor] = 0
+        }
+        value.length = limb + 1
+    }
+    value.data[limb] |= cast[u32](1) << bit
+}
+
+// shift_left_one_magnitude multiplies one nonnegative working remainder by two
+// without allocating an intermediate Integer.
+shift_left_one_magnitude :: proc(value: ^Integer) {
+    carry: u64
+    for index: usize = 0; index < value.length; index += 1 {
+        shifted := (cast[u64](value.data[index]) << 1) | carry
+        value.data[index] = cast[u32](shifted)
+        carry = shifted >> Limb_Bits
+    }
+    if carry != 0 {
+        append_limb(value, cast[u32](carry))
+    }
+}
+
+// subtract_magnitude_in_place removes a known-smaller positive divisor from a
+// positive working remainder during binary long division.
+subtract_magnitude_in_place :: proc(value, subtrahend: ^Integer) {
+    assert(compare_magnitude(value, subtrahend) >= 0,
+        "division remainder is smaller than divisor")
+    borrow: u64
+    for index: usize = 0; index < value.length; index += 1 {
+        right_limb: u64
+        if index < subtrahend.length {
+            right_limb = cast[u64](subtrahend.data[index])
+        }
+        total := right_limb + borrow
+        left_limb := cast[u64](value.data[index])
+        if left_limb < total {
+            value.data[index] = cast[u32](Limb_Base + left_limb - total)
+            borrow = 1
+        } else {
+            value.data[index] = cast[u32](left_limb - total)
+            borrow = 0
+        }
+    }
+    assert(borrow == 0, "division subtraction retained a borrow")
+    normalize(value)
+}
+
+// divide performs unsigned binary long division over magnitudes, then applies
+// Draft's truncation-toward-zero quotient sign and dividend-signed remainder.
+// False means only division by zero; both outputs are canonical zero on failure.
+pub divide :: proc(
+    quotient, remainder: ^Integer,
+    dividend, divisor: ^Integer,
+) -> bool {
+    assert(quotient != remainder && quotient != dividend &&
+        quotient != divisor && remainder != dividend && remainder != divisor,
+        "big integer division aliases an input or output")
+    assert(initialized(quotient) && initialized(remainder) &&
+        initialized(dividend) && initialized(divisor),
+        "big integer division uses an uninitialized owner")
+    clear(quotient)
+    clear(remainder)
+    if is_zero(divisor) {
+        return false
+    }
+
+    remaining_bits := bit_count(dividend)
+    for remaining_bits != 0 {
+        remaining_bits -= 1
+        shift_left_one_magnitude(remainder)
+        if magnitude_bit(dividend, remaining_bits) {
+            add_small_magnitude(remainder, 1)
+        }
+        if compare_magnitude(remainder, divisor) >= 0 {
+            subtract_magnitude_in_place(remainder, divisor)
+            set_magnitude_bit(quotient, remaining_bits)
+        }
+    }
+    if quotient.length != 0 {
+        quotient.negative = dividend.negative != divisor.negative
+    }
+    if remainder.length != 0 {
+        remainder.negative = dividend.negative
+    }
+    return true
+}
+
+// shift_left multiplies source by 2^count while retaining its mathematical
+// sign. count is unsigned here; the expression evaluator diagnoses a negative
+// source shift count before calling this representation layer.
+pub shift_left :: proc(
+    destination: ^Integer,
+    source: ^Integer,
+    count: usize,
+) {
+    assert(destination != source,
+        "big integer left shift aliases its input")
+    assert(initialized(destination) && initialized(source),
+        "big integer left shift uses an uninitialized owner")
+    if count == 0 {
+        copy(destination, source)
+        return
+    }
+    if is_zero(source) {
+        clear(destination)
+        return
+    }
+    whole_limbs := count / cast[usize](Limb_Bits)
+    bits := cast[u32](count % cast[usize](Limb_Bits))
+    assert(whole_limbs <= ~cast[usize](0) - source.length - 1,
+        "big integer left shift limb count overflows")
+    set_zero_limbs(destination, whole_limbs + source.length + 1)
+    carry: u64
+    for index: usize = 0; index < source.length; index += 1 {
+        shifted := (cast[u64](source.data[index]) << bits) | carry
+        destination.data[whole_limbs + index] = cast[u32](shifted)
+        carry = shifted >> Limb_Bits
+    }
+    destination.data[whole_limbs + source.length] = cast[u32](carry)
+    destination.negative = source.negative
+    normalize(destination)
+}
+
+// has_discarded_bits reports whether a magnitude loses any one bit under a
+// right shift. Negative arithmetic shift uses this to round toward minus
+// infinity in the infinite two's-complement domain.
+has_discarded_bits :: proc(value: ^Integer, count: usize) -> bool {
+    full_limbs := count / cast[usize](Limb_Bits)
+    if full_limbs > value.length {
+        full_limbs = value.length
+    }
+    for index: usize = 0; index < full_limbs; index += 1 {
+        if value.data[index] != 0 {
+            return true
+        }
+    }
+    partial := cast[u32](count % cast[usize](Limb_Bits))
+    if partial != 0 && full_limbs < value.length {
+        mask := (cast[u32](1) << partial) - 1
+        return (value.data[full_limbs] & mask) != 0
+    }
+    return false
+}
+
+// shift_right implements infinite two's-complement arithmetic shift. Positive
+// values shift logically; a negative value with discarded one bits rounds its
+// finite magnitude quotient away from zero to obtain floor(value / 2^count).
+pub shift_right :: proc(
+    destination: ^Integer,
+    source: ^Integer,
+    count: usize,
+) {
+    assert(destination != source,
+        "big integer right shift aliases its input")
+    assert(initialized(destination) && initialized(source),
+        "big integer right shift uses an uninitialized owner")
+    if count == 0 {
+        copy(destination, source)
+        return
+    }
+    if is_zero(source) {
+        clear(destination)
+        return
+    }
+    if count >= bit_count(source) {
+        if source.negative {
+            set_i64(destination, -1)
+        } else {
+            clear(destination)
+        }
+        return
+    }
+
+    discarded := has_discarded_bits(source, count)
+    whole_limbs := count / cast[usize](Limb_Bits)
+    bits := cast[u32](count % cast[usize](Limb_Bits))
+    set_zero_limbs(destination, source.length - whole_limbs)
+    carry: u32
+    remaining := source.length
+    for remaining > whole_limbs {
+        input := remaining - 1
+        output := input - whole_limbs
+        if bits == 0 {
+            destination.data[output] = source.data[input]
+        } else {
+            destination.data[output] = (source.data[input] >> bits) | carry
+            carry = source.data[input] << (Limb_Bits - bits)
+        }
+        remaining -= 1
+    }
+    destination.negative = source.negative
+    normalize(destination)
+    if destination.negative && discarded {
+        add_small_magnitude(destination, 1)
+    }
+}
+
+// to_twos_complement writes exactly count fixed-width limbs. One additional
+// limb beyond both inputs gives binary operations an unambiguous sign bit while
+// modeling infinite sign extension.
+to_twos_complement :: proc(
+    destination: ^Integer,
+    source: ^Integer,
+    count: usize,
+) {
+    set_zero_limbs(destination, count)
+    copied := source.length
+    if copied > count {
+        copied = count
+    }
+    for index: usize = 0; index < copied; index += 1 {
+        destination.data[index] = source.data[index]
+    }
+    if !source.negative {
+        return
+    }
+    for index: usize = 0; index < count; index += 1 {
+        destination.data[index] = ~destination.data[index]
+    }
+    carry: u64 = 1
+    for index: usize = 0; index < count; index += 1 {
+        sum := cast[u64](destination.data[index]) + carry
+        destination.data[index] = cast[u32](sum)
+        carry = sum >> Limb_Bits
+        if carry == 0 {
+            break
+        }
+    }
+}
+
+// from_twos_complement converts one fixed-width packet back into canonical
+// sign/magnitude. bits is a temporary limb owner whose negative flag is unused.
+from_twos_complement :: proc(destination, bits: ^Integer) {
+    assert(bits.length != 0,
+        "two's-complement packet has no sign limb")
+    negative := (bits.data[bits.length - 1] & 0x80000000) != 0
+    copy(destination, bits)
+    destination.negative = false
+    if !negative {
+        normalize(destination)
+        return
+    }
+    for index: usize = 0; index < destination.length; index += 1 {
+        destination.data[index] = ~destination.data[index]
+    }
+    add_small_magnitude(destination, 1)
+    destination.negative = true
+    normalize(destination)
+}
+
+// Bitwise_Operation is private closed dispatch shared by the three binary
+// infinite-two's-complement operations.
+Bitwise_Operation :: enum u8 {
+    and_value,
+    or_value,
+    xor_value,
+}
+
+// bitwise_binary materializes one finite sign-extension packet per operand,
+// applies the exact limb operation, and canonicalizes the signed result.
+bitwise_binary :: proc(
+    destination: ^Integer,
+    left, right: ^Integer,
+    operation: Bitwise_Operation,
+) {
+    assert(destination != left && destination != right,
+        "big integer bitwise output aliases an input")
+    assert(initialized(destination) && initialized(left) && initialized(right),
+        "big integer bitwise operation uses an uninitialized owner")
+    count := left.length
+    if right.length > count {
+        count = right.length
+    }
+    assert(count != ~cast[usize](0),
+        "big integer bitwise limb count overflows")
+    count += 1
+
+    left_bits: Integer
+    right_bits: Integer
+    init_with_allocator(&left_bits, destination.allocator)
+    init_with_allocator(&right_bits, destination.allocator)
+    defer destroy(&right_bits)
+    defer destroy(&left_bits)
+    to_twos_complement(&left_bits, left, count)
+    to_twos_complement(&right_bits, right, count)
+    for index: usize = 0; index < count; index += 1 {
+        switch operation {
+        case .and_value:
+            left_bits.data[index] &= right_bits.data[index]
+        case .or_value:
+            left_bits.data[index] |= right_bits.data[index]
+        case .xor_value:
+            left_bits.data[index] ~= right_bits.data[index]
+        }
+    }
+    from_twos_complement(destination, &left_bits)
+}
+
+// bitwise_and writes the infinite-two's-complement intersection.
+pub bitwise_and :: proc(destination: ^Integer, left, right: ^Integer) {
+    bitwise_binary(destination, left, right, .and_value)
+}
+
+// bitwise_or writes the infinite-two's-complement union.
+pub bitwise_or :: proc(destination: ^Integer, left, right: ^Integer) {
+    bitwise_binary(destination, left, right, .or_value)
+}
+
+// bitwise_xor writes the infinite-two's-complement exclusive-or result.
+pub bitwise_xor :: proc(destination: ^Integer, left, right: ^Integer) {
+    bitwise_binary(destination, left, right, .xor_value)
+}
+
+// bitwise_not uses ~x == -x - 1 directly on sign/magnitude. This avoids a
+// temporary sign-extension packet for the unary case.
+pub bitwise_not :: proc(destination: ^Integer, source: ^Integer) {
+    assert(destination != source,
+        "big integer complement output aliases its input")
+    copy(destination, source)
+    destination.negative = false
+    if source.negative {
+        subtract_one_magnitude(destination)
+    } else {
+        add_small_magnitude(destination, 1)
+        destination.negative = true
+    }
+    normalize(destination)
+}
+
+// magnitude_u64 returns the finite magnitude when it occupies at most two
+// limbs. It intentionally ignores sign for signed conversion.
+magnitude_u64 :: proc(value: ^Integer) -> (u64, bool) {
+    if value.length > 2 {
+        return (0, false)
+    }
+    result: u64
+    if value.length != 0 {
+        result = cast[u64](value.data[0])
+    }
+    if value.length == 2 {
+        result |= cast[u64](value.data[1]) << Limb_Bits
+    }
+    return (result, true)
+}
+
+// to_u64 succeeds only for a nonnegative value representable by u64.
+pub to_u64 :: proc(value: ^Integer) -> (u64, bool) {
+    assert(initialized(value), "big integer is not initialized")
+    if value.negative {
+        return (0, false)
+    }
+    return magnitude_u64(value)
+}
+
+// to_i64 succeeds only for the exact signed range, including i64 minimum.
+pub to_i64 :: proc(value: ^Integer) -> (i64, bool) {
+    assert(initialized(value), "big integer is not initialized")
+    (magnitude, fits) := magnitude_u64(value)
+    if !fits {
+        return (0, false)
+    }
+    positive_limit := cast[u64](~cast[i64](0))
+    positive_limit >>= 1
+    if !value.negative {
+        if magnitude > positive_limit {
+            return (0, false)
+        }
+        return (cast[i64](magnitude), true)
+    }
+    if magnitude > positive_limit + 1 {
+        return (0, false)
+    }
+    if magnitude == positive_limit + 1 {
+        return (cast[i64](magnitude), true)
+    }
+    return (-cast[i64](magnitude), true)
+}
+
+// divide_small_magnitude divides a nonnegative magnitude in place by one
+// nonzero u32 and returns the u32 remainder. High-to-low processing uses a u64
+// packet containing the prior remainder and current limb.
+divide_small_magnitude :: proc(value: ^Integer, divisor: u32) -> u32 {
+    assert(divisor != 0, "small big integer divisor is zero")
+    assert(!value.negative,
+        "small division received a negative magnitude")
+    remainder: u64
+    remaining := value.length
+    for remaining != 0 {
+        remaining -= 1
+        packet := (remainder << Limb_Bits) |
+            cast[u64](value.data[remaining])
+        value.data[remaining] = cast[u32](packet / cast[u64](divisor))
+        remainder = packet % cast[u64](divisor)
+    }
+    normalize(value)
+    return cast[u32](remainder)
+}
+
+// format_decimal writes the shortest signed decimal spelling into destination
+// and returns its initialized prefix. The returned slice borrows destination.
+// False means only that the buffer was too small; its bytes are then
+// unspecified. The source value is not modified.
+pub format_decimal :: proc(
+    destination: []u8,
+    value: ^Integer,
+) -> ([]u8, bool) {
+    assert(initialized(value), "big integer is not initialized")
+    empty: []u8
+    if is_zero(value) {
+        if len(destination) == 0 {
+            return (empty, false)
+        }
+        destination[0] = cast[u8]('0')
+        return (destination[:1], true)
+    }
+
+    remaining: Integer
+    init_with_allocator(&remaining, value.allocator)
+    defer destroy(&remaining)
+    copy(&remaining, value)
+    remaining.negative = false
+
+    written: usize
+    for !is_zero(&remaining) {
+        if written == len(destination) {
+            return (empty, false)
+        }
+        digit := divide_small_magnitude(&remaining, 10)
+        destination[written] = cast[u8](digit) + cast[u8]('0')
+        written += 1
+    }
+    if value.negative {
+        if written == len(destination) {
+            return (empty, false)
+        }
+        destination[written] = cast[u8]('-')
+        written += 1
+    }
+
+    for index: usize = 0; index < written / 2; index += 1 {
+        opposite := written - index - 1
+        temporary := destination[index]
+        destination[index] = destination[opposite]
+        destination[opposite] = temporary
+    }
+    return (destination[:written], true)
+}

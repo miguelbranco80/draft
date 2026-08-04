@@ -1265,6 +1265,14 @@ if(BUILD_TESTING)
     target_link_libraries(
       draft_workspace_public_names_oracle PRIVATE draft_compiler)
 
+    # This fixed-operation oracle exposes the production arbitrary-precision
+    # integer independently of the semantic pipeline. The paired Draft tool is
+    # built in process-unique test storage, so this migration check adds no
+    # command to draftc and no generated state to the source checkout.
+    add_executable(
+      draft_big_integer_oracle tools/bootstrap_big_integer.cpp)
+    target_link_libraries(draft_big_integer_oracle PRIVATE draft_compiler)
+
     # Same-package Draft tests catch focused lexical and parser failures. The
     # process tests are the migration gates: stdout, stderr, and exit status
     # remain byte-for-byte equal to the C++ bootstrap over repository sources,
@@ -1284,6 +1292,22 @@ if(BUILD_TESTING)
     set_tests_properties(
       draft_self_hosted_frontend_units
       PROPERTIES LABELS "frontend;self-hosting"
+    )
+    add_test(
+      NAME draft_self_hosted_big_integer_differential
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DDRAFTC=$<TARGET_FILE:draftc>"
+        "-DORACLE=$<TARGET_FILE:draft_big_integer_oracle>"
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/self-hosted-big-integer-tests"
+        "-DTARGET_SELECTOR=${DRAFT_NATIVE_HOST_TARGET}"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_self_hosted_big_integer_test.cmake"
+    )
+    set_tests_properties(
+      draft_self_hosted_big_integer_differential
+      PROPERTIES LABELS "frontend;self-hosting;integration"
     )
     add_test(
       NAME draft_self_hosted_lexer_differential

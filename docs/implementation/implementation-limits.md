@@ -256,6 +256,15 @@ parametric forms, foreign/export declarations, procedure contracts, bitwise/
 shift/cast/comparison integer expressions, untyped intermediates beyond u128,
 negative or wider named scalar publication, and general constant/type forms
 fail explicitly at this interface boundary.
+The lower `compiler/big_integer` package is no longer part of this missing
+surface: it implements and differentially qualifies arbitrary-precision
+parsing, sign/magnitude arithmetic, division, shifts, infinite-two's-complement
+bitwise operations, fixed-width conversion, and decimal formatting against the
+production C++ `BigInteger`. The u128 failures above remain because the typed
+interface evaluator still stores values in `Enum_Integer` and its published
+constant packet still stores u64. The next integration must replace those
+owning/value seams and their diagnostics; the existence of the lower package
+does not make wider expressions accepted by `draftc-next` yet.
 Imported constants remain unavailable to the earlier package-`when` selector.
 Deeper nominal member lookup, full type/body checking, elaboration, MIR, LLVM,
 artifacts, and linking have not moved to the staging driver. The C++ driver
