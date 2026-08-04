@@ -353,15 +353,17 @@ signatures.
 Named integer constants, enum values, and fixed-array counts share an evaluator
 for integer literals, ready local/imported unsigned constants, target numeric
 facts, grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`,
-`|`, and `~` (xor), and `<<`/`>>`. Untyped operations remain mathematically
-exact regardless of intermediate width and use infinite-two's-complement
-bitwise semantics; concrete unsigned types no wider than 64 bits wrap at their
+`|`, `~` (xor), `<<`/`>>`, and explicit integer casts to concrete unsigned
+types no wider than 64 bits. Direct integer comparisons use that exact domain
+and publish bool. Untyped operations remain mathematically exact regardless of
+intermediate width and use infinite-two's-complement bitwise semantics;
+concrete unsigned operations and casts no wider than 64 bits reduce at their
 declared width. Shift counts must be nonnegative, stay below a concrete left
 width, and fit the one-million-bit constant resource bound.
-Named constants can currently publish only nonnegative u64 results. Enum values
-must fit the signed/u128 value packet, and fixed-array counts require a positive
-result representable by the target-sized count packet from an untyped value or
-exact `usize`. Packages are processed dependency-first;
+Named integer constants can currently publish only nonnegative u64 results.
+Enum values must fit the signed/u128 value packet, and fixed-array counts
+require a positive result representable by the target-sized count packet from
+an untyped value or exact `usize`. Packages are processed dependency-first;
 each producer interface type/value is reconstructed in the consumer's local
 type domain, and imported rows print structural/nominal type shapes so
 process-local Type IDs do not enter the qualification contract. Each distinct
@@ -389,12 +391,12 @@ maximum-member overlay layout. Forward local type/count aliases and qualified
 imported type/value/count aliases are included. C enums, packed/bit fields, C or
 explicitly aligned aggregates, selected/synthesized/directive members,
 SIMD/parametric types, foreign/export
-declarations, procedure contracts, cast/comparison integer
-expressions, negative or wider named scalar publication, and general
-constant/type forms fail explicitly rather than
-receiving a fallback interface. Imported constants are available here only
-after the dependency interface exists; the earlier package-`when` command still
-cannot consume them.
+declarations, procedure contracts, signed, wider, or non-integer cast
+destinations, exact integer comparisons nested in unsupported constant forms,
+negative or wider named integer publication, and general constant/type forms
+fail explicitly rather than receiving a fallback interface. Imported constants
+are available here only after the dependency interface exists; the earlier
+package-`when` command still cannot consume them.
 These are qualification commands rather than the public compiler. Public
 semantic compilation and later commands continue to use `build/draftc` until
 their own replacement gates are complete.

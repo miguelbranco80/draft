@@ -2,8 +2,9 @@
 #
 # Both executables emit the established graph, declaration, target-selection,
 # and public-name prefix before the canonical scalar/structural/nominal type
-# graph, including exact natural-layout struct fields/offsets, enum values,
-# variant discriminator/payload packets, and zero-offset union overlays.
+# graph, including exact integer casts/comparisons, natural-layout struct
+# fields/offsets, enum values, variant discriminator/payload packets, and
+# zero-offset union overlays.
 # Imported rows are compared through structural/nominal consumer-local type
 # shapes so unrelated production-only private interning cannot affect the
 # result. Scratch is process-unique below the caller-provided binary directory.
@@ -176,6 +177,25 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Target_Shift_Wrapped :: target.page_size << 60\n"
   "pub Concrete_Count_Shift :: (1 << target.pointer_bits) >> target.pointer_bits\n"
   "pub Index :: u32\n"
+  "pub Cast_Byte :: cast[u8](257)\n"
+  "pub Cast_Negative :: cast[u8](-1)\n"
+  "pub Cast_Index :: cast[Index](4294967297)\n"
+  "pub Cast_Page :: cast[usize](target.page_size)\n"
+  "pub Cast_Wide :: cast[u64]((1 << 100) + 9)\n"
+  "pub Cast_Arithmetic :: cast[u8](255) + 2\n"
+  "pub Forward_Cast :: cast[Later_Cast_Index](65537)\n"
+  "Later_Cast_Index :: u16\n"
+  "pub Equal_Wide :: ((1 << 200) | 7) == ((1 << 200) + 7)\n"
+  "pub Unequal_Wide :: (1 << 200) != (1 << 199)\n"
+  "pub Less_Negative :: -(1 << 200) < -1\n"
+  "pub Less_Equal_Wide :: (1 << 200) <= (1 << 200)\n"
+  "pub Greater_Wide :: (1 << 200) > ((1 << 199) + 1)\n"
+  "pub Greater_Equal_Cast :: cast[u8](-1) >= 255\n"
+  "pub Target_Comparison :: target.page_size >= 4096\n"
+  "pub Forward_Comparison :: Later_Comparison_Value > 7\n"
+  "Later_Comparison_Value :: 8\n"
+  "pub Boolean_Comparison :: true != false\n"
+  "pub Type_Comparison :: u8 != u16\n"
   "pub Duration :: distinct i64\n"
   "pub Epoch :: distinct i64\n"
   "pub Pair :: struct { left: u8; right: u32; tail: u16; }\n"
@@ -199,6 +219,7 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Product_Code :: enum { zero; square = 18446744073709551615 * 18446744073709551615; }\n"
   "pub Arbitrary_Code :: enum u128 { zero; recovered = (340282366920938463463374607431768211455 + 1) - 1; quotient = ((340282366920938463463374607431768211455 + 1) * 37) / (340282366920938463463374607431768211455 + 1); remainder = (((340282366920938463463374607431768211455 + 1) * 37) + 19) % (340282366920938463463374607431768211455 + 1); negative_recovered = -(340282366920938463463374607431768211455 + 1) + (340282366920938463463374607431768211455 + 2); }\n"
   "pub Bitwise_Code :: enum i16 { zero; complement = ~0; xor_value = -8 ~ 3; and_value = -1 & 255; or_value = 8 | 3; arithmetic_shift = -9 >> 2; left_shift = 3 << 4; wide_recovered = ((1 << 200) | 37) & 63; }\n"
+  "pub Cast_Code :: enum u8 { zero; wrapped = cast[u8](257); maximum = cast[u8](-1); }\n"
   "Private_Status :: enum u8 { none; active = 9; }\n"
   "pub Private_Status_View :: Private_Status\n"
   "pub Choice :: variant { none; count: u32; pair: Pair; }\n"
@@ -234,6 +255,7 @@ file(WRITE "${interface_workspace}/values/package.draft"
   "pub Bitwise_Array :: [2 | 1]u8\n"
   "pub Shift_Array :: [(1 << 6) >> 4]u8\n"
   "pub Concrete_Count_Array :: [(1 << target.pointer_bits) >> target.pointer_bits]u8\n"
+  "pub Cast_Count_Array :: [cast[usize]((1 << 80) + 3)]u8\n"
   "pub Duration_Array :: [Count]Duration\n"
   "pub Pair_Array :: [Count]Pair\n"
   "pub Pair_Pointer :: ^Pair\n"
@@ -272,6 +294,9 @@ file(WRITE "${interface_workspace}/middle/package.draft"
   "pub Arbitrary_Count :: values.Arbitrary_Recovered + values.Arbitrary_Divided\n"
   "pub Bitwise_Count :: (values.Bitwise_Count << 1) >> 1\n"
   "pub Target_Bits :: values.Target_Shifted | 1\n"
+  "pub Imported_Cast :: cast[values.Index](4294967297)\n"
+  "pub Imported_Comparison :: values.Cast_Wide == 9\n"
+  "pub Reexported_Comparison :: values.Greater_Wide\n"
   "pub Imported_Arithmetic_Array :: [values.Remainder_Count + 1]u8\n"
   "pub Private_Status :: values.Private_Status_View\n"
   "pub Middle_Code :: enum u16 { none; count = values.Count; }\n"
@@ -300,6 +325,9 @@ file(WRITE "${interface_workspace}/app/package.draft"
   "pub Imported_Arbitrary_Code :: middle.Arbitrary_Code\n"
   "pub Imported_Bitwise_Code :: middle.Bitwise_Code\n"
   "pub Imported_Bitwise_Count :: middle.Bitwise_Count\n"
+  "pub Imported_Cast :: middle.Imported_Cast\n"
+  "pub Imported_Comparison :: middle.Imported_Comparison\n"
+  "pub Transitive_Comparison :: middle.Reexported_Comparison\n"
   "pub Local_Enabled :: values.Enabled\n"
   "pub Local_Label :: values.Label\n"
   "pub Local_Pointer :: values.Index_Pointer\n"
@@ -520,8 +548,8 @@ expect_next_interface_failure(
 )
 
 # Array counts reuse the shared exact integer evaluator. Trapping shifts and
-# concrete type mismatches remain invalid even though bitwise and shift
-# operators are now inside its closed vocabulary.
+# concrete type mismatches remain invalid even though bitwise, shift, and
+# supported unsigned cast operators are now inside its closed vocabulary.
 expect_next_interface_failure(
   invalid-array-count-division-by-zero
   "package app\npub Bytes :: [4 / 0]u8\nmain :: proc() {}\n"
@@ -545,6 +573,26 @@ expect_next_interface_failure(
 expect_next_interface_failure(
   invalid-bitwise-concrete-type-mismatch
   "package app\npub Mixed :: target.page_size & target.pointer_bits\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
+expect_next_interface_failure(
+  invalid-comparison-concrete-type-mismatch
+  "package app\npub Mixed :: cast[u8](1) == cast[u16](1)\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
+
+# The explicit-conversion slice currently publishes only unsigned integer
+# destinations through 64 bits. Production accepts these additional cast
+# families, so they remain deliberate self-hosting boundaries rather than
+# being confused with invalid Draft source.
+expect_staged_interface_failure(
+  unsupported-signed-integer-cast
+  "package app\npub Signed :: cast[i64](1)\nmain :: proc() {}\n"
+  "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
+)
+expect_staged_interface_failure(
+  unsupported-boolean-cast
+  "package app\npub Truth :: cast[bool](1)\nmain :: proc() {}\n"
   "self-hosted typed interface requires a supported scalar, structural, distinct, ordinary struct, ordinary enum, ordinary variant, or ordinary union declaration"
 )
 

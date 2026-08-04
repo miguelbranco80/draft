@@ -3477,15 +3477,17 @@ integer_expression_to_scalar :: proc(
     return (result, true)
 }
 
-// evaluate_integer_arithmetic_expression evaluates one side-effect-free integer
+// evaluate_integer_expression evaluates one side-effect-free integer
 // syntax tree without recursively running another declaration product. Local
 // names consume only completed scalar products and report the first missing
 // Symbol_Id through blocked_symbol. Imported constants and target numeric facts
 // are already consumer-local inputs. The admitted syntax is integer literals,
 // names, qualified imported/target members, grouping, unary sign/complement,
-// and binary + - * / % & | ~ << >>. Casts, comparisons, and compile-time
-// procedures remain at the next constant-evaluator seam.
-evaluate_integer_arithmetic_expression :: proc(
+// binary + - * / % & | ~ << >>, and explicit casts to the concrete unsigned
+// types whose values fit the current scalar packet. Comparisons are projected
+// separately because their result is boolean; compile-time procedures remain
+// at the next constant-evaluator seam.
+evaluate_integer_expression :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     evaluation: ^Integer_Evaluation,
     semantic_package: ^Semantic_Package,
@@ -3586,7 +3588,7 @@ evaluate_integer_arithmetic_expression :: proc(
         if len(children) != 1 {
             return (Integer_Expression_Value{}, false)
         }
-        return evaluate_integer_arithmetic_expression(
+        return evaluate_integer_expression(
             graph,
             evaluation,
             semantic_package,
@@ -3605,7 +3607,7 @@ evaluate_integer_arithmetic_expression :: proc(
             operation != .tilde {
             return (Integer_Expression_Value{}, false)
         }
-        (result, valid) := evaluate_integer_arithmetic_expression(
+        (result, valid) := evaluate_integer_expression(
             graph,
             evaluation,
             semantic_package,
@@ -3654,6 +3656,79 @@ evaluate_integer_arithmetic_expression :: proc(
             }
         }
         return (result, true)
+    case .call_expression:
+        // `cast[T](value)` is a call whose callee is a two-child bracket
+        // expression. Resolve T through the ordinary compile-time type-value
+        // path so builtin, local-alias, and imported-alias targets obey the
+        // same dependency rules as every other typed interface use. This
+        // closed slice admits only concrete unsigned destinations through 64
+        // bits; the mathematical source is reduced modulo the destination
+        // width as required by the specification's explicit conversion rule.
+        if len(children) != 2 {
+            return (Integer_Expression_Value{}, false)
+        }
+        callee := compiler_syntax.syntax_tree_node(tree, children[0])
+        callee_children := compiler_syntax.syntax_tree_children(
+            tree,
+            children[0],
+        )
+        if callee.kind != .bracket_expression || len(callee_children) != 2 {
+            return (Integer_Expression_Value{}, false)
+        }
+        base := compiler_syntax.syntax_tree_node(tree, callee_children[0])
+        if base.kind != .name_expression || !bytes_equal_text(
+            node_source_bytes(
+                graph,
+                semantic_package,
+                file_index,
+                tree,
+                callee_children[0],
+            ),
+            "cast",
+        ) {
+            return (Integer_Expression_Value{}, false)
+        }
+        target := evaluate_target_condition_expression(
+            graph,
+            semantic_package,
+            file_index,
+            tree,
+            callee_children[1],
+            facts,
+            blocked_symbol,
+            .type_value,
+        )
+        if target.kind != .type_value {
+            return (Integer_Expression_Value{}, false)
+        }
+        (bit_width, supported) := unsigned_integer_width(
+            semantic_package,
+            target.type_value,
+        )
+        if !supported || bit_width == 0 {
+            return (Integer_Expression_Value{}, false)
+        }
+        (argument, valid) := evaluate_integer_expression(
+            graph,
+            evaluation,
+            semantic_package,
+            file_index,
+            tree,
+            children[1],
+            facts,
+            blocked_symbol,
+        )
+        if !valid {
+            return (Integer_Expression_Value{}, false)
+        }
+        return (Integer_Expression_Value{
+            integer = wrap_unsigned_integer_value(
+                evaluation,
+                argument.integer,
+                bit_width,
+            ),
+            static_type = target.type_value,
+        }, true)
     case .binary_expression:
         if len(children) != 2 {
             return (Integer_Expression_Value{}, false)
@@ -3668,7 +3743,7 @@ evaluate_integer_arithmetic_expression :: proc(
         if !have_operation {
             return (Integer_Expression_Value{}, false)
         }
-        (left, valid_left) := evaluate_integer_arithmetic_expression(
+        (left, valid_left) := evaluate_integer_expression(
             graph,
             evaluation,
             semantic_package,
@@ -3681,7 +3756,7 @@ evaluate_integer_arithmetic_expression :: proc(
         if !valid_left {
             return (Integer_Expression_Value{}, false)
         }
-        (right, valid_right) := evaluate_integer_arithmetic_expression(
+        (right, valid_right) := evaluate_integer_expression(
             graph,
             evaluation,
             semantic_package,
@@ -3704,6 +3779,120 @@ evaluate_integer_arithmetic_expression :: proc(
     case:
         return (Integer_Expression_Value{}, false)
     }
+}
+
+// evaluate_integer_comparison_expression recognizes one possibly grouped
+// integer comparison and returns its boolean value. The second result reports
+// that both operands entered this exact integer domain, not merely that the
+// root token is a comparison. Non-integer equality therefore remains available
+// to the target-condition evaluator. Once both operands are exact integers, a
+// type mismatch is recognized as invalid so that older bounded evaluation
+// cannot retry the same syntax after discarding concrete type identity.
+//
+// Draft's "Expressions and evaluation" rules require exact type identity for
+// two concrete numeric operands and contextual conversion of one untyped
+// operand only when representable. integer_binary_type owns that rule for this
+// evaluator; compiler_big_integer.compare then implements mathematical signed
+// ordering without narrowing either operand.
+evaluate_integer_comparison_expression :: proc(
+    graph: ^compiler_workspace.Workspace_Graph,
+    evaluation: ^Integer_Evaluation,
+    semantic_package: ^Semantic_Package,
+    file_index: usize,
+    tree: ^compiler_syntax.Syntax_Tree,
+    id: compiler_syntax.Node_Id,
+    facts: ^Target_Facts,
+    blocked_symbol: ^Symbol_Id,
+) -> (Compile_Time_Value, bool) {
+    node := compiler_syntax.syntax_tree_node(tree, id)
+    children := compiler_syntax.syntax_tree_children(tree, id)
+    if node.kind == .group_expression {
+        if len(children) != 1 {
+            return (invalid_compile_time_value(), false)
+        }
+        return evaluate_integer_comparison_expression(
+            graph,
+            evaluation,
+            semantic_package,
+            file_index,
+            tree,
+            children[0],
+            facts,
+            blocked_symbol,
+        )
+    }
+    if node.kind != .binary_expression || len(children) != 2 {
+        return (invalid_compile_time_value(), false)
+    }
+    left_node := compiler_syntax.syntax_tree_node(tree, children[0])
+    right_node := compiler_syntax.syntax_tree_node(tree, children[1])
+    (operation, have_operation) := binary_operator(
+        tree,
+        left_node,
+        right_node,
+    )
+    if !have_operation ||
+        (operation != .equal_equal && operation != .bang_equal &&
+            operation != .less && operation != .less_equal &&
+            operation != .greater && operation != .greater_equal) {
+        return (invalid_compile_time_value(), false)
+    }
+
+    (left, valid_left) := evaluate_integer_expression(
+        graph,
+        evaluation,
+        semantic_package,
+        file_index,
+        tree,
+        children[0],
+        facts,
+        blocked_symbol,
+    )
+    if !valid_left {
+        return (invalid_compile_time_value(), false)
+    }
+    (right, valid_right) := evaluate_integer_expression(
+        graph,
+        evaluation,
+        semantic_package,
+        file_index,
+        tree,
+        children[1],
+        facts,
+        blocked_symbol,
+    )
+    if !valid_right {
+        return (invalid_compile_time_value(), false)
+    }
+    (_, _, valid_type) := integer_binary_type(
+        evaluation,
+        semantic_package,
+        left,
+        right,
+    )
+    if !valid_type {
+        return (invalid_compile_time_value(), true)
+    }
+
+    order := compiler_big_integer.compare(
+        integer_value(evaluation, left.integer),
+        integer_value(evaluation, right.integer),
+    )
+    result: Compile_Time_Value
+    result.kind = .boolean
+    result.static_type = Type_Id{value = 4}
+    result.type_value = invalid_type_id()
+    switch operation {
+    case .equal_equal: result.boolean = order == 0
+    case .bang_equal: result.boolean = order != 0
+    case .less: result.boolean = order < 0
+    case .less_equal: result.boolean = order <= 0
+    case .greater: result.boolean = order > 0
+    case .greater_equal: result.boolean = order >= 0
+    case:
+        return (invalid_compile_time_value(), true)
+    }
+    return (result, true)
 }
 
 // integer_expression_to_enum_integer projects an arbitrary-precision result
@@ -3755,7 +3944,7 @@ evaluate_enum_integer_expression :: proc(
     evaluation: Integer_Evaluation
     init_integer_evaluation(&evaluation)
     defer destroy_integer_evaluation(&evaluation)
-    (value, valid) := evaluate_integer_arithmetic_expression(
+    (value, valid) := evaluate_integer_expression(
         graph,
         &evaluation,
         semantic_package,
@@ -3772,8 +3961,12 @@ evaluate_enum_integer_expression :: proc(
 }
 
 // evaluate_integer_scalar_expression is the named-constant projection. It
-// permits arbitrary-width intermediates but publishes only the existing
-// nonnegative u64 interface packet after the root value is complete.
+// publishes an exact integer comparison directly as bool; other integer roots
+// may use arbitrary-width intermediates but must fit the existing nonnegative
+// u64 interface packet after completion. The second result means this exact
+// evaluator recognized the root. A recognized-but-invalid comparison retains
+// an invalid value so the caller does not retry it through the older bounded
+// scalar evaluator and accidentally discard concrete type identity.
 evaluate_integer_scalar_expression :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     semantic_package: ^Semantic_Package,
@@ -3786,7 +3979,21 @@ evaluate_integer_scalar_expression :: proc(
     evaluation: Integer_Evaluation
     init_integer_evaluation(&evaluation)
     defer destroy_integer_evaluation(&evaluation)
-    (value, valid) := evaluate_integer_arithmetic_expression(
+    (comparison, recognized_comparison) :=
+        evaluate_integer_comparison_expression(
+            graph,
+            &evaluation,
+            semantic_package,
+            file_index,
+            tree,
+            id,
+            facts,
+            blocked_symbol,
+        )
+    if recognized_comparison {
+        return (comparison, true)
+    }
+    (value, valid) := evaluate_integer_expression(
         graph,
         &evaluation,
         semantic_package,
@@ -3822,7 +4029,7 @@ evaluate_array_count_expression :: proc(
     evaluation: Integer_Evaluation
     init_integer_evaluation(&evaluation)
     defer destroy_integer_evaluation(&evaluation)
-    (value, valid) := evaluate_integer_arithmetic_expression(
+    (value, valid) := evaluate_integer_expression(
         graph,
         &evaluation,
         semantic_package,
@@ -5060,8 +5267,8 @@ target_feature :: proc(
 // ranges. The parser has already established expression shape; this operation
 // deliberately recognizes only operators in the current scalar-constant
 // subsets. Arithmetic/bitwise/shift rows are consumed by the typed-interface
-// integer evaluator; comparisons and logical rows remain in the target-
-// condition path.
+// integer evaluator. Comparisons are shared by its exact integer projection and
+// the older target-condition path; logical rows remain target-condition-only.
 binary_operator :: proc(
     tree: ^compiler_syntax.Syntax_Tree,
     left, right: ^compiler_syntax.Syntax_Node,
@@ -5794,11 +6001,11 @@ append_unsupported_compile_time_diagnostic :: proc(
 // declaration symbol and package. A struct, enum, variant, or union installs
 // its nominal shell before completing its packet; unavailable dependencies
 // attach one graph edge. Only a complete attempt publishes the constant value.
-// Typed-interface scalar products additionally admit the shared arbitrary-
-// precision integer `+ - * / % & | ~ << >>` evaluator, then require the final
-// value to fit the published scalar packet. Grouped declarations and the
-// broader Draft constant vocabulary remain outside this staging slice and fail
-// only when a consumer demands them.
+// Typed-interface scalar products additionally admit the shared exact integer
+// evaluator, including unsigned casts and direct comparisons. Integer results
+// must fit the published scalar packet; comparisons publish bool. Grouped
+// declarations and the broader Draft constant vocabulary remain outside this
+// staging slice and fail only when a consumer demands them.
 run_named_constant_product :: proc(
     graph: ^compiler_workspace.Workspace_Graph,
     facts: ^Target_Facts,
@@ -6039,8 +6246,8 @@ run_named_constant_product :: proc(
             }
         }
     } else if use == .typed_interface {
-        valid_integer := false
-        (value, valid_integer) = evaluate_integer_scalar_expression(
+        handled_integer := false
+        (value, handled_integer) = evaluate_integer_scalar_expression(
             graph,
             semantic_package,
             symbol.syntax.file_index,
@@ -6049,7 +6256,7 @@ run_named_constant_product :: proc(
             facts,
             &blocked_symbol,
         )
-        if !valid_integer {
+        if !handled_integer {
             value = evaluate_target_condition_expression(
                 graph,
                 semantic_package,
@@ -6506,9 +6713,9 @@ declaration_type_syntax :: proc(
 // this typed-interface slice. It resolves children recursively, interns exact
 // package-local identities, and reports the first unpublished local constant or
 // type through blocked_symbol. Array counts reuse the shared scalar compile-time
-// evaluator, so literals, `+ - * / % & | ~ << >>`, named local/imported
-// untyped-or-usize constants, and target usize facts follow one dependency
-// mechanism.
+// evaluator, so literals, `+ - * / % & | ~ << >>`, supported casts, named
+// local/imported untyped-or-usize constants, and target usize facts follow one
+// dependency mechanism.
 // Declaration-owned
 // distinct, struct, enum, variant, and union syntax is intentionally constructed
 // by the constant product which has the defining symbol; seeing any of them

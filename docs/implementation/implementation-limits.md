@@ -228,15 +228,19 @@ each imported declaration is reconstructed in the consumer Type-ID domain
 beneath its file-local alias. One shared arbitrary-precision integer evaluator
 accepts literals, local/imported unsigned constants, target numeric facts,
 grouping, unary sign/complement, binary `+`, `-`, `*`, `/`, `%`, `&`, `|`, and
-`~` (xor), and `<<`/`>>`. Untyped operations remain mathematically exact
-regardless of intermediate width, with infinite-two's-complement bitwise
-semantics and arithmetic right shift for negative values, while concrete
-unsigned types no wider than 64 bits wrap at their declared width. Negative
-shift counts, counts at or beyond a concrete left width, and work beyond the
-one-million-bit constant resource bound fail closed. Named
-interface constants currently publish only nonnegative u64 results. Fixed-array
-counts consume the same evaluator and require a positive result representable
-by the target-sized count packet from an untyped value or exact `usize`.
+`~` (xor), `<<`/`>>`, and explicit integer casts to concrete unsigned types no
+wider than 64 bits. Direct integer `==`, `!=`, `<`, `<=`, `>`, and `>=`
+expressions compare in the same exact domain and publish boolean constants.
+Untyped operations remain mathematically exact regardless of intermediate
+width, with infinite-two's-complement bitwise semantics and arithmetic right
+shift for negative values, while concrete unsigned types no wider than 64 bits
+wrap at their declared width. Explicit integer casts reduce modulo the target
+width. Negative shift counts, counts at or beyond a concrete left width, and
+work beyond the one-million-bit constant resource bound fail closed. Named
+integer interface constants currently publish only nonnegative u64 results.
+Fixed-array counts consume the same evaluator and require a positive result
+representable by the target-sized count packet from an untyped value or exact
+`usize`.
 Forward local type/count aliases and qualified imported type/value aliases are
 supported. Distinct interface rows retain the defining root content identity,
 root-relative package path, and original declaration name across direct and
@@ -258,18 +262,19 @@ types, zero byte offsets, and maximum-member natural layout; grouped fields and
 pointer recursion are supported. C enums, packed/bit fields, C or explicitly
 aligned aggregates, selected/synthesized/directive members, SIMD types,
 parametric forms, foreign/export declarations, procedure contracts,
-cast/comparison integer expressions, negative or wider named scalar
-publication, and general constant/type forms fail explicitly at this interface
-boundary.
+signed, wider, or non-integer cast destinations, comparison results nested in
+the broader unsupported constant-expression vocabulary, negative or wider
+named integer publication, and general constant/type forms fail explicitly at
+this interface boundary.
 The `compiler/big_integer` package implements and differentially qualifies the
 arbitrary-precision values now consumed by this evaluator:
 parsing, sign/magnitude arithmetic, division, shifts, infinite-two's-complement
-bitwise operations, fixed-width conversion, and decimal formatting against the
-production C++ `BigInteger`. One root evaluation owns a temporary value table,
-uses stable IDs across table growth, and projects only its final result into the
-finite scalar, enum, or array interface packet before destruction. The remaining
-u64/u128 limits above are publication boundaries, not intermediate arithmetic
-limits.
+bitwise operations, signed comparison, fixed-width conversion, and decimal
+formatting against the production C++ `BigInteger`. One root evaluation owns a
+temporary value table, uses stable IDs across table growth, and projects only
+its final result into the finite scalar, enum, or array interface packet before
+destruction. The remaining u64/u128 limits above are publication boundaries,
+not intermediate arithmetic limits.
 Imported constants remain unavailable to the earlier package-`when` selector.
 Deeper nominal member lookup, full type/body checking, elaboration, MIR, LLVM,
 artifacts, and linking have not moved to the staging driver. The C++ driver
